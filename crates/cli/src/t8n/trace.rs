@@ -87,11 +87,14 @@ impl Tracing {
             .map_err(|err| Error::Tracer(err.to_string()))
     }
 
-    /// The empty trace file go-ethereum leaves for a transaction it rejects after starting it.
+    /// The empty file `--trace` leaves for a transaction go-ethereum rejects after starting it.
     pub(super) fn empty(&self, index: usize, hash: B256) -> Option<TxTrace> {
-        let kind = self.kind?;
-        let extension = if kind == TraceKind::Jsonl { "jsonl" } else { "json" };
-        Some(TxTrace { index, hash, extension, content: String::new() })
+        (self.kind == Some(TraceKind::Jsonl)).then(|| TxTrace {
+            index,
+            hash,
+            extension: "jsonl",
+            content: String::new(),
+        })
     }
 
     /// Renders the finished transaction's trace.

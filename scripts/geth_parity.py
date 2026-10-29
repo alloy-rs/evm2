@@ -34,8 +34,9 @@ tracers out. `--js-dir DIR` adds each `*.js` file of DIR (for example
 
 Known differences: `--known-diffs FILE` (default crates/cli/testdata/geth-parity/known-diffs.json)
 lists differences that exist today as {case, fork, tracer, path, op?, reason}, plus `"kind": "geth-gap"` for a
-difference where geth lacks a feature that evm2 has (the summary counts them apart, and
-`--write-known-diffs` keeps them as they are). Every field but reason
+difference where geth lacks a feature that evm2 has and `"kind": "extension"` for a field evm2 prints
+and geth does not (the summary counts both apart, `--write-known-diffs` keeps them as they are, and
+fix PRs never delete them). Every field but reason
 may be a list. Case, fork and tracer are globs (`*` matches any text) and path is a glob over the
 field path, with array indexes written as `[]`, addresses as `<address>` and hashes as `<hash>`,
 for example `structLogs[].gasCost`. An optional `op` (a list of opcode names, globs) limits an entry
@@ -339,14 +340,15 @@ def read_outputs(out):
     for name in ("result", "alloc", "body"):
         path = out / f"{name}.json"
         outputs[name] = json.loads(path.read_text()) if path.exists() else None
-    traces = []
-    pattern = re.compile(r"trace-(\d+)-0x[0-9a-f]+\.(jsonl|json)$")
+    traces, files = [], []
+    pattern = re.compile(r"trace-(\d+)-(0x[0-9a-f]+)\.(jsonl|json)$")
     for path in sorted(out.glob("trace-*"), key=lambda p: int(pattern.match(p.name).group(1))):
         text = path.read_text()
+        files.append([int(pattern.match(path.name).group(1)), pattern.match(path.name).group(2), bool(text.strip())])
         if not text.strip():
-            continue  # geth opens a trace file for a rejected transaction and writes nothing
+            continue  # with --trace, geth opens a file for a rejected transaction and writes nothing
         traces.append([json.loads(line) for line in text.splitlines() if line.strip()] if path.suffix == ".jsonl" else json.loads(text))
-    outputs["traces"] = traces
+    outputs["traces"], outputs["files"] = traces, files
     return outputs
 
 
@@ -657,6 +659,8 @@ def compare(case, fork, tracer, geth, evm2, strict_errors):
             found += [Difference(case, fork, tracer, None, (name, *path), x, y) for path, x, y in diffs]
         return found
     g, e = geth["traces"], evm2["traces"]
+    if geth.get("files") is not None and geth["files"] != evm2["files"]:  # numbering and hashes of the trace files
+        found.append(Difference(case, fork, tracer, None, ("<trace files>",), geth["files"], evm2["files"]))
     if len(g) != len(e):
         found.append(Difference(case, fork, tracer, None, ("<traces>",), len(g), len(e)))
     for tx, (gt, et) in enumerate(zip(g, e)):
@@ -671,8 +675,11 @@ def compare(case, fork, tracer, geth, evm2, strict_errors):
 # `op` limits an entry to the steps of the named opcodes; without it the entry covers every difference at its path.
 KNOWN_KEYS = ("case", "fork", "tracer", "path", "op")
 
-# `kind` of an entry for something geth does not implement; fix PRs never delete these entries.
+# `kind` of an entry for something geth does not implement, or an evm2 field geth does not print;
+# fix PRs never delete these entries.
 GETH_GAP = "geth-gap"
+EXTENSION = "extension"
+PERMANENT = (GETH_GAP, EXTENSION)
 
 
 def load_known(path):
@@ -686,6 +693,8 @@ def load_known(path):
         missing = [key for key in KNOWN_KEYS[:4] if key not in entry]
         if missing:
             sys.exit(f"known difference without {', '.join(missing)} (use \"*\" to match all): {json.dumps(entry)[:200]}")
+        if all(entry[key] == "*" for key in ("case", "tracer", "path")):
+            sys.exit(f"known difference that matches every case, tracer and path: {json.dumps(entry)[:200]}")
     return [
         dict(zip(KNOWN_KEYS, combination), reason=entry.get("reason", ""), kind=entry.get("kind", ""))
         for entry in entries
@@ -845,7 +854,7 @@ def stored_outputs(case, fork, tracer):
         return {"result": bundle["result"], "alloc": bundle["alloc"]}
     if tracer not in bundle["traces"]:
         return None
-    return {"traces": bundle["traces"][tracer]}
+    return {"traces": bundle["traces"][tracer], "files": bundle.get("files") if tracer == "jsonl" else None}
 
 
 def write_bundle(case, fork, geth_runs):
@@ -860,10 +869,12 @@ def write_bundle(case, fork, geth_runs):
             bundle["result"], bundle["alloc"] = lower_hex(outputs["result"]), lower_hex(outputs["alloc"])
         else:
             bundle["traces"][tracer] = [normalize_trace(tracer, t) for t in outputs["traces"]]
+            if tracer == "jsonl":
+                bundle["files"] = outputs["files"]
     path.parent.mkdir(exist_ok=True)
     dump = lambda value: json.dumps(value, separators=(",", ":"), sort_keys=True)
     traces = ",\n".join(f"  {json.dumps(t)}: {dump(v)}" for t, v in sorted(bundle["traces"].items()))
-    fields = [f'"{key}": {dump(bundle[key])}' for key in ("alloc", "geth", "result")]
+    fields = [f'"{key}": {dump(bundle[key])}' for key in ("alloc", "files", "geth", "result") if key in bundle]
     path.write_text("{\n" + ",\n".join([*fields, f'"traces": {{\n{traces}\n}}']) + "\n}\n")
 
 
@@ -1002,8 +1013,7 @@ def main():
 
 
 def report(args, differences, errors, known, ran, pairs):
-    unknown, hits, gaps = [], set(), 0
-    group = lambda atom: tuple(atom[key] for key in KNOWN_KEYS[:4])
+    unknown, hits, kinds = [], set(), {GETH_GAP: 0, EXTENSION: 0}
     # Atoms without a wildcard in tracer and path are found by that pair; the others are tried for every difference.
     by_path, wild = {}, []
     for i, atom in enumerate(known):
@@ -1014,8 +1024,9 @@ def report(args, differences, errors, known, ran, pairs):
     for d in differences:
         candidates = [*by_path.get((d.tracer, d.collapsed), ()), *wild]
         matched = [i for i in candidates if atom_matches(known[i], d)]
-        hits.update(group(known[i]) for i in matched)
-        gaps += any(known[i]["kind"] == GETH_GAP for i in matched)
+        hits.update(matched)
+        for kind in kinds:
+            kinds[kind] += any(known[i]["kind"] == kind for i in matched)
         if not matched:
             unknown.append(d)
     if args.write_known_diffs:
@@ -1024,10 +1035,9 @@ def report(args, differences, errors, known, ran, pairs):
         write_known(args.known_diffs, differences, known, ran)
         log(f"wrote {args.known_diffs}")
         return 0
-    # An opcode list narrows an entry but is not checked for staleness: the entry stays while any of its steps differ.
-    stale = [atom for atom in known if group(atom) not in hits and atom_selected(atom, ran)]
+    stale = [atom for i, atom in enumerate(known) if i not in hits and atom_selected(atom, ran)]
 
-    unclassified = {(a["case"], a["tracer"], a["path"]) for a in known if a["reason"] in ("", "unclassified")}
+    unclassified = {(a["case"], a["tracer"], a["path"]) for a in known if len(a["reason"].strip()) < 10 or a["reason"] == "unclassified"}
     for case, tracer, path in sorted(unclassified)[:20]:
         print(f"UNCLASSIFIED known diff needs a reason: {case} {tracer} {path}")
 
@@ -1051,7 +1061,7 @@ def report(args, differences, errors, known, ran, pairs):
     total = len(differences)
     print(
         f"\n{pairs} case/fork pairs, {len(ran)} comparisons: {total} differences "
-        f"({total - len(unknown) - gaps} known, {gaps} geth gaps, {len(unknown)} new), {len(errors)} errors, {len(stale)} stale known entries, "
+        f"({total - len(unknown) - sum(kinds.values())} known, {kinds[GETH_GAP]} geth gaps, {kinds[EXTENSION]} extensions, {len(unknown)} new), {len(errors)} errors, {len(stale)} stale known entries, "
         f"{len(rejected)} skipped because both tools reject the input"
     )
     if unknown:
@@ -1070,34 +1080,38 @@ def write_known(path, differences, old, ran):
     Entries outside the run's selection stay. Reasons carry over by tracer and path; entries
     group by tracer and path, then by the forks and opcodes each case differs in.
     """
-    reasons = {(a["tracer"], a["path"]): a["reason"] for a in old if a["reason"]}
-    gap_atoms = [a for a in old if a["kind"] == GETH_GAP]
+    reasons = {(a["tracer"], a["path"]): a["reason"] for a in old if a["reason"] and a["kind"] not in PERMANENT}
+    permanent = [a for a in old if a["kind"] in PERMANENT]
     found = {}
     for d in differences:
-        if any(atom_matches(a, d) for a in gap_atoms):
+        if any(atom_matches(a, d) for a in permanent):
             continue
         found.setdefault((d.tracer, d.collapsed), {}).setdefault(d.case, {}).setdefault(d.fork, set()).add(d.op)
     entries = [
         {k: a[k] for k in (*KNOWN_KEYS, "reason", "kind") if a[k] and not (k == "op" and a[k] == "*")}
         for a in old
-        if a["kind"] == GETH_GAP or not atom_selected(a, ran)
+        if a["kind"] in PERMANENT or not atom_selected(a, ran)
     ]
     for (tracer, collapsed), cases in sorted(found.items()):
+        # Cases that differ in the same opcodes at the same forks share an entry, so each entry is an exact product.
         groups = {}
         for case, by_fork in sorted(cases.items()):
-            forks = tuple(sorted(by_fork, key=fork_index))
-            ops = frozenset().union(*by_fork.values())
-            groups.setdefault((forks, ops), []).append(case)
-        for (forks, ops), names in groups.items():
-            entry = {
-                "case": names if len(names) > 1 else names[0],
-                "fork": list(forks) if len(forks) > 1 else forks[0],
-                "tracer": tracer, "path": collapsed,
-            }
-            if "" not in ops:  # a difference outside a step stays unpinned
-                entry["op"] = sorted(ops) if len(ops) > 1 else next(iter(ops))
-            entry["reason"] = reasons.get((tracer, collapsed)) or "unclassified"
-            entries.append(entry)
+            by_ops = {}
+            for fork, ops in by_fork.items():
+                by_ops.setdefault(frozenset(ops), []).append(fork)
+            shape = frozenset((ops, tuple(sorted(forks, key=fork_index))) for ops, forks in by_ops.items())
+            groups.setdefault(shape, []).append(case)
+        for shape, names in groups.items():
+            for ops, forks in sorted(shape, key=lambda item: (item[1], sorted(item[0]))):
+                entry = {
+                    "case": names if len(names) > 1 else names[0],
+                    "fork": list(forks) if len(forks) > 1 else forks[0],
+                    "tracer": tracer, "path": collapsed,
+                }
+                if "" not in ops:  # a difference outside a step stays unpinned
+                    entry["op"] = sorted(ops) if len(ops) > 1 else next(iter(ops))
+                entry["reason"] = reasons.get((tracer, collapsed)) or "unclassified"
+                entries.append(entry)
     Path(path).write_text('{\n  "known": [\n' + ",\n".join("    " + json.dumps(e) for e in entries) + "\n  ]\n}\n")
 
 

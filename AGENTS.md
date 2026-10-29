@@ -87,7 +87,9 @@ a reason. A fix deletes its entries; the script and the test fail on a differenc
 and on an entry that no longer occurs. Never add an entry to make a failure go away without a reason
 that names the geth behavior. An entry with `"kind": "geth-gap"` marks something geth does not
 implement (for example netting BAL changes over a block access index, go-ethereum
-`tests/block_test.go:94-96`); the script counts these apart and fix PRs leave them.
+`tests/block_test.go:94-96`); `"kind": "extension"` marks an evm2 field geth does not print (the
+EIP-8037 state gas fields, kept deliberately). The script counts both kinds apart and fix PRs leave
+them. An optional `op` limits an entry to differences in steps of the named opcodes.
 
 ## Rust
 

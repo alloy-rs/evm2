@@ -311,9 +311,12 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
                 block_hashes.is_some_and(|hashes| hashes.contains_key(&number))
             });
             if !listed {
-                return Err(Error::Execution(format!(
-                    "getHash({number}) invoked, blockhash for that block not provided"
-                )));
+                let reason = if block_hashes.is_some() {
+                    "blockhash for that block not provided"
+                } else {
+                    "no blockhashes provided"
+                };
+                return Err(Error::Execution(format!("getHash({number}) invoked, {reason}")));
             }
         }
         let tx_index = receipts.len();

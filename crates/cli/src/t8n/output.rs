@@ -6,7 +6,7 @@ use alloy_eips::eip7685::Requests;
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use evm2::evm::InMemoryDB;
 use serde_json::{Map, Value, json};
-use std::{io::Write, path::Path};
+use std::{collections::BTreeMap, io::Write, path::Path};
 
 /// The trace of one executed transaction.
 #[derive(Clone, Debug)]
@@ -192,7 +192,7 @@ impl Output {
         std::fs::create_dir_all(base)
             .map_err(|source| Error::Write { path: base.clone(), source })?;
         // Outputs sent to stdout or stderr share one object, keyed by output name.
-        let (mut stdout, mut stderr) = (Map::new(), Map::new());
+        let (mut stdout, mut stderr) = (BTreeMap::new(), BTreeMap::new());
         let body = json!(self.body);
         let outputs = [
             ("result", &args.output_result, &self.result),
@@ -201,23 +201,26 @@ impl Output {
         .into_iter()
         .chain(args.output_body.as_ref().map(|name| ("body", name, &body)));
         for (key, name, value) in outputs {
+            if name.is_empty() {
+                continue;
+            }
             let stream = match name.as_str() {
                 "stdout" => Some(&mut stdout),
                 "stderr" => Some(&mut stderr),
                 _ => None,
             };
             if let Some(stream) = stream {
-                stream.insert(key.into(), value.clone());
+                stream.insert(key, value.clone());
             } else {
                 let content = if key == "result" { to_pretty(value) } else { value.to_string() };
                 write_file(base, name, &content)?;
             }
         }
         if !stdout.is_empty() {
-            write_all(std::io::stdout(), &to_pretty(&Value::Object(stdout)), Path::new("stdout"))?;
+            write_all(std::io::stdout(), &to_pretty(&stdout), Path::new("stdout"))?;
         }
         if !stderr.is_empty() {
-            write_all(std::io::stderr(), &to_pretty(&Value::Object(stderr)), Path::new("stderr"))?;
+            write_all(std::io::stderr(), &to_pretty(&stderr), Path::new("stderr"))?;
         }
         for trace in &self.traces {
             write_file(base, &trace.file_name(), &trace.content)?;
@@ -226,7 +229,7 @@ impl Output {
     }
 }
 
-fn to_pretty(value: &Value) -> String {
+fn to_pretty(value: &impl serde::Serialize) -> String {
     serde_json::to_string_pretty(value).expect("JSON values serialize")
 }
 
