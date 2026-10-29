@@ -64,13 +64,19 @@ impl StorageOverlay {
     ///
     /// Such a slot cached zero instead of its backing value, and the rollback restores its zero
     /// current value. A slot that fails to reload keeps its zero, so its read stays in the overlay
-    /// for the BAL, and is retried by the next rolled-back creation.
+    /// for the BAL, and is retried by the next rolled-back creation, which keeps any write made
+    /// to the slot in between.
     pub(super) fn reload_zeroed(&mut self, address: &Address, database: &mut dyn DynDatabase) {
         for (key, slot) in &mut self.slots {
             if slot.created_zero
                 && let Ok(value) = database.get_storage(address, key)
             {
-                slot.value = Tracked::new(value);
+                // A retry can find a slot written since a failed reload; keep that write.
+                let unchanged = !slot.value.is_changed();
+                slot.value.original = value;
+                if unchanged {
+                    slot.value.current = value;
+                }
                 slot.created_zero = false;
             }
         }

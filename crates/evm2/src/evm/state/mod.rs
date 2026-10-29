@@ -1425,13 +1425,14 @@ mod tests {
         let slot = state.accounts[&address].storage.slots[&key];
         assert!(slot.created_zero);
         assert_eq!((slot.value.original, slot.value.current), (Word::ZERO, Word::ZERO));
+        state.storage_slot(&address, key).unwrap().set(Word::from(9));
         state.clear_bal();
         let checkpoint = state.checkpoint();
         state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
         state.rollback(checkpoint, features);
         let slot = state.accounts[&address].storage.slots[&key];
         assert!(!slot.created_zero);
-        assert_eq!((slot.value.original, slot.value.current), (Word::from(6), Word::from(6)));
+        assert_eq!((slot.value.original, slot.value.current), (Word::from(6), Word::from(9)));
     }
 
     #[test]
