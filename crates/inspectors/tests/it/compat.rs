@@ -388,7 +388,7 @@ impl ExecutionResult {
                 Output::Call(result.output)
             };
             Self::Success { output, gas_used }
-        } else if result.stop.is_revert() {
+        } else if result.stop.is_frame_revert() {
             Self::Revert { output: result.output, gas_used }
         } else {
             Self::Halt { reason: result.stop, gas_used }

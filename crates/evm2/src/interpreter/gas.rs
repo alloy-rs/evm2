@@ -459,7 +459,7 @@ impl GasTracker {
     ///   revert/halt the child's state changes roll back, so it contributes none.
     #[inline]
     pub const fn merge_child_gas(&mut self, child: Self, stop: InstrStop) {
-        if stop.is_success() || stop.is_revert() {
+        if stop.is_success() || stop.is_frame_revert() {
             self.erase_cost(child.remaining);
         }
         if stop.is_success() {

@@ -123,16 +123,26 @@ impl InstrStop {
         matches!(self, Self::Stop | Self::Return | Self::SelfDestruct)
     }
 
-    /// Returns whether execution reverted without an exceptional halt.
+    /// Returns whether execution ended with the `REVERT` opcode.
     #[inline]
     pub const fn is_revert(self) -> bool {
+        matches!(self, Self::Revert)
+    }
+
+    /// Returns whether the frame failed without an exceptional halt, so its unused gas returns to
+    /// the caller.
+    ///
+    /// This is the `REVERT` opcode and the failures of a call or create before its frame ran:
+    /// [`Self::CallTooDeep`], [`Self::OutOfFunds`] and [`Self::NonceOverflow`].
+    #[inline]
+    pub const fn is_frame_revert(self) -> bool {
         matches!(self, Self::Revert | Self::CallTooDeep | Self::OutOfFunds | Self::NonceOverflow)
     }
 
     /// Returns whether execution halted exceptionally.
     #[inline]
     pub const fn is_halt(self) -> bool {
-        !self.is_success() && !self.is_revert()
+        !self.is_success() && !self.is_frame_revert()
     }
 
     /// Returns whether execution ran out of gas or exceeded the memory limit.
