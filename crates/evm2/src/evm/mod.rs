@@ -1008,14 +1008,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Returns `true` if a top-level create leaves the sender nonce to the create path.
     ///
-    /// Fee-charging transactions consume it during sender validation. Without fee charging, the
-    /// increment waits until the inspector's create hook and the value-transfer funds check have
-    /// passed, so an underfunded create leaves the nonce unchanged. Every exit that follows
-    /// validation and consumes the nonce must follow this decision: the create path and the
-    /// runtime state-gas halt in [`prepare_initial_frame`](crate::ethereum::prepare_initial_frame).
+    /// This needs [`EvmFeatures::DEFERRED_CREATE_NONCE`] with [`EvmFeatures::FEE_CHARGE`]
+    /// disabled. Otherwise sender validation consumes the nonce. When deferred, the increment
+    /// waits until the inspector's create hook and the value-transfer funds check have passed, so
+    /// an underfunded create leaves the nonce unchanged. Every exit that follows validation and
+    /// consumes the nonce must follow this decision: the create path and the runtime state-gas
+    /// halt in [`prepare_initial_frame`](crate::ethereum::prepare_initial_frame).
     #[inline]
     pub const fn defers_create_nonce(&self) -> bool {
-        !self.feature(EvmFeatures::FEE_CHARGE)
+        self.feature(EvmFeatures::DEFERRED_CREATE_NONCE) && !self.feature(EvmFeatures::FEE_CHARGE)
     }
 
     /// Returns the active base specification ID.

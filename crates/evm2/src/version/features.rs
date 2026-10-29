@@ -166,13 +166,20 @@ evm_features! {
     BALANCE_TOP_UP,
     /// Charges transaction fees.
     ///
-    /// When disabled, top-level creation consumes the sender nonce only after the value-transfer
-    /// funds check, so an insufficient balance leaves the nonce unchanged. Custom handlers
-    /// committing these transactions must validate transfer funding, and must not bump the nonce
-    /// of a top-level create themselves.
-    ///
     /// Default: on
     FEE_CHARGE,
+    /// Defers a top-level create's sender nonce increment until after the inspector's create
+    /// hook and the value-transfer funds check.
+    ///
+    /// Meant for simulations that want an underfunded create to leave the sender nonce unchanged.
+    /// It takes effect only while [`Self::FEE_CHARGE`] is disabled; otherwise, and by default,
+    /// every top-level create consumes the nonce during sender validation. Because a rejected
+    /// create then leaves its nonce reusable, the same signed transaction can be replayed:
+    /// handlers that commit such transactions must validate transfer funding, and must not bump
+    /// the nonce of a top-level create themselves.
+    ///
+    /// Default: off
+    DEFERRED_CREATE_NONCE,
     /// Records emitted logs in the transaction result.
     ///
     /// When disabled, `LOG0`-`LOG4` still apply static-call, stack, gas, and memory rules, but log

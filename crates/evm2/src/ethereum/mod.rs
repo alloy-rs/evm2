@@ -427,11 +427,12 @@ pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult
 
 /// Loads and validates the sender account, then warms and touches it.
 ///
-/// Calls and fee-charging transactions consume the nonce before execution. Fee-disabled creates
-/// defer the increment ([`Evm::defers_create_nonce`]) until after the inspector and
-/// value-transfer precheck, so an underfunded create leaves the nonce unchanged. Custom handlers
-/// that disable fees must validate transfer funding if they commit underfunded creations, and must
-/// not bump the nonce of a top-level create themselves: the create path does.
+/// Calls and, by default, creates consume the nonce before execution. With
+/// [`EvmFeatures::DEFERRED_CREATE_NONCE`] and fee charging disabled, a create defers the
+/// increment ([`Evm::defers_create_nonce`]) until after the inspector and value-transfer
+/// precheck, so an underfunded create leaves the nonce unchanged. Handlers enabling the flag must
+/// validate transfer funding if they commit underfunded creations, and must not bump the nonce of
+/// a top-level create themselves: the create path does.
 pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
@@ -1500,7 +1501,10 @@ mod tests {
     }
 
     #[rstest::rstest]
-    fn rejected_create_nonce_depends_on_fee_charging(#[values(false, true)] fee_charge: bool) {
+    fn rejected_create_nonce_depends_on_deferral(
+        #[values(false, true)] fee_charge: bool,
+        #[values(false, true)] deferred: bool,
+    ) {
         let caller = Address::with_last_byte(0xaa);
         let recipient = Address::with_last_byte(0xbb);
         for spec in [SpecId::PRAGUE, SpecId::AMSTERDAM] {
@@ -1516,6 +1520,7 @@ mod tests {
                                 .features
                                 .remove(EvmFeatures::BALANCE_CHECK | EvmFeatures::BALANCE_TOP_UP);
                             version.features.set(EvmFeatures::FEE_CHARGE, fee_charge);
+                            version.features.set(EvmFeatures::DEFERRED_CREATE_NONCE, deferred);
                             let mut database = InMemoryDB::default();
                             database.insert_account_info(
                                 &caller,
@@ -1574,12 +1579,13 @@ mod tests {
                             }
                             let nonce =
                                 evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce;
+                            let kept = deferred && !fee_charge && to.is_create() && value == 2;
                             assert_eq!(
                                 nonce,
-                                if !fee_charge && to.is_create() && value == 2 { 10 } else { 11 },
+                                if kept { 10 } else { 11 },
                                 "{spec:?} {to:?} value={value} type={tx_type}"
                             );
-                            if fee_charge && value == 2 {
+                            if !kept && value == 2 {
                                 assert_eq!(
                                     evm.transact(&tx).map(crate::evm::ExecutedTx::discard),
                                     Err(HandlerError::InvalidNonce { expected: 11, got: 10 })
@@ -1599,6 +1605,7 @@ mod tests {
         let mut version = Version::new(spec);
         version.features.remove(EvmFeatures::BALANCE_CHECK | EvmFeatures::BALANCE_TOP_UP);
         version.features.set(EvmFeatures::FEE_CHARGE, fee_charge);
+        version.features.insert(EvmFeatures::DEFERRED_CREATE_NONCE);
         let input = Bytes::new();
         let value = U256::from(2);
         let (intrinsic, floor) =
@@ -1638,6 +1645,7 @@ mod tests {
         let spec = SpecId::PRAGUE;
         let mut version = Version::new(spec);
         version.features.set(EvmFeatures::FEE_CHARGE, fee_charge);
+        version.features.insert(EvmFeatures::DEFERRED_CREATE_NONCE);
         let mut database = InMemoryDB::default();
         database.insert_account_info(&caller, AccountInfo::default().with_nonce(10));
         database.insert_account_info(&caller.create(10), AccountInfo::default().with_nonce(1));
@@ -1686,6 +1694,7 @@ mod tests {
         let mut version = Version::new(spec);
         version.features.remove(EvmFeatures::BALANCE_CHECK | EvmFeatures::BALANCE_TOP_UP);
         version.features.set(EvmFeatures::FEE_CHARGE, fee_charge);
+        version.features.insert(EvmFeatures::DEFERRED_CREATE_NONCE);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &caller,
@@ -1731,6 +1740,7 @@ mod tests {
         version.features.remove(
             EvmFeatures::BALANCE_CHECK | EvmFeatures::BALANCE_TOP_UP | EvmFeatures::FEE_CHARGE,
         );
+        version.features.insert(EvmFeatures::DEFERRED_CREATE_NONCE);
         let mut database = InMemoryDB::default();
         if existing {
             database.insert_account_info(&caller, AccountInfo::default());
