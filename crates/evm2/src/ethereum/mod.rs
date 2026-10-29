@@ -914,6 +914,7 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmTypes, ExecutionConfig, Precompiles,
+        constants::MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
         env::{BlockEnvExt, TxEnvExt},
         evm::InMemoryDB,
         interpreter::{Host, InstrStop, op},
@@ -1379,6 +1380,14 @@ mod tests {
             })
         );
         assert_eq!(validate_tx_gas_limit_cap(amsterdam, tx_gas_limit), Ok(()));
+        assert_eq!(validate_tx_gas_limit_cap(amsterdam, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM), Ok(()));
+        assert_eq!(
+            validate_tx_gas_limit_cap(amsterdam, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1),
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1,
+                cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM
+            })
+        );
         assert_eq!(
             validate_execution_gas_limit_cap(amsterdam, tx_gas_limit, intrinsic, floor_gas),
             Ok(())
