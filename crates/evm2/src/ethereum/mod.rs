@@ -968,6 +968,7 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmTypes, ExecutionConfig, Precompiles,
+        constants::MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
         env::BlockEnvExt,
         evm::InMemoryDB,
         interpreter::{Host, InstrStop, op},
@@ -1432,6 +1433,14 @@ mod tests {
             })
         );
         assert_eq!(validate_tx_gas_limit_cap(amsterdam, tx_gas_limit), Ok(()));
+        assert_eq!(validate_tx_gas_limit_cap(amsterdam, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM), Ok(()));
+        assert_eq!(
+            validate_tx_gas_limit_cap(amsterdam, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1),
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1,
+                cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM
+            })
+        );
         assert_eq!(
             validate_execution_gas_limit_cap(amsterdam, tx_gas_limit, intrinsic, floor_gas),
             Ok(())
@@ -1458,6 +1467,39 @@ mod tests {
                 cap: amsterdam_without_eip8037.tx_gas_limit_cap,
             })
         );
+    }
+
+    #[rstest::rstest]
+    fn amsterdam_handler_rejects_gas_limit_above_total_cap(
+        #[values(MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1)]
+        gas_limit: u64,
+    ) {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Eip2930(TxEip2930 {
+                chain_id: 1,
+                gas_limit,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                ..Default::default()
+            }),
+            Address::with_last_byte(0xaa),
+        );
+
+        let expected = if gas_limit > MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM {
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit,
+                cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
+            })
+        } else {
+            Ok(())
+        };
+        assert_eq!(evm.validate_tx(&tx), expected);
     }
 
     #[rstest::rstest]
