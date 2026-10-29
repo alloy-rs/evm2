@@ -1092,6 +1092,33 @@ fn create_nonce_overflow_is_a_failed_frame() {
 }
 
 #[test]
+fn create_nonce_overflow_runs_no_frame_since_amsterdam() {
+    let factory = Address::with_last_byte(0x42);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &factory,
+        AccountInfo {
+            nonce: u64::MAX,
+            ..AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f5ff000").into()))
+        },
+    );
+    let mut evm = Context::mainnet()
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::AMSTERDAM)
+        .with_db(db)
+        .build_mainnet_with_inspector(TracingInspector::new(
+            TracingInspectorConfig::default_parity(),
+        ));
+    evm.inspect_tx(TxEnv {
+        gas_limit: 1_000_000,
+        kind: TransactTo::Call(factory),
+        ..Default::default()
+    })
+    .unwrap();
+    let traces = evm.inspector.into_parity_builder().into_transaction_traces();
+    assert_eq!(traces.len(), 1);
+}
+
+#[test]
 fn precompile_exclusion_uses_original_callee_with_delegation() {
     let parent = Address::from([0x11; 20]);
     for callee in [2, 0x55] {

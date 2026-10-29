@@ -65,6 +65,8 @@ pub enum InstrStop {
     CallTooDeep,
     /// Insufficient funds for transfer.
     OutOfFunds,
+    /// Nonce overflow.
+    NonceOverflow,
 
     // Halt Codes
     /// Out of gas error.
@@ -101,8 +103,6 @@ pub enum InstrStop {
     CreateCollision,
     /// Error in precompiled contract execution.
     PrecompileError,
-    /// Nonce overflow.
-    NonceOverflow,
     /// Exceeded contract size limit during creation.
     CreateContractSizeLimit,
     /// Created contract starts with invalid bytes (`0xEF`).
@@ -126,7 +126,7 @@ impl InstrStop {
     /// Returns whether execution reverted without an exceptional halt.
     #[inline]
     pub const fn is_revert(self) -> bool {
-        matches!(self, Self::Revert | Self::CallTooDeep | Self::OutOfFunds)
+        matches!(self, Self::Revert | Self::CallTooDeep | Self::OutOfFunds | Self::NonceOverflow)
     }
 
     /// Returns whether execution halted exceptionally.
