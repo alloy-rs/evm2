@@ -8,7 +8,6 @@ use crate::utils::{
     TxEnv, deploy_contract, op,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
-use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
     GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
@@ -693,9 +692,9 @@ fn test_geth_mux_tracer() {
     assert!(res.result.is_success());
 
     let (ctx, inspector) = evm.ctx_inspector();
-    let frame = inspector
-        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
-        .unwrap();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
 
     assert_eq!(frame.0.len(), 5);
     assert!(frame.0.contains_key(&GethDebugTracerType::BuiltInTracer(
@@ -2255,9 +2254,9 @@ fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
         .unwrap();
 
     let (ctx, inspector) = evm.ctx_inspector();
-    let frame = inspector
-        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
-        .unwrap();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
     let GethTrace::JS(preimages) = &frame.0[&key] else { panic!("expected a JSON object") };
     assert_eq!(preimages.as_object().unwrap().len(), 1);
 }

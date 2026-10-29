@@ -1,11 +1,11 @@
 use crate::tracing::{
     FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MuxInspector,
     TracingInspector, TracingInspectorConfig, TransactionContext, final_refunded,
+    utils::transaction_info,
 };
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256};
-use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
     GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace, NoopFrame, PreStateConfig,
@@ -68,7 +68,9 @@ impl DebugInspector {
             }
             Self::Noop(inspector) => Self::Noop(inspector.clone()),
             Self::StateGasTracer(inspector) => Self::StateGasTracer(inspector.clone()),
-            Self::Mux(inspector, config) => Self::Mux(inspector.clone(), config.clone()),
+            Self::Mux(_, config) => {
+                Self::Mux(MuxInspector::try_from_config(config.clone())?, config.clone())
+            }
             Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
             Self::Erc7562Tracer(inspector, config) => {
                 Self::Erc7562Tracer(inspector.clone(), config.clone())
@@ -217,7 +219,7 @@ impl DebugInspector {
 
     /// Sets the index the next recorded log receives, see
     /// [`TracingInspector::set_next_log_index`].
-    pub const fn set_next_log_index(&mut self, index: usize) {
+    pub fn set_next_log_index(&mut self, index: usize) {
         match self {
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
@@ -245,15 +247,7 @@ impl DebugInspector {
         res: &TxResultWithState<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<GethTrace, DebugInspectorError> {
-        #[allow(clippy::needless_update)]
-        let tx_info = TransactionInfo {
-            hash: tx_context.as_ref().and_then(|c| c.tx_hash),
-            index: tx_context.as_ref().and_then(|c| c.tx_index.map(|i| i as u64)),
-            block_hash: tx_context.as_ref().and_then(|c| c.block_hash),
-            block_number: Some(block_env.number.saturating_to()),
-            base_fee: Some(block_env.basefee.saturating_to()),
-            ..Default::default()
-        };
+        let tx_info = transaction_info::<T>(tx_context.as_ref(), block_env);
 
         let res = match self {
             Self::FourByte(inspector) => FourByteFrame::from(&*inspector).into(),
@@ -283,8 +277,7 @@ impl DebugInspector {
             }
             .into(),
             Self::Mux(inspector, _) => {
-                inspector.finalize_transaction(tx, &res.result);
-                inspector.try_into_mux_frame(res, db, tx_info)?.into()
+                inspector.try_into_mux_frame(res, tx, block_env, tx_context, db)?.into()
             }
             Self::FlatCallTracer(inspector) => {
                 inspector.recover_runtime_oog_root(tx, &res.result);
