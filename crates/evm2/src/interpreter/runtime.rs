@@ -6,7 +6,7 @@ use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
     evm::inspector::{Inspector, OpcodeSet},
-    interpreter::dispatch,
+    interpreter::dispatch::{self, InstrTable},
     trustme,
     version::{EvmFeatures, GasParams},
 };
@@ -15,6 +15,8 @@ use alloy_primitives::{Address, B256, Bytes};
 use core::{fmt, hint::cold_path, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
+#[cfg(tco)]
+use crate::evm::config::InspectTable;
 #[cfg(tco)]
 use core::borrow::Borrow;
 
@@ -39,6 +41,10 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
+    /// The shared table the frame runs on, if the inspector steps a sparse set.
+    #[cfg(tco)]
+    #[derive_where(skip)]
+    inspect_table: Option<InspectTable<T>>,
     pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
     pub(in crate::interpreter) stack: Box<StackBacking>,
@@ -99,6 +105,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             host: None,
             inspector: None,
             steps: OpcodeSet::EMPTY,
+            #[cfg(tco)]
+            inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
@@ -512,7 +520,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             // Load the table only after setup: passing it in keeps it in a callee-saved register
             // across setup, which makes the dispatch loop spill the stack pointer.
             match inspector {
-                Some(inspector) => self.run_inspected(inspector),
+                Some(_) => self.run_inspected(),
                 None => {
                     // SAFETY: `prepare_run` initialized the host, and the config is only read
                     // here.
@@ -526,23 +534,46 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Runs the frame on the table for its inspector's config, and again on the table for the new
     /// config each time a message opcode changes it.
-    #[inline(never)]
-    fn run_inspected(&mut self, inspector: NonNull<dyn Inspector<T> + 'host>) -> InstrStop {
+    ///
+    /// Only `self` is live across the dispatch call, which recurses once per nested frame.
+    #[inline(always)]
+    fn run_inspected(&mut self) -> InstrStop {
         loop {
-            // SAFETY: `prepare_run` initialized the host. The config is read again on each reload
-            // and the table is held for the run, so neither is used after the host replaced it.
-            let config = unsafe { self.execution_config_detached() };
-            // SAFETY: The inspector pointer is valid for this run.
-            self.steps = unsafe { inspector.as_ref() }.config().steps;
-            let instructions = config.inspect_instructions_for(self.steps);
-            #[cfg(tco)]
-            let instructions = instructions.borrow();
-            let stop = dispatch::run(self, instructions);
+            let instructions = self.select_inspect_table();
+            // SAFETY: The table is a static one, or a shared one that `self` holds until the run
+            // ends.
+            let stop = dispatch::run(self, unsafe { &*instructions });
             if stop != InstrStop::ReloadTable {
+                #[cfg(tco)]
+                {
+                    self.inspect_table = None;
+                }
                 return stop;
             }
             self.result = Ok(());
         }
+    }
+
+    /// Records the opcodes the inspector steps now and returns the table for them. Not inlined, so
+    /// that its temporaries stay out of the frame of `run_inspected`.
+    #[inline(never)]
+    fn select_inspect_table(&mut self) -> *const InstrTable<T> {
+        // SAFETY: `prepare_run` initialized the host. The config is read again on each reload and
+        // the table is held for the run, so neither is used after the host replaced it.
+        let config = unsafe { self.execution_config_detached() };
+        // SAFETY: `run_inner` installed the inspector, which is valid for this run.
+        let inspector = unsafe { self.inspector.unwrap_unchecked().as_ref() };
+        self.steps = inspector.config().steps;
+        let table = config.inspect_instructions_for(self.steps);
+        #[cfg(tco)]
+        let table = {
+            let instructions: *const InstrTable<T> = table.borrow();
+            self.inspect_table = Some(table);
+            instructions
+        };
+        #[cfg(not(tco))]
+        let table: *const InstrTable<T> = table;
+        table
     }
 
     /// Takes an owned error recorded by an instruction or inspector hook.
@@ -614,7 +645,10 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     }
 
     /// Returns whether the inspector's config no longer matches the table this frame runs on.
-    #[inline]
+    ///
+    /// Not inlined, so the config it builds does not grow the stack of a message opcode handler,
+    /// which sits under every nested frame.
+    #[inline(never)]
     pub(crate) fn inspector_config_changed(&self) -> bool {
         // SAFETY: Only inspected frames call this, and the inspector pointer is valid while the
         // frame executes.

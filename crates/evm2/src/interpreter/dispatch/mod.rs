@@ -267,11 +267,14 @@ const fn instruction_changed<T: EvmTypesHost>(
 }
 
 trait InspectMode<T: EvmTypesHost> {
-    /// Whether handlers call the inspector's step hooks.
+    /// Whether the dispatch calls the inspector's step hooks: from the handlers on the tail-call
+    /// backend, and from the loop on the others, where a hook must not run while a handler holds
+    /// the stack borrow.
     const INSPECT: bool;
 
-    /// Whether message opcode handlers check, after the instruction, that the inspector's config
-    /// still matches the frame's table, without calling step hooks.
+    /// Whether the dispatch checks, after each message opcode, that the inspector's config still
+    /// matches the frame's table, without calling step hooks: in the handlers on the tail-call
+    /// backend, and in the loop on the others.
     const WATCH: bool = false;
 
     fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
