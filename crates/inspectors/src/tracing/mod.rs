@@ -296,7 +296,7 @@ impl TracingInspector {
     /// precompiles without value, see [PrecompileExclusion::ZeroValue].
     #[inline]
     pub fn into_parity_builder(self) -> ParityTraceBuilder {
-        ParityTraceBuilder::new(self.traces.arena, self.spec_id, self.config)
+        ParityTraceBuilder::new(self.traces.arena, PrecompileExclusion::ZeroValue)
     }
 
     /// Consumes the Inspector and returns a [ParityTraceBuilder] for geth's flatCallTracer.
@@ -310,7 +310,7 @@ impl TracingInspector {
         } else {
             PrecompileExclusion::CallAndStaticCall
         };
-        ParityTraceBuilder::with_precompile_exclusion(self.traces.arena, exclusion)
+        ParityTraceBuilder::new(self.traces.arena, exclusion)
     }
 
     /// Consumes the Inspector and returns a [GethTraceBuilder].

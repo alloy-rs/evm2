@@ -1,5 +1,4 @@
 use crate::tracing::{
-    TracingInspectorConfig,
     tx_state::TxState,
     types::{CallKind, CallTraceNode, CallTraceStep, StepDelta, TraceMemberOrder},
     utils::load_account_code,
@@ -13,7 +12,7 @@ use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
 use evm2::{
-    EvmTypesHost, SpecId, TxResultExt, TxResultWithState,
+    EvmTypesHost, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase, PendingState},
     interpreter::InstrStop,
 };
@@ -32,21 +31,9 @@ pub struct ParityTraceBuilder {
 }
 
 impl ParityTraceBuilder {
-    /// Returns a new instance of the builder
-    pub fn new(
-        nodes: Vec<CallTraceNode>,
-        _spec_id: Option<SpecId>,
-        _config: TracingInspectorConfig,
-    ) -> Self {
-        Self::with_precompile_exclusion(nodes, PrecompileExclusion::ZeroValue)
-    }
-
     /// Returns a new instance of the builder that leaves out the calls to precompiles selected by
     /// `exclusion`.
-    pub fn with_precompile_exclusion(
-        mut nodes: Vec<CallTraceNode>,
-        exclusion: PrecompileExclusion,
-    ) -> Self {
+    pub fn new(mut nodes: Vec<CallTraceNode>, exclusion: PrecompileExclusion) -> Self {
         // Parents always precede their children in the arena.
         let mut excluded = Vec::<bool>::with_capacity(nodes.len());
         for node in &nodes {
@@ -445,7 +432,7 @@ impl ParityTraceBuilder {
 /// Which calls to precompiles a [`ParityTraceBuilder`] leaves out of its traces.
 ///
 /// A call is only left out if the inspector recorded it as a call to a precompile, see
-/// [`TracingInspectorConfig::record_precompile_calls`], and it is not the root call.
+/// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls), and it is not the root call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrecompileExclusion {
     /// Keeps every call to a precompile.
@@ -658,7 +645,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let traces = ParityTraceBuilder::new(nodes, None, TracingInspectorConfig::default_parity())
+        let traces = ParityTraceBuilder::new(nodes, PrecompileExclusion::ZeroValue)
             .into_transaction_traces();
 
         assert_eq!(traces.len(), 2);
@@ -722,7 +709,7 @@ mod tests {
             },
         ];
 
-        let traces = ParityTraceBuilder::new(nodes, None, TracingInspectorConfig::default_parity())
+        let traces = ParityTraceBuilder::new(nodes, PrecompileExclusion::ZeroValue)
             .into_transaction_traces();
 
         assert_eq!(traces.len(), 4);
@@ -785,11 +772,8 @@ mod tests {
             },
         ];
 
-        let traces = ParityTraceBuilder::with_precompile_exclusion(
-            nodes,
-            PrecompileExclusion::CallAndStaticCall,
-        )
-        .into_transaction_traces();
+        let traces = ParityTraceBuilder::new(nodes, PrecompileExclusion::CallAndStaticCall)
+            .into_transaction_traces();
 
         let addresses: Vec<_> = traces.iter().map(|trace| trace.trace_address.clone()).collect();
         assert_eq!(addresses, [vec![], vec![0]]);
