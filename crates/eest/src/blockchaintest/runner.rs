@@ -204,16 +204,18 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "london/validation/test_invalid_header.json",
     "shanghai/eip4895_withdrawals/test_withdrawals_root.json",
 
+    // These check which header fields a block carries on either side of a fork, which is
+    // consensus-level block validation.
+    "eip7843_slotnum/fork_transition/invalid_post_fork_block_without_slot_number.json",
+    "eip7843_slotnum/fork_transition/invalid_pre_fork_block_with_slot_number.json",
+    "eip7928_block_level_access_lists/fork_transition/invalid_post_fork_block_without_bal_hash_field.json",
+    "eip7928_block_level_access_lists/fork_transition/invalid_pre_fork_block_with_bal_hash_field.json",
+
     // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
     "prague/eip6110_deposits",
     "prague/eip7002_el_triggerable_withdrawals",
     "prague/eip7251_consolidations",
     "prague/eip7685_general_purpose_el_requests",
-
-    // A failed EIP-4788 or EIP-2935 system call does not invalidate the block, but the runner treats
-    // every failed system call as an invalid block.
-    "eip8037_state_creation_gas_cost_increase/state_gas_system_calls/system_call_execution_boundary.json",
-    "eip7928_block_level_access_lists/block_access_lists_cross_index/bal_pre_execution_call_failure_keeps_read_drops_write.json",
 
     // This fixture has a block gas limit below the transaction intrinsic gas and belongs to block validation.
     "static/state_tests/stEIP1559/lowGasLimit.json",

@@ -1,7 +1,8 @@
 //! API shim so that the test files can stay as close to upstream as possible.
 
-use alloy_consensus::{TxEip2930, TxEip4844, TxLegacy, transaction::Recovered};
+use alloy_consensus::{TxEip2930, TxEip4844, TxEip7702, TxLegacy, transaction::Recovered};
 use alloy_eip2930::AccessList;
+use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypesHost, Inspector, NoopInspector, Precompiles, TxResult,
@@ -37,6 +38,7 @@ pub struct TxEnv {
     pub chain_id: Option<u64>,
     pub blob_hashes: Vec<B256>,
     pub max_fee_per_blob_gas: u128,
+    pub authorization_list: Vec<SignedAuthorization>,
     pub access_list: AccessList,
 }
 
@@ -54,6 +56,7 @@ impl Default for TxEnv {
             chain_id: None,
             blob_hashes: Vec::new(),
             max_fee_per_blob_gas: 0,
+            authorization_list: Vec::new(),
             access_list: AccessList::default(),
         }
     }
@@ -334,6 +337,27 @@ impl TxEnv {
                         access_list: Default::default(),
                         blob_versioned_hashes: self.blob_hashes.clone(),
                         max_fee_per_blob_gas: self.max_fee_per_blob_gas,
+                        input: self.data.clone(),
+                    }
+                    .into(),
+                ),
+                self.caller,
+            );
+        }
+        if !self.authorization_list.is_empty() {
+            let TxKind::Call(to) = self.kind else { panic!("EIP-7702 transactions must be calls") };
+            return Recovered::new_unchecked(
+                TxEnvelope::Eip7702(
+                    TxEip7702 {
+                        chain_id: self.chain_id.unwrap_or(1),
+                        nonce: self.nonce,
+                        gas_limit: self.gas_limit,
+                        max_fee_per_gas: self.gas_price,
+                        max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or(self.gas_price),
+                        to,
+                        value: self.value,
+                        access_list: Default::default(),
+                        authorization_list: self.authorization_list.clone(),
                         input: self.data.clone(),
                     }
                     .into(),
