@@ -1098,6 +1098,7 @@ impl<'a> State<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evm::bal::{AccountBal, Bal, BlockAccessIndex};
     use alloc::vec;
 
     #[test]
@@ -1401,29 +1402,60 @@ mod tests {
 
     #[test]
     fn rollback_of_creation_keeps_slot_whose_reload_fails() {
-        use crate::evm::bal::{AccountBal, Bal, BlockAccessIndex};
-
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
         let key = Word::from(1);
         let features = Version::base(crate::SpecId::CANCUN).features;
         let mut db = CacheDB::default();
         db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_storage(&address, &key, &Word::from(6));
         let mut state = State::new(db);
-        // The BAL covers the account but omits the slot, so rereading the slot fails.
-        state.set_bal(Arc::new(Bal::from_iter([(address, AccountBal::default())])));
-        state.set_bal_index(BlockAccessIndex::new(1));
+        let bal = Arc::new(Bal::from_iter([(address, AccountBal::default())]));
 
+        // The creation's own read checks the BAL, so detach it there. The BAL covers the account
+        // but omits the slot, so rereading the slot during the rollback fails.
         let checkpoint = state.checkpoint();
-        // Rereading is the only read that can fail: the creation's own read checks the BAL, so
-        // detach it while the account is created.
-        state.clear_bal();
         state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
         assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
-        state.set_bal(Arc::new(Bal::from_iter([(address, AccountBal::default())])));
+        state.set_bal(bal);
+        state.set_bal_index(BlockAccessIndex::new(1));
         state.rollback(checkpoint, features);
 
-        assert!(state.accounts[&address].storage.slots[&key].created_zero);
+        // The slot stays loaded, so its read reaches the BAL, and the next rollback retries it.
+        let slot = state.accounts[&address].storage.slots[&key];
+        assert!(slot.created_zero);
+        assert_eq!((slot.value.original, slot.value.current), (Word::ZERO, Word::ZERO));
+        state.clear_bal();
+        let checkpoint = state.checkpoint();
+        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
+        state.rollback(checkpoint, features);
+        let slot = state.accounts[&address].storage.slots[&key];
+        assert!(!slot.created_zero);
+        assert_eq!((slot.value.original, slot.value.current), (Word::from(6), Word::from(6)));
+    }
+
+    #[test]
+    fn rollback_of_creation_reloads_only_slots_loaded_under_it() {
+        let caller = Address::with_last_byte(1);
+        let address = Address::with_last_byte(2);
+        let (before, under) = (Word::from(1), Word::from(2));
+        let features = Version::base(crate::SpecId::CANCUN).features;
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        let mut state = State::new(db);
+        assert_eq!(state.storage_slot(&address, before).unwrap().current(), Word::ZERO);
+        // Only a reread can observe these values.
+        for key in [before, under] {
+            state.overlay_db_mut().insert_account_storage(&address, &key, &Word::from(5));
+        }
+
+        let checkpoint = state.checkpoint();
+        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
+        assert_eq!(state.storage_slot(&address, under).unwrap().current(), Word::ZERO);
+        state.rollback(checkpoint, features);
+
+        assert_eq!(state.storage_slot(&address, before).unwrap().current(), Word::ZERO);
+        assert_eq!(state.storage_slot(&address, under).unwrap().current(), Word::from(5));
     }
 
     #[test]

@@ -89,7 +89,7 @@ pub struct StorageSlot {
     /// Whether the slot was warmed during execution this transaction, for EIP-2929 gas accounting.
     pub is_warm: bool,
     /// Whether the slot was first loaded while its account was created in the transaction, so it
-    /// cached zero without a database read. Rolling that creation back reloads the slot.
+    /// cached zero instead of its backing value. Rolling that creation back reloads the slot.
     pub(crate) created_zero: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
