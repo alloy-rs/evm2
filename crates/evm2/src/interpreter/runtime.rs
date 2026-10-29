@@ -747,7 +747,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             // Ordinary failed charges may wrap the counter. Memory expansion and
             // other OOG guards preserve it.
             self.0.gas.set_remaining(0);
-        } else if self.0.result == Err(InstrStop::MemoryOOG) {
+        } else if matches!(self.0.result, Err(InstrStop::MemoryOOG | InstrStop::MemoryLimitOOG)) {
             cold_path();
             // The failed expansion kept the balance, so the step cost is the gas paid before it
             // plus the expansion it attempted. A call reports only the gas paid before it.

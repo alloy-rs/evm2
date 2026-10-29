@@ -1892,6 +1892,8 @@ fn test_geth_struct_log_failed_memory_expansion_cost() {
         (hex!("60006139e4526102e06117a4613a0437").to_vec(), 1947, 112, 184),
         (hex!("60006128e4526102e0610d6461290437").to_vec(), 1382, 166, 172),
         (hex!("5f5f600162ffffff5f61111161fffff1").to_vec(), 200, 182, 100),
+        // Past the default memory limit, which geth does not have.
+        (hex!("600164010000000052").to_vec(), 20, 14, 0x2000_1808_0006),
     ] {
         let context = Context::mainnet()
             .with_db(CacheDB::<EmptyDB>::default())

@@ -5,7 +5,7 @@ use core::{cmp::min, fmt, hint::cold_path, ops::Range};
 
 /// Largest memory size in bytes whose expansion cost is still an exact gas amount: the
 /// quadratic term overflows 64 bits beyond it.
-const MAX_CHARGEABLE_SIZE: usize = 0x1F_FFFF_FFE0;
+const MAX_CHARGEABLE_SIZE: u64 = 0x1F_FFFF_FFE0;
 
 /// Linear EVM memory.
 pub struct Memory {
@@ -132,27 +132,32 @@ impl Memory {
             return Err(InstrStop::MemoryOOG);
         };
 
-        if self.limit_reached(new_num_words) {
-            cold_path();
-            return Err(InstrStop::MemoryLimitOOG);
-        }
-
         // Commit the new size and balance only once the expansion is paid for, so a failed
         // charge leaves the gas, memory length and word count as they were before the step.
         let cost = gas_params.memory_cost(new_num_words);
         let delta = unsafe { cost.checked_sub(gas.memory().expansion_cost).unwrap_unchecked() };
+        if self.limit_reached(new_num_words) {
+            cold_path();
+            self.record_failed_cost(new_size, delta);
+            return Err(InstrStop::MemoryLimitOOG);
+        }
         let Some(remaining) = gas.remaining().checked_sub(delta) else {
-            // Keep the attempted charge for inspectors, unless the size is so large that the
-            // charge itself overflows the gas arithmetic.
-            if new_size <= MAX_CHARGEABLE_SIZE {
-                self.failed_cost = delta;
-            }
+            self.record_failed_cost(new_size, delta);
             return Err(InstrStop::MemoryOOG);
         };
         gas.set_remaining(remaining);
         gas.memory_mut().set_words_num(new_num_words, cost);
         self.resize_to(new_size);
         Ok(())
+    }
+
+    /// Keeps the cost of an expansion that failed, unless the size is so large that the cost
+    /// itself overflows the gas arithmetic.
+    #[cold]
+    fn record_failed_cost(&mut self, new_size: usize, delta: u64) {
+        if new_size as u64 <= MAX_CHARGEABLE_SIZE {
+            self.failed_cost = delta;
+        }
     }
 
     /// Takes the expansion cost of the last failed memory charge, or zero if none failed.
@@ -342,7 +347,7 @@ mod tests {
 
         // A size whose cost overflows the gas arithmetic records no cost.
         assert_matches!(
-            memory.resize_evm(&mut gas, &gas_params, MAX_CHARGEABLE_SIZE, 1),
+            memory.resize_evm(&mut gas, &gas_params, MAX_CHARGEABLE_SIZE as usize, 1),
             Err(InstrStop::MemoryOOG)
         );
         assert_eq!(memory.take_failed_cost(), 0);
