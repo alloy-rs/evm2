@@ -117,22 +117,18 @@ impl<'a> GethTraceBuilder<'a> {
             let mut log =
                 step.convert_to_geth_struct_log(opts, trace_node.trace.depth as u64 + 1, stack);
 
-            // Only touch the storage cache when updating it or emitting a storage snapshot.
+            // geth snapshots the storage of the contract, with the slots of all its earlier
+            // SLOADs and SSTOREs, unless the opcode fails before it runs.
             if opts.is_storage_enabled()
-                && (step.storage_change.is_some()
-                    || matches!(step.op.get(), op::SLOAD | op::SSTORE))
+                && !step.is_error()
+                && let Some((key, value)) = step.storage_slot.as_deref().copied()
             {
                 let contract_storage = storage.entry(trace_node.execution_address()).or_default();
-                if let Some(change) = &step.storage_change {
-                    contract_storage.insert(change.key.into(), change.value.into());
-                }
-
-                if matches!(step.op.get(), op::SLOAD | op::SSTORE) {
-                    log.storage = Some(contract_storage.clone());
-                }
+                contract_storage.insert(key.into(), value.into());
+                log.storage = Some(contract_storage.clone());
             }
 
-            if opts.is_return_data_enabled() {
+            if opts.is_return_data_enabled() && !step.returndata.is_empty() {
                 log.return_data = Some(step.returndata.clone());
             }
 

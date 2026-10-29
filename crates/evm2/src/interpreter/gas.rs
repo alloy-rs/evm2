@@ -265,6 +265,16 @@ impl GasTracker {
         self.state_gas_spilled
     }
 
+    /// Returns the remaining gas plus the state gas drawn from it, which is the remaining gas had
+    /// the reservoir covered every state charge.
+    ///
+    /// The difference between two readings is the execution gas charged in between: a spill of
+    /// state gas into the remaining gas cancels out, as does a refill of it.
+    #[inline]
+    pub const fn remaining_excluding_state_spill(&self) -> u64 {
+        self.remaining.saturating_add(self.state_gas_spilled)
+    }
+
     /// Adds `delta` to the spilled state gas, saturating.
     ///
     /// Used to merge a successful child frame's spilled state gas into this
@@ -629,6 +639,13 @@ impl Gas {
         self.tracker.state_gas_spilled()
     }
 
+    /// Returns the remaining gas plus the state gas drawn from it.
+    /// See [`GasTracker::remaining_excluding_state_spill`].
+    #[inline]
+    pub const fn remaining_excluding_state_spill(&self) -> u64 {
+        self.tracker.remaining_excluding_state_spill()
+    }
+
     /// Adds `delta` to the spilled state gas, saturating.
     /// See [`GasTracker::add_state_gas_spilled`].
     #[inline]
@@ -830,6 +847,24 @@ mod tests {
         // Further charges spill in full once the reservoir is empty.
         assert!(gas.spend_state(100).is_ok());
         assert_eq!((gas.state_gas_spilled(), gas.remaining()), (400, 600));
+    }
+
+    #[test]
+    fn test_remaining_excluding_state_spill() {
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(1000, 500);
+        assert_eq!(gas.remaining_excluding_state_spill(), 1000);
+
+        // A charge the reservoir covers and a spill into the remaining gas do not move it.
+        assert!(gas.spend_state(300).is_ok());
+        assert!(gas.spend_state(500).is_ok());
+        assert_eq!((gas.remaining(), gas.state_gas_spilled()), (700, 300));
+        assert_eq!(gas.remaining_excluding_state_spill(), 1000);
+
+        // Execution gas does, and a refill of the spill does not.
+        assert!(gas.spend(100).is_ok());
+        assert_eq!(gas.remaining_excluding_state_spill(), 900);
+        gas.refill_reservoir(300);
+        assert_eq!(gas.remaining_excluding_state_spill(), 900);
     }
 
     #[test]

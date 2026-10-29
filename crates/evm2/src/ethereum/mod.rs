@@ -17,7 +17,6 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
-    env::TxEnv,
     evm::{
         AccountInfo,
         handler::{DefaultTxHandlerHooks, GasSettlement},
@@ -708,7 +707,6 @@ pub const fn settle_initial_frame_gas<E>(
 /// Executes the prepared first frame and settles its gas into the transaction-level tracker.
 pub fn execute_initial_frame<T: EvmTypes>(
     host: &mut Evm<'_, T>,
-    tx_env: &TxEnv<T>,
     frame: Option<InitialFrame<T>>,
     tx_gas: &mut GasTracker,
     execution_gas_limit: u64,
@@ -720,7 +718,7 @@ pub fn execute_initial_frame<T: EvmTypes>(
 
     // Failed execution has already been rolled back to the message's own checkpoint inside
     // `execute_message`; the settle merges the frame gas into the transaction-level gas.
-    let mut result = host.execute_message(tx_env, &mut message)?;
+    let mut result = host.execute_message(&mut message)?;
     settle_initial_frame_gas(tx_gas, &mut result, charged_state_gas);
     Ok(result)
 }
@@ -914,12 +912,13 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmTypes, ExecutionConfig, Precompiles,
-        env::{BlockEnvExt, TxEnvExt},
+        constants::MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
+        env::BlockEnvExt,
         evm::InMemoryDB,
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
-    use alloc::{string::ToString, vec};
+    use alloc::{format, string::ToString, vec};
     use alloy_consensus::{TxEip2930, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
 
@@ -1356,7 +1355,7 @@ mod tests {
         assert_eq!(message.code_address, delegated);
         assert_eq!(charged_state_gas, 0);
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output.len(), 32);
@@ -1379,6 +1378,14 @@ mod tests {
             })
         );
         assert_eq!(validate_tx_gas_limit_cap(amsterdam, tx_gas_limit), Ok(()));
+        assert_eq!(validate_tx_gas_limit_cap(amsterdam, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM), Ok(()));
+        assert_eq!(
+            validate_tx_gas_limit_cap(amsterdam, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1),
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1,
+                cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM
+            })
+        );
         assert_eq!(
             validate_execution_gas_limit_cap(amsterdam, tx_gas_limit, intrinsic, floor_gas),
             Ok(())
@@ -1405,6 +1412,39 @@ mod tests {
                 cap: amsterdam_without_eip8037.tx_gas_limit_cap,
             })
         );
+    }
+
+    #[rstest::rstest]
+    fn amsterdam_handler_rejects_gas_limit_above_total_cap(
+        #[values(MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1)]
+        gas_limit: u64,
+    ) {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Eip2930(TxEip2930 {
+                chain_id: 1,
+                gas_limit,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                ..Default::default()
+            }),
+            Address::with_last_byte(0xaa),
+        );
+
+        let expected = if gas_limit > MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM {
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit,
+                cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
+            })
+        } else {
+            Ok(())
+        };
+        assert_eq!(evm.validate_tx(&tx), expected);
     }
 
     #[rstest::rstest]
@@ -1448,6 +1488,116 @@ mod tests {
                 intrinsic_and_floor_gas(&version, sender, to, &input, 0, 0, value);
             assert_eq!(intrinsic, base + calldata_gas + initcode_gas);
             assert_eq!(floor, base + floor_calldata_gas);
+        }
+    }
+
+    #[rstest::rstest]
+    fn underfunded_top_level_value_depends_on_balance_check(
+        #[values(false, true)] balance_check: bool,
+        #[values(false, true)] fee_charge: bool,
+    ) {
+        let caller = Address::with_last_byte(0xaa);
+        let recipient = Address::with_last_byte(0xbb);
+        for spec in [SpecId::PRAGUE, SpecId::AMSTERDAM] {
+            for to in [TxKind::Create, TxKind::Call(recipient)] {
+                for value in [0, 1, 2] {
+                    for input in [
+                        Bytes::from_static(&[op::STOP]),
+                        Bytes::from_static(&[op::PUSH0, op::PUSH0, op::REVERT]),
+                    ] {
+                        for tx_type in 0..=2 {
+                            let mut version = Version::new(spec);
+                            version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+                            version.features.set(EvmFeatures::BALANCE_CHECK, balance_check);
+                            version.features.set(EvmFeatures::FEE_CHARGE, fee_charge);
+                            let mut database = InMemoryDB::default();
+                            database.insert_account_info(
+                                &caller,
+                                AccountInfo::default().with_nonce(10).with_balance(U256::ONE),
+                            );
+                            database.insert_account_info(
+                                &recipient,
+                                AccountInfo::default()
+                                    .with_code(Bytecode::new_legacy(input.clone())),
+                            );
+                            let tx = match tx_type {
+                                0 => TxEnvelope::Legacy(TxLegacy {
+                                    nonce: 10,
+                                    gas_limit: 500_000,
+                                    to,
+                                    value: U256::from(value),
+                                    input: input.clone(),
+                                    ..Default::default()
+                                }),
+                                1 => TxEnvelope::Eip2930(TxEip2930 {
+                                    chain_id: version.chain_id,
+                                    nonce: 10,
+                                    gas_limit: 500_000,
+                                    to,
+                                    value: U256::from(value),
+                                    input: input.clone(),
+                                    ..Default::default()
+                                }),
+                                _ => TxEnvelope::Eip1559(TxEip1559 {
+                                    chain_id: version.chain_id,
+                                    nonce: 10,
+                                    gas_limit: 500_000,
+                                    to,
+                                    value: U256::from(value),
+                                    input: input.clone(),
+                                    ..Default::default()
+                                }),
+                            };
+                            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                                ExecutionConfig::for_spec_and_version(spec, version),
+                                spec,
+                                BlockEnvExt {
+                                    gas_limit: U256::from(10_000_000),
+                                    ..Default::default()
+                                },
+                                ethereum_tx_registry(spec),
+                                database,
+                                Precompiles::base(spec),
+                            );
+                            let tx = Recovered::new_unchecked(tx, caller);
+                            let case = format!("{spec:?} {to:?} value={value} type={tx_type}");
+                            let caller_before = evm.state.account_info_untracked(&caller).unwrap();
+                            let recipient_before =
+                                evm.state.account_info_untracked(&recipient).unwrap();
+                            if balance_check && value == 2 {
+                                assert_eq!(
+                                    evm.transact(&tx).map(crate::evm::ExecutedTx::discard),
+                                    Err(HandlerError::InsufficientFunds {
+                                        fee: U256::from(2),
+                                        balance: U256::ONE
+                                    }),
+                                    "{case}"
+                                );
+                                assert_eq!(
+                                    evm.state.account_info_untracked(&caller).unwrap(),
+                                    caller_before,
+                                    "{case}"
+                                );
+                                assert_eq!(
+                                    evm.state.account_info_untracked(&recipient).unwrap(),
+                                    recipient_before,
+                                    "{case}"
+                                );
+                                continue;
+                            }
+                            let result = evm.transact(&tx).unwrap().commit();
+                            if value == 2 {
+                                assert_eq!(result.stop, InstrStop::OutOfFunds, "{case}");
+                            } else {
+                                assert_eq!(result.status, input[0] == op::STOP, "{case}");
+                            }
+                            let nonce =
+                                evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce;
+                            assert_eq!(nonce, 11, "{case}");
+                        }
+                    }
+                }
+            }
         }
     }
 }
