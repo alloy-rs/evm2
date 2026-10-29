@@ -58,6 +58,23 @@ impl StorageOverlay {
     pub fn is_changed(&self) -> bool {
         self.wiped || self.changed_slots().next().is_some()
     }
+
+    /// Rereads the slots that hold zero in the overlay after the account's creation was rolled
+    /// back.
+    ///
+    /// A slot first loaded under the creation cached zero instead of its backing value, and the
+    /// rollback restores its zero current value. A slot that fails to reload is evicted, so its
+    /// next load reports the error.
+    pub(super) fn reload_zeroed(&mut self, address: &Address, database: &mut dyn DynDatabase) {
+        self.slots.retain(|key, slot| {
+            if !slot.value.original.is_zero() || !slot.value.current.is_zero() {
+                return true;
+            }
+            let Ok(value) = database.get_storage(address, key) else { return false };
+            slot.value = Tracked::new(value);
+            true
+        });
+    }
 }
 
 /// Persistent storage slot cached by [`super::State`].
