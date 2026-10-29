@@ -17,7 +17,6 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
-    env::TxEnv,
     evm::{
         AccountInfo,
         handler::{DefaultTxHandlerHooks, GasSettlement},
@@ -708,7 +707,6 @@ pub const fn settle_initial_frame_gas<E>(
 /// Executes the prepared first frame and settles its gas into the transaction-level tracker.
 pub fn execute_initial_frame<T: EvmTypes>(
     host: &mut Evm<'_, T>,
-    tx_env: &TxEnv<T>,
     frame: Option<InitialFrame<T>>,
     tx_gas: &mut GasTracker,
     execution_gas_limit: u64,
@@ -720,7 +718,7 @@ pub fn execute_initial_frame<T: EvmTypes>(
 
     // Failed execution has already been rolled back to the message's own checkpoint inside
     // `execute_message`; the settle merges the frame gas into the transaction-level gas.
-    let mut result = host.execute_message(tx_env, &mut message)?;
+    let mut result = host.execute_message(&mut message)?;
     settle_initial_frame_gas(tx_gas, &mut result, charged_state_gas);
     Ok(result)
 }
@@ -914,7 +912,7 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmTypes, ExecutionConfig, Precompiles,
-        env::{BlockEnvExt, TxEnvExt},
+        env::BlockEnvExt,
         evm::InMemoryDB,
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
@@ -1356,7 +1354,7 @@ mod tests {
         assert_eq!(message.code_address, delegated);
         assert_eq!(charged_state_gas, 0);
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output.len(), 32);

@@ -51,7 +51,7 @@ pub fn gaslimit(cx: _) -> out {
 
 #[instruction]
 pub fn chainid(cx: _) -> Result<out> {
-    *out = cx.state.tx().chain_id;
+    *out = cx.state.host().tx_env().chain_id;
 }
 
 #[instruction]
@@ -73,7 +73,7 @@ pub fn basefee(cx: _) -> Result<out> {
 #[instruction]
 pub fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
     let index = index.to_usize_saturated();
-    *out = cx.state.tx().blob_hashes.get(index).copied().unwrap_or_default();
+    *out = cx.state.host().tx_env().blob_hashes.get(index).copied().unwrap_or_default();
 }
 
 #[instruction]

@@ -139,7 +139,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
         let SystemTx { caller, system_contract_address, data, gas_limit, .. } = tx;
         self.state.prewarm(&system_contract_address);
-        let tx_env = TxEnvExt {
+        self.tx_env = TxEnvExt {
             origin: caller,
             gas_price: U256::ZERO,
             chain_id: U256::from(self.version().chain_id),
@@ -165,8 +165,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             U256::ZERO,
             &mut tx_gas,
         )?;
-        let result =
-            execute_initial_frame(self, &tx_env, frame, &mut tx_gas, gas_limit, reservoir)?;
+        let result = execute_initial_frame(self, frame, &mut tx_gas, gas_limit, reservoir)?;
         let gas_spent = gas_limit.saturating_sub(result.gas.remaining());
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
