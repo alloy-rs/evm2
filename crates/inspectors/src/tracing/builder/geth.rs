@@ -429,12 +429,11 @@ impl<'a> GethTraceBuilder<'a> {
 
             state_diff.pre.insert(addr, pre_state);
 
-            // determine the change type
-            // if the account was created _and_ not empty we need to treat it as modified,
-            // so that it is retained later in `diff_traces`
+            // Geth drops every account that was empty before the transaction from the pre state,
+            // whether the transaction created it or only funded it.
             // See <https://etherscan.io/tx/0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d>
             // <https://github.com/paradigmxyz/reth/issues/19703#issuecomment-3527067849>
-            let pre_change = if changed_acc.created && db_acc.is_empty() {
+            let pre_change = if db_acc.is_empty() {
                 AccountChangeKind::Create
             } else {
                 AccountChangeKind::Modify
@@ -481,9 +480,8 @@ impl<'a> GethTraceBuilder<'a> {
             true
         });
 
-        // Don't keep created accounts the pre state
+        // Don't keep accounts that were empty before the transaction in the pre state
         pre.retain(|addr, _pre_state| {
-            // only keep accounts that are not created
             change_type.get(addr).map(|ty| !ty.0.is_created()).unwrap_or(true)
         });
     }

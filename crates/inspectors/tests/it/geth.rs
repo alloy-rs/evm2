@@ -2192,3 +2192,68 @@ fn test_geth_failed_root_logs() {
         }
     }
 }
+
+/// Geth omits every account that was empty before the transaction from the pre state, including
+/// accounts that the transaction only funds, such as a fresh recipient and a fresh coinbase.
+#[test]
+fn test_geth_prestate_diff_omits_empty_accounts() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let coinbase = address!("2adc25665018aa1fe0e6bc666dac8fc2697ff9ba");
+    let recipient = address!("2222222222222222222222222222222222222222");
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .modify_block_chained(|block| {
+            block.beneficiary = coinbase;
+            block.basefee = U256::from(8);
+        })
+        .build_mainnet();
+
+    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
+    let mut insp =
+        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut db = evm.ctx.db.clone();
+    let res = evm
+        .with_inspector(&mut insp)
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            gas_price: 0x600,
+            kind: TransactTo::Call(recipient),
+            value: U256::from(5),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = insp
+        .with_transaction_gas_used(res.result.tx_gas_used())
+        .geth_builder()
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
+        .unwrap();
+
+    // Output of geth's `evm t8n --trace.tracer prestateTracer --trace.jsonconfig
+    // '{"diffMode":true}'`.
+    assert_eq!(
+        serde_json::to_value(frame).unwrap(),
+        serde_json::json!({
+            "post": {
+                "0x2222222222222222222222222222222222222222": { "balance": "0x5" },
+                "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": { "balance": "0x1e99fc0" },
+                "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {
+                    "balance": "0x16345785b9dcffb",
+                    "nonce": 1
+                }
+            },
+            "pre": {
+                "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": { "balance": "0x16345785d8a0000" }
+            }
+        })
+    );
+}
