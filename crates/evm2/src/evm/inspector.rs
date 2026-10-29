@@ -1497,8 +1497,18 @@ mod tests {
 
         let caller = Address::from([0xaa; 20]);
         let target = Address::from([0xbb; 20]);
-        // CREATE(0, 0, 0), then STOP.
-        let code = vec![op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE, op::STOP];
+        // MSTORE8(0, 0), CREATE(0, 0, 1) with a one byte STOP initcode, then STOP.
+        let code = vec![
+            op::PUSH0,
+            op::PUSH0,
+            op::MSTORE8,
+            op::PUSH1,
+            1,
+            op::PUSH0,
+            op::PUSH0,
+            op::CREATE,
+            op::STOP,
+        ];
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &caller,

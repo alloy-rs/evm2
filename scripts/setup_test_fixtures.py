@@ -39,16 +39,15 @@ MAIN_VERSION = os.environ.get("MAIN_VERSION", "v5.3.0")
 # own repository.
 LEGACY_VERSION = os.environ.get("LEGACY_VERSION", "1f581b8ccdc4c63acf5f2c5c1b155c690c32a8eb")
 BASE_URL = "https://github.com/ethereum/execution-spec-tests/releases/download"
-# Fork-specific devnet fixtures are published from the execution-specs repo.
-DEVNET_BASE_URL = os.environ.get(
-    "DEVNET_BASE_URL",
+# Mainline execution-specs fixtures cover Frontier..Amsterdam. The release is a URL path component, so
+# the `@` is percent-encoded. Override EEST_VERSION/EEST_TAR/EEST_BASE_URL to select another release,
+# for example a fork-specific devnet release.
+EEST_BASE_URL = os.environ.get(
+    "EEST_BASE_URL",
     "https://github.com/ethereum/execution-specs/releases/download",
 )
-# Default fork-specific devnet fixtures: glamsterdam (Amsterdam) devnet-8. Downloaded by default so
-# the Amsterdam tests run without extra configuration; override DEVNET_VERSION/DEVNET_TAR to select a
-# different devnet release. The version is a URL path component, so the `@` is percent-encoded.
-DEFAULT_DEVNET_VERSION = "tests-glamsterdam-devnet%40v8.1.4"
-DEFAULT_DEVNET_TAR = "fixtures_glamsterdam-devnet.tar.gz"
+DEFAULT_EEST_VERSION = "tests%40v21.0.1"
+DEFAULT_EEST_TAR = "fixtures.tar.gz"
 LEGACY_URL = f"https://github.com/ethereum/legacytests/archive/{LEGACY_VERSION}.tar.gz"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -57,7 +56,7 @@ FIXTURES_DIR = Path(os.environ.get("EVM2_TEST_FIXTURES", REPO_ROOT / "test-fixtu
 
 MAIN_STABLE_DIR = FIXTURES_DIR / "main" / "stable"
 MAIN_DEVELOP_DIR = FIXTURES_DIR / "main" / "develop"
-DEVNET_DIR = FIXTURES_DIR / "devnet"
+EEST_DIR = FIXTURES_DIR / "eest"
 LEGACY_DIR = FIXTURES_DIR / "legacytests"
 
 console = Console()
@@ -87,6 +86,8 @@ class Fixture:
     url: str
     dest: Path
     exists_paths: tuple[Path, ...]
+    # tar member patterns to skip while extracting.
+    excludes: tuple[str, ...] = ()
 
 
 def env_flag(name: str) -> bool:
@@ -124,37 +125,39 @@ def legacy_fixture() -> Fixture:
     )
 
 
-def devnet_fixture() -> Fixture | None:
-    version = os.environ.get("DEVNET_VERSION", DEFAULT_DEVNET_VERSION)
-    tar_name = os.environ.get("DEVNET_TAR", DEFAULT_DEVNET_TAR)
+def eest_fixture() -> Fixture | None:
+    version = os.environ.get("EEST_VERSION", DEFAULT_EEST_VERSION)
+    tar_name = os.environ.get("EEST_TAR", DEFAULT_EEST_TAR)
 
-    # An explicitly cleared version or tar disables the devnet fixtures.
+    # An explicitly cleared version or tar disables the execution-specs fixtures.
     if not version or not tar_name:
         return None
 
     return Fixture(
-        label="devnet",
-        url=f"{DEVNET_BASE_URL}/{version}/{tar_name}",
-        dest=DEVNET_DIR,
-        exists_paths=(DEVNET_DIR / "state_tests", DEVNET_DIR / "blockchain_tests"),
+        label="eest",
+        url=f"{EEST_BASE_URL}/{version}/{tar_name}",
+        dest=EEST_DIR,
+        exists_paths=(EEST_DIR / "state_tests", EEST_DIR / "blockchain_tests"),
+        # The runner executes only the state and blockchain test formats.
+        excludes=("*/blockchain_tests_engine*", "*/blockchain_tests_sync", "*/transaction_tests"),
     )
 
 
 def fixture_plan() -> list[Fixture]:
     fixtures: list[Fixture] = []
 
-    # The glamsterdam devnet fixtures cover frontier..amsterdam, superseding the main develop suite
-    # by fork coverage, so main develop/stable is now opt-in via EVM2_STATETEST_MAIN.
+    # The execution-specs release covers frontier..amsterdam, superseding the main develop suite by
+    # fork coverage, so main develop/stable is opt-in via EVM2_STATETEST_MAIN.
     if env_flag("EVM2_STATETEST_MAIN"):
         fixtures.append(main_fixture())
 
-    # Legacy hand-written GeneralStateTests, unless a devnet-only run was requested.
-    if not env_flag("EVM2_STATETEST_DEVNET_ONLY"):
+    # Legacy hand-written GeneralStateTests, unless an execution-specs-only run was requested.
+    if not env_flag("EVM2_STATETEST_EEST_ONLY"):
         fixtures.append(legacy_fixture())
 
-    # Glamsterdam (Amsterdam) devnet fixtures: the default suite.
-    if devnet := devnet_fixture():
-        fixtures.append(devnet)
+    # Mainline execution-specs fixtures: the default suite.
+    if eest := eest_fixture():
+        fixtures.append(eest)
 
     return fixtures
 
@@ -192,6 +195,7 @@ async def pipe_to_tar(
         "tar",
         "xzf",
         "-",
+        *(f"--exclude={pattern}" for pattern in fixture.excludes),
         "--strip-components=1",
         "-C",
         str(fixture.dest),
@@ -354,8 +358,8 @@ def print_summary() -> None:
         MAIN_STABLE_DIR / "blockchain_tests",
         MAIN_DEVELOP_DIR / "state_tests",
         MAIN_DEVELOP_DIR / "blockchain_tests",
-        DEVNET_DIR / "state_tests",
-        DEVNET_DIR / "blockchain_tests",
+        EEST_DIR / "state_tests",
+        EEST_DIR / "blockchain_tests",
         LEGACY_DIR / "Cancun" / "GeneralStateTests",
         LEGACY_DIR / "Constantinople" / "GeneralStateTests",
     ]:
