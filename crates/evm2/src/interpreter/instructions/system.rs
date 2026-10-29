@@ -140,6 +140,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         stack_gas_limit
     };
     gas.spend(gas_limit)?;
+    state.finish_step_charge(gas.remaining());
 
     if transfers_value {
         gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend));
@@ -312,6 +313,7 @@ fn create_inner<T: EvmTypesHost>(
         state.gas_params().get(GasId::Create)
     };
     gas.spend(create_cost)?;
+    state.finish_step_charge(gas.remaining());
 
     let kind = if is_create2 { MessageKind::Create2 } else { MessageKind::Create };
     let current = state.message();

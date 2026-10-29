@@ -1189,6 +1189,14 @@ fn call_cost_includes_forwarded_gas() {
 }
 
 #[test]
+fn call_cost_excludes_stipend() {
+    // A cold CALL forwarding 1024 gas.
+    let step = call_step(&hex!("5f5f5f5f5f6043610400f100"), &hex!("00"), SpecId::PRAGUE);
+    assert_eq!(step.cost, 2_600 + 1_024);
+    assert_eq!(step.used, step.gas_remaining - step.cost + 1_024);
+}
+
+#[test]
 fn precompile_call_cost_includes_forwarded_gas() {
     let step = call_step(&hex!("5f5f5f5f5f600461fffff100"), &[], SpecId::PRAGUE);
     assert_eq!(step.cost, 100 + 65_535);
@@ -1197,31 +1205,10 @@ fn precompile_call_cost_includes_forwarded_gas() {
 }
 
 #[test]
-fn create_cost_includes_forwarded_gas() {
-    for code in [&hex!("5f5f5ff000")[..], &hex!("5f5f5f5ff500")[..]] {
-        let step = call_step(code, &[], SpecId::PRAGUE);
-        let available = step.gas_remaining - 32_000;
-        assert_eq!(step.cost, 32_000 + available - available / 64);
-        assert_eq!(step.child_gas_limit, Some(available - available / 64));
-        assert_eq!(step.used, available);
-        assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
-    }
-}
-
-#[test]
-fn create_with_initcode_cost_includes_forwarded_gas() {
-    // The initcode `5f5f5f5f00` spends 8 gas.
-    let code = hex!("645f5f5f5f005f526005601b5ff000");
-    let step = call_step(&code, &[], SpecId::PRAGUE);
-    let limit = step.child_gas_limit.unwrap();
-    assert_eq!(step.cost, limit + 32_002);
-    assert_eq!(step.used, step.gas_remaining - step.cost + limit - 8);
-    assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
-}
-
-#[test]
 fn unfunded_call_cost_includes_forwarded_gas() {
-    // The child fails with out of funds and returns its gas, including the stipend.
+    // The child fails with out of funds and returns its gas, including the stipend. The cost
+    // has the base, cold, value and, for an empty target, new account charges plus the
+    // forwarded 1000 gas, without the stipend.
     for (child, cost) in [(&hex!("00")[..], 2_600 + 9_000 + 1_000), (&[][..], 37_600)] {
         let step = call_step(&hex!("5f5f5f5f600160436103e8f100"), child, SpecId::PRAGUE);
         assert_eq!(step.child_gas_limit, Some(1_000 + 2_300));
@@ -1232,13 +1219,40 @@ fn unfunded_call_cost_includes_forwarded_gas() {
 }
 
 #[test]
-fn unfunded_create_cost_includes_forwarded_gas() {
+fn create_cost_excludes_forwarded_gas() {
+    for code in [&hex!("5f5f5ff000")[..], &hex!("5f5f5f5ff500")[..]] {
+        let step = call_step(code, &[], SpecId::PRAGUE);
+        let available = step.gas_remaining - 32_000;
+        assert_eq!(step.cost, 32_000);
+        assert_eq!(step.child_gas_limit, Some(available - available / 64));
+        assert_eq!(step.used, available);
+        assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
+    }
+}
+
+#[test]
+fn create_cost_counts_initcode_memory_and_hash_words() {
+    // The initcode `5f5f5f5f00` spends 8 gas.
+    for (code, cost) in [
+        (&hex!("645f5f5f5f005f526005601b5ff000")[..], 32_002),
+        (&hex!("645f5f5f5f005f526005601b5f5ff500")[..], 32_008),
+        (&hex!("6001600052600160ff5ff000")[..], 32_023),
+    ] {
+        let step = call_step(code, &[], SpecId::PRAGUE);
+        assert_eq!(step.cost, cost);
+    }
+    let step = call_step(&hex!("645f5f5f5f005f526005601b5ff000"), &[], SpecId::PRAGUE);
+    assert_eq!(step.used, step.gas_remaining - step.cost - 8);
+    assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
+}
+
+#[test]
+fn unfunded_create_cost_excludes_forwarded_gas() {
     let code = hex!("5f5f6001f000");
     assert!(trace_vm_code(&code, &[]).ops[3].sub.is_none());
     let step = call_step(&code, &[], SpecId::PRAGUE);
-    let available = step.gas_remaining - 32_000;
-    assert_eq!(step.cost, 32_000 + available - available / 64);
-    assert_eq!(step.used, available);
+    assert_eq!(step.cost, 32_000);
+    assert_eq!(step.used, step.gas_remaining - 32_000);
     assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
 }
 

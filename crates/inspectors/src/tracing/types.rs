@@ -676,12 +676,6 @@ pub struct CallTraceStep {
     /// State-gas spent before this step, used to calculate `state_gas_cost`.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub state_gas_spent: i64,
-    /// Remaining gas of a call or create step when it handed its gas to the child, which is
-    /// before the child returns its unused gas.
-    ///
-    /// [`Self::gas_cost`] counts the gas forwarded to the child through this value.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub gas_remaining_at_call: Option<u64>,
     /// Change of the contract state after step execution (effect of the SLOAD/SSTORE instructions)
     pub storage_change: Option<Box<StorageChange>>,
     /// Final status of the step

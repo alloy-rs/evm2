@@ -551,7 +551,6 @@ impl TracingInspector {
                 .feature(EvmFeatures::EIP8037)
                 .then_some(interp.gas().reservoir()),
             state_gas_spent: interp.gas().state_gas_spent(),
-            gas_remaining_at_call: None,
             storage_change: None,
             status: None,
 
@@ -652,16 +651,12 @@ impl TracingInspector {
             };
         }
 
-        // The gas cost is the difference between the recorded gas remaining at the start of the
-        // step and the remaining gas at the end of the step, or at the call hand-off if the step
-        // started a child, which counts the forwarded gas. An out-of-gas step consumes the whole
-        // remainder, except the reentrancy sentry, which halts before any charge.
+        // An out-of-gas step consumes the whole remainder, except the reentrancy sentry, which
+        // halts before any charge.
         step.gas_cost = if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
             0
         } else {
-            let gas_remaining_after =
-                step.gas_remaining_at_call.unwrap_or_else(|| interp.gas().remaining());
-            step.gas_remaining.saturating_sub(gas_remaining_after)
+            interp.step_cost()
         };
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
@@ -732,19 +727,6 @@ impl TracingInspector {
         // Do not guess the EVM features from the halt or its gas accounting. The normal hooks did
         // not run, and the transaction result does not identify the active fork.
     }
-
-    /// Records the remaining gas of the step that starts a child, after the opcode charged the
-    /// forwarded gas and before the child returns its unused gas.
-    fn record_gas_remaining_at_call<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>) {
-        // Only a step of the active trace can start the child. A nested root traced by the same
-        // inspector must not overwrite the outer step that is still last.
-        if let Some(&(trace_idx, step_idx)) = self.step_stack.last()
-            && self.trace_stack.last().is_some_and(|entry| entry.trace_idx == trace_idx)
-            && let Some(step) = self.traces.arena[trace_idx].trace.steps.get_mut(step_idx)
-        {
-            step.gas_remaining_at_call = Some(interp.gas().remaining());
-        }
-    }
 }
 
 impl<T: EvmTypes> Inspector<T> for TracingInspector {
@@ -794,7 +776,6 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.record_gas_remaining_at_call(interp);
         if self.spec_id.is_none() {
             self.spec_id = Some(interp.spec());
         }
@@ -858,7 +839,6 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.record_gas_remaining_at_call(interp);
         if self.spec_id.is_none() {
             self.spec_id = Some(interp.spec());
         }
