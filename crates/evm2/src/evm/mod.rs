@@ -2052,7 +2052,7 @@ impl SStore {
 pub struct SelfDestructResult {
     /// Whether the destroyed account had non-zero value.
     pub had_value: bool,
-    /// Balance transferred or cleared by the destruction.
+    /// Balance of the self-destructing contract, moved by [`Host::finish_selfdestruct`].
     pub value: Word,
     /// Whether the beneficiary is empty/non-existent for new-account gas checks.
     pub target_is_empty: bool,
