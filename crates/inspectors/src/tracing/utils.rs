@@ -1,5 +1,5 @@
 //! Utility functions for evm2 related ops.
-use crate::tracing::config::TraceStyle;
+use crate::tracing::{TransactionContext, config::TraceStyle};
 use alloc::{
     borrow::Cow,
     format,
@@ -7,10 +7,10 @@ use alloc::{
     vec::Vec,
 };
 use alloy_primitives::{Bytes, hex};
+use alloy_rpc_types_eth::TransactionInfo;
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
-    AccountInfo, SpecId, Version,
-    constants::STACK_LIMIT,
+    AccountInfo, EvmTypesHost, SpecId, Version, constants::STACK_LIMIT, env::BlockEnv,
     evm::{DbResult, DynDatabase},
     interpreter::{
         InstrStop,
@@ -351,6 +351,22 @@ pub(crate) fn maybe_revert_reason(output: &[u8]) -> Option<String> {
             }
         }
         _ => None,
+    }
+}
+
+/// Returns the [`TransactionInfo`] of a traced transaction.
+pub(crate) fn transaction_info<T: EvmTypesHost>(
+    tx_context: Option<&TransactionContext>,
+    block_env: &BlockEnv<T>,
+) -> TransactionInfo {
+    #[allow(clippy::needless_update)]
+    TransactionInfo {
+        hash: tx_context.and_then(|c| c.tx_hash),
+        index: tx_context.and_then(|c| c.tx_index.map(|i| i as u64)),
+        block_hash: tx_context.and_then(|c| c.block_hash),
+        block_number: Some(block_env.number.saturating_to()),
+        base_fee: Some(block_env.basefee.saturating_to()),
+        ..Default::default()
     }
 }
 
