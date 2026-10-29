@@ -18,8 +18,9 @@ pub use compiler::{CompileTimings, EvmCompiler, EvmCompilerInput, HostLayout};
 mod linker;
 pub use linker::{Linker, shared_library_path};
 
-/// ABI version of compiled artifacts. Bump when the calling convention or execution layout changes.
-pub const ABI_VERSION: u32 = 3;
+/// ABI version of compiled artifacts. Bump when the calling convention, the execution layout or the
+/// `InstrStop` discriminants change.
+pub const ABI_VERSION: u32 = 4;
 
 /// Internal tests and testing utilities. Not public API.
 #[cfg(test)]
