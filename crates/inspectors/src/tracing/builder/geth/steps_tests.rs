@@ -362,7 +362,7 @@ fn struct_log_limit_counts_json_bytes() {
         let expected = sizes
             .iter()
             .take_while(|size| {
-                let logged = written <= limit as usize;
+                let logged = written <= limit;
                 written += **size;
                 logged
             })
