@@ -530,6 +530,9 @@ impl TracingInspector {
 
         self.last_journal_len = interp.host().state().journal().len();
 
+        let storage_slot =
+            if self.config.record_state_diff { storage_slot(interp, op.get()) } else { None };
+
         let step_idx = node.trace.steps.len();
         node.trace.steps.push(CallTraceStep {
             pc: interp.pc(),
@@ -552,6 +555,7 @@ impl TracingInspector {
                 .then_some(interp.gas().reservoir()),
             state_gas_spent: interp.gas().state_gas_spent(),
             storage_change: None,
+            storage_slot,
             status: None,
 
             // This is never populated in `TracingInspector`.
@@ -945,6 +949,27 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
             tx_index: tx_info.index.map(|idx| idx as usize),
             tx_hash: tx_info.hash,
         }
+    }
+}
+
+/// Returns the key and value of the storage slot an SLOAD or SSTORE is about to access, as
+/// geth's struct logger reads them before the opcode runs: an SLOAD reports the value the slot
+/// holds, an SSTORE the value it writes.
+fn storage_slot<T: EvmTypes>(interp: &mut Interpreter<'_, '_, T>, op: u8) -> Option<(U256, U256)> {
+    let stack = interp.stack();
+    let stack = stack.as_slice();
+    match op {
+        op::SLOAD => {
+            let key = *stack.last()?;
+            let address = interp.message().destination;
+            let value = interp.host().state().get_storage(&address, &key).unwrap_or_default();
+            Some((key, value))
+        }
+        op::SSTORE => {
+            let [.., value, key] = stack else { return None };
+            Some((*key, *value))
+        }
+        _ => None,
     }
 }
 

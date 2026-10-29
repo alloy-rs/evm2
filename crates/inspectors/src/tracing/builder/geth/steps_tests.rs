@@ -30,6 +30,7 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
                 reason: StorageChangeReason::SSTORE,
             })
         }),
+        storage_slot: (op == op::SSTORE).then(|| (U256::ZERO, U256::from(pc))),
         status: (op == op::REVERT).then_some(InstrStop::Revert),
         immediate_bytes: None,
         decoded: None,
@@ -191,6 +192,8 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
         })
         .collect();
     nodes[0].trace.steps.last_mut().unwrap().status = Some(InstrStop::OutOfGas);
+    // The SLOAD reads the value its delegatecall child wrote.
+    nodes[2].trace.steps[2].storage_slot = Some((U256::ZERO, U256::from(30)));
     let builder = GethTraceBuilder::new(nodes);
     let expected = [
         (0, 1),
@@ -269,18 +272,17 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
 }
 
 #[test]
-fn storage_snapshots_keep_empty_reads_and_custom_changes() {
-    let mut custom_change = test_step(2, op::SSTORE);
-    // Public trace nodes can carry a storage change on a different opcode.
-    custom_change.op = OpCode::new_or_unknown(op::ADD);
+fn storage_snapshots_accumulate_and_skip_failed_steps() {
+    let mut failed = test_step(4, op::SSTORE);
+    failed.status = Some(InstrStop::OutOfGas);
+    let mut sload = test_step(1, op::SLOAD);
+    sload.storage_slot = Some((U256::ZERO, U256::from(1)));
+    // A step that is not an SLOAD or SSTORE has no slot.
+    let mut add = test_step(2, op::ADD);
+    add.storage_slot = None;
     let builder = GethTraceBuilder::new(vec![CallTraceNode {
         trace: CallTrace {
-            steps: vec![
-                test_step(0, op::PUSH0),
-                test_step(1, op::SLOAD),
-                custom_change,
-                test_step(3, op::SLOAD),
-            ],
+            steps: vec![test_step(0, op::PUSH0), sload, add, failed],
             ..Default::default()
         },
         ..Default::default()
@@ -296,11 +298,11 @@ fn storage_snapshots_keep_empty_reads_and_custom_changes() {
         );
         assert_eq!(frame.struct_logs.len(), 4);
         assert!(frame.struct_logs[0].storage.is_none());
-        assert_eq!(frame.struct_logs[1].storage, (!disable_storage).then(BTreeMap::new));
-        assert!(frame.struct_logs[2].storage.is_none());
         assert_eq!(
-            frame.struct_logs[3].storage,
-            (!disable_storage).then(|| { BTreeMap::from([(B256::ZERO, U256::from(2).into())]) })
+            frame.struct_logs[1].storage,
+            (!disable_storage).then(|| BTreeMap::from([(B256::ZERO, U256::from(1).into())]))
         );
+        assert!(frame.struct_logs[2].storage.is_none());
+        assert!(frame.struct_logs[3].storage.is_none());
     }
 }
