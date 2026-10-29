@@ -255,10 +255,6 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 // the prewarm set on load) decides coldness: a slot warmed earlier this execution
                 // is a cheap warm access and must not be forced out of gas.
                 let slot = entry.into_mut();
-                // A rollback that failed to reload the slot leaves it for this load to retry.
-                if slot.created_zero && !created {
-                    slot.reload_created_zero(address, &key, &mut inner.database)?;
-                }
                 let is_cold = if WARM || skip_cold_load {
                     !slot.is_warm && !inner.prewarm_set.is_storage_warm(address, &key)
                 } else {
@@ -266,6 +262,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 };
                 if skip_cold_load && is_cold {
                     return Err(LoadError::ColdLoadSkipped);
+                }
+                // A rollback that failed to reload the slot leaves it for this load to retry.
+                if slot.created_zero && !created {
+                    slot.reload_created_zero(address, &key, &mut inner.database)?;
                 }
                 (slot, is_cold)
             }

@@ -1426,6 +1426,11 @@ mod tests {
         // The slot stays loaded, so its read reaches the BAL, and later loads report the failure
         // instead of serving the zero.
         assert!(state.accounts[&address].storage.slots[&key].created_zero);
+        // An unaffordable cold access is skipped before the pending reload reads the database.
+        assert!(matches!(
+            state.storage(&address).unwrap().into_slot_with_skip(key, true),
+            Err(LoadError::ColdLoadSkipped)
+        ));
         assert!(state.storage_slot(&address, key).is_err());
         assert!(state.storage_slot_untracked(&address, &key).is_err());
         assert!(state.accounts[&address].storage.slots[&key].created_zero);
