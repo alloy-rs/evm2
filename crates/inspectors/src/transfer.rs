@@ -22,19 +22,26 @@ pub const TRANSFER_EVENT_TOPIC: B256 =
 /// Transfers made by a call or create that fails, including transfers in its subcalls, are
 /// discarded together with their logs.
 ///
+/// Like `go-ethereum`'s `eth_simulateV1` tracer, the logs are kept by the inspector and are never
+/// added to the EVM's own logs, so receipts and log blooms do not include them.
+///
 /// This can be used to construct an `eth_simulateV1` response. For `ots_getInternalOperations`,
 /// use [InternalOperationsInspector](crate::otterscan::InternalOperationsInspector).
 #[derive(Debug, Default, Clone)]
 pub struct TransferInspector {
     internal_only: bool,
     transfers: Vec<TransferOperation>,
-    /// Checkpoints of the call and create frames currently executing.
-    checkpoints: Vec<TransferCheckpoint>,
-    /// If enabled, will insert ERC20-style transfer logs emitted by [TRANSFER_LOG_EMITTER] for
-    /// each ETH transfer.
+    /// Number of transfers recorded before each call and create frame currently executing.
+    checkpoints: Vec<usize>,
+    /// If enabled, collects the emitted logs together with ERC20-style transfer logs emitted by
+    /// [TRANSFER_LOG_EMITTER] for each ETH transfer.
     ///
     /// Can be used for [eth_simulateV1](https://github.com/ethereum/execution-apis/pull/484) execution.
-    insert_logs: bool,
+    collect_logs: bool,
+    /// Logs of each call and create frame currently executing.
+    frames: Vec<Vec<Log>>,
+    /// Logs of the top-level frames that succeeded.
+    logs: Vec<Log>,
 }
 
 impl TransferInspector {
@@ -43,7 +50,14 @@ impl TransferInspector {
     /// If `internal_only` is set to `true`, only internal transfers are collected, in other words,
     /// the top level call is ignored.
     pub const fn new(internal_only: bool) -> Self {
-        Self { internal_only, transfers: Vec::new(), checkpoints: Vec::new(), insert_logs: false }
+        Self {
+            internal_only,
+            transfers: Vec::new(),
+            checkpoints: Vec::new(),
+            collect_logs: false,
+            frames: Vec::new(),
+            logs: Vec::new(),
+        }
     }
 
     /// Creates a new transfer inspector that only collects internal transfers.
@@ -56,10 +70,23 @@ impl TransferInspector {
         self.transfers
     }
 
-    /// Sets whether to insert ERC20-style transfer logs.
-    pub const fn with_logs(mut self, insert_logs: bool) -> Self {
-        self.insert_logs = insert_logs;
+    /// Sets whether to collect the emitted logs and the ERC20-style transfer logs.
+    ///
+    /// Once EIP-7708 is active the EVM emits the transfer logs itself, so this must be disabled
+    /// to report each transfer once, as `eth_simulateV1` does.
+    pub const fn with_logs(mut self, collect_logs: bool) -> Self {
+        self.collect_logs = collect_logs;
         self
+    }
+
+    /// Returns a reference to the logs of the succeeded top-level frames, in emission order.
+    pub fn logs(&self) -> &[Log] {
+        &self.logs
+    }
+
+    /// Takes the logs of the succeeded top-level frames, in emission order.
+    pub fn take_logs(&mut self) -> Vec<Log> {
+        core::mem::take(&mut self.logs)
     }
 
     /// Returns a reference to the collected transfers.
@@ -73,11 +100,13 @@ impl TransferInspector {
     }
 
     fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut Evm<'_, T>) {
-        self.checkpoints
-            .push(TransferCheckpoint { transfers: self.transfers.len(), logs: host.logs().len() });
+        self.checkpoints.push(self.transfers.len());
+        if self.collect_logs {
+            self.frames.push(Vec::new());
+        }
 
         let kind = match message.kind {
-            MessageKind::Call | MessageKind::CallCode => TransferKind::Call,
+            MessageKind::Call => TransferKind::Call,
             MessageKind::Create => TransferKind::Create,
             MessageKind::Create2 => TransferKind::Create2,
             _ => return,
@@ -87,40 +116,59 @@ impl TransferInspector {
         if self.internal_only && message.depth == host.version().initial_call_depth {
             return;
         }
+
+        self.record_transfer(kind, message.caller, message.destination, message.value);
+    }
+
+    fn on_transfer_end(&mut self, failed: bool) {
+        let Some(transfers) = self.checkpoints.pop() else { return };
+        if failed {
+            self.transfers.truncate(transfers);
+        }
+        if self.collect_logs
+            && let Some(frame) = self.frames.pop()
+            && !failed
+        {
+            match self.frames.last_mut() {
+                Some(parent) => parent.extend(frame),
+                None => self.logs.extend(frame),
+            }
+        }
+    }
+
+    fn record_transfer(&mut self, kind: TransferKind, from: Address, to: Address, value: U256) {
         // skip zero transfers
-        let value = message.value;
         if value.is_zero() {
             return;
         }
 
-        let from = message.caller;
-        let to = message.destination;
         self.transfers.push(TransferOperation { kind, from, to, value });
 
-        if self.insert_logs {
+        if self.collect_logs
+            && let Some(frame) = self.frames.last_mut()
+        {
             let from = B256::from_slice(&from.abi_encode());
             let to = B256::from_slice(&to.abi_encode());
             let data = value.abi_encode();
 
-            host.log(Log::new_unchecked(
+            frame.push(Log::new_unchecked(
                 TRANSFER_LOG_EMITTER,
                 vec![TRANSFER_EVENT_TOPIC, from, to],
                 data.into(),
             ));
         }
     }
-
-    fn on_transfer_end<T: EvmTypes>(&mut self, failed: bool, host: &mut Evm<'_, T>) {
-        if let Some(checkpoint) = self.checkpoints.pop()
-            && failed
-        {
-            self.transfers.truncate(checkpoint.transfers);
-            host.logs_mut().truncate(checkpoint.logs);
-        }
-    }
 }
 
 impl<T: EvmTypes> Inspector<T> for TransferInspector {
+    fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
+        if self.collect_logs
+            && let Some(frame) = self.frames.last_mut()
+        {
+            frame.push(log.clone());
+        }
+    }
+
     fn call(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
@@ -132,11 +180,11 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
 
     fn call_end(
         &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        self.on_transfer_end::<T>(!result.is_success(), interp.host());
+        self.on_transfer_end(!result.is_success());
     }
 
     fn create(
@@ -150,14 +198,14 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
 
     fn create_end(
         &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
         // A create that stops early without a created address, such as on nonce overflow, also
         // counts as failed even though its stop is `Return`.
         let failed = !result.is_success() || result.created_address.is_none();
-        self.on_transfer_end::<T>(failed, interp.host());
+        self.on_transfer_end(failed);
     }
 
     fn selfdestruct(
@@ -167,12 +215,7 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
         value: &U256,
         _host: &mut T::Host<'_>,
     ) {
-        self.transfers.push(TransferOperation {
-            kind: TransferKind::SelfDestruct,
-            from: *contract,
-            to: *target,
-            value: *value,
-        });
+        self.record_transfer(TransferKind::SelfDestruct, *contract, *target, *value);
     }
 }
 
@@ -201,13 +244,4 @@ pub enum TransferKind {
     Create2,
     /// A SELFDESTRUCT operation
     SelfDestruct,
-}
-
-/// Transfer state at the start of a call or create frame.
-#[derive(Clone, Copy, Debug)]
-struct TransferCheckpoint {
-    /// Number of transfers recorded before the frame.
-    transfers: usize,
-    /// Number of logs emitted before the frame.
-    logs: usize,
 }
