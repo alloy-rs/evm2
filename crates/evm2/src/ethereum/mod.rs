@@ -579,10 +579,9 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
 ) -> HandlerResult<InitialFrame<T>> {
     // A failed charge leaves `tx_gas` out of range, so the halted frame reports the budget the
     // phase started with.
-    let (gas_limit, reservoir) = (tx_gas.remaining(), tx_gas.reservoir());
-    let halted = |host: &Evm<'a, T>| {
-        halted_initial_frame(host, caller, nonce, to, input, value, gas_limit, reservoir)
-    };
+    let budget = *tx_gas;
+    let halted =
+        |host: &Evm<'a, T>| halted_initial_frame(host, caller, nonce, to, input, value, &budget);
     let mut charged_state_gas = 0;
     let message = match to {
         TxKind::Call(to) => {
@@ -689,7 +688,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
 
 /// Builds the first frame of a transaction whose runtime gas phase ran out of gas.
 ///
-/// The message names the call or create the transaction would have run, with the budget the
+/// The message names the call or create the transaction would have run, with the `budget` the
 /// runtime gas phase started with and no resolved bytecode, and it reads no account state: the
 /// recipient of an unaffordable charge stays out of the EIP-7928 block access list.
 /// [`execute_initial_frame`] halts it with out-of-gas, reporting the frame to the inspector.
@@ -700,8 +699,7 @@ pub fn halted_initial_frame<T: EvmTypes>(
     to: TxKind,
     input: &Bytes,
     value: U256,
-    gas_limit: u64,
-    reservoir: u64,
+    budget: &GasTracker,
 ) -> InitialFrame<T> {
     let (kind, destination) = match to {
         TxKind::Call(to) => (MessageKind::Call, to),
@@ -710,8 +708,8 @@ pub fn halted_initial_frame<T: EvmTypes>(
     let message = MessageExt {
         kind,
         depth: host.version().initial_call_depth,
-        gas_limit,
-        reservoir,
+        gas_limit: budget.remaining(),
+        reservoir: budget.reservoir(),
         destination,
         call_target: destination,
         caller,

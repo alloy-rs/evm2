@@ -178,8 +178,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
             tx.to.into(),
             &tx.input,
             tx.value,
-            execution_gas_limit,
-            reservoir,
+            &GasTracker::new_with_execution_gas_and_reservoir(execution_gas_limit, reservoir),
         )
     } else {
         prepare_initial_frame(
