@@ -21,6 +21,67 @@ use evm2::{
     interpreter::{InstrStop, op},
 };
 
+/// The smallest size in bytes of the JSON of a struct log,
+/// `{"pc":0,"op":"OR","gas":0,"gasCost":0,"depth":1}`.
+pub(crate) const MIN_STRUCT_LOG_JSON_LEN: u64 = 48;
+
+/// Returns the size in bytes of the JSON that geth's struct logger writes for the log.
+///
+/// geth counts these bytes against the `limit` option. The JSON is compact, orders the fields as
+/// `pc`, `op`, `gas`, `gasCost`, `depth`, `error`, `stack`, `returnData`, `memory`, `storage` and
+/// `refund`, and omits the optional ones that are unset, empty or zero. It also counts the
+/// `stateGasCost` and `stateGasReservoir` fields that evm2 adds after EIP-8037. It escapes `<`, `>`
+/// and `&` in strings as `\u00xx`.
+///
+/// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/eth/tracers/logger/logger.go#L145-L155>
+fn struct_log_json_len(log: &StructLog) -> usize {
+    const fn digits(value: u64) -> usize {
+        match value.checked_ilog10() {
+            Some(log) => log as usize + 1,
+            None => 1,
+        }
+    }
+    // The quoted `0x`-prefixed minimal hex of a word.
+    fn word(value: &U256) -> usize {
+        2 + 2 + value.bit_len().div_ceil(4).max(1)
+    }
+    // The quoted `0x`-prefixed hex of a 32-byte hash.
+    const HASH: usize = 2 + 2 + 64;
+
+    // `{"pc":`, `,"op":"`, `","gas":`, `,"gasCost":`, `,"depth":` and `}`.
+    let mut len = 6 + digits(log.pc) + 7 + log.op.len() + 1 + 7 + digits(log.gas);
+    len += 11 + digits(log.gas_cost) + 9 + digits(log.depth) + 1;
+    // The fields after EIP-8037 that evm2 adds to the struct log: `,"stateGasCost":` and
+    // `,"stateGasReservoir":`.
+    if let Some(cost) = log.state_gas_cost {
+        len += 16 + usize::from(cost < 0) + digits(cost.unsigned_abs());
+    }
+    if let Some(reservoir) = log.state_gas_reservoir {
+        len += 21 + digits(reservoir);
+    }
+    if let Some(error) = log.error.as_ref().filter(|error| !error.is_empty()) {
+        let escaped = error.bytes().filter(|byte| matches!(byte, b'<' | b'>' | b'&')).count();
+        len += 10 + error.len() + 5 * escaped + 1;
+    }
+    if let Some(stack) = &log.stack {
+        len += 10 + stack.iter().map(word).sum::<usize>() + stack.len().saturating_sub(1) + 1;
+    }
+    if let Some(return_data) = log.return_data.as_ref().filter(|data| !data.is_empty()) {
+        len += 15 + 2 + 2 * return_data.len() + 1;
+    }
+    if let Some(memory) = log.memory.as_ref().filter(|memory| !memory.is_empty()) {
+        len += 11 + memory.iter().map(|chunk| chunk.len() + 2).sum::<usize>();
+        len += memory.len().saturating_sub(1) + 1;
+    }
+    if let Some(storage) = log.storage.as_ref().filter(|storage| !storage.is_empty()) {
+        len += 12 + storage.len() * (HASH + 1 + HASH) + storage.len().saturating_sub(1) + 1;
+    }
+    if let Some(refund) = log.refund_counter.filter(|refund| *refund != 0) {
+        len += 10 + digits(refund);
+    }
+    len
+}
+
 /// A frame awaiting tree assembly, with visibility inherited by children in the forward pass.
 struct PendingCallFrame<T> {
     /// Whether this call and its ancestors permit descendant logs. Independent of whether
@@ -92,9 +153,11 @@ impl<'a> GethTraceBuilder<'a> {
         // call depth rather than step count, and a trace without subcalls needs no allocation.
         let mut steps = main_trace_node.steps_with_children();
         let mut parents = Vec::new();
+        let mut json_len = 0u64;
 
         loop {
-            if opts.limit.is_some_and(|limit| struct_logs.len() as u64 >= limit) {
+            // geth stops logging once the JSON written so far is over the limit.
+            if opts.limit.is_some_and(|limit| json_len > limit) {
                 break;
             }
             let Some(CallTraceStepStackItem { trace_node, step, call_child_id }) = steps.next()
@@ -133,6 +196,9 @@ impl<'a> GethTraceBuilder<'a> {
             }
 
             // Add step to geth trace
+            if opts.limit.is_some() {
+                json_len = json_len.saturating_add(struct_log_json_len(&log) as u64);
+            }
             struct_logs.push(log);
 
             // Visit the child immediately after its call opcode, then resume the parent.
@@ -194,7 +260,10 @@ impl<'a> GethTraceBuilder<'a> {
             GethDefaultTracingOptions { limit: opts.limit.filter(|limit| *limit != 0), ..opts };
         let capacity = opts.limit.map_or_else(
             || self.trace_step_count(),
-            |limit| self.trace_step_count().min(usize::try_from(limit).unwrap_or(usize::MAX)),
+            |limit| {
+                let steps = limit / MIN_STRUCT_LOG_JSON_LEN + 1;
+                self.trace_step_count().min(usize::try_from(steps).unwrap_or(usize::MAX))
+            },
         );
         let mut struct_logs = Vec::with_capacity(capacity);
         let mut storage = HashMap::default();

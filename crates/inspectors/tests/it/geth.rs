@@ -1719,11 +1719,15 @@ fn test_geth_opcode_limit_end_to_end() {
         assert_eq!(steps[8]["depth"], 2);
         assert_eq!(steps[11]["depth"], 1);
 
-        // The cap must count steps across call frames, including a cap inside the child.
-        for limit in [2, 9, 12] {
+        // The limit counts bytes of JSON across call frames, including a cap inside the child.
+        // geth logs a step while the JSON written so far is within the limit, so the bytes of the
+        // first `steps - 1` steps let `steps` steps through.
+        let sizes: Vec<_> = steps.iter().map(geth_json_len).collect();
+        for steps in [2, 9, 12] {
+            let limit: usize = sizes[..steps - 1].iter().sum();
             let (limited, limited_gas) = run(json!({ "limit": limit }));
             let mut expected = full.clone();
-            expected["structLogs"].as_array_mut().unwrap().truncate(limit);
+            expected["structLogs"].as_array_mut().unwrap().truncate(steps);
             assert_eq!(limited, expected);
             assert_eq!(limited_gas, gas_used);
         }
@@ -1734,6 +1738,24 @@ fn test_geth_opcode_limit_end_to_end() {
         assert_eq!(calls["calls"].as_array().unwrap().len(), 1);
         assert_eq!(run(json!({ "tracer": "callTracer", "limit": 2 })).0, calls);
     }
+}
+
+/// Returns the bytes of the JSON geth writes for a struct log, which leaves out a zero refund and
+/// empty return data, memory and storage.
+fn geth_json_len(log: &serde_json::Value) -> usize {
+    let mut log = log.clone();
+    let fields = log.as_object_mut().unwrap();
+    for (name, empty) in [
+        ("refund", serde_json::json!(0)),
+        ("returnData", serde_json::json!("0x")),
+        ("memory", serde_json::json!([])),
+        ("storage", serde_json::json!({})),
+    ] {
+        if fields.get(name) == Some(&empty) {
+            fields.remove(name);
+        }
+    }
+    log.to_string().len()
 }
 
 /// Execute real bytecode and compare capped capture with the complete execution.
@@ -1786,11 +1808,34 @@ fn test_geth_opcode_limit() {
             full.return_value,
             if terminal == op::INVALID { Bytes::new() } else { hex!("2a").into() }
         );
-        // Includes caps before CALL, on CALL, in the child, and after returning to the parent.
-        for limit in [None, Some(0), Some(2), Some(8), Some(9), Some(12), Some(u64::MAX)] {
+        // Includes caps before CALL, on CALL, in the child, and after returning to the parent. The
+        // limit counts bytes of JSON, and the first `steps - 1` steps let `steps` steps through.
+        let sizes: Vec<_> = full
+            .struct_logs
+            .iter()
+            .map(|log| geth_json_len(&serde_json::to_value(log).unwrap()))
+            .collect();
+        let step_limit = |steps: usize| sizes[..steps - 1].iter().sum::<usize>() as u64;
+        for limit in [
+            None,
+            Some(0),
+            Some(step_limit(2)),
+            Some(step_limit(8)),
+            Some(step_limit(9)),
+            Some(step_limit(12)),
+            Some(u64::MAX),
+        ] {
             let opts = GethDefaultTracingOptions { limit, ..Default::default() };
-            let expected_len = limit.filter(|n| *n != 0).map_or(full.struct_logs.len(), |n| {
-                full.struct_logs.len().min(usize::try_from(n).unwrap_or(usize::MAX))
+            let expected_len = limit.filter(|n| *n != 0).map_or(full.struct_logs.len(), |limit| {
+                let mut written = 0;
+                sizes
+                    .iter()
+                    .take_while(|size| {
+                        let logged = written as u64 <= limit;
+                        written += **size;
+                        logged
+                    })
+                    .count()
             });
             let mut expected = full.clone();
             expected.struct_logs.truncate(expected_len);
@@ -1799,10 +1844,14 @@ fn test_geth_opcode_limit() {
             for _ in 0..2 {
                 let actual = run(&mut inspector, opts);
                 assert_eq!(actual, expected, "limit {limit:?}, terminal {terminal}");
-                assert_eq!(
-                    inspector.traces().nodes().iter().map(|n| n.trace.steps.len()).sum::<usize>(),
-                    expected_len
-                );
+                // Capture stops at the most steps the limit can hold, at least a byte count's worth
+                // of the smallest log each.
+                let recorded =
+                    inspector.traces().nodes().iter().map(|n| n.trace.steps.len()).sum::<usize>();
+                assert!(recorded >= expected_len);
+                if let Some(limit) = limit.filter(|limit| *limit != 0) {
+                    assert!(recorded as u64 <= limit / 48 + 1);
+                }
                 inspector.fuse();
             }
             // Builder options also apply to already collected unlimited traces.
@@ -2053,7 +2102,7 @@ fn test_debug_default_tracer_moves_stacks() {
     caller_code.extend_from_slice(&hex!("5af150600700"));
 
     for disable_stack in [false, true] {
-        for limit in [None, Some(0), Some(10)] {
+        for limit in [None, Some(0), Some(1000)] {
             let config = GethDefaultTracingOptions {
                 disable_stack: Some(disable_stack),
                 limit,
