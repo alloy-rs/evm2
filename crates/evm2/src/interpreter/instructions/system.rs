@@ -140,6 +140,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         stack_gas_limit
     };
     gas.spend(gas_limit)?;
+    state.finish_step_charge(gas.remaining());
 
     if transfers_value {
         gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend));
@@ -367,6 +368,7 @@ fn create_inner<T: EvmTypesHost>(
             charged_create_state_gas = true;
         }
     }
+    state.finish_step_charge(gas.remaining());
     let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
