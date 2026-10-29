@@ -940,6 +940,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ///
     /// This lets a host run a transaction on behalf of an enclosing one whose origin differs from
     /// the nested transaction's sender. Validation, fees and nonces still use the sender.
+    ///
+    /// The override stays set across transactions until it is cleared, and system calls ignore it.
+    /// Set it only between transactions, not while a frame is executing.
     #[inline]
     pub const fn set_tx_origin(&mut self, origin: Option<Address>) {
         self.tx_origin = origin;

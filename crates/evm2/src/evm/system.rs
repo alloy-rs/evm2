@@ -137,6 +137,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// registry handler to execute system-call semantics and return the outcome to the outer
     /// transaction lifecycle for finalization.
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
+        // System calls keep their own origin, so the host's override does not apply.
+        let tx_origin = self.tx_origin.take();
+        let result = self.execute_system_call_inner(tx);
+        self.tx_origin = tx_origin;
+        result
+    }
+
+    fn execute_system_call_inner(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
         let SystemTx { caller, system_contract_address, data, gas_limit, .. } = tx;
         self.state.prewarm(&system_contract_address);
         let tx_env = TxEnvExt {
@@ -330,6 +338,37 @@ mod tests {
         let caller = U256::from_be_slice(caller.as_slice());
         assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.value.current), Some(caller));
         assert_eq!(storage.get(&U256::ONE).map(|slot| slot.value.current), Some(caller));
+    }
+
+    #[test]
+    fn system_call_ignores_tx_origin_override() {
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::ORIGIN,
+            op::PUSH1,
+            0,
+            op::SSTORE,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = TestEvm::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_tx_origin(Some(Address::from([0x11; 20])));
+
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
+
+        assert!(result.result.status);
+        let storage =
+            &result.pending_state.accounts.get(&contract).expect("storage changed").storage.slots;
+        let system_address = U256::from_be_slice(SYSTEM_ADDRESS.as_slice());
+        assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.value.current), Some(system_address));
+        assert_eq!(evm.tx_origin, Some(Address::from([0x11; 20])));
     }
 
     #[test]
