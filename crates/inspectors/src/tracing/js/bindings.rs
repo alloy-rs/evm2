@@ -452,8 +452,16 @@ impl ReusableEvmDb {
     }
 
     /// Borrows the in-flight state only for the duration of a callback.
-    pub(crate) fn with_state_scope<R>(&self, state: &mut State<'_>, f: impl FnOnce() -> R) -> R {
-        self.with_scope(&mut StateDbReader { state }, f)
+    ///
+    /// `pre_accounts` override the accounts' current info, for steps whose opcode has already
+    /// changed them by the time the callback runs.
+    pub(crate) fn with_state_scope<R>(
+        &self,
+        state: &mut State<'_>,
+        pre_accounts: &[(Address, Option<AccountInfo>)],
+        f: impl FnOnce() -> R,
+    ) -> R {
+        self.with_scope(&mut StateDbReader { state, pre_accounts }, f)
     }
 
     /// Borrows a transaction's materialized changes and backing database during a callback.
@@ -519,10 +527,14 @@ impl core::fmt::Debug for dyn EvmDbReader {
 
 struct StateDbReader<'a, 'db> {
     state: &'a mut State<'db>,
+    pre_accounts: &'a [(Address, Option<AccountInfo>)],
 }
 
 impl EvmDbReader for StateDbReader<'_, '_> {
     fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        if let Some((_, info)) = self.pre_accounts.iter().find(|(account, _)| account == address) {
+            return Ok(info.clone());
+        }
         self.state.account_info_untracked(address)
     }
 
@@ -615,6 +627,8 @@ pub(crate) struct StepSnapshot {
     gas_remaining: u64,
     stack: StackView,
     memory: MemoryView,
+    /// Accounts the opcode changes before the callback runs, with their info before the step.
+    pub(crate) pre_accounts: Vec<(Address, Option<AccountInfo>)>,
 }
 
 impl StepSnapshot {
@@ -627,6 +641,7 @@ impl StepSnapshot {
         state.gas_remaining = gas_remaining;
         state.stack.record(op, stack);
         state.memory.record(op, stack, memory);
+        state.pre_accounts.clear();
     }
 }
 

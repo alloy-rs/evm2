@@ -122,6 +122,8 @@ pub struct JsInspector {
     precompiles: PrecompileList,
     /// Pre-execution states captured in `step()` to be processed in `step_end()`.
     pending_steps: Vec<PendingStep>,
+    /// The frame of a SELFDESTRUCT that ran in the current step, entered after the step callback.
+    pending_selfdestruct: Option<CallFrame>,
     /// Depth of the root frame, which can be non-zero for a nested transaction root.
     ///
     /// Pending steps are indexed relative to it.
@@ -224,6 +226,7 @@ impl JsInspector {
             next_call_id: 1,
             precompiles,
             pending_steps: Vec::new(),
+            pending_selfdestruct: None,
             root_depth: 0,
             hook_error: None,
             interrupt: None,
@@ -279,6 +282,7 @@ impl JsInspector {
         self.step_fn = step_fn;
         self.call_stack.clear();
         self.pending_steps.clear();
+        self.pending_selfdestruct = None;
         self.root_depth = 0;
         self.hook_error = None;
 
@@ -576,7 +580,8 @@ impl JsInspector {
             call_id: call.id,
         };
         let (stack, memory, host) = interp.stack_memory_host();
-        let res = self.reusable_db.with_state_scope(host.state_mut(), || {
+        let pre_accounts = pending.snapshot.pre_accounts.clone();
+        let res = self.reusable_db.with_state_scope(host.state_mut(), &pre_accounts, || {
             self.reusable_step_log.with_scope(
                 &mut pending.snapshot,
                 stack.as_slice(),
@@ -623,43 +628,8 @@ impl JsInspector {
         }
     }
 
-    /// Returns the pending-step slot of the current frame, relative to the root frame.
-    #[inline]
-    fn pending_step_index<T: EvmTypes>(&self, interp: &Interpreter<'_, '_, T>) -> usize {
-        usize::from(interp.message().depth - self.root_depth)
-    }
-}
-
-impl<T: EvmTypes> Inspector<T> for JsInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        if self.check_and_halt(interp) || self.hook_errored() {
-            return;
-        }
-        let index = self.pending_step_index(interp);
-        if self.pending_steps.len() <= index {
-            self.pending_steps.resize_with(index + 1, PendingStep::default);
-        }
-        let pending = &mut self.pending_steps[index];
-        pending.gas_spent_before = interp.gas().spent();
-        pending.frame_refund = interp.gas().refunded();
-        pending.instruction = FaultStep {
-            pc: interp.pc() as u64,
-            op: interp.opcode(),
-            gas: interp.gas().remaining(),
-        };
-        pending.active = true;
-        if self.step_fn.is_some() {
-            pending.snapshot.record(PreStep {
-                pc: pending.instruction.pc,
-                op: pending.instruction.op,
-                gas_remaining: pending.instruction.gas,
-                stack: interp.stack().as_slice(),
-                memory: interp.memory().as_slice(),
-            });
-        }
-    }
-
-    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+    /// Invokes the step and fault callbacks of the instruction that just executed.
+    fn end_step<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.check_and_halt(interp) || self.hook_errored() {
             return;
         }
@@ -695,6 +665,78 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             self.invoke_step_hook(interp, true, error);
             self.check_and_halt(interp);
         }
+    }
+
+    /// Enters and exits the frame of a SELFDESTRUCT after the callback of its step, like geth.
+    fn enter_and_exit_selfdestruct(&mut self) {
+        let Some(frame) = self.pending_selfdestruct.take() else { return };
+        if self.is_interrupted() || self.hook_errored() {
+            return;
+        }
+        if let Err(err) = self.try_enter(frame) {
+            self.record_hook_error("enter", err);
+        }
+        // Exit with an empty frame result, as in geth's SELFDESTRUCT.
+        if !self.is_interrupted() && !self.hook_errored() && self.exit_fn.is_some() {
+            let frame = FrameResult { gas_used: 0, output: Bytes::new(), error: None };
+            if let Err(err) = self.try_exit(frame) {
+                self.record_hook_error("exit", err);
+            }
+        }
+    }
+
+    /// Returns the pending-step slot of the current frame, relative to the root frame.
+    #[inline]
+    fn pending_step_index<T: EvmTypes>(&self, interp: &Interpreter<'_, '_, T>) -> usize {
+        usize::from(interp.message().depth - self.root_depth)
+    }
+}
+
+impl<T: EvmTypes> Inspector<T> for JsInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if self.check_and_halt(interp) || self.hook_errored() {
+            return;
+        }
+        let index = self.pending_step_index(interp);
+        if self.pending_steps.len() <= index {
+            self.pending_steps.resize_with(index + 1, PendingStep::default);
+        }
+        let pending = &mut self.pending_steps[index];
+        pending.gas_spent_before = interp.gas().spent();
+        pending.frame_refund = interp.gas().refunded();
+        pending.instruction = FaultStep {
+            pc: interp.pc() as u64,
+            op: interp.opcode(),
+            gas: interp.gas().remaining(),
+        };
+        pending.active = true;
+        if self.step_fn.is_some() {
+            pending.snapshot.record(PreStep {
+                pc: pending.instruction.pc,
+                op: pending.instruction.op,
+                gas_remaining: pending.instruction.gas,
+                stack: interp.stack().as_slice(),
+                memory: interp.memory().as_slice(),
+            });
+            if pending.instruction.op == op::SELFDESTRUCT
+                && let Some(&target) = interp.stack().as_slice().last()
+            {
+                // The transfer has happened when the callback runs, but geth runs it before.
+                let target = Address::from_word(target.into());
+                let contract = interp.message().destination;
+                let state = interp.host().state_mut();
+                for address in [contract, target] {
+                    if let Ok(info) = state.account_info_untracked(&address) {
+                        pending.snapshot.pre_accounts.push((address, info));
+                    }
+                }
+            }
+        }
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        self.end_step(interp);
+        self.enter_and_exit_selfdestruct();
     }
 
     fn call(
@@ -838,9 +880,10 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return;
         }
         // This is exempt from the root call constraint, because selfdestruct is treated as a
-        // new scope that is entered and immediately exited.
+        // new scope that is entered and immediately exited. Geth does so after the step callback
+        // of the SELFDESTRUCT, so the frame is entered from `step_end`.
         if self.enter_fn.is_some() {
-            let frame = CallFrame {
+            self.pending_selfdestruct = Some(CallFrame {
                 contract: Contract {
                     caller: *contract,
                     contract: *target,
@@ -849,18 +892,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 },
                 kind: FrameKind::SelfDestruct,
                 gas: 0,
-            };
-            if let Err(err) = self.try_enter(frame) {
-                self.record_hook_error("enter", err);
-            }
-        }
-
-        // exit with empty frame result ref <https://github.com/ethereum/go-ethereum/blob/0004c6b229b787281760b14fb9460ffd9c2496f1/core/vm/instructions.go#L829-L829>
-        if !self.is_interrupted() && !self.hook_errored() && self.exit_fn.is_some() {
-            let frame = FrameResult { gas_used: 0, output: Bytes::new(), error: None };
-            if let Err(err) = self.try_exit(frame) {
-                self.record_hook_error("exit", err);
-            }
+            });
         }
     }
 }
@@ -1475,6 +1507,32 @@ mod tests {
         }"#;
         let err = try_run_trace(code, None, true).unwrap_err();
         assert!(matches!(err, JsInspectorError::JsError(_)));
+    }
+
+    #[test]
+    fn test_selfdestruct_steps_before_entering_and_reads_pre_transfer_balances() {
+        let code = r#"{
+            res: [],
+            step: function(log, db) {
+                if (log.op.toString() === 'SELFDESTRUCT') {
+                    this.res.push(['step', db.getBalance(log.contract.getAddress()).toString(), db.exists(toAddress('0000000000000000000000000000000000000003'))]);
+                }
+            },
+            enter: function(frame) { this.res.push(['enter', frame.getType(), frame.getValue().toString()]); },
+            exit: function() { this.res.push(['exit']); },
+            fault: function() {},
+            result: function() { return this.res; }
+        }"#;
+        let tx = TxEnvelope::Legacy(TxLegacy {
+            gas_limit: 1_000_000,
+            value: U256::from(7),
+            to: TxKind::Call(Address::repeat_byte(0x01)),
+            ..Default::default()
+        });
+        // PUSH1 3, SELFDESTRUCT
+        let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+        let res = try_run_tx(insp, Some(bytes!("0x6003ff")), true, U256::ZERO, tx).unwrap();
+        assert_eq!(res, json!([["step", "7", false], ["enter", "SELFDESTRUCT", "7"], ["exit"]]));
     }
 
     #[test]
