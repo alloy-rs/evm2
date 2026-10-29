@@ -2581,7 +2581,7 @@ fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
             balance: U256::from(7),
             nonce: 1,
             code_hash: alloy_primitives::keccak256(&code),
-            code: Some(Bytecode::new_raw(code.clone())),
+            code: Some(Bytecode::new_raw(code)),
             ..Default::default()
         },
     );
