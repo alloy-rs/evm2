@@ -343,19 +343,16 @@ impl TxEnv {
         }
         if !self.access_list.is_empty() {
             return Recovered::new_unchecked(
-                TxEnvelope::Eip2930(
-                    TxEip2930 {
-                        chain_id: self.chain_id.unwrap_or(1),
-                        nonce: self.nonce,
-                        gas_price: self.gas_price,
-                        gas_limit: self.gas_limit,
-                        to: self.kind,
-                        value: self.value,
-                        access_list: self.access_list.clone(),
-                        input: self.data.clone(),
-                    }
-                    .into(),
-                ),
+                TxEnvelope::Eip2930(TxEip2930 {
+                    chain_id: self.chain_id.unwrap_or(1),
+                    nonce: self.nonce,
+                    gas_price: self.gas_price,
+                    gas_limit: self.gas_limit,
+                    to: self.kind,
+                    value: self.value,
+                    access_list: self.access_list.clone(),
+                    input: self.data.clone(),
+                }),
                 self.caller,
             );
         }
