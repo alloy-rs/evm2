@@ -67,6 +67,11 @@ impl super::DispatchGas for RemainingGas {
     }
 
     #[inline(always)]
+    fn undo_spend<T: EvmTypesHost>(&mut self, _state: &mut InterpreterState<'_, '_, T>, cost: u64) {
+        self.unspend(cost);
+    }
+
+    #[inline(always)]
     fn sync_before_exec<T: EvmTypesHost>(
         &self,
         state: &mut InterpreterState<'_, '_, T>,

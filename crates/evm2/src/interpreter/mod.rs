@@ -15,6 +15,8 @@ pub use instructions::i256;
 
 pub(crate) mod dispatch;
 
+pub(crate) mod fused;
+
 #[doc(hidden)] // For macro only. Not public API.
 pub mod private;
 

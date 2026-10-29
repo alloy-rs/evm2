@@ -42,6 +42,8 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) stack: Box<StackBacking>,
 
     pub(in crate::interpreter) gas: Gas,
+    /// Gas spent by child frames during the current run.
+    pub(in crate::interpreter) child_gas_spent: u64,
     pub(in crate::interpreter) result: Result,
     error: Option<ExecutionError>,
     spec: SpecId,
@@ -83,6 +85,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             bytecode_ref: None,
             stack_len: 0,
             gas: Gas::new(0),
+            child_gas_spent: 0,
             memory: Memory::new(),
             result: Ok(()),
             error: None,
@@ -160,8 +163,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Returns the current bytecode-relative program counter.
     #[inline]
     pub fn pc(&self) -> usize {
-        // SAFETY: `pc` is always in bounds of `bytecode`.
-        unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
+        // SAFETY: `pc` is always in bounds of the active bytecode view.
+        unsafe { self.pc.offset_from(self.code_base()) as usize }
     }
 
     /// Sets the current bytecode-relative program counter.
@@ -171,12 +174,20 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Panics if `pc` is out of bounds of the active bytecode.
     #[inline]
     pub fn set_pc(&mut self, pc: usize) {
-        let bytecode = self.bytecode.bytes_slice();
-        assert!(pc < bytecode.len());
-        self.pc = unsafe { bytecode.as_ptr().add(pc) };
+        assert!(pc < self.bytecode.bytes_slice().len());
+        self.pc = unsafe { self.code_base().add(pc) };
+    }
+
+    /// Returns the start of the active bytecode buffer without analyzing jump destinations.
+    #[inline]
+    fn code_base(&self) -> *const u8 {
+        self.bytecode_ref.map_or_else(|| self.bytecode.bytes_slice().as_ptr(), |view| view.as_ptr())
     }
 
     /// Returns the current opcode.
+    ///
+    /// Inspected runs execute the original bytecode, so inspectors always see original opcodes.
+    /// After an uninspected run of fused bytecode, this may return a synthetic opcode.
     #[inline]
     pub const fn opcode(&self) -> u8 {
         // SAFETY: `pc` is always in bounds of `bytecode`.
@@ -499,11 +510,47 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             // across setup, which makes the dispatch loop spill the stack pointer.
             // SAFETY: `prepare_run` initialized the host, and the config is only read here.
             let config = unsafe { self.execution_config_detached() };
-            let instructions =
-                if inspector.is_some() { config.inspect_instructions } else { config.instructions };
-            dispatch::run(self, instructions)
+            // Fused bytecode keeps immediates that may hold synthetic opcodes, so only enter it at
+            // the start, where `pc` is known to be on an instruction boundary.
+            let fusion =
+                config.fused_instructions.filter(|_| inspector.is_none() && self.pc() == 0);
+            let fused_code = fusion.and_then(|_| self.bytecode.fused_bytes()).map(<[u8]>::as_ptr);
+            self.set_code_base(fused_code.unwrap_or(self.bytecode.bytes_slice().as_ptr()));
+            self.child_gas_spent = 0;
+            if let Some(instructions) = fusion
+                && fused_code.is_some()
+            {
+                dispatch::run(self, instructions)
+            } else {
+                let instructions = if inspector.is_some() {
+                    config.inspect_instructions
+                } else {
+                    config.instructions
+                };
+                let gas = self.gas.remaining();
+                let stop = dispatch::run(self, instructions);
+                if fusion.is_some() {
+                    let spent = gas.saturating_sub(self.gas.remaining());
+                    self.bytecode.record_unfused_gas(spent.saturating_sub(self.child_gas_spent));
+                }
+                stop
+            }
         };
         self.finish_run(stop)
+    }
+
+    /// Points the bytecode view and `pc` at `code`, the fused or original bytecode.
+    ///
+    /// Both have the same layout, so `pc` keeps its offset.
+    #[inline]
+    fn set_code_base(&mut self, code: *const u8) {
+        // SAFETY: `prepare_run` initialized the view.
+        let view = unsafe { self.bytecode_ref.as_mut().unwrap_unchecked() };
+        if view.as_ptr() != code {
+            // SAFETY: `pc` is in bounds of both buffers.
+            self.pc = unsafe { code.add(self.pc.offset_from_unsigned(view.as_ptr())) };
+            view.set_base(code);
+        }
     }
 
     /// Takes an owned error recorded by an instruction or inspector hook.

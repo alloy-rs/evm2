@@ -138,6 +138,8 @@ pub struct ExecutionConfig<T: EvmTypesHost> {
     pub(crate) instructions: &'static InstrTable<T>,
     #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
+    #[derive_where(skip)]
+    pub(crate) fused_instructions: Option<&'static InstrTable<T>>,
 }
 
 impl<T: EvmTypesHost> ExecutionConfig<T> {
@@ -163,6 +165,8 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
             inspect_instructions:
                 &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
+            fused_instructions: SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::FUSED_INSTRUCTIONS[i]
+                .as_ref(),
         }
     }
 
@@ -176,6 +180,7 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             opcode_config: C::OPCODE_CONFIG,
             instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
             inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
+            fused_instructions: ConfigInstrTables::<T, C>::FUSED_INSTRUCTIONS.as_ref(),
         }
     }
 

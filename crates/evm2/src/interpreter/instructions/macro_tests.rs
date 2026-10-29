@@ -14,6 +14,8 @@ const NO_STACK_PREAMBLE_OPCODE: u8 = 0x0e;
 const CONCRETE_EQ_OPCODE: u8 = 0x0f;
 const TYPE_BOUND_OPCODE: u8 = 0x1d;
 const ASSOC_BOUND_OPCODE: u8 = 0x1e;
+/// A byte that fusion reserves for a synthetic opcode.
+const RESERVED_OPCODE: u8 = 0xb1;
 
 #[instruction]
 fn macro_add([a, b]: [Word]) -> out {
@@ -73,12 +75,13 @@ const fn macro_opcode_config() -> OpcodeConfig<TestTypes> {
     config.set_instruction::<macro_concrete_eq>(CONCRETE_EQ_OPCODE, 0);
     config.set_instruction::<macro_type_bound<TestTypes>>(TYPE_BOUND_OPCODE, 0);
     config.set_instruction::<macro_assoc_bound>(ASSOC_BOUND_OPCODE, 0);
+    config.set_instruction::<macro_no_stack_preamble<TestTypes>>(RESERVED_OPCODE, 10);
     config
 }
 
 fn run(config: RunConfig<'_>) -> TestInterpreter {
     let execution_config = ExecutionConfig::<TestTypes>::for_config::<MacroConfig>();
-    let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data } = config;
+    let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data, .. } = config;
     let message = Message::<TestTypes> { code: legacy_bytecode(code), gas_limit, ..message };
     let mut inner = Interpreter::<TestTypes>::new(&tx_env, &message);
     *inner.return_data_mut() = return_data;
@@ -155,4 +158,14 @@ fn instruction_macro_evm_types_assoc_colon_bound_attribute() {
 
     assert_eq!(interp.err, InstrStop::Stop);
     assert_eq!(interp.stack(), [Word::from(31337)]);
+}
+
+#[test]
+fn instruction_on_reserved_fused_opcode() {
+    let interp = run(RunConfig::new([RESERVED_OPCODE, op::STOP]));
+    assert_eq!(interp.err, InstrStop::Stop);
+    assert_eq!(interp.stack(), [Word::from(0xbeef_u64)]);
+
+    let interp = run(RunConfig::new([RESERVED_OPCODE, 0x12, 0x34, op::STOP]).gas_limit(5));
+    assert_eq!(interp.err, InstrStop::OutOfGas);
 }

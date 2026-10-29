@@ -1,7 +1,9 @@
 use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut},
+    interpreter::{
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut, fused,
+    },
 };
 use core::hint::cold_path;
 
@@ -64,6 +66,9 @@ trait DispatchGas: Copy {
         dynamic_gas: bool,
     );
 
+    /// Undoes a failed `pre_step` that charged `cost`.
+    fn undo_spend<T: EvmTypesHost>(&mut self, state: &mut InterpreterState<'_, '_, T>, cost: u64);
+
     fn sync_after_exec<T: EvmTypesHost>(
         &mut self,
         state: &mut InterpreterState<'_, '_, T>,
@@ -79,6 +84,12 @@ impl DispatchGas for () {
         op: u8,
     ) -> Result {
         state.gas_mut().spend(C::OPCODE_CONFIG.static_gas(op) as _)
+    }
+
+    #[inline(always)]
+    fn undo_spend<T: EvmTypesHost>(&mut self, state: &mut InterpreterState<'_, '_, T>, cost: u64) {
+        let gas = state.gas_mut();
+        gas.set_remaining(gas.remaining().wrapping_add(cost));
     }
 
     #[inline(always)]
@@ -116,11 +127,19 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
             gas.sync_before_exec(state, dynamic_gas);
             r = instr(&mut pc, stack.reborrow(), state);
             if r.is_ok() {
-                inc_pc(&mut pc, op);
+                inc_pc::<T, M>(&mut pc, op);
             }
             gas.sync_after_exec(state, dynamic_gas);
         }
         Err(e) => {
+            if M::FUSED
+                && let Some(first) = fused::unfused_op(op)
+            {
+                // Not enough gas for the whole sequence: run its first opcode alone.
+                cold_path();
+                gas.undo_spend(state, C::OPCODE_CONFIG.static_gas(op) as u64);
+                return dispatch_unfused::<T, C, M, G>(pc, stack, gas, state, first);
+            }
             gas.sync_before_exec(state, false);
             r = Err(e);
         }
@@ -133,6 +152,18 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
         return (Pc::new(core::ptr::null()), gas);
     }
     (pc, gas)
+}
+
+#[cold]
+#[inline(never)]
+fn dispatch_unfused<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGas>(
+    pc: Pc,
+    stack: StackMut<'_>,
+    gas: G,
+    state: &mut InterpreterState<'_, '_, T>,
+    op: u8,
+) -> (Pc, G) {
+    dispatch_inner::<T, C, M, G>(pc, stack, gas, state, op)
 }
 
 #[inline(always)]

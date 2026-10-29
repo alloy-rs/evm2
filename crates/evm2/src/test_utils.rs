@@ -281,6 +281,7 @@ pub(crate) struct RunConfig<'a> {
     pub(crate) message: Message<TestTypes>,
     pub(crate) gas_limit: u64,
     pub(crate) return_data: Bytes,
+    pub(crate) inspect: bool,
 }
 
 impl<'a> RunConfig<'a> {
@@ -322,6 +323,12 @@ impl<'a> RunConfig<'a> {
         self.return_data = return_data;
         self
     }
+
+    /// Runs with a no-op inspector, which disables opcode fusion.
+    pub(crate) const fn inspect(mut self) -> Self {
+        self.inspect = true;
+        self
+    }
 }
 
 impl Default for RunConfig<'_> {
@@ -334,12 +341,14 @@ impl Default for RunConfig<'_> {
             message: MessageExt { gas_limit: 10_000, ..MessageExt::default() },
             gas_limit: 10_000,
             return_data: Bytes::new(),
+            inspect: false,
         }
     }
 }
 
 pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data } = config;
+    let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data, inspect } =
+        config;
     let message = Message::<TestTypes> { code: legacy_bytecode(code), gas_limit, ..message };
     let mut inner = Interpreter::<TestTypes>::new(&tx_env, &message);
     *inner.return_data_mut() = return_data;
@@ -347,7 +356,12 @@ pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
     let host = host.unwrap_or(&mut default_host);
     host.spec_id = spec_id;
     host.execution_config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id);
-    let (err, execution_error) = match inner.run(host) {
+    let result = if inspect {
+        inner.run_inspect(host, &mut crate::NoopInspector::default())
+    } else {
+        inner.run(host)
+    };
+    let (err, execution_error) = match result {
         Ok(stop) => (stop, None),
         Err(error) => (InstrStop::FatalExternalError, Some(error)),
     };

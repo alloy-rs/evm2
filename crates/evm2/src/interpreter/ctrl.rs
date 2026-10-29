@@ -22,6 +22,13 @@ impl<'a> BytecodeRef<'a> {
         }
     }
 
+    /// Points the view at `base`, another buffer with the same layout.
+    #[inline]
+    pub(crate) const fn set_base(&mut self, base: *const u8) {
+        // SAFETY: `base` points into a live bytecode allocation.
+        self.base = unsafe { NonNull::new_unchecked(base.cast_mut()) };
+    }
+
     /// Returns a pointer to the start of the bytecode.
     #[inline]
     pub const fn as_ptr(&self) -> *const u8 {

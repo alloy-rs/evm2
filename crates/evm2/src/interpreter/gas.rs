@@ -515,6 +515,12 @@ impl RemainingGas {
             Ok(())
         }
     }
+
+    /// Returns `cost` charged by a failed [`spend`](Self::spend).
+    #[inline(always)]
+    pub(crate) const fn unspend(&mut self, cost: u64) {
+        self.0 = self.0.wrapping_add(cost);
+    }
 }
 
 /// Interpreter gas state.

@@ -54,6 +54,20 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         }
     }
 
+    /// Returns a copy of this config.
+    pub(crate) const fn const_clone(&self) -> Self {
+        Self {
+            static_gas_table: StaticGasTable { table: self.static_gas_table.table, _align: [] },
+            instruction_impls: InstructionImplTable {
+                instrs: self.instruction_impls.instrs,
+                dynamic_gas: self.instruction_impls.dynamic_gas,
+            },
+            revisions: self.revisions,
+            instruction_sets: self.instruction_sets,
+            origin: self.origin,
+        }
+    }
+
     /// Returns the static gas cost for `opcode`.
     #[inline(always)]
     pub const fn static_gas(&self, opcode: u8) -> u16 {
