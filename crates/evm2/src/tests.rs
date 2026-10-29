@@ -561,7 +561,6 @@ fn precompile_dispatch_uses_original_callee(
         U256::ZERO,
         &mut gas,
     )
-    .unwrap()
     .unwrap();
     let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut frame.message).unwrap();
 

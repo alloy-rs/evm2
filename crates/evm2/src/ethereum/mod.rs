@@ -545,6 +545,9 @@ pub struct InitialFrame<T: EvmTypes> {
     /// account-creation charge), zero when nothing was charged. Refunded by
     /// [`settle_initial_frame_gas`] when the frame fails and the leaf is not created.
     pub charged_state_gas: u64,
+    /// Whether the runtime gas phase ran out of gas, so the frame halts without executing
+    /// ([`execute_initial_frame`]). Its message then carries no resolved bytecode.
+    pub runtime_oog: bool,
 }
 
 /// Completes the EIP-2780 runtime gas phase on the transaction-level `tx_gas` and builds the
@@ -562,9 +565,9 @@ pub struct InitialFrame<T: EvmTypes> {
 /// the CREATE opcode instead. A delegated recipient is still resolved (for free) so the frame
 /// runs the delegate's code.
 ///
-/// The frame's `gas_limit`/`reservoir` snapshot `tx_gas` after the charges. Returns `None` when
-/// a charge runs out of gas: the transaction stays valid but is included as an out-of-gas halt
-/// without entering execution ([`runtime_oog_result`]).
+/// The frame's `gas_limit`/`reservoir` snapshot `tx_gas` after the charges. When a charge runs out
+/// of gas the transaction stays valid but is included as an out-of-gas halt: the returned frame
+/// is [`halted_initial_frame`], which [`execute_initial_frame`] halts without entering execution.
 pub fn prepare_initial_frame<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
@@ -573,7 +576,10 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     input: &Bytes,
     value: U256,
     tx_gas: &mut GasTracker,
-) -> HandlerResult<Option<InitialFrame<T>>> {
+) -> HandlerResult<InitialFrame<T>> {
+    let halted = |host: &Evm<'a, T>, tx_gas: &GasTracker| {
+        halted_initial_frame(host, caller, nonce, to, input, value, tx_gas)
+    };
     let mut charged_state_gas = 0;
     let message = match to {
         TxKind::Call(to) => {
@@ -587,7 +593,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
             if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
                 let new_account_state_gas = host.version().gas_params.new_account_state_gas();
                 if tx_gas.spend_state(new_account_state_gas).is_err() {
-                    return Ok(None);
+                    return Ok(halted(host, tx_gas));
                 }
                 charged_state_gas = new_account_state_gas;
             }
@@ -604,17 +610,17 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     // list.
                     let cold_additional = host.version().gas_params.cold_account_additional_cost();
                     if tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
-                        return Ok(None);
+                        return Ok(halted(host, tx_gas));
                     }
                     let skip_cold_load = tx_gas.remaining() < cold_additional;
                     let load =
                         match Host::load_account(host, &delegated_address, true, skip_cold_load) {
                             Ok(load) => load,
-                            Err(HostError::Halt(_)) => return Ok(None),
+                            Err(HostError::Halt(_)) => return Ok(halted(host, tx_gas)),
                             Err(HostError::Execution(error)) => return Err(error.into()),
                         };
                     if load.is_cold && tx_gas.spend(cold_additional).is_err() {
-                        return Ok(None);
+                        return Ok(halted(host, tx_gas));
                     }
                     code = load.code;
                 } else {
@@ -650,7 +656,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 if !target_alive {
                     let create_state_gas = host.version().gas_params.create_state_gas();
                     if tx_gas.spend_state(create_state_gas).is_err() {
-                        return Ok(None);
+                        return Ok(halted(host, tx_gas));
                     }
                     charged_state_gas = create_state_gas;
                 }
@@ -675,7 +681,44 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
         }
     };
     debug_assert_eq!(message.depth, host.version().initial_call_depth);
-    Ok(Some(InitialFrame { message, charged_state_gas }))
+    Ok(InitialFrame { message, charged_state_gas, runtime_oog: false })
+}
+
+/// Builds the first frame of a transaction whose runtime gas phase ran out of gas.
+///
+/// The message names the call or create the transaction would have run, with the budget `tx_gas`
+/// had left at the failed charge and no resolved bytecode, and it reads no account state: the
+/// recipient of an unaffordable charge stays out of the EIP-7928 block access list.
+/// [`execute_initial_frame`] halts it with out-of-gas, reporting the frame to the inspector.
+pub fn halted_initial_frame<T: EvmTypes>(
+    host: &Evm<'_, T>,
+    caller: Address,
+    nonce: u64,
+    to: TxKind,
+    input: &Bytes,
+    value: U256,
+    tx_gas: &GasTracker,
+) -> InitialFrame<T> {
+    let (kind, destination) = match to {
+        TxKind::Call(to) => (MessageKind::Call, to),
+        TxKind::Create => (MessageKind::Create, caller.create(nonce)),
+    };
+    let message = MessageExt {
+        kind,
+        depth: host.version().initial_call_depth,
+        gas_limit: tx_gas.remaining(),
+        reservoir: tx_gas.reservoir(),
+        destination,
+        call_target: destination,
+        caller,
+        input: input.clone(),
+        value,
+        code_address: destination,
+        caller_is_static: false,
+        salt: B256::ZERO,
+        ..MessageExt::default()
+    };
+    InitialFrame { message, charged_state_gas: 0, runtime_oog: true }
 }
 
 /// Settles the first frame's result into the transaction-level `tx_gas` and writes the settled
@@ -706,17 +749,25 @@ pub const fn settle_initial_frame_gas<E>(
 }
 
 /// Executes the prepared first frame and settles its gas into the transaction-level tracker.
+///
+/// A frame whose runtime gas phase ran out of gas ([`InitialFrame::runtime_oog`]) is halted
+/// without executing ([`Evm::execute_halted_message`]) and settled as [`runtime_oog_result`].
 pub fn execute_initial_frame<T: EvmTypes>(
     host: &mut Evm<'_, T>,
     tx_env: &TxEnv<T>,
-    frame: Option<InitialFrame<T>>,
+    frame: InitialFrame<T>,
     tx_gas: &mut GasTracker,
     execution_gas_limit: u64,
     reservoir: u64,
 ) -> Result<MessageResult<T>, crate::ExecutionError> {
-    let Some(InitialFrame { mut message, charged_state_gas }) = frame else {
-        return Ok(runtime_oog_result(execution_gas_limit, reservoir));
-    };
+    let InitialFrame { mut message, charged_state_gas, runtime_oog } = frame;
+    if runtime_oog {
+        return host.execute_halted_message(
+            tx_env,
+            &mut message,
+            runtime_oog_result(execution_gas_limit, reservoir),
+        );
+    }
 
     // Failed execution has already been rolled back to the message's own checkpoint inside
     // `execute_message`; the settle merges the frame gas into the transaction-level gas.
@@ -726,7 +777,8 @@ pub fn execute_initial_frame<T: EvmTypes>(
 }
 
 /// Builds the result for a transaction whose EIP-2780 runtime gas phase ran out of gas
-/// ([`prepare_initial_frame`] returned `None`, or the EIP-7702 authorization charges bailed).
+/// ([`prepare_initial_frame`] returned a [halted frame](halted_initial_frame), or the EIP-7702
+/// authorization charges bailed).
 ///
 /// The transaction is valid but cannot afford the state-dependent runtime charges: it is
 /// included as an out-of-gas halt that consumes all execution gas and returns the reservoir,
@@ -1341,7 +1393,7 @@ mod tests {
         );
 
         let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(100_000, 0);
-        let InitialFrame { mut message, charged_state_gas } = prepare_initial_frame(
+        let InitialFrame { mut message, charged_state_gas, .. } = prepare_initial_frame(
             &mut evm,
             caller,
             0,
@@ -1350,7 +1402,6 @@ mod tests {
             U256::ZERO,
             &mut tx_gas,
         )
-        .unwrap()
         .unwrap();
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);

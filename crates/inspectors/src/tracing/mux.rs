@@ -9,7 +9,7 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    EvmTypes, EvmTypesHost, Inspector, TxResultExt, TxResultWithState,
+    EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
     evm::{DbResult, DynDatabase},
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -174,13 +174,8 @@ impl MuxInspector {
     }
 
     /// Finalizes the transaction root for tracers sharing the tracing inspector.
-    pub(crate) fn finalize_transaction<E>(
-        &mut self,
-        tx: &Recovered<impl Transaction>,
-        result: &TxResultExt<E>,
-    ) {
+    pub(crate) fn finalize_transaction(&mut self, tx: &Recovered<impl Transaction>) {
         if let Some(inspector) = &mut self.tracing {
-            inspector.recover_runtime_oog_root(tx, result);
             inspector.set_transaction_gas_limit(tx.gas_limit());
             inspector.set_transaction_caller(tx.signer());
         }

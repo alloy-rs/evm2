@@ -1,9 +1,9 @@
 use super::{
-    InitialFrame, LazyAuthorization, PreparedTx, access_list_counts, effective_gas_price,
-    initial_gas_and_reservoir, intrinsic_and_floor_gas, prepare_initial_frame, runtime_oog_result,
-    settle_initial_frame_gas, validate_block_gas_limit, validate_chain_id,
-    validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
+    LazyAuthorization, PreparedTx, access_list_counts, effective_gas_price, execute_initial_frame,
+    halted_initial_frame, initial_gas_and_reservoir, intrinsic_and_floor_gas,
+    prepare_initial_frame, validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+    validate_execution_gas_limit_cap, validate_floor_gas, validate_gas_price,
+    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
     validate_sender_and_bump_nonce, validate_tx_gas_limit_cap, warm_access_list,
     warm_base_accounts,
 };
@@ -11,7 +11,7 @@ use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult, Version,
     env::TxEnvExt,
     evm::handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
-    interpreter::{GasTracker, Host, InstrStop, MessageResult, gas::EIP8038_ACCOUNT_WRITE},
+    interpreter::{GasTracker, InstrStop, MessageResult, gas::EIP8038_ACCOUNT_WRITE},
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
 };
@@ -170,40 +170,41 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
             },
         )
     };
-    // Settles the transaction as an out-of-gas halt when the runtime gas phase (the authorization
-    // charges or the first-frame recipient charge) runs out of gas: reverts the authorization
-    // checkpoint to drop the applied delegations, then consumes all execution gas and returns the
-    // reservoir. Unreachable pre-Amsterdam, where no runtime charge is attempted.
-    let settle_oog = |host: &mut Evm<'_, T>| {
-        let features = host.version().features;
-        host.state.rollback(runtime_checkpoint, features);
-        settle(host, runtime_oog_result(execution_gas_limit, reservoir))
+    let frame = if auth_oog {
+        halted_initial_frame(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, &tx_gas)
+    } else {
+        prepare_initial_frame(
+            req.host,
+            caller,
+            tx.nonce,
+            tx.to.into(),
+            &tx.input,
+            tx.value,
+            &mut tx_gas,
+        )?
     };
-
-    if auth_oog {
-        return settle_oog(req.host);
+    // A runtime gas phase that ran out of gas (the authorization charges or the first-frame
+    // recipient charge) settles the transaction as an out-of-gas halt: the authorization
+    // checkpoint reverts to drop the applied delegations, then the frame halts without executing,
+    // consuming all execution gas and returning the reservoir. Unreachable pre-Amsterdam, where no
+    // runtime charge is attempted.
+    if frame.runtime_oog {
+        let features = req.host.version().features;
+        req.host.state.rollback(runtime_checkpoint, features);
     }
-    let Some(InitialFrame { mut message, charged_state_gas }) = prepare_initial_frame(
-        req.host,
-        caller,
-        tx.nonce,
-        tx.to.into(),
-        &tx.input,
-        tx.value,
-        &mut tx_gas,
-    )?
-    else {
-        // A depth-0 recipient charge that ran out of gas is part of the runtime gas phase, so it
-        // drops the delegations too.
-        return settle_oog(req.host);
-    };
 
     // Failed execution has already been rolled back to the message's own checkpoint (past the
     // applied delegations, which stay) inside `execute_message`. The settle merges the frame gas
     // into `tx_gas`, which carries the authorization state gas into the block state-gas
     // accounting.
-    let mut result = req.host.execute_message(&tx_env, &mut message)?;
-    settle_initial_frame_gas(&mut tx_gas, &mut result, charged_state_gas);
+    let result = execute_initial_frame(
+        req.host,
+        &tx_env,
+        frame,
+        &mut tx_gas,
+        execution_gas_limit,
+        reservoir,
+    )?;
     settle(req.host, result)
 }
 

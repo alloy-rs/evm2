@@ -12,8 +12,7 @@ use crate::{
     },
 };
 use alloc::{boxed::Box, vec::Vec};
-use alloy_consensus::{Transaction, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use alloy_rpc_types_trace::parity::StorageDelta;
 use core::{mem, ops::Range};
 use evm2::{
@@ -696,37 +695,6 @@ impl TracingInspector {
                 );
             }
         }
-    }
-
-    /// Restores a root omitted when evm2 halts during runtime gas charging, before its hooks run.
-    pub(crate) fn recover_runtime_oog_root<E>(
-        &mut self,
-        tx: &Recovered<impl Transaction>,
-        result: &TxResultExt<E>,
-    ) {
-        // The arena starts with a default root. After execution, call_end/create_end have set
-        // its status if the root was recorded, even when it executed no opcodes.
-        if self.traces.arena[0].trace.status.is_some() || result.stop != InstrStop::OutOfGas {
-            return;
-        }
-
-        let (kind, address) = match tx.kind() {
-            TxKind::Call(address) => (CallKind::Call, address),
-            TxKind::Create => (CallKind::Create, tx.signer().create(tx.nonce())),
-        };
-        self.traces.arena[0].trace = CallTrace {
-            caller: tx.signer(),
-            address,
-            kind,
-            value: tx.value(),
-            data: if self.config.record_inputs { tx.input().clone() } else { Bytes::new() },
-            gas_limit: tx.gas_limit(),
-            gas_used: result.tx_gas_used(),
-            status: Some(InstrStop::OutOfGas),
-            ..Default::default()
-        };
-        // Do not guess the EVM features from the halt or its gas accounting. The normal hooks did
-        // not run, and the transaction result does not identify the active fork.
     }
 }
 
