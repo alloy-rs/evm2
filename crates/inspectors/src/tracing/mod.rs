@@ -41,7 +41,7 @@ mod fourbyte;
 pub use fourbyte::FourByteInspector;
 
 mod keccak;
-pub use keccak::{KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector};
+pub use keccak::{KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MEMORY_PAD_LIMIT};
 
 mod limits;
 use limits::TraceBudget;

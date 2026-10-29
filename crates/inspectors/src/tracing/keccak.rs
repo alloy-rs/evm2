@@ -3,9 +3,8 @@
 //! The keccak256PreimageTracer collects the preimage of every `KECCAK256` operation executed in
 //! the lifetime of a transaction. The result is a map of hash to preimage.
 //!
-//! Unlike geth, it does not record an operation that runs out of gas for lack of gas to hash the
-//! preimage or expand memory for it, which bounds the work the tracer does by the gas of the
-//! transaction.
+//! Like geth, it records an operation that goes on to fail. [`MEMORY_PAD_LIMIT`] bounds the work
+//! per operation, so a transaction cannot make the tracer copy more than that much padding.
 //!
 //! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
 
@@ -20,8 +19,9 @@ use serde_json::Value;
 /// The name of the tracer in the `tracer` option of `debug_trace*` and in a mux tracer config.
 pub const KECCAK256_PREIMAGE_TRACER: &str = "keccak256PreimageTracer";
 
-/// The most zero padding a preimage that reaches past the end of memory may need.
-const MEMORY_PAD_LIMIT: u64 = 1024 * 1024;
+/// The most zero padding, in bytes, a preimage that reaches past the end of memory may need. geth
+/// records nothing for a preimage that needs more.
+pub const MEMORY_PAD_LIMIT: u64 = 1024 * 1024;
 
 /// Inspector that records the preimage of every `KECCAK256` operation.
 #[derive(Clone, Debug, Default)]
@@ -59,25 +59,6 @@ impl<T: EvmTypes> Inspector<T> for Keccak256PreimageInspector {
         // The operands are truncated to 64 bits.
         let (offset, length) = (offset.as_limbs()[0], length.as_limbs()[0]);
         let memory = interp.memory().as_slice();
-
-        // Skip an operation that cannot pay for hashing and expanding memory: it fails with out of
-        // gas, and a transaction could otherwise make every such operation copy up to
-        // `MEMORY_PAD_LIMIT` bytes for next to no gas.
-        let gas_params = &interp.version().gas_params;
-        let usize_of = |value: u64| usize::try_from(value).unwrap_or(usize::MAX);
-        let words = memory.len().div_ceil(32);
-        let new_words = if length == 0 {
-            words
-        } else {
-            words.max(usize_of(offset.saturating_add(length)).div_ceil(32))
-        };
-        let gas = gas_params
-            .keccak256_word_cost(usize_of(length))
-            .saturating_add(gas_params.memory_cost(new_words) - gas_params.memory_cost(words));
-        if gas > interp.gas().remaining() {
-            return;
-        }
-
         if let Some(preimage) = memory_copy_padded(memory, offset, length) {
             self.inner.entry(keccak256(&preimage)).or_insert_with(|| preimage.into_owned().into());
         }

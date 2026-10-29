@@ -19,8 +19,8 @@ use evm2::{
     ethereum::ethereum_tx_registry,
 };
 use evm2_inspectors::tracing::{
-    DebugInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MuxInspector,
-    TracingInspector, TracingInspectorConfig,
+    DebugInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MEMORY_PAD_LIMIT,
+    MuxInspector, TracingInspector, TracingInspectorConfig,
 };
 
 #[test]
@@ -2265,16 +2265,21 @@ fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
 }
 
 #[test]
-fn keccak256_preimage_tracer_skips_operations_that_run_out_of_gas() {
-    // KECCAK256 of 512 KiB at offset 0.
-    let code = hex!("620800005f20");
-    for (gas_limit, recorded) in [(200_000, 0), (10_000_000, 1)] {
+fn keccak256_preimage_tracer_bounds_the_padding_like_geth() {
+    // KECCAK256 of `MEMORY_PAD_LIMIT` and of one byte more at offset 0 of empty memory.
+    for (size, recorded) in [(MEMORY_PAD_LIMIT, 1), (MEMORY_PAD_LIMIT + 1, 0)] {
+        // PUSH3 size, PUSH0, KECCAK256.
+        let code = [&[0x62][..], &size.to_be_bytes()[5..], &hex!("5f20")].concat();
         let (contract, db) = contract_with_code(&code);
         let mut inspector = Keccak256PreimageInspector::default();
         Context::mainnet()
             .with_db(db)
             .build_mainnet_with_inspector(&mut inspector)
-            .inspect_tx(TxEnv { gas_limit, kind: TransactTo::Call(contract), ..Default::default() })
+            .inspect_tx(TxEnv {
+                gas_limit: 10_000_000,
+                kind: TransactTo::Call(contract),
+                ..Default::default()
+            })
             .unwrap();
         assert_eq!(inspector.json_result().as_object().unwrap().len(), recorded);
     }
