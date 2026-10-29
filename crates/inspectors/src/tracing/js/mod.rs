@@ -69,6 +69,9 @@ struct PendingStep {
     active: bool,
 }
 
+/// The input of the empty log a fault-only tracer sees.
+static EMPTY_INPUT: Bytes = Bytes::new();
+
 /// A javascript inspector that will delegate inspector functions to javascript functions
 ///
 /// See also <https://geth.ethereum.org/docs/developers/evm-tracing/custom-tracer#custom-javascript-tracing>
@@ -551,29 +554,50 @@ impl JsInspector {
         let depth = interp.message().depth;
         let index = self.pending_step_index(interp);
         let pending = &mut self.pending_steps[index];
-        let call = self.call_stack.last().expect("call stack is empty");
-        // evm2's CALL/CREATE step_end runs after the child has returned and merged its refund.
-        let frame_refund = if matches!(
-            pending.instruction.op,
-            op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
-        ) {
-            pending.frame_refund
+        let info = if self.step_fn.is_none() {
+            // Geth fills the log in its step hook, which a tracer without `step` never runs, so
+            // `fault` sees an empty log with only the error set.
+            StepInfo {
+                cost: 0,
+                refund: 0,
+                depth: 0,
+                error,
+                caller: Address::ZERO,
+                contract: Address::ZERO,
+                value: U256::ZERO,
+                input: &EMPTY_INPUT,
+                call_id: 0,
+            }
         } else {
-            interp.gas().refunded()
-        };
-        let refund = call.enclosing_refund + frame_refund;
-        debug_assert!(refund >= 0, "transaction-wide refund counter went negative: {refund}");
-        let info = StepInfo {
-            cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
-            refund: refund.max(0) as u64,
-            // Geth reports the depth starting at 1 for the top-level call.
-            depth: u64::from(depth) + 1,
-            error,
-            caller: interp.message().caller,
-            contract: interp.message().destination,
-            value: call.contract.value,
-            input: &call.contract.input,
-            call_id: call.id,
+            let call = self.call_stack.last().expect("call stack is empty");
+            // evm2's CALL/CREATE step_end runs after the child has returned and merged its refund.
+            let frame_refund = if matches!(
+                pending.instruction.op,
+                op::CALL
+                    | op::CALLCODE
+                    | op::DELEGATECALL
+                    | op::STATICCALL
+                    | op::CREATE
+                    | op::CREATE2
+            ) {
+                pending.frame_refund
+            } else {
+                interp.gas().refunded()
+            };
+            let refund = call.enclosing_refund + frame_refund;
+            debug_assert!(refund >= 0, "transaction-wide refund counter went negative: {refund}");
+            StepInfo {
+                cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
+                refund: refund.max(0) as u64,
+                // Geth reports the depth starting at 1 for the top-level call.
+                depth: u64::from(depth) + 1,
+                error,
+                caller: interp.message().caller,
+                contract: interp.message().destination,
+                value: call.contract.value,
+                input: &call.contract.input,
+                call_id: call.id,
+            }
         };
         let (stack, memory, host) = interp.stack_memory_host();
         let res = self.reusable_db.with_state_scope(host.state_mut(), || {
@@ -673,19 +697,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         let result = interp.result().err();
         let is_fault = result.is_some_and(|stop| should_fault(stop, pending.instruction.op));
         let error = result.and_then(|stop| utils::fmt_error_msg(stop, TraceStyle::Geth));
-        if self.step_fn.is_none() {
-            if !is_fault {
-                return;
-            }
-            // Fault-only tracers expose post-execution stack and memory.
-            pending.snapshot.record(PreStep {
-                pc: pending.instruction.pc,
-                op: pending.instruction.op,
-                gas_remaining: pending.instruction.gas,
-                stack: interp.stack().as_slice(),
-                memory: interp.memory().as_slice(),
-            });
-        } else {
+        if self.step_fn.is_some() {
             self.invoke_step_hook(interp, false, if is_fault { None } else { error.clone() });
             if self.check_and_halt(interp) || self.hook_errored() {
                 return;

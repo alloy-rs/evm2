@@ -94,10 +94,11 @@ fn faults_follow_steps_and_preserve_instruction_metadata() {
         assert!(!result.result.is_success());
         assert_eq!(actual.unwrap(), expected);
     }
-    let fault_only = "{e:[],fault:function(l){this.e.push([l.getPC(),l.op.toString(),l.getCost()])},result:function(){return this.e}}";
+    // Geth fills the log in its step hook, so a tracer without `step` sees an empty one.
+    let fault_only = "{e:[],fault:function(l){this.e.push([l.getPC(),l.op.toString(),l.getCost(),l.getDepth(),l.stack.length(),l.memory.length(),l.getError()])},result:function(){return this.e}}";
     assert_eq!(
         execute(fault_only, &hex!("60ff5600"), 1_000_000).0.unwrap(),
-        json!([[2, "JUMP", 8]])
+        json!([[0, "STOP", 0, 0, 0, 0, "invalid jump destination"]])
     );
 }
 
@@ -142,8 +143,11 @@ fn static_write_errors_follow_the_opcode_validation_stage() {
             assert!(result.result.is_success());
             assert_eq!(
                 output.unwrap(),
-                if has_step || callback == "fault" {
+                if has_step {
                     json!([[callback, opcode, "write protection"]])
+                } else if callback == "fault" {
+                    // A tracer without `step` sees geth's empty log.
+                    json!([[callback, "STOP", "write protection"]])
                 } else {
                     json!([])
                 },
