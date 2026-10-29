@@ -674,6 +674,7 @@ impl<'a> State<'a> {
                 return Ok(slot.value.current);
             }
             if account.storage.wiped || account.discards_storage() {
+                self.database.check_bal_storage(address, key)?;
                 return Ok(Word::ZERO);
             }
         }

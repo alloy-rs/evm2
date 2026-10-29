@@ -251,6 +251,19 @@ impl<ExtDB> CacheDB<ExtDB> {
     pub fn insert_block_hash(&mut self, number: &Word, hash: &B256) {
         self.cache.block_hashes.insert(*number, *hash);
     }
+
+    /// Checks that the attached read BAL, if any, covers storage slot `key`.
+    ///
+    /// Used by reads that know the slot's value without consulting storage, such as a slot of an
+    /// account created in the transaction, so they keep the coverage check of
+    /// [`DynDatabase::get_storage`].
+    #[inline]
+    pub(crate) fn check_bal_storage(&self, address: &Address, key: &Word) -> DbResult<()> {
+        match self.bal_context.bal_storage(address, key) {
+            Ok(_) => Ok(()),
+            Err(err) => Err(DatabaseError::new(err, false)),
+        }
+    }
 }
 
 /// Applies streamed changes to the cache and forwards every callback to [`BalContext`]'s own sink
