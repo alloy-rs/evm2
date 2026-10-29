@@ -65,7 +65,7 @@ fn executor<'a>(
     rules: EthBlockRules,
 ) -> EthBlockExecutor<'a> {
     let evm = evm(spec, gas_limit);
-    EthBlockExecutor::new(evm, ctx, rules, EthReceiptBuilder, BlockStateAccumulator::new())
+    EthBlockExecutor::new(evm, ctx, rules, EthReceiptBuilder)
 }
 
 fn transfer(gas_limit: u64) -> Recovered<EthereumTxEnvelope<TxEip4844>> {
@@ -84,18 +84,12 @@ fn transfer(gas_limit: u64) -> Recovered<EthereumTxEnvelope<TxEip4844>> {
     )
 }
 
-fn balance(state: &BlockStateAccumulator, address: Address) -> Option<U256> {
-    state
-        .accounts()
-        .find(|(account, _)| *account == address)
-        .and_then(|(_, delta)| delta.current.as_ref().map(|info| info.balance))
+fn balance(state: &BundleState, address: Address) -> Option<U256> {
+    state.account(&address).and_then(|account| account.info.as_ref()).map(|info| info.balance)
 }
 
-fn storage(state: &BlockStateAccumulator, address: Address, slot: U256) -> Option<U256> {
-    state
-        .storage()
-        .find(|(key, _)| key.address() == address && key.key() == slot)
-        .map(|(_, delta)| delta.current)
+fn storage(state: &BundleState, address: Address, slot: U256) -> Option<U256> {
+    state.storage(&address, slot)
 }
 
 #[test]
@@ -156,7 +150,7 @@ fn discards_uncommitted_transaction() {
     let mut executor = executor(SpecId::PRAGUE, 30_000_000, ctx(), EthBlockRules::default());
     executor.apply_pre_execution_changes().unwrap();
     let gas = executor
-        .execute_transaction_with_commit_condition(&transfer(21_000), |_| CommitChanges::No)
+        .execute_transaction_with_commit_condition(&transfer(21_000), |_, _| CommitChanges::No)
         .unwrap();
     assert_eq!(gas, None);
 
