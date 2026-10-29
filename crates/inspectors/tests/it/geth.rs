@@ -7,7 +7,7 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
     TxEnv, deploy_contract, op,
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, map::HashMap};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
     geth::{
@@ -22,7 +22,8 @@ use evm2::{
     ethereum::ethereum_tx_registry,
 };
 use evm2_inspectors::tracing::{
-    DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
+    DebugInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MEMORY_PAD_LIMIT,
+    MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig,
 };
 
 #[test]
@@ -1261,7 +1262,7 @@ fn test_geth_prestate_diff_selfdestruct_cancun() {
 }
 
 #[test]
-fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
+fn test_geth_default_tracer_omits_empty_return_data() {
     let contract = address!("0xc000000000000000000000000000000000000003");
     let caller = address!("0xa000000000000000000000000000000000000003");
     let code = hex!("00");
@@ -1307,7 +1308,7 @@ fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
         );
 
     assert!(!frame.struct_logs.is_empty(), "Expected struct logs for STOP execution");
-    assert!(frame.struct_logs.iter().all(|log| log.return_data == Some(Bytes::default())));
+    assert!(frame.struct_logs.iter().all(|log| log.return_data.is_none()));
 
     let struct_logs = serde_json::to_value(&frame)
         .unwrap()
@@ -1316,9 +1317,7 @@ fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
         .cloned()
         .unwrap();
 
-    assert!(struct_logs.iter().all(|log| {
-        log.get("returnData") == Some(&serde_json::Value::String("0x".to_string()))
-    }));
+    assert!(struct_logs.iter().all(|log| log.get("returnData").is_none()));
 }
 
 fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
@@ -2192,6 +2191,125 @@ fn test_geth_failed_root_logs() {
                     assert_eq!(serde_json::to_value(frame).unwrap().get("logs"), None);
                 }
             }
+        }
+    }
+}
+
+fn contract_with_code(code: &[u8]) -> (Address, CacheDB<EmptyDB>) {
+    let contract = Address::with_last_byte(0x42);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo::default().with_code(Bytecode::new_raw(code.to_vec().into())),
+    );
+    (contract, db)
+}
+
+#[test]
+fn keccak256_preimage_tracer_collects_padded_preimages() {
+    let (contract, db) = contract_with_code(&hex!(
+        // MSTORE(0, 0x2a), then KECCAK256 of (0, 32), of (0, 0), of (0x10, 0x40) and of (0, 2 MiB).
+        "602a5f52" "60205f2050" "5f5f2050" "6040601020" "50" "62200000" "5f2050"
+    ));
+    let mut inspector = Keccak256PreimageInspector::default();
+    Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(&mut inspector)
+        .inspect_tx(TxEnv {
+            gas_limit: 10_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let mut word = [0; 32];
+    word[31] = 0x2a;
+    let mut padded = [0; 0x40];
+    padded[..0x10].copy_from_slice(&word[0x10..]);
+    let expected = serde_json::Value::Object(
+        [&word[..], &[], &padded]
+            .into_iter()
+            .map(|preimage| {
+                (hex::encode_prefixed(keccak256(preimage)), hex::encode_prefixed(preimage).into())
+            })
+            .collect(),
+    );
+    assert_eq!(inspector.json_result().unwrap(), expected);
+}
+
+#[test]
+fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
+    let options: GethDebugTracingOptions =
+        serde_json::from_value(serde_json::json!({"tracer": "keccak256PreimageTracer"})).unwrap();
+    assert!(matches!(DebugInspector::new(options).unwrap(), DebugInspector::Keccak256Preimage(_)));
+
+    let (contract, db) = contract_with_code(&hex!("602a5f5260205f2050"));
+    let key = GethDebugTracerType::JsTracer(KECCAK256_PREIMAGE_TRACER.into());
+    let config = MuxConfig(HashMap::from_iter([(key.clone(), None)]));
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(MuxInspector::try_from_config(config).unwrap());
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let frame = inspector
+        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
+        .unwrap();
+    let GethTrace::JS(preimages) = &frame.0[&key] else { panic!("expected a JSON object") };
+    assert_eq!(preimages.as_object().unwrap().len(), 1);
+}
+
+#[test]
+fn keccak256_preimage_tracer_bounds_the_padding_like_geth() {
+    // KECCAK256 of `MEMORY_PAD_LIMIT` and of one byte more at offset 0 of empty memory.
+    for (size, recorded) in [(MEMORY_PAD_LIMIT, 1), (MEMORY_PAD_LIMIT + 1, 0)] {
+        // PUSH3 size, PUSH0, KECCAK256.
+        let code = [&[0x62][..], &size.to_be_bytes()[5..], &hex!("5f20")].concat();
+        let (contract, db) = contract_with_code(&code);
+        let mut inspector = Keccak256PreimageInspector::default();
+        Context::mainnet()
+            .with_db(db)
+            .build_mainnet_with_inspector(&mut inspector)
+            .inspect_tx(TxEnv {
+                gas_limit: 10_000_000,
+                kind: TransactTo::Call(contract),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(inspector.json_result().unwrap().as_object().unwrap().len(), recorded);
+    }
+}
+
+#[test]
+fn keccak256_preimage_tracer_stops_recording_at_the_byte_limit() {
+    // MSTORE(0, 0x2a), then KECCAK256 of 32 and of 64 bytes.
+    let code = hex!("602a5f52" "60205f2050" "60405f2050");
+    for (limit, recorded, exceeded) in [(40, 1, true), (96, 2, false)] {
+        let (contract, db) = contract_with_code(&code);
+        let mut inspector = Keccak256PreimageInspector::new(
+            TraceLimits::default().set_max_recorded_bytes(Some(limit)),
+        );
+        Context::mainnet()
+            .with_db(db)
+            .build_mainnet_with_inspector(&mut inspector)
+            .inspect_tx(TxEnv {
+                gas_limit: 1_000_000,
+                kind: TransactTo::Call(contract),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(inspector.limit_exceeded(), exceeded);
+        match inspector.json_result() {
+            Ok(preimages) => {
+                assert_eq!((preimages.as_object().unwrap().len(), exceeded), (recorded, false))
+            }
+            Err(_) => assert!(exceeded),
         }
     }
 }

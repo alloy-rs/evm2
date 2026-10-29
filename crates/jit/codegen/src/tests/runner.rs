@@ -359,6 +359,7 @@ fn prepare_host(spec_id: SpecId) -> Evm<'static, BaseEvmTypes> {
         def_database(),
         Precompiles::base(spec_id),
     );
+    *evm.tx_env_mut() = def_tx_env();
     for address in [Address::ZERO, DEF_ADDR, DEF_CALLER, OTHER_ADDR, Address::with_last_byte(0x69)]
     {
         evm.state_mut().prewarm(&address);
@@ -396,7 +397,6 @@ fn with_evm_context_and_host_mut<
     modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
     f: F,
 ) -> R {
-    let tx_env = def_tx_env();
     let mut message = def_message(DEF_GAS_LIMIT);
     if let Some(modify_message) = modify_message {
         modify_message(&mut message);
@@ -405,7 +405,7 @@ fn with_evm_context_and_host_mut<
         code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
         ..message
     };
-    let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+    let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
     interpreter.prepare_run(host);
 
     let (mut ecx, stack, stack_len) =
@@ -512,7 +512,6 @@ fn run_compiled_test_case_with_context(
     }
 
     // Interpreter - run evm2 as the oracle
-    let tx_env = def_tx_env();
     let mut message = def_message(gas_limit);
     if let Some(modify_message) = modify_message {
         modify_message(&mut message);
@@ -522,7 +521,7 @@ fn run_compiled_test_case_with_context(
         code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
         ..message
     };
-    let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+    let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
     let mut int_host = prepare_host(spec_id);
     let int_stop = interpreter.run(&mut int_host).unwrap();
     let int_result = int_stop;

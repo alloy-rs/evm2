@@ -713,10 +713,14 @@ impl CallTraceStep {
                 format!("opcode {:#x} not defined", self.op.get()).into()
             },
             pc: self.pc as u64,
-            refund_counter: Some(self.gas_refund_counter),
+            // geth omits a zero refund and empty memory and return data.
+            refund_counter: (self.gas_refund_counter != 0).then_some(self.gas_refund_counter),
             stack,
             memory: if opts.is_memory_enabled() {
-                self.memory.as_ref().map(RecordedMemory::memory_chunks)
+                self.memory
+                    .as_ref()
+                    .map(RecordedMemory::memory_chunks)
+                    .filter(|memory| !memory.is_empty())
             } else {
                 None
             },

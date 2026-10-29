@@ -1109,6 +1109,28 @@ fn create_nonce_overflow_is_a_failed_frame() {
 }
 
 #[test]
+fn create_with_empty_initcode_runs_no_steps() {
+    let factory = Address::with_last_byte(0x42);
+    for (kind, depth_nodes) in [(TransactTo::Create, 1), (TransactTo::Call(factory), 2)] {
+        let mut db = CacheDB::<EmptyDB>::default();
+        db.insert_account_info(
+            &factory,
+            AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f5ff000").into())),
+        );
+        let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
+            TracingInspector::new(TracingInspectorConfig::default_parity()),
+        );
+        evm.inspect_tx(TxEnv { gas_limit: 1_000_000, kind, ..Default::default() }).unwrap();
+        let nodes = evm.inspector.traces().nodes();
+        assert_eq!(nodes.len(), depth_nodes);
+        let create = nodes.last().unwrap();
+        assert!(create.kind().is_any_create());
+        assert!(create.trace.success && create.trace.steps.is_empty());
+        assert_eq!(create.trace.gas_used, 0);
+    }
+}
+
+#[test]
 fn precompile_exclusion_uses_original_callee_with_delegation() {
     let parent = Address::from([0x11; 20]);
     for callee in [2, 0x55] {
