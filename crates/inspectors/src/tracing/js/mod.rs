@@ -1247,27 +1247,31 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_slice_rejects_non_finite_indexes() {
+    fn test_memory_slice_non_finite_indexes_are_zero() {
         let code = r#"{
-            depths: [],
-            step: function(log) { this.depths.push(log.memory.slice(Infinity, NaN)); },
+            res: [],
+            step: function(log) {
+                if (log.op.toString() === 'STOP') {
+                    this.res.push(log.memory.slice(Infinity, NaN).length, log.memory.slice(NaN, 2).length);
+                }
+            },
             fault: function() {},
-            result: function() { return this.depths; }
+            result: function() { return this.res; }
         }"#;
-        let err = try_run_trace(code, None, true).unwrap_err();
-        assert!(matches!(err, JsInspectorError::JsError(_)));
+        let res = run_trace(code, None, true);
+        assert_eq!(res, json!([0, 2]));
     }
 
     #[test]
-    fn test_memory_slice_rejects_non_finite_end() {
+    fn test_memory_slice_infinite_end_is_zero() {
         let code = r#"{
-            depths: [],
-            step: function(log) { this.depths.push(log.memory.slice(0, Infinity)); },
+            res: [],
+            step: function(log) { this.res.push(log.memory.slice(0, Infinity).length); },
             fault: function() {},
-            result: function() { return this.depths; }
+            result: function() { return this.res; }
         }"#;
-        let err = try_run_trace(code, None, true).unwrap_err();
-        assert!(matches!(err, JsInspectorError::JsError(_)));
+        let res = run_trace(code, None, true);
+        assert_eq!(res, json!([0, 0, 0]));
     }
 
     #[test]
@@ -1343,27 +1347,102 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_get_uint_rejects_non_finite_offset() {
+    fn test_memory_get_uint_returns_bigint() {
         let code = r#"{
-            depths: [],
-            step: function(log, db) { this.depths.push(log.memory.getUint(Infinity)); },
+            res: [],
+            step: function(log) {
+                if (log.op.toString() === 'STOP') {
+                    var word = log.memory.getUint(0);
+                    this.res.push(typeof word, word.toString(), log.memory.getUint(NaN).toString());
+                    this.res.push(log.memory.getUint(Infinity).toString());
+                }
+            },
             fault: function() {},
-            result: function() { return this.depths; }
+            result: function() { return this.res; }
         }"#;
-        let err = try_run_trace(code, None, true).unwrap_err();
-        assert!(matches!(err, JsInspectorError::JsError(_)));
+        // PUSH1 42, PUSH1 0, MSTORE, STOP
+        let res = run_trace(code, Some(bytes!("0x602a60005200")), true);
+        assert_eq!(res, json!(["bigint", "42", "42", "42"]));
     }
 
     #[test]
-    fn test_memory_get_uint_rejects_nan_offset() {
+    fn test_memory_and_stack_errors_match_geth() {
+        // PUSH1 42, PUSH1 0, MSTORE, PUSH1 1, PUSH1 2, STOP
+        let contract = Some(bytes!("0x602a600052600160020000"));
+        for (expression, expected) in [
+            ("log.memory.slice(5, 2)", "tracer accessed out of bound memory: offset 5, end 2"),
+            ("log.memory.slice(-1, 4)", "tracer accessed out of bound memory: offset -1, end 4"),
+            (
+                "log.memory.slice(0, 1e30)",
+                "tracer accessed out of bound memory: offset 0, end -9223372036854775808",
+            ),
+            (
+                "log.memory.slice(0, 1048577 + 32)",
+                "reached limit for padding memory slice: 1048577",
+            ),
+            (
+                "log.memory.getUint(1)",
+                "tracer accessed out of bound memory: available 32, offset 1, size 32",
+            ),
+            (
+                "log.memory.getUint(-1)",
+                "tracer accessed out of bound memory: available 32, offset -1, size 32",
+            ),
+            ("log.stack.peek(2)", "tracer accessed out of bound stack: size 2, index 2"),
+            ("log.stack.peek(-1)", "tracer accessed out of bound stack: size 2, index -1"),
+        ] {
+            let code = format!(
+                "{{step: function(log) {{ if (log.op.toString() === 'STOP') {expression}; }}, fault: function() {{}}, result: function() {{}}}}"
+            );
+            let JsInspectorError::JsError(error) =
+                try_run_trace(&code, contract.clone(), true).unwrap_err()
+            else {
+                panic!("{expression}: unexpected error");
+            };
+            assert_eq!(
+                error.as_native().unwrap().message(),
+                format!("{expected}    in server-side tracer function 'step'"),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_stack_peek_index_conversion() {
         let code = r#"{
-            depths: [],
-            step: function(log, db) { this.depths.push(log.memory.getUint(NaN)); },
+            res: [],
+            step: function(log) {
+                if (log.op.toString() === 'STOP') {
+                    this.res.push(
+                        log.stack.peek(NaN).toString(),
+                        log.stack.peek(Infinity).toString(),
+                        log.stack.peek(1.5).toString(),
+                        log.stack.peek('1').toString()
+                    );
+                }
+            },
             fault: function() {},
-            result: function() { return this.depths; }
+            result: function() { return this.res; }
         }"#;
-        let err = try_run_trace(code, None, true).unwrap_err();
-        assert!(matches!(err, JsInspectorError::JsError(_)));
+        let res = run_trace(code, Some(bytes!("0x600160020000")), true);
+        assert_eq!(res, json!(["2", "2", "1", "1"]));
+    }
+
+    #[test]
+    fn test_frame_value_is_undefined_for_staticcall() {
+        let code = r#"{
+            res: [],
+            enter: function(frame) { this.res.push([frame.getType(), String(frame.getValue())]); },
+            exit: function() {},
+            fault: function() {},
+            result: function() { return this.res; }
+        }"#;
+        // CALL and STATICCALL of the identity precompile.
+        let calls = bytes!("0x6000600060006000600060046101fff1600060006000600060046101fffa00");
+        assert_eq!(
+            run_trace(code, Some(calls), true),
+            json!([["CALL", "0"], ["STATICCALL", "undefined"]])
+        );
     }
 
     #[test]
@@ -1658,7 +1737,7 @@ mod tests {
                 if (op === 'MSTORE8' || op === 'STOP') {
                     this.res.push(log.memory.length());
                     if (log.memory.length() > 0) {
-                        this.res.push(log.memory.getUint(0)[0]);
+                        this.res.push(Number(log.memory.getUint(0) >> 248n));
                         this.res.push(log.memory.slice(0, 2)[0]);
                     }
                 }
