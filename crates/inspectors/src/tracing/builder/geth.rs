@@ -144,11 +144,11 @@ impl<'a> GethTraceBuilder<'a> {
         // call depth rather than step count, and a trace without subcalls needs no allocation.
         let mut steps = main_trace_node.steps_with_children();
         let mut parents = Vec::new();
-        let mut json_len = 0;
+        let mut json_len = 0u64;
 
         loop {
             // geth stops logging once the JSON written so far is over the limit.
-            if opts.limit.is_some_and(|limit| json_len as u64 > limit) {
+            if opts.limit.is_some_and(|limit| json_len > limit) {
                 break;
             }
             let Some(CallTraceStepStackItem { trace_node, step, call_child_id }) = steps.next()
@@ -192,7 +192,7 @@ impl<'a> GethTraceBuilder<'a> {
 
             // Add step to geth trace
             if opts.limit.is_some() {
-                json_len += struct_log_json_len(&log);
+                json_len = json_len.saturating_add(struct_log_json_len(&log) as u64);
             }
             struct_logs.push(log);
 
