@@ -11,7 +11,7 @@ use crate::{
         utils::{StepContext, fmt_geth_create_end, fmt_geth_halt, gas_used},
     },
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256};
 use alloy_rpc_types_trace::parity::StorageDelta;
