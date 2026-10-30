@@ -6,7 +6,10 @@ use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
     evm::inspector::{Inspector, OpcodeSet},
-    interpreter::dispatch::{self, InstrTable}, interpreter::{dispatch, opcode::OpCode},
+    interpreter::{
+        dispatch::{self, InstrTable},
+        opcode::OpCode,
+    },
     trustme,
     version::{EvmFeatures, GasParams},
 };
