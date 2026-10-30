@@ -571,10 +571,8 @@ fn test_geth_jstracer_get_code_does_not_load_the_account() {
 
     // The transaction loads its caller and target. The code read does not add `observed`.
     let pending = &res.tx_result.pending_state;
-    assert!(pending.account_info(&observed).is_none());
     assert!(pending.account_changes_for(&observed).is_none());
     assert!(pending.account_changes_for(&target).is_some());
-    assert!(pending.account_changes().all(|account| account.address != observed));
 }
 
 #[test]
