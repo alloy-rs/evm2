@@ -212,7 +212,9 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
         let mut children = 0..node.children.len();
         for (step_idx, step) in node.trace.steps.iter().enumerate() {
             node.ordering.push(TraceMemberOrder::Step(step_idx));
-            if let Some(child) = step.is_call_like_op().then(|| children.next()).flatten() {
+            if step.is_call_like_op()
+                && let Some(child) = children.next()
+            {
                 node.ordering.push(TraceMemberOrder::Call(child));
             }
         }

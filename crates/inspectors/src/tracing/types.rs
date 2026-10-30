@@ -290,12 +290,12 @@ impl CallTraceNode {
         self.trace.steps.iter().enumerate().map(move |(step_idx, step)| {
             ordering
                 .find(|member| matches!(member, TraceMemberOrder::Step(idx) if *idx == step_idx));
-            let call_child_id = ordering
-                .next_if(|member| matches!(member, TraceMemberOrder::Call(_)))
-                .and_then(|member| match member {
-                    TraceMemberOrder::Call(child) => self.children.get(*child).copied(),
-                    _ => None,
-                });
+            let call_child_id = match ordering.next_if(|member| {
+                step.is_call_like_op() && matches!(member, TraceMemberOrder::Call(_))
+            }) {
+                Some(TraceMemberOrder::Call(child)) => self.children.get(*child).copied(),
+                _ => None,
+            };
             CallTraceStepStackItem { trace_node: self, step, call_child_id }
         })
     }
