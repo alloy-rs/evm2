@@ -22,7 +22,6 @@ use llvm_sys::{
     error::*,
     orc2::{lljit::*, *},
     prelude::*,
-    target_machine::LLVMCodeGenOptLevel,
 };
 use std::{
     ffi::{CStr, CString, c_char, c_void},
@@ -1287,18 +1286,15 @@ impl LLJITBuilder {
 
     /// Use a thread-safe compiler without spawning background threads.
     ///
-    /// Installs `ConcurrentIRCompiler` (fresh `TargetMachine` per compilation)
-    /// so multiple caller threads can compile through the same LLJIT safely.
+    /// Installs a compiler like `ConcurrentIRCompiler` (fresh `TargetMachine`
+    /// per compilation) so multiple caller threads can compile through the same
+    /// LLJIT safely. It compiles each module at the codegen level recorded by
+    /// `cpp::module_set_codegen_opt_level` and fails for a module without one.
     /// The default `InPlaceTaskDispatcher` is preserved, meaning compilation
     /// runs inline on the thread that triggers it — no background threads.
-    ///
-    /// Every compilation uses the codegen optimization level `level`.
-    pub fn concurrent_compiler(mut self, level: LLVMCodeGenOptLevel) -> Self {
+    pub fn concurrent_compiler(mut self) -> Self {
         unsafe {
-            crate::cpp::evm2_jit_llvm_lljit_builder_set_concurrent_compiler(
-                self.as_inner_init(),
-                level,
-            )
+            crate::cpp::evm2_jit_llvm_lljit_builder_set_concurrent_compiler(self.as_inner_init())
         };
         self
     }

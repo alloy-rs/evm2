@@ -1,13 +1,13 @@
 //! Custom bindings to LLVM.
 
-use crate::wrap::{Attribute, Context, Function};
+use crate::wrap::{Attribute, Context, Function, Module};
 use llvm_sys::{
     error::LLVMErrorRef,
     orc2::{
         LLVMOrcExecutionSessionRef, LLVMOrcExecutorAddress, LLVMOrcJITDylibRef,
         lljit::{LLVMOrcLLJITBuilderRef, LLVMOrcLLJITRef},
     },
-    prelude::{LLVMAttributeRef, LLVMContextRef, LLVMValueRef},
+    prelude::{LLVMAttributeRef, LLVMContextRef, LLVMModuleRef, LLVMValueRef},
     target_machine::{LLVMCodeGenOptLevel, LLVMTargetMachineRef},
 };
 use std::{ffi::c_char, sync::atomic::AtomicUsize};
@@ -33,7 +33,6 @@ unsafe extern "C" {
 
     pub(crate) fn evm2_jit_llvm_lljit_builder_set_concurrent_compiler(
         builder: LLVMOrcLLJITBuilderRef,
-        level: LLVMCodeGenOptLevel,
     );
 
     pub(crate) fn evm2_jit_llvm_execution_session_remove_jit_dylib(
@@ -67,11 +66,20 @@ unsafe extern "C" {
 
     fn evm2_jit_llvm_set_dso_local(val: LLVMValueRef, local: bool);
 
+    fn evm2_jit_llvm_module_set_codegen_opt_level(
+        module: LLVMModuleRef,
+        level: LLVMCodeGenOptLevel,
+    );
+
     pub(crate) fn evm2_jit_llvm_expand_ir_insts_after_lsr();
 }
 
 pub(crate) fn set_dso_local(f: Function) {
     unsafe { evm2_jit_llvm_set_dso_local(f.as_value_ref(), true) };
+}
+
+pub(crate) fn module_set_codegen_opt_level(module: &Module, level: LLVMCodeGenOptLevel) {
+    unsafe { evm2_jit_llvm_module_set_codegen_opt_level(module.as_mut_ptr(), level) };
 }
 
 pub(crate) fn create_initializes_attr(cx: &Context, lower: i64, upper: i64) -> Attribute {

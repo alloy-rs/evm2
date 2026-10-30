@@ -217,22 +217,15 @@ impl GlobalOrcJit {
         Self::global().get().and_then(|r| r.as_ref().ok())
     }
 
-    /// Returns the process-wide JIT, creating it on first use.
-    ///
-    /// `opt_level` selects the codegen level of every JIT compilation in the process. Only the
-    /// first call's value takes effect, like the other arguments.
     fn get(
-        opt_level: OptimizationLevel,
         debug_support: bool,
         profiling_support: bool,
         simple_perf: bool,
     ) -> Result<&'static Self> {
         let result = Self::global().get_or_init(|| {
             init().map_err(|e| e.to_string())?;
-            let jit = orc::LLJIT::builder()
-                .concurrent_compiler(convert_opt_level(opt_level))
-                .build()
-                .map_err(|e| e.to_string())?;
+            let jit =
+                orc::LLJIT::builder().concurrent_compiler().build().map_err(|e| e.to_string())?;
             jit.get_execution_session().set_default_error_reporter();
             jit.get_obj_transform_layer().set_transform(obj_capture_transform);
 
@@ -398,13 +391,8 @@ impl fmt::Debug for OrcJitState {
 }
 
 impl OrcJitState {
-    fn new(
-        opt_level: OptimizationLevel,
-        debug_support: bool,
-        profiling_support: bool,
-        simple_perf: bool,
-    ) -> Result<Self> {
-        let global = GlobalOrcJit::get(opt_level, debug_support, profiling_support, simple_perf)?;
+    fn new(debug_support: bool, profiling_support: bool, simple_perf: bool) -> Result<Self> {
+        let global = GlobalOrcJit::get(debug_support, profiling_support, simple_perf)?;
         let jd = global.create_jit_dylib()?;
         let jd_guard = Arc::new(JitDylibGuard { global, jd });
         Ok(Self {
@@ -595,7 +583,6 @@ impl EvmLlvmBackend {
     fn ensure_orc(&mut self) -> Result<&mut OrcJitState> {
         if self.orc.is_none() {
             self.orc = Some(OrcJitState::new(
-                self.backend_config.opt_level,
                 self.backend_config.debug_support,
                 self.backend_config.profiling_support,
                 self.backend_config.simple_perf,
@@ -691,6 +678,10 @@ impl EvmLlvmBackend {
 
         let tracker = orc.jd().create_resource_tracker();
 
+        cpp::module_set_codegen_opt_level(
+            &old_module,
+            convert_opt_level(self.backend_config.opt_level),
+        );
         let tsm = orc::ThreadSafeModule::create_in_context(old_module, tscx);
         orc.global.jit.add_module_with_rt(tsm, &tracker).map_err(error_msg)?;
 

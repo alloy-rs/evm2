@@ -80,23 +80,59 @@ static CodeGenOptLevel toCodeGenOptLevel(LLVMCodeGenOptLevel Level) {
   llvm_unreachable("invalid LLVMCodeGenOptLevel");
 }
 
-/// Use ConcurrentIRCompiler (thread-safe, fresh TargetMachine per compilation)
-/// while keeping the default InPlaceTaskDispatcher (no background threads).
-///
-/// Every compilation uses the given codegen optimization level. The IR
-/// optimization passes are run separately with their own level.
+static constexpr StringLiteral CodeGenOptLevelFlag = "evm2.codegen_opt_level";
+
+/// Record the codegen optimization level the JIT uses to compile `M`.
+extern "C" void
+evm2_jit_llvm_module_set_codegen_opt_level(LLVMModuleRef M,
+                                           LLVMCodeGenOptLevel Level) {
+  unwrap(M)->addModuleFlag(Module::Override, CodeGenOptLevelFlag,
+                           static_cast<uint32_t>(Level));
+}
+
+/// Like ConcurrentIRCompiler: a fresh TargetMachine per compilation, so several
+/// threads can compile through one LLJIT. The codegen level comes from the
+/// module flag set by evm2_jit_llvm_module_set_codegen_opt_level, so each
+/// module is compiled at the level of the backend that built it.
+class CodeGenLevelIRCompiler : public orc::IRCompileLayer::IRCompiler {
+  orc::JITTargetMachineBuilder JTMB;
+
+public:
+  explicit CodeGenLevelIRCompiler(orc::JITTargetMachineBuilder JTMB)
+      : IRCompiler(orc::irManglingOptionsFromTargetOptions(JTMB.getOptions())),
+        JTMB(std::move(JTMB)) {}
+
+  Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
+    auto *Flag = mdconst::extract_or_null<ConstantInt>(
+        M.getModuleFlag(CodeGenOptLevelFlag));
+    if (!Flag)
+      return createStringError(inconvertibleErrorCode(),
+                               "module has no codegen optimization level");
+    auto Builder = JTMB;
+    Builder.setCodeGenOptLevel(toCodeGenOptLevel(
+        static_cast<LLVMCodeGenOptLevel>(Flag->getZExtValue())));
+    auto TM = Builder.createTargetMachine();
+    if (!TM)
+      return TM.takeError();
+    return orc::SimpleCompiler(**TM)(M);
+  }
+};
+
+/// Use CodeGenLevelIRCompiler (thread-safe, fresh TargetMachine per
+/// compilation) while keeping the default InPlaceTaskDispatcher (no background
+/// threads). The IR optimization passes are run separately with their own
+/// level.
 ///
 /// setSupportConcurrentCompilation(true) would also switch the dispatcher to
 /// DynamicThreadPoolTaskDispatcher, spawning background threads. We only want
 /// the thread-safe compiler, not the thread pool.
 extern "C" void evm2_jit_llvm_lljit_builder_set_concurrent_compiler(
-    LLVMOrcLLJITBuilderRef Builder, LLVMCodeGenOptLevel Level) {
+    LLVMOrcLLJITBuilderRef Builder) {
   auto *B = reinterpret_cast<orc::LLJITBuilder *>(Builder);
   B->setCompileFunctionCreator(
-      [L = toCodeGenOptLevel(Level)](orc::JITTargetMachineBuilder JTMB)
+      [](orc::JITTargetMachineBuilder JTMB)
           -> Expected<std::unique_ptr<orc::IRCompileLayer::IRCompiler>> {
-        JTMB.setCodeGenOptLevel(L);
-        return std::make_unique<orc::ConcurrentIRCompiler>(std::move(JTMB));
+        return std::make_unique<CodeGenLevelIRCompiler>(std::move(JTMB));
       });
 }
 
