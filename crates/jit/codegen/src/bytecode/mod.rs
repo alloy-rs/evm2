@@ -274,9 +274,9 @@ impl<'a> Bytecode<'a> {
                 } else if let Some(stack_io) = compute_stack_io(opcode, immediate) {
                     (info.base_gas(), stack_io)
                 } else {
-                    // Halts before it runs, so it takes no stack and pays no gas.
+                    // Pays its static gas, then halts before touching the stack.
                     flags |= InstFlags::INVALID_IMMEDIATE;
-                    (0, (0, 0))
+                    (info.base_gas(), (0, 0))
                 };
 
             let data = match opcode {
@@ -1280,8 +1280,7 @@ bitflags::bitflags! {
         /// program where it is reachable is not compiled.
         const UNSUPPORTED_HOST = 1 << 12;
         /// The `DUPN`, `SWAPN`, or `EXCHANGE` immediate is invalid.
-        /// Always returns
-        /// [`InvalidImmediateEncoding`](evm2::interpreter::InstrStop::InvalidImmediateEncoding)
+        /// Always returns [`InvalidImmediateEncoding`](evm2::interpreter::InstrStop::InvalidImmediateEncoding)
         /// at runtime.
         const INVALID_IMMEDIATE = 1 << 13;
     }
