@@ -14,7 +14,7 @@ use crate::registry::HandlerError;
 use crate::{
     EvmTypes,
     env::TxEnvExt,
-    ethereum::{execute_initial_frame, prepare_initial_frame},
+    ethereum::{execute_initial_frame, gas_spent_breakdown, prepare_initial_frame},
     interpreter::GasTracker,
     registry::HandlerResult,
     version::{EvmFeatures, GasId},
@@ -111,9 +111,10 @@ impl SystemTx {
 impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Executes a system call.
     ///
-    /// System calls bypass normal transaction validation, nonce updates, fee charging, gas refunds,
-    /// and beneficiary rewards. They execute a top-level `CALL` with zero value and
-    /// [`SystemTx::gas_limit`] gas, then finalize and return an executed transaction handle.
+    /// System calls bypass normal transaction validation, nonce updates, fee charging, and
+    /// beneficiary rewards. They execute a top-level `CALL` with zero value and
+    /// [`SystemTx::gas_limit`] gas, then finalize and return an executed transaction handle. A
+    /// successful call reports its raw gas refund, without the EIP-3529 cap.
     ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
@@ -172,11 +173,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             &mut tx_gas,
         )?;
         let result = execute_initial_frame(self, frame, &mut tx_gas, gas_limit, reservoir)?;
-        // The reservoir is funded on top of `gas_limit`, so the state gas it paid for is added
-        // back; otherwise `total_gas_spent` would not cover `state_gas_spent`.
-        let gas_spent = gas_limit
-            .saturating_sub(result.gas.remaining())
-            .saturating_add(reservoir.saturating_sub(result.gas.reservoir()));
+        // The reservoir is funded on top of `gas_limit`.
+        let (total_gas_spent, state_gas_spent) =
+            gas_spent_breakdown(gas_limit.saturating_add(reservoir), &result.gas, 0);
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
         } else {
@@ -184,8 +183,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         };
         Ok(TxResultExt {
             status: result.stop.is_success(),
-            total_gas_spent: gas_spent,
-            state_gas_spent: result.gas.state_gas_spent().max(0) as u64,
+            total_gas_spent,
+            state_gas_spent,
             refunded: gas_refunded,
             floor_gas: 0,
             stop: result.stop,
