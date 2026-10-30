@@ -339,11 +339,14 @@ impl Bytecode {
     ///
     /// The caller must guarantee that `hash` is the keccak256 of [`Self::original_byte_slice`];
     /// this lets [`Self::hash_slow`] return without hashing the code. Empty bytecode always has
-    /// the empty code hash, so this does nothing for it.
+    /// the empty code hash, and the zero hash marks an unknown code hash, so this does nothing
+    /// for either.
     #[inline]
     pub fn seed_hash(&self, hash: B256) {
-        let Some(inner) = &self.0 else { return };
-        let cell = &inner.hash;
+        if self.is_empty() || hash.is_zero() {
+            return;
+        }
+        let cell = &self.inner().hash;
         match cell.get() {
             Some(cached) => debug_assert_eq!(*cached, hash, "seeded hash differs from cached hash"),
             None => {

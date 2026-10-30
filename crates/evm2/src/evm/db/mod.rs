@@ -29,6 +29,9 @@ pub trait Database: NonStaticAny {
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
 
     /// Loads bytecode by code hash.
+    ///
+    /// The returned bytecode must hash to `code_hash`: the state caches that hash on it, and the
+    /// JIT keys compiled code by it.
     fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error>;
 
     /// Loads a persistent storage slot.
@@ -121,6 +124,9 @@ pub trait DynDatabase: NonStaticAny {
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
     /// Loads bytecode by code hash.
+    ///
+    /// The returned bytecode must hash to `code_hash`: the state caches that hash on it, and the
+    /// JIT keys compiled code by it.
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode>;
 
     /// Loads a persistent storage slot.
@@ -151,6 +157,9 @@ pub trait DatabaseRef: NonStaticAny {
     fn get_account(&self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
 
     /// Loads bytecode by code hash.
+    ///
+    /// The returned bytecode must hash to `code_hash`: the state caches that hash on it, and the
+    /// JIT keys compiled code by it.
     fn get_code_by_hash(&self, code_hash: &B256) -> Result<Bytecode, Self::Error>;
 
     /// Loads a persistent storage slot.
@@ -267,6 +276,9 @@ pub trait DynDatabaseRef: NonStaticAny {
     fn get_account(&self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
     /// Loads bytecode by code hash.
+    ///
+    /// The returned bytecode must hash to `code_hash`: the state caches that hash on it, and the
+    /// JIT keys compiled code by it.
     fn get_code_by_hash(&self, code_hash: &B256) -> DbResult<Bytecode>;
 
     /// Loads a persistent storage slot.
