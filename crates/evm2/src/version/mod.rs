@@ -832,9 +832,6 @@ evm_versions! {
             // floor-tokens count.
             TxFloorZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
             TxAccessListFloorByteMultiplier: EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER,
-            // EIP-7702 under EIP-8037: per-authorization execution-gas refund. The
-            // intrinsic per-auth execution charge bundles a worst-case
-            // `ACCOUNT_WRITE`; when the authority leaf already exists (or the auth
             // EIP-2780 (ethereum/EIPs#11844): the per-auth `ACCOUNT_WRITE` and
             // state gas are charged conditionally at the runtime gas phase, per
             // authority that incurs them, so the pessimistic per-auth intrinsic
