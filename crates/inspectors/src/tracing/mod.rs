@@ -529,8 +529,12 @@ impl TracingInspector {
             }
         }
 
-        let storage_change =
-            if self.config.record_state_diff { storage_change(interp, op.get()) } else { None };
+        // A step that halts on the budget never runs, so it records no access.
+        let storage_change = if self.config.record_state_diff && !self.budget.halts() {
+            storage_change(interp, op.get())
+        } else {
+            None
+        };
 
         let step_idx = node.trace.steps.len();
         node.trace.steps.push(CallTraceStep {
@@ -917,7 +921,7 @@ fn storage_change<T: EvmTypes>(
     };
     let address = interp.message().destination;
     // A database error leaves the record empty: an opcode that reads the slot fails on it too.
-    let current = interp.host().read_storage_slot(&address, &key).ok()?;
+    let current = interp.host().state_mut().storage_slot_untracked(&address, &key).ok()?;
     Some(Box::new(match value {
         Some(value) => StorageChange { key, value, had_value: Some(current), reason },
         None => StorageChange { key, value: current, had_value: None, reason },
