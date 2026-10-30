@@ -44,6 +44,8 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     /// Remaining gas plus spilled state gas once the current step finished charging, if it
     /// marked that point.
     step_gas_after_charge: Option<u64>,
+    /// State gas spent at the start of the current inspected step.
+    step_state_gas_before: i64,
     pub(in crate::interpreter) result: Result,
     error: Option<ExecutionError>,
     spec: SpecId,
@@ -85,6 +87,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             gas: Gas::new(0),
             step_gas_before: 0,
             step_gas_after_charge: None,
+            step_state_gas_before: 0,
             memory: Memory::new(),
             result: Ok(()),
             error: None,
@@ -254,6 +257,19 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             None => self.gas.remaining_excluding_state_spill(),
         };
         self.step_gas_before.saturating_sub(after)
+    }
+
+    /// Returns the net state gas the current step spent, before its effects.
+    ///
+    /// This is [`Gas::state_gas_spent`] now minus its value at the start of the step. It is
+    /// negative when the step refunds state gas. Unlike [`Interpreter::step_cost`], it counts up
+    /// to the end of the step, including the state gas a call or create step charges for itself
+    /// and the state gas its child frame spent.
+    ///
+    /// Only meaningful in [`Inspector::step_end`](crate::inspector::Inspector::step_end).
+    #[inline]
+    pub const fn step_state_gas_cost(&self) -> i64 {
+        self.gas.state_gas_spent().saturating_sub(self.step_state_gas_before)
     }
 
     /// Returns the current linear memory.
@@ -706,6 +722,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.stack_len = stack_len;
         self.0.step_gas_before = self.0.gas.remaining_excluding_state_spill();
         self.0.step_gas_after_charge = None;
+        self.0.step_state_gas_before = self.0.gas.state_gas_spent();
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);

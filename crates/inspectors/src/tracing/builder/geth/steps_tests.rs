@@ -22,7 +22,6 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
         gas_cost: 1,
         state_gas_cost: None,
         state_gas_reservoir: None,
-        state_gas_spent: 0,
         storage_change: (op == op::SSTORE).then(|| {
             alloc::boxed::Box::new(StorageChange {
                 key: U256::ZERO,

@@ -670,9 +670,6 @@ pub struct CallTraceStep {
     pub state_gas_cost: Option<i64>,
     /// State-gas reservoir before this step.
     pub state_gas_reservoir: Option<u64>,
-    /// State-gas spent before this step, used to calculate `state_gas_cost`.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub state_gas_spent: i64,
     /// Change of the contract state after step execution (effect of the SLOAD/SSTORE instructions)
     pub storage_change: Option<Box<StorageChange>>,
     /// The key and value a geth struct log snapshots for an SLOAD or SSTORE: the value the slot

@@ -562,7 +562,6 @@ impl TracingInspector {
                 .version()
                 .feature(EvmFeatures::EIP8037)
                 .then_some(interp.gas().reservoir()),
-            state_gas_spent: interp.gas().state_gas_spent(),
             storage_change: None,
             storage_slot,
             status: None,
@@ -679,7 +678,7 @@ impl TracingInspector {
         } else {
             interp.step_cost()
         };
-        let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
+        let state_gas_delta = interp.step_state_gas_cost();
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
             step.state_gas_cost = Some(state_gas_delta);
         }
