@@ -200,6 +200,14 @@ pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + '
         interpreter: &mut Interpreter<'frame, 'host, T>,
         host: &mut T::Host<'host>,
     ) -> Option<InstrStop>;
+
+    /// Returns whether this runner can execute frames under `config`.
+    ///
+    /// The EVM calls this when the runner or the execution config changes, not per frame, and
+    /// skips the runner while it returns `false`.
+    fn supports(&self, _config: &ExecutionConfig<T>) -> bool {
+        true
+    }
 }
 
 /// EVM host and transaction dispatcher.
@@ -226,6 +234,11 @@ pub struct Evm<'a, T: EvmTypesHost> {
     inspect_system_calls: bool,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
+    /// Whether `interpreter_runner` is set and supports `execution_config`.
+    ///
+    /// Refreshed whenever either changes.
+    #[derive_where(skip)]
+    runner_supported: bool,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
@@ -355,6 +368,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             inspector: None,
             inspect_system_calls: false,
             interpreter_runner: None,
+            runner_supported: false,
             current_frame: None,
             frame_checkpoint: None,
             running: false,
@@ -594,6 +608,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.block = block;
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
+        self.refresh_runner_support();
     }
 
     #[inline]
@@ -610,6 +625,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.registry = registry;
         self.precompiles = precompiles;
         self.evm_send = false;
+        self.refresh_runner_support();
     }
 
     /// Returns the accepted-state overlay database.
@@ -1017,6 +1033,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_interpreter_runner<R: InterpreterRunner<T>>(&mut self, runner: R) {
         self.assert_interpreter_runner_mutable();
         self.interpreter_runner = Some(Arc::new(runner));
+        self.refresh_runner_support();
     }
 
     /// Sets the optional shared external interpreter runner.
@@ -1024,13 +1041,24 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_shared_interpreter_runner(&mut self, runner: Arc<dyn InterpreterRunner<T>>) {
         self.assert_interpreter_runner_mutable();
         self.interpreter_runner = Some(runner);
+        self.refresh_runner_support();
     }
 
     /// Removes the optional external interpreter runner.
     #[inline]
     pub fn clear_interpreter_runner(&mut self) -> Option<Arc<dyn InterpreterRunner<T>>> {
         self.assert_interpreter_runner_mutable();
-        self.interpreter_runner.take()
+        let runner = self.interpreter_runner.take();
+        self.refresh_runner_support();
+        runner
+    }
+
+    #[inline]
+    fn refresh_runner_support(&mut self) {
+        self.runner_supported = self
+            .interpreter_runner
+            .as_ref()
+            .is_some_and(|runner| runner.supports(&self.execution_config));
     }
 
     /// Returns the active EVM version.
@@ -1729,11 +1757,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
-        let interpreter_runner = guard.evm.interpreter_runner.clone();
+        let runner = if guard.evm.runner_supported {
+            guard.evm.interpreter_runner.as_deref().map(NonNull::from)
+        } else {
+            None
+        };
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(guard.evm, inspector)
-        } else if let Some(runner) = interpreter_runner
-            && let Some(stop) = runner.run(interp_ref, guard.evm)
+        } else if let Some(runner) = runner
+            // SAFETY: The runner lives in the `Arc` stored in `self`, which cannot be replaced,
+            // cleared, or dropped while `running` is set, so the pointee outlives this call. It
+            // is called through a pointer because it also receives `&mut Evm`.
+            && let Some(stop) = unsafe { runner.as_ref() }.run(interp_ref, guard.evm)
         {
             interp_ref.finish_run(stop)
         } else {
@@ -3308,6 +3343,79 @@ mod tests {
     #[test]
     fn interpreter_runner_can_fallback_to_interpreter() {
         assert_eq!(run_with_test_interpreter_runner(None, &[op::STOP]), InstrStop::Stop);
+    }
+
+    #[derive(Debug)]
+    struct SpecBoundRunner {
+        spec_id: SpecId,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl InterpreterRunner<BaseEvmTypes> for SpecBoundRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Some(InstrStop::Return)
+        }
+
+        fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            config.base_spec_id() == self.spec_id
+        }
+    }
+
+    #[test]
+    fn interpreter_runner_support_follows_runner_and_execution_config() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let message = MessageExt {
+            gas_limit: 30_000,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..Default::default()
+        };
+        let run = |evm: &mut Evm<'_, BaseEvmTypes>| {
+            let stop = evm.run_interpreter(&message).unwrap();
+            (stop, calls.load(Ordering::Relaxed))
+        };
+        let set_spec = |evm: &mut Evm<'_, BaseEvmTypes>, spec_id: SpecId| {
+            evm.set_execution_config(
+                <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+                    spec_id,
+                ),
+                spec_id,
+                TxRegistry::new(),
+                Precompiles::base(spec_id),
+            );
+        };
+
+        evm.set_shared_interpreter_runner(Arc::new(SpecBoundRunner {
+            spec_id: SpecId::PRAGUE,
+            calls: Arc::clone(&calls),
+        }));
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 0));
+
+        set_spec(&mut evm, SpecId::PRAGUE);
+        assert_eq!(run(&mut evm), (InstrStop::Return, 1));
+
+        set_spec(&mut evm, SpecId::OSAKA);
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 1));
+
+        set_spec(&mut evm, SpecId::PRAGUE);
+        assert_eq!(run(&mut evm), (InstrStop::Return, 2));
+
+        let runner = evm.clear_interpreter_runner().unwrap();
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 2));
+
+        evm.set_shared_interpreter_runner(runner);
+        assert_eq!(run(&mut evm), (InstrStop::Return, 3));
     }
 
     #[test]

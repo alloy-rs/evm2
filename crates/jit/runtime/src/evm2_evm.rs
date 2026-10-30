@@ -2,7 +2,7 @@
 
 use crate::runtime::{JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
 use evm2::{
-    EvmTypesHost, InterpreterRunner,
+    EvmTypesHost, ExecutionConfig, InterpreterRunner,
     interpreter::{Host, InstrStop, Interpreter},
 };
 
@@ -33,7 +33,12 @@ impl<T: EvmTypesHost> InterpreterRunner<T> for JitInterpreterRunner {
         interpreter: &mut Interpreter<'frame, 'host, T>,
         host: &mut T::Host<'host>,
     ) -> Option<InstrStop> {
-        run_interpreter(&self.backend, interpreter, host)
+        run_supported(&self.backend, interpreter, host)
+    }
+
+    #[inline]
+    fn supports(&self, config: &ExecutionConfig<T>) -> bool {
+        self.backend.supports_host::<T>(config)
     }
 }
 
@@ -47,12 +52,22 @@ pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
     interpreter: &mut Interpreter<'frame, 'host, T>,
     host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
+    if !backend.supports_host::<T>(host.execution_config()) {
+        return None;
+    }
+    run_supported(backend, interpreter, host)
+}
+
+/// Like [`run_interpreter`], for a host whose execution config the backend already supports.
+#[inline]
+fn run_supported<'frame, 'host, T: EvmTypesHost>(
+    backend: &JitBackend,
+    interpreter: &mut Interpreter<'frame, 'host, T>,
+    host: &mut T::Host<'host>,
+) -> Option<InstrStop> {
     // Disabled runners must not hash code merely to discover that lookup is unavailable.
     // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
-    if !backend.enabled()
-        || interpreter.gas().remaining() > i64::MAX as u64
-        || !backend.supports_host::<T>(host.execution_config())
-    {
+    if !backend.enabled() || interpreter.gas().remaining() > i64::MAX as u64 {
         return None;
     }
     let code_hash = interpreter.original_bytecode_hash();
@@ -928,6 +943,15 @@ mod custom_host_tests {
             JitBackend::new(RuntimeConfig { blocking: true, ..Default::default() }).unwrap();
         let mut fresh = Interpreter::<CustomTypes>::new(&message);
         assert_eq!(run_interpreter(&wrong, &mut fresh, &mut host), None);
+        let config = host.execution_config();
+        let supports = |backend: &JitBackend| {
+            InterpreterRunner::<CustomTypes>::supports(
+                &JitInterpreterRunner::new(backend.clone()),
+                config,
+            )
+        };
+        assert!(supports(&backend));
+        assert!(!supports(&wrong));
         assert_eq!(fresh.run(&mut host).unwrap(), InstrStop::Return);
         assert_eq!(fresh.output(), expected_output);
     }
