@@ -16,6 +16,7 @@
 #include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderPerf.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/GlobalValue.h>
+#include <llvm/Support/ErrorHandling.h>
 #include <llvm/Target/RegisterTargetPassConfigCallback.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Transforms/Scalar.h>
