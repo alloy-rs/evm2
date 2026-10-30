@@ -476,6 +476,10 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.features = version.features;
         self.host = Some(NonNull::from(host));
         self.inspector = None;
+        #[cfg(tco)]
+        {
+            self.merged_steps = false;
+        }
     }
 
     /// Runs the host's instruction implementation for the opcode at `pc` on the interpreter

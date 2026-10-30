@@ -1227,6 +1227,35 @@ mod tests {
     }
 
     #[test]
+    fn run_without_inspector_after_all_steps_run() {
+        #[derive(Default)]
+        struct StepsInspector {
+            steps: usize,
+        }
+
+        impl<T: EvmTypesHost> Inspector<T> for StepsInspector {
+            fn step(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
+                self.steps += 1;
+            }
+        }
+
+        // The nested call makes the second run use the frames the first one left in the pool.
+        let (db, code) = config_test_code();
+        let (result, inspector, mut evm) = run_evm_with_inspector_db(
+            db,
+            code.clone(),
+            &MessageExt::default(),
+            1_000_000,
+            StepsInspector::default(),
+        );
+        assert!(inspector.steps > 0);
+
+        let mut message =
+            MessageExt { gas_limit: 1_000_000, code: legacy_bytecode(code), ..Default::default() };
+        assert_eq!(Host::execute_message(&mut evm, &mut message).unwrap().stop, result.stop);
+    }
+
+    #[test]
     fn step_end_can_stop_before_next_opcode_executes() {
         #[derive(Default)]
         struct StopOnStepEndInspector {
