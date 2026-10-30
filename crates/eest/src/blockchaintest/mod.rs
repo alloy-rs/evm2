@@ -17,7 +17,7 @@ pub use hook::{
     TransactionFinished, TransactionStarted,
 };
 pub use runner::run;
-pub(crate) use runner::{IGNORED_TESTS, suites};
+pub(crate) use runner::{ignored_tests, suites};
 pub use types::{
     Account, Block, BlockHash, BlockHeader, BlockchainTest, BlockchainTestCase, DecodedBlock,
     ForkSpec, SealEngine, State, Transaction, Withdrawal,

@@ -21,19 +21,13 @@ pub(crate) fn suite(path: PathBuf) -> TestSuite {
         roots: vec![TestRoot { name: "additional".to_string(), label: "additional tests", path }],
         // Descend into every directory so all JSON files under the path run.
         should_descend: descend_all,
-        should_ignore,
+        ignored: crate::runner::ignored_tests()
+            .into_iter()
+            .chain(crate::blockchaintest::ignored_tests())
+            .collect(),
         run_file,
         run_files: None,
     }
-}
-
-/// Honors the same ignore lists the state and blockchain runners use, since an
-/// additional path can hold fixtures of either kind.
-fn should_ignore(name: &str) -> bool {
-    crate::runner::IGNORED_TESTS
-        .iter()
-        .chain(crate::blockchaintest::IGNORED_TESTS)
-        .any(|pattern| name.contains(pattern))
 }
 
 fn run_file(path: PathBuf) -> Result<(), Failed> {

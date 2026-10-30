@@ -1,6 +1,10 @@
-use crate::discover::find_json_tests;
 #[cfg(feature = "jit")]
 use crate::execution::CompiledMode;
+use crate::{
+    discover::find_json_tests,
+    env::STATE_TEST_SUBDIR_ENV,
+    fixtures::{EEST_ONLY_ENV, additional_tests_path, env_flag},
+};
 use libtest_mimic::{Arguments, Failed, Trial};
 use std::{
     env,
@@ -32,6 +36,16 @@ pub(crate) struct TestRoot {
     pub(crate) path: PathBuf,
 }
 
+impl TestRoot {
+    /// Whether this is the optional EEST `main` root: `statetests` or `blockchain_tests`, with an
+    /// optional compiled-mode suffix.
+    fn is_main(&self) -> bool {
+        let mut parts = self.name.split("::");
+        matches!(parts.next(), Some("statetests" | "blockchain_tests"))
+            && parts.all(|part| matches!(part, "jit" | "aot"))
+    }
+}
+
 /// A JSON fixture test suite.
 pub(crate) struct TestSuite {
     /// Human readable suite name.
@@ -40,12 +54,42 @@ pub(crate) struct TestSuite {
     pub(crate) roots: Vec<TestRoot>,
     /// Directory descent filter.
     pub(crate) should_descend: fn(&Path) -> bool,
-    /// Test ignore filter.
-    pub(crate) should_ignore: fn(&str) -> bool,
+    /// Lists of fixture-name patterns this suite skips.
+    pub(crate) ignored: Vec<IgnoreList>,
     /// Test file runner.
     pub(crate) run_file: FileRunner,
     /// Optional batched file runner.
     pub(crate) run_files: Option<BatchRunner>,
+}
+
+impl TestSuite {
+    /// Returns whether the fixture named `name` is skipped.
+    fn ignores(&self, name: &str) -> bool {
+        self.ignored.iter().any(|list| list.matches(name))
+    }
+}
+
+/// A list of fixture-name patterns to skip. A pattern matches every fixture whose name contains it.
+pub(crate) struct IgnoreList {
+    patterns: &'static [&'static str],
+    /// Whether the patterns name fixtures only the optional `main` roots contain.
+    main_only: bool,
+}
+
+impl IgnoreList {
+    /// A list of patterns that name fixtures in the default roots.
+    pub(crate) const fn new(patterns: &'static [&'static str]) -> Self {
+        Self { patterns, main_only: false }
+    }
+
+    /// A list of patterns that name fixtures only the optional `main` roots contain.
+    pub(crate) const fn main_only(patterns: &'static [&'static str]) -> Self {
+        Self { patterns, main_only: true }
+    }
+
+    fn matches(&self, name: &str) -> bool {
+        self.patterns.iter().any(|pattern| name.contains(pattern))
+    }
 }
 
 /// Runs cargo-nextest JSON fixture harnesses in one test binary.
@@ -83,6 +127,8 @@ fn collect_trials(args: &Arguments, suites: &[TestSuite]) -> Result<Vec<Trial>, 
         return exact_trial(suites, filter).map(|trial| trial.into_iter().collect());
     }
 
+    check_ignored_tests(suites)?;
+
     let mut trials = Vec::new();
     for suite in suites {
         if let Some(trial) = batched_trial(suite)? {
@@ -94,13 +140,54 @@ fn collect_trials(args: &Arguments, suites: &[TestSuite]) -> Result<Vec<Trial>, 
             let files = find_json_tests(std::slice::from_ref(&root.path), suite.should_descend)?;
             for path in files {
                 let name = test_name(&root.name, &root.path, &path);
-                let ignored = (suite.should_ignore)(&name);
+                let ignored = suite.ignores(&name);
                 let run_file = suite.run_file;
                 trials.push(Trial::test(name, move || run_file(path)).with_ignored_flag(ignored));
             }
         }
     }
     Ok(trials)
+}
+
+/// Fails when an ignore pattern matches no discovered fixture, so dead entries cannot accumulate.
+///
+/// Skipped when the roots are not the full default set: an explicit root, additional tests,
+/// `SUBDIR`, or an execution-specs-only run leave patterns without fixtures. Patterns in a
+/// main-only list are checked only when a `main` root exists.
+fn check_ignored_tests(suites: &[TestSuite]) -> Result<(), String> {
+    let roots = || suites.iter().flat_map(|suite| &suite.roots);
+    let subdir = env::var_os(STATE_TEST_SUBDIR_ENV).is_some_and(|subdir| !subdir.is_empty());
+    if subdir
+        || env_flag(EEST_ONLY_ENV)
+        || additional_tests_path().is_some()
+        || roots().any(|root| root.name.ends_with("::custom"))
+    {
+        return Ok(());
+    }
+
+    let mut names = Vec::new();
+    for suite in suites {
+        for root in &suite.roots {
+            let files = find_json_tests(std::slice::from_ref(&root.path), suite.should_descend)?;
+            names.extend(files.iter().map(|path| test_name(&root.name, &root.path, path)));
+        }
+    }
+
+    let has_main = roots().any(TestRoot::is_main);
+    let mut dead = suites
+        .iter()
+        .flat_map(|suite| &suite.ignored)
+        .filter(|list| has_main || !list.main_only)
+        .flat_map(|list| list.patterns)
+        .filter(|pattern| !names.iter().any(|name| name.contains(*pattern)))
+        .collect::<Vec<_>>();
+    dead.sort_unstable();
+    dead.dedup();
+    if dead.is_empty() {
+        return Ok(());
+    }
+    let dead = dead.iter().map(|pattern| format!("  {pattern}")).collect::<Vec<_>>().join("\n");
+    Err(format!("ignore patterns that match no fixture; remove them:\n{dead}"))
 }
 
 fn exact_trial(suites: &[TestSuite], name: &str) -> Result<Option<Trial>, String> {
@@ -126,7 +213,7 @@ fn exact_trial(suites: &[TestSuite], name: &str) -> Result<Option<Trial>, String
     // is the only path it can resolve to.
     let path = if root.path.is_file() { root.path.clone() } else { root.path.join(relative) };
     Ok(path.is_file().then(|| {
-        let ignored = (suite.should_ignore)(name);
+        let ignored = suite.ignores(name);
         let run_file = suite.run_file;
         Trial::test(name.to_string(), move || run_file(path)).with_ignored_flag(ignored)
     }))
@@ -143,7 +230,7 @@ fn batched_trial(suite: &TestSuite) -> Result<Option<Trial>, String> {
         let files = find_json_tests(std::slice::from_ref(&root.path), suite.should_descend)?;
         paths.extend(files.into_iter().filter(|path| {
             let name = test_name(&root.name, &root.path, path);
-            !(suite.should_ignore)(&name) && compiled_eest_subset_allows(subset, &name)
+            !suite.ignores(&name) && compiled_eest_subset_allows(subset, &name)
         }));
     }
 

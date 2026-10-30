@@ -16,6 +16,11 @@ priority = 2
 filter = 'test(blockchain_tests::)'
 priority = 1
 
+# These statetests spend 15-40s of CPU in the interpreter.
+[[profile.default.overrides]]
+filter = 'test(/loopMul|static_Call50000_sha256/)'
+slow-timeout = { period = "60s", terminate-after = 5 }
+
 [[profile.default.overrides]]
 filter = 'test(/::(?:jit|aot)(?:$|::)/)'
 slow-timeout = { period = "60m", terminate-after = 1 }
