@@ -305,6 +305,7 @@ pub fn call_with<T: EvmTypesHost>(
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
+    state.note_inspector_config_change();
     gas.merge_child_gas(result.gas, result.stop);
     // EIP-8037: a value-bearing CALL that creates the target charges NEW_ACCOUNT state
     // gas upfront on this frame. If the call does not succeed (depth/balance failure,
@@ -321,7 +322,7 @@ pub fn call_with<T: EvmTypesHost>(
     }
     state.swap_return_data(&mut result.output);
     stack.push_u64(result.stop.is_success() as u64)?;
-    // A stop that a hook set, or a reload that the host requested, ends the instruction.
+    // A hook's stop or a config reload.
     state.result()
 }
 
@@ -472,6 +473,7 @@ pub fn create_with<T: EvmTypesHost>(
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
+    state.note_inspector_config_change();
     gas.merge_child_gas(result.gas, result.stop);
 
     // EIP-8037: when the opcode charged the conditional `create_state_gas`
@@ -491,7 +493,7 @@ pub fn create_with<T: EvmTypesHost>(
         state.clear_return_data();
     }
     stack.push(result.created_address_for_parent())?;
-    // A stop that a hook set, or a reload that the host requested, ends the instruction.
+    // A hook's stop or a config reload.
     state.result()
 }
 

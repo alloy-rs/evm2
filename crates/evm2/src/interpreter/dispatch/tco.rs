@@ -61,8 +61,7 @@ extern_table! {
             state.gas_mut().set_remaining(remaining_gas.get());
             M::step(state, pc, stack.len());
             remaining_gas.set(state.gas_mut().remaining());
-            // A reload that a message from the hook requested waits for the end of the step.
-            if state.result().is_err() && state.result() != Err(InstrStop::Reload) {
+            if state.result().is_err() {
                 cold_path();
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
             }
@@ -92,10 +91,6 @@ extern_table! {
         }
         if let Err(e) = r {
             cold_path();
-            if e == InstrStop::Reload {
-                // The frame continues after the instruction.
-                super::inc_pc(&mut pc, OP);
-            }
             state.set_result(Err(e));
             if M::INSPECT {
                 M::step_end(state, pc, stack.len());

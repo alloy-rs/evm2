@@ -428,23 +428,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         Ok(stop)
     }
 
-    /// Stops the frame with [`InstrStop::Reload`] if the inspector's config no longer matches the
-    /// table this frame runs on, unless a stop is already set. The instruction that ran the child
-    /// message returns the stop.
-    ///
-    /// Not inlined, so the config it builds does not grow the stack of the host, which sits under
-    /// every nested frame.
-    #[inline(never)]
-    pub(crate) fn note_inspector_config_change(&mut self) {
-        if self.result.is_ok()
-            && let Some(inspector) = self.inspector
-            // SAFETY: The inspector pointer is valid while the frame executes.
-            && unsafe { inspector.as_ref() }.inspector_config().steps() != self.steps
-        {
-            self.result = Err(InstrStop::Reload);
-        }
-    }
-
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, host: &mut T::Host<'host>) -> Result<InstrStop, ExecutionError> {
@@ -563,14 +546,10 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline(always)]
     fn run_inspected(&mut self) -> InstrStop {
         loop {
-            // A hook before the run, such as `initialize_interp`, may have stopped the frame, or
-            // run a message that changed the config, which the table selection below picks up.
+            // A hook before the run, such as `initialize_interp`, may have stopped the frame.
             if let Err(stop) = self.result {
                 cold_path();
-                if stop != InstrStop::Reload {
-                    return stop;
-                }
-                self.result = Ok(());
+                return stop;
             }
             let instructions = self.select_inspect_table();
             // SAFETY: The table is a static one, or the one `self` holds until the next selection.
@@ -580,6 +559,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             }
             cold_path();
             self.result = Ok(());
+            // SAFETY: The stop left the pc at the message instruction, which a next one follows.
+            self.pc = unsafe { self.pc.add(dispatch::instruction_len(*self.pc)) };
         }
     }
 
@@ -690,6 +671,20 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[cfg(not(tco))]
     pub(crate) const fn steps(&self) -> OpcodeSet {
         self.0.steps
+    }
+
+    /// Stops the instruction with [`InstrStop::Reload`] if the inspector's config no longer
+    /// matches the table this frame runs on. A message instruction calls it after its child
+    /// message and returns the result.
+    #[inline(never)]
+    pub(crate) fn note_inspector_config_change(&mut self) {
+        if self.0.result.is_ok()
+            && let Some(inspector) = self.0.inspector
+            // SAFETY: The inspector pointer is valid while the frame executes.
+            && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
+        {
+            self.0.result = Err(InstrStop::Reload);
+        }
     }
 
     #[inline]

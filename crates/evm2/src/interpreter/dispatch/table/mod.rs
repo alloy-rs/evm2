@@ -129,22 +129,11 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
         }
     }
     if M::INSPECT {
-        // Only a stop replaces the result, which a hook may have set during the instruction.
-        if let Err(e) = r {
-            if e == InstrStop::Reload {
-                // The frame continues after the instruction.
-                inc_pc(&mut pc, op);
-            }
-            state.set_result(Err(e));
-        }
+        state.set_result(r);
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
-        if e == InstrStop::Reload {
-            // The frame continues after the instruction, which the null `pc` does not tell.
-            inc_pc(&mut pc, op);
-            state.set_pc(pc.as_ptr());
-        }
+        state.set_pc(pc.as_ptr());
         return (Pc::new(core::ptr::null()), gas);
     }
     (pc, gas)
@@ -230,8 +219,7 @@ fn run_stepped<T: EvmTypesHost, M: InspectMode<T>>(
     imp::sync_loop_state(state, loop_state);
     M::step(state, cursor.pc(), cursor.stack_len());
     loop_state = imp::loop_state(state.gas_mut());
-    // A reload that a message from the hook requested waits for the end of the step.
-    if state.result().is_err() && state.result() != Err(InstrStop::Reload) {
+    if state.result().is_err() {
         return Err(finish_run(state, cursor, loop_state));
     }
 
@@ -271,15 +259,8 @@ fn finish_run<T: EvmTypesHost>(
 ) -> InstrStop {
     cold_path();
     let (pc, stack_len) = (cursor.pc(), cursor.stack_len());
-    // The NULL `pc` is only a loop-exit sentinel; never publish it. A handler that stops the frame
-    // for a reload has published its own.
-    let pc = if !pc.as_ptr().is_null() {
-        pc.as_ptr()
-    } else if state.result() == Err(InstrStop::Reload) {
-        state.0.pc
-    } else {
-        state.bytecode().as_ptr()
-    };
+    // The NULL `pc` is only a loop-exit sentinel; the stopping handler published its own.
+    let pc = if pc.as_ptr().is_null() { state.0.pc } else { pc.as_ptr() };
     state.set_pc_stack_len(pc, stack_len);
     imp::finish_loop(state.gas_mut(), loop_state);
     state.result().unwrap_err()

@@ -1382,10 +1382,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
         if let Some(frame) = top_frame {
             let _ = guard.evm.interpreter_pool.push(frame);
-        } else {
-            // The child message may have changed what the inspector wants stepped in the parent,
-            // which the instruction that ran it acts on.
-            frame.note_inspector_config_change();
         }
 
         result

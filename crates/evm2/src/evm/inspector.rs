@@ -116,9 +116,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Returns what this inspector observes, as an [`InspectorConfig`].
     ///
     /// Read when a frame starts and when a child message of the frame returns, so a child message
-    /// may change the answer. A message that a hook runs through the host counts as a child
-    /// message. A change that a hook makes itself, such as in [`Self::step`], takes effect when the
-    /// next child message of the frame returns. The default observes everything.
+    /// may change the answer. A change that a hook makes itself, such as in [`Self::step`], takes
+    /// effect when the next child message of the frame returns. The default observes everything.
     #[inline]
     fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::new()
@@ -613,8 +612,6 @@ mod tests {
         stop_after_child: bool,
         /// Stops every frame before it runs.
         stop_on_init: bool,
-        /// Answers every child message with a fatal stop.
-        fatal_child: bool,
     }
 
     impl ConfigInspector {
@@ -667,11 +664,7 @@ mod tests {
             self.calls += 1;
             // Like a cheatcode that changes what its caller's inspector wants to see.
             self.switched |= message.depth > 0;
-            (self.fatal_child && message.depth > 0).then(|| MessageResultExt {
-                stop: InstrStop::FatalExternalError,
-                gas: GasTracker::new(message.gas_limit),
-                ..Default::default()
-            })
+            None
         }
 
         fn call_end(
@@ -822,122 +815,6 @@ mod tests {
         assert_eq!(inspector.creates, 0);
     }
 
-    #[derive(Clone, Copy, PartialEq)]
-    enum HookMessage {
-        Step,
-        StepEnd,
-        Log,
-    }
-
-    /// Runs a child message from a hook, which switches its own steps from every opcode to `ADD`.
-    struct HookMessageInspector {
-        trigger: HookMessage,
-        switched: bool,
-        steps: Vec<u8>,
-        step_ends: Vec<u8>,
-    }
-
-    impl HookMessageInspector {
-        fn new(trigger: HookMessage) -> Self {
-            Self { trigger, switched: false, steps: Vec::new(), step_ends: Vec::new() }
-        }
-
-        fn run_child(&mut self, host: &mut Evm<'_, BaseEvmTypes>) {
-            if !self.switched {
-                let mut child = MessageExt { gas_limit: 1000, depth: 1, ..Default::default() };
-                Host::execute_message(host, &mut child).unwrap();
-            }
-        }
-    }
-
-    impl Inspector<BaseEvmTypes> for HookMessageInspector {
-        fn inspector_config(&self) -> InspectorConfig {
-            let steps = if self.switched { opcode_set([op::ADD]) } else { OpcodeSet::ALL };
-            InspectorConfig::new().with_steps(steps)
-        }
-
-        fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
-            self.steps.push(interp.opcode());
-            if self.trigger == HookMessage::Step && interp.opcode() == op::ADD {
-                self.run_child(interp.host());
-            }
-        }
-
-        fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
-            self.step_ends.push(self.steps[self.step_ends.len()]);
-            if self.trigger == HookMessage::StepEnd && self.step_ends.len() == 3 {
-                self.run_child(interp.host());
-            }
-        }
-
-        fn log(&mut self, _log: &Log, host: &mut Evm<'_, BaseEvmTypes>) {
-            if self.trigger == HookMessage::Log {
-                self.run_child(host);
-            }
-        }
-
-        fn call(
-            &mut self,
-            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
-            message: &mut Message<BaseEvmTypes>,
-        ) -> Option<MessageResult<BaseEvmTypes>> {
-            self.switched |= message.depth > 0;
-            None
-        }
-    }
-
-    #[test]
-    fn message_run_by_a_hook_reloads_without_repeating_or_skipping_an_instruction() {
-        let code = vec![
-            op::PUSH1,
-            1,
-            op::PUSH1,
-            2,
-            op::ADD,
-            op::POP,
-            op::PUSH0,
-            op::PUSH0,
-            op::LOG0,
-            op::PUSH1,
-            3,
-            op::PUSH1,
-            4,
-            op::ADD,
-            op::POP,
-            op::STOP,
-        ];
-        let (expected, expected_logs) =
-            run_evm_uninspected(InMemoryDB::default(), code.clone(), 100_000);
-        for (trigger, steps) in [
-            (HookMessage::Step, vec![op::PUSH1, op::PUSH1, op::ADD, op::ADD]),
-            (HookMessage::StepEnd, vec![op::PUSH1, op::PUSH1, op::ADD, op::ADD]),
-            (
-                HookMessage::Log,
-                vec![
-                    op::PUSH1,
-                    op::PUSH1,
-                    op::ADD,
-                    op::POP,
-                    op::PUSH0,
-                    op::PUSH0,
-                    op::LOG0,
-                    op::ADD,
-                ],
-            ),
-        ] {
-            let (result, inspector, evm) = run_evm_with_inspector(
-                code.clone(),
-                &MessageExt::default(),
-                100_000,
-                HookMessageInspector::new(trigger),
-            );
-            assert_eq!(result, expected);
-            assert_eq!(evm.logs(), expected_logs);
-            assert_eq!(inspector.steps, steps);
-            assert_eq!(inspector.step_ends, steps);
-        }
-    }
-
     #[test]
     fn stop_set_before_the_run_ends_the_frame_without_steps() {
         let code = vec![op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP];
@@ -1043,62 +920,6 @@ mod tests {
         );
         assert_eq!(result, expected);
         assert_eq!(inspector.steps.len(), 1);
-    }
-
-    #[test]
-    fn reload_stop_does_not_outlive_a_failed_frame() {
-        let child = Address::from([0x66; 20]);
-        // The child calls another account and returns 7, which the second run observes.
-        let mut child_code = call_code(Address::from([0x77; 20]));
-        child_code.extend([op::CALL, op::POP, op::PUSH1, 7]);
-        return_top_word(&mut child_code);
-        let mut db = InMemoryDB::default();
-        db.insert_account_info(
-            &child,
-            AccountInfo::default().with_code(legacy_bytecode(child_code)),
-        );
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnvExt::default(),
-            TxRegistry::new(),
-            db,
-            Precompiles::base(SpecId::OSAKA),
-        );
-        let run = |evm: &mut Evm<'_, BaseEvmTypes>| {
-            let mut code = Vec::new();
-            push_all(
-                &mut code,
-                [
-                    Word::ZERO,
-                    Word::ZERO,
-                    Word::ZERO,
-                    Word::ZERO,
-                    Word::ZERO,
-                    address_to_word(&child),
-                    Word::from(500_000),
-                ],
-            );
-            code.extend([op::CALL, op::POP, op::RETURNDATASIZE]);
-            return_top_word(&mut code);
-            let mut message = MessageExt {
-                gas_limit: 1_000_000,
-                code: legacy_bytecode(code),
-                ..Default::default()
-            };
-            Host::execute_message(evm, &mut message)
-        };
-
-        // The child changes the steps and fails fatally before its caller can act on the change.
-        evm.set_inspector(ConfigInspector {
-            fatal_child: true,
-            ..ConfigInspector::new(OpcodeSet::EMPTY).switching_to(OpcodeSet::ALL)
-        });
-        assert!(run(&mut evm).is_err());
-
-        // Without an inspector, the pooled interpreter of the failed frame runs the child's frame.
-        evm.clear_inspector_as::<ConfigInspector>().unwrap();
-        let result = run(&mut evm).unwrap();
-        assert_eq!(Word::from_be_slice(&result.output), Word::from(32));
     }
 
     #[test]
