@@ -22,17 +22,6 @@ pub(crate) fn insert_account_with_storage(
     }
 }
 
-/// Returns whether the given system contract exists with non-empty code.
-pub(crate) fn system_contract_has_code(database: &InMemoryDB, address: Address) -> bool {
-    database
-        .cache
-        .accounts
-        .get(&address)
-        .and_then(Option::as_ref)
-        .and_then(|info| database.cache.contracts.get(&info.code_hash))
-        .is_some_and(|code| !code.is_empty())
-}
-
 /// Returns persistent storage values for trie-root calculation.
 pub(crate) fn storage_for_root(
     state: &InMemoryDB,

@@ -25,7 +25,7 @@ use crate::{
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
 use alloy_eips::{eip2718::Typed2718, eip7840::BlobParams};
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
@@ -376,7 +376,7 @@ fn seed_block_hashes(database: &mut InMemoryDB, test_case: &BlockchainTestCase) 
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BlockResolution {
-    Commit,
+    Commit(B256),
     Discard,
 }
 
@@ -701,7 +701,14 @@ fn execute_block(
             return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
         }
 
-        Ok(BlockResolution::Commit)
+        let Some(block_hash) = block_hash else {
+            return Err(TestError::case(
+                path,
+                name,
+                TestErrorKind::UnexpectedFailure("committed block has no header".into()),
+            ));
+        };
+        Ok(BlockResolution::Commit(block_hash))
     })();
 
     // The EVM was constructed with this concrete database above; recover it before returning so
@@ -727,13 +734,12 @@ fn execute_block(
     }
 
     match result {
-        Ok(BlockResolution::Commit) => {
+        Ok(BlockResolution::Commit(block_hash)) => {
             restored_database.commit_source(&block_state);
-            restored_database
-                .insert_block_hash(&next_block_env.number, &block_hash.unwrap_or_default());
+            restored_database.insert_block_hash(&next_block_env.number, &block_hash);
             *database = restored_database;
             *block_env = next_block_env;
-            *parent_block_hash = block_hash;
+            *parent_block_hash = Some(block_hash);
             if let Some(excess_blob_gas) = this_excess_blob_gas {
                 *parent_excess_blob_gas = excess_blob_gas;
             }
@@ -1153,9 +1159,6 @@ fn increment_balance(
     };
     let mut current = original.clone().unwrap_or_default();
     current.balance = current.balance.saturating_add(amount);
-    if current.code_hash.is_zero() {
-        current.code_hash = KECCAK256_EMPTY;
-    }
     // EELS `modify_state` destroys an account left empty by the modification, so a zero-amount
     // withdrawal neither creates its recipient nor keeps a pre-existing empty one alive. The
     // BAL commit below still runs to record the touched address.
