@@ -937,9 +937,6 @@ pub unsafe fn __revmc_builtin_do_return<T: EvmTypesHost>(
         let Some(end) = offset.checked_add(len) else {
             return Err(InstrStop::MemoryOOG.into());
         };
-        if end > u32::MAX as usize {
-            return Err(InstrStop::MemoryLimitOOG.into());
-        }
         ensure_memory(ecx, offset, len)?;
         offset as u32..end as u32
     } else {
@@ -962,9 +959,6 @@ pub unsafe fn __revmc_builtin_do_return_cc<T: EvmTypesHost>(
         let Some(end) = offset.checked_add(len) else {
             return Err(InstrStop::MemoryOOG.into());
         };
-        if end > u32::MAX as usize {
-            return Err(InstrStop::MemoryLimitOOG.into());
-        }
         ensure_memory(ecx, offset, len)?;
         offset as u32..end as u32
     } else {

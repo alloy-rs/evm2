@@ -111,7 +111,6 @@ impl Version {
     /// - [`memory_limit`](Self::memory_limit) is at most [`u32::MAX`].
     /// - [`GasId::MaxRefundQuotient`] is non-zero.
     #[inline]
-    #[track_caller]
     pub const fn assert_valid(&self) {
         assert!(
             self.initial_call_depth < u16::MAX - CALL_DEPTH_LIMIT,
