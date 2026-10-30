@@ -168,8 +168,8 @@ pub trait StateChangeSink {
 
     /// Observes a storage slot the transaction loaded but left unchanged.
     ///
-    /// `value` is the slot's value before the transaction. It is not the value after it for a slot
-    /// that the transaction wrote and a storage wipe then reset.
+    /// `value` is the slot's value at the start of the transaction. After a storage wipe the
+    /// slot's value after the transaction is zero.
     ///
     /// Only transaction-level sources report reads; sinks that persist changes can ignore them.
     #[inline]
