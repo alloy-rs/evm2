@@ -41,9 +41,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) gas: Gas,
     /// Remaining gas plus spilled state gas at the start of the current inspected step.
     step_gas_before: u64,
-    /// Remaining gas plus spilled state gas once the current step finished charging, if it
-    /// marked that point.
-    step_gas_after_charge: Option<u64>,
+    /// Remaining gas plus spilled state gas, and state gas spent, once the current step finished
+    /// charging, if it marked that point.
+    step_after_charge: Option<(u64, i64)>,
     /// State gas spent at the start of the current inspected step.
     step_state_gas_before: i64,
     pub(in crate::interpreter) result: Result,
@@ -86,7 +86,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             stack_len: 0,
             gas: Gas::new(0),
             step_gas_before: 0,
-            step_gas_after_charge: None,
+            step_after_charge: None,
             step_state_gas_before: 0,
             memory: Memory::new(),
             result: Ok(()),
@@ -252,8 +252,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Only meaningful in [`Inspector::step_end`](crate::inspector::Inspector::step_end).
     #[inline]
     pub const fn step_cost(&self) -> u64 {
-        let after = match self.step_gas_after_charge {
-            Some(after) => after,
+        let after = match self.step_after_charge {
+            Some((after, _)) => after,
             None => self.gas.remaining_excluding_state_spill(),
         };
         self.step_gas_before.saturating_sub(after)
@@ -261,15 +261,20 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Returns the net state gas the current step spent, before its effects.
     ///
-    /// This is [`Gas::state_gas_spent`] now minus its value at the start of the step. It is
-    /// negative when the step refunds state gas. Unlike [`Interpreter::step_cost`], it counts up
-    /// to the end of the step, including the state gas a call or create step charges for itself
-    /// and the state gas its child frame spent.
+    /// This is [`Gas::state_gas_spent`] once the step finished charging minus its value at the
+    /// start of the step. It is negative when the step refunds state gas. Like
+    /// [`Interpreter::step_cost`], it stops counting where the step finished charging, so a call
+    /// or create step reports its own state gas and leaves out the state gas its child frame
+    /// spends, which the child's steps report.
     ///
     /// Only meaningful in [`Inspector::step_end`](crate::inspector::Inspector::step_end).
     #[inline]
     pub const fn step_state_gas_cost(&self) -> i64 {
-        self.gas.state_gas_spent().saturating_sub(self.step_state_gas_before)
+        let after = match self.step_after_charge {
+            Some((_, after)) => after,
+            None => self.gas.state_gas_spent(),
+        };
+        after.saturating_sub(self.step_state_gas_before)
     }
 
     /// Returns the current linear memory.
@@ -721,7 +726,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
         self.0.step_gas_before = self.0.gas.remaining_excluding_state_spill();
-        self.0.step_gas_after_charge = None;
+        self.0.step_after_charge = None;
         self.0.step_state_gas_before = self.0.gas.state_gas_spent();
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
@@ -744,11 +749,12 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         }
     }
 
-    /// Marks that the current step finished charging gas, so [`Interpreter::step_cost`] stops
-    /// counting gas after this point.
+    /// Marks that the current step finished charging gas, so [`Interpreter::step_cost`] and
+    /// [`Interpreter::step_state_gas_cost`] stop counting after this point.
     #[inline]
     pub(crate) const fn finish_step_charge(&mut self, gas: &Gas) {
-        self.0.step_gas_after_charge = Some(gas.remaining_excluding_state_spill());
+        self.0.step_after_charge =
+            Some((gas.remaining_excluding_state_spill(), gas.state_gas_spent()));
     }
 
     #[inline]

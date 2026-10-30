@@ -1,4 +1,5 @@
-//! Amsterdam step costs leave out state gas, in both trace formats.
+//! Amsterdam step costs leave out state gas, in both trace formats, and a step's state gas leaves
+//! out the state gas of the frame it starts.
 //!
 //! The expected values come from go-ethereum `a0cba163b1f17f6044df84502ff13036dffb5de1`
 //! (`evm 1.17.11-unstable-a0cba163`): the interpreter passes each opcode's execution and state
@@ -117,4 +118,40 @@ fn create_cost_leaves_out_state_gas_spilled_from_a_short_reservoir() {
         assert_eq!(step.cost, 12_000);
         assert_eq!(step.used, step.gas_remaining - 12_000 - spilled);
     }
+}
+
+/// Returns the state gas of the call or create step before the final `STOP` in the root frame,
+/// and the state gas of the `SSTORE` that the child frame runs as its third step.
+fn call_and_child_sstore_state_gas(code: &[u8], child: &[u8]) -> (Option<i64>, Option<i64>) {
+    let inspector = inspect_funded_code(
+        code,
+        child,
+        SpecId::AMSTERDAM,
+        TracingInspectorConfig::all(),
+        16,
+        FULL_RESERVOIR_GAS_LIMIT,
+    );
+    let nodes = inspector.traces().nodes();
+    let steps = &nodes[0].trace.steps;
+    (steps[steps.len() - 2].state_gas_cost, nodes[1].trace.steps[2].state_gas_cost)
+}
+
+#[test]
+fn call_state_gas_leaves_out_the_state_gas_of_the_child() {
+    // The value call reaches an account with code, so it is not a new account and the call step
+    // charges no state gas. The child writes a new slot: 64 state bytes at 1,530 gas per byte.
+    let code = hex!("5f5f5f5f6001604361fffff100");
+    let (call, child_sstore) = call_and_child_sstore_state_gas(&code, &hex!("602a5f5500"));
+    assert_eq!(child_sstore, Some(64 * 1_530));
+    assert_eq!(call, None);
+}
+
+#[test]
+fn create_state_gas_leaves_out_the_state_gas_of_the_initcode() {
+    // The create step charges the account creation. The initcode, `PUSH1 0x2a PUSH0 SSTORE
+    // STOP`, writes a new slot and runs as the child frame.
+    let code = hex!("64602a5f55005f526005601b5ff000");
+    let (create, child_sstore) = call_and_child_sstore_state_gas(&code, &[]);
+    assert_eq!(child_sstore, Some(64 * 1_530));
+    assert_eq!(create, Some(NEW_ACCOUNT_STATE_GAS as i64));
 }
