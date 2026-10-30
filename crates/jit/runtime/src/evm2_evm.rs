@@ -33,6 +33,7 @@ impl<T: EvmTypesHost> InterpreterRunner<T> for JitInterpreterRunner {
         interpreter: &mut Interpreter<'frame, 'host, T>,
         host: &mut T::Host<'host>,
     ) -> Option<InstrStop> {
+        debug_assert!(self.supports(host.execution_config()), "unsupported host");
         run_supported(&self.backend, interpreter, host)
     }
 

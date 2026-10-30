@@ -196,6 +196,9 @@ pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + '
     /// Record execution errors with [`Interpreter::fail`]; the EVM extracts them after this
     /// method returns.
     ///
+    /// The EVM calls this only while [`Self::supports`] holds for the active execution config;
+    /// other callers must check it first.
+    ///
     /// The EVM calls the runner through a borrow of the `Arc` stored in `host`, so the runner
     /// must not replace or swap `*host`.
     fn run<'frame, 'host>(
