@@ -1,12 +1,12 @@
 use crate::fixture::Suites;
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
-use evm2::{SpecId, Version};
+use evm2::SpecId;
 use evm2_cli::evm_bench::BenchCase;
 use revm::{
     ExecuteEvm, MainBuilder, MainContext,
     context::{BlockEnv, CfgEnv, Context, TxEnv},
     database::{CacheDB, EmptyDB, InMemoryDB},
-    primitives::{U256, hardfork::SpecId as RevmSpecId},
+    primitives::hardfork::SpecId as RevmSpecId,
     statetest_types::{Test, TestSuite, TestUnit},
 };
 use std::{borrow::Cow, sync::Arc};
@@ -108,11 +108,6 @@ fn revm_case(input: &str, name: &str, spec: SpecId) -> (TestUnit, Test) {
         .map(|(_, tests)| tests)
         .expect("fixture suite must contain revm post test");
     let test = tests.remove(0);
-    let gas_limit = &mut unit.transaction.gas_limit[test.indexes.gas];
-    let cap = U256::from(Version::base(spec).tx_gas_limit_cap);
-    if *gas_limit > cap {
-        *gas_limit = cap;
-    }
     (unit, test)
 }
 
