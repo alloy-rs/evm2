@@ -35,8 +35,6 @@ use wrap::{
     Metadata, Module, PassBuilderOptions, Target, TargetMachine, Type, Value,
 };
 
-pub use llvm_sys;
-
 mod cpp;
 
 mod dh;
@@ -118,6 +116,9 @@ type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, FxBuildHasher>;
 pub struct EvmLlvmBackend {
     cx: &'static Context,
     _dh: dh::DiagnosticHandlerGuard,
+    /// LLVM debug info builder and compile unit, created lazily when `debug_file` is set.
+    /// Dropped before `module`, which its builder refers to.
+    di_state: Option<DiState>,
     bcx: wrap::Builder,
     module: Module,
     machine: TargetMachine,
@@ -131,9 +132,6 @@ pub struct EvmLlvmBackend {
     _cx_handle: Option<Box<ManuallyDrop<Context>>>,
     /// Owned context for AOT mode. `None` in JIT mode.
     _aot_cx: Option<Box<Context>>,
-
-    /// LLVM debug info builder and compile unit, created lazily when `debug_file` is set.
-    di_state: Option<DiState>,
 
     ty_void: Type,
     ty_ptr: Type,

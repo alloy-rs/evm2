@@ -1,6 +1,6 @@
 //! Targets, target machines, and code generation.
 
-use super::{Module, string::LLVMString, to_c_str};
+use super::{LLVMString, Module, to_c_str};
 use llvm_sys::{
     core::{LLVMDisposeMemoryBuffer, LLVMGetBufferSize, LLVMGetBufferStart},
     prelude::LLVMMemoryBufferRef,
@@ -98,15 +98,6 @@ pub struct TargetMachine {
 }
 
 impl TargetMachine {
-    /// Wraps a raw target machine, taking ownership of it.
-    ///
-    /// # Safety
-    ///
-    /// `raw` must be a valid target machine that nothing else disposes.
-    pub const unsafe fn new(raw: LLVMTargetMachineRef) -> Self {
-        Self { raw }
-    }
-
     /// Returns the raw target machine.
     pub const fn as_mut_ptr(&self) -> LLVMTargetMachineRef {
         self.raw

@@ -1,11 +1,13 @@
 //! LLVM IR: contexts, modules, types, values, and the instruction builder.
 
-use super::{DILocation, Metadata, TargetData, TargetMachine, string::LLVMString, to_c_str};
+use super::{DILocation, LLVMString, Metadata, TargetData, TargetMachine, to_c_str};
 use llvm_sys::{
-    LLVMAttributeFunctionIndex, LLVMLinkage, LLVMModuleFlagBehavior, LLVMTailCallKind,
-    LLVMTypeKind, LLVMUnnamedAddr,
+    LLVMAttributeFunctionIndex, LLVMIntPredicate, LLVMLinkage, LLVMModuleFlagBehavior,
+    LLVMTailCallKind, LLVMTypeKind, LLVMUnnamedAddr,
     analysis::{LLVMVerifierFailureAction, LLVMVerifyModule},
     core::*,
+    debuginfo::LLVMSetSubprogram,
+    error::LLVMGetErrorMessage,
     prelude::*,
     target::LLVMIntPtrTypeInContext,
     transforms::pass_builder::{
@@ -328,7 +330,7 @@ impl Module {
         if error.is_null() {
             return Ok(());
         }
-        Err(unsafe { LLVMString::from_raw(llvm_sys::error::LLVMGetErrorMessage(error)) })
+        Err(unsafe { LLVMString::from_raw(LLVMGetErrorMessage(error)) })
     }
 }
 
@@ -579,7 +581,7 @@ impl Function {
 
     /// Attaches the debug info subprogram.
     pub fn set_subprogram(self, subprogram: Metadata) {
-        unsafe { llvm_sys::debuginfo::LLVMSetSubprogram(self.0, subprogram.raw()) }
+        unsafe { LLVMSetSubprogram(self.0, subprogram.raw()) }
     }
 
     /// Returns the raw value.
@@ -868,7 +870,7 @@ impl Builder {
     /// Builds an integer comparison.
     pub fn build_int_compare(
         &self,
-        predicate: llvm_sys::LLVMIntPredicate,
+        predicate: LLVMIntPredicate,
         lhs: Value,
         rhs: Value,
         name: &str,
