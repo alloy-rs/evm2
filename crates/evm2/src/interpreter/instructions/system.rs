@@ -4,7 +4,8 @@ use crate::{
     EvmFeatures, EvmTypesHost,
     bytecode::Bytecode,
     interpreter::{
-        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Pc, Result,
+        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Pc, MessageResult,
+        Result,
         StackMut, Word, derive_create_destination,
     },
     utils::WordExt,
@@ -228,16 +229,53 @@ fn prepare_call<T: EvmTypesHost>(
 
 #[inline(never)]
 fn call_inner<T: EvmTypesHost>(
+    stack: StackMut<'_>,
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, '_, T>,
+    kind: MessageKind,
+) -> Result {
+    call_with(stack, gas, state, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
+}
+
+/// Executes a call opcode of `kind` with hooks around its child message.
+///
+/// This is the body of [`call`], [`callcode`], [`delegatecall`] and [`staticcall`], for custom
+/// call instructions that need extra behavior. Use it from an
+/// `#[instruction(no_stack_preamble, dynamic_gas)]` function with `stack`, `cx.gas` and
+/// `cx.state`.
+///
+/// `before` runs after every charge the opcode makes, the EIP-8037 new-account state gas
+/// included, and after the forwarded gas is taken from `gas`, right before the child message
+/// executes. It may charge or credit `gas`, edit the child message (for example its `gas_limit`,
+/// `reservoir` or `ext`), or fail the instruction.
+///
+/// `after` runs once the child's gas is merged into `gas` and the upfront new-account state gas of
+/// a failed child is refunded, before the return data is copied and the success word is pushed.
+/// It may charge or credit `gas` or fail the instruction. A fatal child result returns before
+/// `after` runs.
+///
+/// An `Err` from either hook stops the instruction with that error. Gas the hooks charge is not
+/// part of the step cost reported to inspectors.
+#[inline]
+pub fn call_with<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
     pc: &mut Pc,
     kind: MessageKind,
+    before: impl FnOnce(&mut Gas, &mut InterpreterState<'_, '_, T>, &mut Message<T>) -> Result,
+    after: impl FnOnce(
+        &mut Gas,
+        &mut InterpreterState<'_, '_, T>,
+        &Message<T>,
+        &MessageResult<T>,
+    ) -> Result,
 ) -> Result {
     let mut message = Message::<T>::default();
     let mut return_memory_range = 0..0;
     let new_account_state_gas =
         prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
+    before(gas, state, &mut message)?;
 
     let mut result =
         state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
@@ -252,6 +290,7 @@ fn call_inner<T: EvmTypesHost>(
     if new_account_state_gas != 0 && !result.stop.is_success() {
         gas.refill_reservoir(new_account_state_gas);
     }
+    after(gas, state, &message, &result)?;
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
         let output = result.output.get_unchecked(..copy_len);
@@ -289,11 +328,43 @@ pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
 
 #[inline(never)]
 fn create_inner<T: EvmTypesHost>(
+    stack: StackMut<'_>,
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, '_, T>,
+    is_create2: bool,
+) -> Result {
+    create_with(stack, gas, state, is_create2, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
+}
+
+/// Executes `CREATE` or `CREATE2` with hooks around its child message.
+///
+/// This is the body of [`create`], for custom creation instructions that need extra behavior, in
+/// the same shape as [`call_with`].
+///
+/// `before` runs after every charge the opcode makes, the EIP-8037 account-creation state gas
+/// included, and after the forwarded gas is taken from `gas`, right before the child message
+/// executes. It does not run when the opcode refuses the creation before forwarding gas (the
+/// EIP-8037 balance, nonce and depth checks).
+///
+/// `after` runs once the child's gas is merged into `gas` and the account-creation state gas of a
+/// failed creation is refunded, before the return data is set and the created address is pushed.
+/// A fatal child result returns before `after` runs.
+///
+/// Both hooks may charge or credit `gas` or fail the instruction, as in [`call_with`].
+#[inline]
+pub fn create_with<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
     pc: &mut Pc,
     is_create2: bool,
+    before: impl FnOnce(&mut Gas, &mut InterpreterState<'_, '_, T>, &mut Message<T>) -> Result,
+    after: impl FnOnce(
+        &mut Gas,
+        &mut InterpreterState<'_, '_, T>,
+        &Message<T>,
+        &MessageResult<T>,
+    ) -> Result,
 ) -> Result {
     require_non_staticcall(state)?;
 
@@ -397,6 +468,7 @@ fn create_inner<T: EvmTypesHost>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
+    before(gas, state, &mut message)?;
     let mut result =
         state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
     if result.stop.is_fatal() {
@@ -413,6 +485,7 @@ fn create_inner<T: EvmTypesHost>(
     if charged_create_state_gas && create_failed {
         gas.refill_reservoir(state.gas_params().create_state_gas());
     }
+    after(gas, state, &message, &result)?;
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
     if result.stop == InstrStop::Revert {
         state.swap_return_data(&mut result.output);
@@ -457,11 +530,14 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 mod tests {
     use super::*;
     use crate::{
-        ExecutionError, SpecId,
+        BaseEvmConfig, EvmConfig, ExecutionConfig, ExecutionError, SpecId,
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
-        interpreter::{MessageResultExt, op},
-        test_utils::{RunConfig, TestHost, push, push_all, run},
+        interpreter::{Interpreter, MessageResultExt, op},
+        test_utils::{
+            RunConfig, TestHost, TestInterpreter, TestTypes, legacy_bytecode, push, push_all, run,
+        },
         utils::address_to_word,
+        version::OpcodeConfig,
     };
     use alloc::vec::Vec;
     use core::assert_matches;
@@ -1008,5 +1084,200 @@ mod tests {
         }));
         assert_matches!(interp.err, InstrStop::SelfDestruct);
         assert_eq!(host.selfdestructs, [(contract, target, false)]);
+    }
+
+    const HOOKED_CALL: u8 = 0x0c;
+    const HOOKED_CREATE: u8 = 0x0d;
+    const KEPT_GAS: u64 = 1_000;
+    const AFTER_FEE: u64 = 7;
+
+    // Keeps `KEPT_GAS` of the forwarded gas in the caller and charges `AFTER_FEE` after a
+    // successful child; a failed child fails the instruction.
+    #[instruction(no_stack_preamble, dynamic_gas)]
+    fn hooked_call(cx: _) -> Result {
+        call_with(
+            stack,
+            cx.gas,
+            cx.state,
+            MessageKind::Call,
+            |gas, _, message| {
+                message.gas_limit -= KEPT_GAS;
+                gas.erase_cost(KEPT_GAS);
+                Ok(())
+            },
+            |gas, _, _, result| {
+                if result.stop.is_success() { gas.spend(AFTER_FEE) } else { Err(InstrStop::Revert) }
+            },
+        )
+    }
+
+    #[instruction(no_stack_preamble, dynamic_gas)]
+    fn hooked_create(cx: _) -> Result {
+        create_with(
+            stack,
+            cx.gas,
+            cx.state,
+            false,
+            |gas, _, message| {
+                message.gas_limit -= KEPT_GAS;
+                gas.erase_cost(KEPT_GAS);
+                Ok(())
+            },
+            |gas, _, _, _| gas.spend(AFTER_FEE),
+        )
+    }
+
+    struct HookedConfig;
+
+    impl EvmConfig<TestTypes> for HookedConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::AMSTERDAM;
+        const OPCODE_CONFIG: &'static OpcodeConfig<TestTypes> = &hooked_opcode_config();
+    }
+
+    const fn hooked_opcode_config() -> OpcodeConfig<TestTypes> {
+        let mut config =
+            OpcodeConfig::<TestTypes>::base::<BaseEvmConfig<{ SpecId::AMSTERDAM as u32 }>>();
+        config.set_instruction::<hooked_call<TestTypes>>(HOOKED_CALL, config.static_gas(op::CALL));
+        config.set_instruction::<hooked_create<TestTypes>>(
+            HOOKED_CREATE,
+            config.static_gas(op::CREATE),
+        );
+        config
+    }
+
+    fn run_hooked(config: RunConfig<'_>) -> TestInterpreter {
+        let RunConfig { code, host, tx_env, message, gas_limit, return_data, .. } = config;
+        let message = Message::<TestTypes> { code: legacy_bytecode(code), gas_limit, ..message };
+        let mut inner = Interpreter::<TestTypes>::new(&message);
+        *inner.return_data_mut() = return_data;
+        let mut default_host = TestHost::default();
+        let host = host.unwrap_or(&mut default_host);
+        host.tx_env = tx_env;
+        host.spec_id = SpecId::AMSTERDAM;
+        host.execution_config = ExecutionConfig::<TestTypes>::for_config::<HookedConfig>();
+        let err = inner.run(host).unwrap();
+        let (stack, stack_len, gas, memory, output) = inner.into_parts();
+        TestInterpreter { stack, stack_len, gas, memory, output, err, execution_error: None }
+    }
+
+    fn call_code(opcode: u8, value: u64) -> Vec<u8> {
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::from(value),
+                address_to_word(&Address::from([0x22; 20])),
+                Word::from(5_000),
+            ],
+        );
+        code.extend([opcode, op::STOP]);
+        code
+    }
+
+    #[test]
+    fn call_with_hooks_adjust_child_and_caller_gas() {
+        let mut base_host = TestHost::default();
+        let base = run_hooked(
+            RunConfig::new(call_code(op::CALL, 0)).host(&mut base_host).gas_limit(30_000),
+        );
+        let mut host = TestHost::default();
+        let hooked =
+            run_hooked(RunConfig::new(call_code(HOOKED_CALL, 0)).host(&mut host).gas_limit(30_000));
+
+        assert_matches!(base.err, InstrStop::Stop);
+        assert_matches!(hooked.err, InstrStop::Stop);
+        assert_eq!(hooked.stack(), [Word::from(1)]);
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].gas_limit, base_host.calls[0].gas_limit - KEPT_GAS);
+        assert_eq!(hooked.gas_remaining(), base.gas_remaining() + KEPT_GAS - AFTER_FEE);
+    }
+
+    #[test]
+    fn call_with_before_runs_after_new_account_state_gas() {
+        // A value call to an empty account charges EIP-8037 new-account state gas before the
+        // forward; `before` sees the child message built after that charge.
+        let mut base_host = TestHost { is_empty: true, ..Default::default() };
+        let base = run_hooked(
+            RunConfig::new(call_code(op::CALL, 1)).host(&mut base_host).gas_limit(200_000),
+        );
+        let mut host = TestHost { is_empty: true, ..Default::default() };
+        let hooked = run_hooked(
+            RunConfig::new(call_code(HOOKED_CALL, 1)).host(&mut host).gas_limit(200_000),
+        );
+
+        assert_matches!(hooked.err, InstrStop::Stop);
+        assert_eq!(host.calls[0].gas_limit, base_host.calls[0].gas_limit - KEPT_GAS);
+        assert_eq!(hooked.gas.state_gas_spent(), base.gas.state_gas_spent());
+        assert_ne!(hooked.gas.state_gas_spent(), 0);
+        assert_eq!(hooked.gas_remaining(), base.gas_remaining() + KEPT_GAS - AFTER_FEE);
+    }
+
+    #[test]
+    fn call_with_after_can_fail_the_instruction() {
+        let mut host = TestHost {
+            execute_result: MessageResultExt { stop: InstrStop::Revert, ..Default::default() },
+            ..Default::default()
+        };
+        let interp =
+            run_hooked(RunConfig::new(call_code(HOOKED_CALL, 0)).host(&mut host).gas_limit(30_000));
+
+        assert_matches!(interp.err, InstrStop::Revert);
+        assert!(interp.stack().is_empty());
+        assert_eq!(host.calls.len(), 1);
+    }
+
+    #[test]
+    fn create_with_hooks_adjust_child_and_caller_gas() {
+        let created = Address::from([0x77; 20]);
+        let execute_result = MessageResultExt {
+            stop: InstrStop::Return,
+            created_address: Some(created),
+            ..MessageResultExt::default()
+        };
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut base_code = code.clone();
+        base_code.extend([op::CREATE, op::STOP]);
+        code.extend([HOOKED_CREATE, op::STOP]);
+
+        let mut base_host = TestHost {
+            execute_result: execute_result.clone(),
+            is_empty: true,
+            ..Default::default()
+        };
+        let base = run_hooked(RunConfig::new(base_code).host(&mut base_host).gas_limit(500_000));
+        let mut host = TestHost { execute_result, is_empty: true, ..Default::default() };
+        let hooked = run_hooked(RunConfig::new(code).host(&mut host).gas_limit(500_000));
+
+        assert_matches!(hooked.err, InstrStop::Stop);
+        assert_eq!(hooked.stack(), [address_to_word(&created)]);
+        assert_eq!(host.calls[0].gas_limit, base_host.calls[0].gas_limit - KEPT_GAS);
+        assert_eq!(hooked.gas.state_gas_spent(), base.gas.state_gas_spent());
+        assert_eq!(hooked.gas_remaining(), base.gas_remaining() + KEPT_GAS - AFTER_FEE);
+    }
+
+    #[test]
+    fn create_with_skips_hooks_when_creation_is_refused_before_forward() {
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut base_code = code.clone();
+        base_code.extend([op::CREATE, op::STOP]);
+        code.extend([HOOKED_CREATE, op::STOP]);
+        let message = MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() };
+
+        let base =
+            run_hooked(RunConfig::new(base_code).message(message.clone()).gas_limit(500_000));
+        let mut host = TestHost::default();
+        let hooked =
+            run_hooked(RunConfig::new(code).host(&mut host).message(message).gas_limit(500_000));
+
+        assert_matches!(hooked.err, InstrStop::Stop);
+        assert_eq!(hooked.stack(), [Word::ZERO]);
+        assert!(host.calls.is_empty());
+        assert_eq!(hooked.gas_remaining(), base.gas_remaining());
     }
 }
