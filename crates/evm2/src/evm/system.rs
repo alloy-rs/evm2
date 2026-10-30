@@ -162,6 +162,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             0
         };
+        // The call's total budget is `gas_limit + reservoir` and must fit in a `u64`.
+        let gas_limit = gas_limit.min(u64::MAX - reservoir);
         let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
         let frame = prepare_initial_frame(
             self,
@@ -175,7 +177,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let result = execute_initial_frame(self, frame, &mut tx_gas, gas_limit, reservoir)?;
         // The reservoir is funded on top of `gas_limit`, so the transaction gas limit includes it.
         let (total_gas_spent, state_gas_spent) =
-            gas_spent_breakdown(gas_limit.saturating_add(reservoir), &result.gas, 0);
+            gas_spent_breakdown(gas_limit + reservoir, &result.gas, 0);
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
         } else {
@@ -559,6 +561,34 @@ mod tests {
         assert_eq!(result.state_gas_spent, state_gas);
         assert_eq!(result.total_gas_spent, regular_gas + state_gas);
         assert_eq!(result.execution_gas_spent(), regular_gas);
+    }
+
+    #[test]
+    fn system_call_total_covers_state_gas_with_unbounded_gas_limit() {
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            1,
+            op::PUSH0,
+            op::SSTORE,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = TestEvm::new(
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+
+        let tx = SystemTx::new(contract, Bytes::new()).with_gas_limit(u64::MAX);
+        let result = evm.system_call(tx).unwrap().discard();
+
+        assert!(result.status);
+        assert!(result.total_gas_spent >= result.state_gas_spent);
+        assert_eq!(result.execution_gas_spent(), 3 + 2 + 2_100 + 10_000);
     }
 
     #[derive(Debug, Default)]
