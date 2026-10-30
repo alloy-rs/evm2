@@ -142,12 +142,7 @@ const fn make_map<const BASE_SPEC_ID: u32>() -> [OpcodeInfo; 256] {
         if !config.is_defined(op) && op != op::INVALID {
             info.set_disabled();
         } else {
-            let static_gas = config.static_gas(op) as u64;
-            assert!(
-                static_gas <= OpcodeInfo::MASK as u64,
-                "static gas exceeds OpcodeInfo capacity"
-            );
-            info.set_gas(static_gas as u16);
+            info.set_gas(config.static_gas(op));
         }
 
         map[op as usize] = info;
