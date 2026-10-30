@@ -236,9 +236,9 @@ impl SectionsAnalysis {
 
         // The exponent is known, so translation does not charge EXP's dynamic gas.
         if data.opcode == op::EXP
-            && let Some(gas) = bytecode.exp_static_gas(inst)
+            && let Some(exponent) = bytecode.exp_static_exponent(inst)
         {
-            self.gas.process_extra(gas);
+            self.gas.process_extra(bytecode.gas_params.exp_cost(exponent));
         }
 
         // Branching instructions and host effects that depend on the remaining gas end both

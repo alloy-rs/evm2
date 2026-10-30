@@ -208,34 +208,35 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// EXP base, exp => base ** exp.
     ///
-    /// A constant exponent has its dynamic gas folded into the section gas cost by
-    /// `SectionsAnalysis` (see `Bytecode::exp_static_gas`), so it is lowered without charging
-    /// gas. For constant-base cases with a dynamic exponent, charge the dynamic gas and compute
-    /// the result inline.
+    /// A constant exponent (`Bytecode::exp_static_exponent`) has its dynamic gas folded into the
+    /// section gas cost by `SectionsAnalysis`, so it is lowered without charging gas. For
+    /// constant-base cases with a dynamic exponent, charge the dynamic gas and compute the result
+    /// inline.
     fn peephole_exp(&mut self) -> bool {
-        let [base, exponent] = self.const_operands();
-        if let Some(exponent) = exponent
-            && self.bytecode.exp_static_gas(self.current_inst.unwrap()).is_some()
-        {
-            match exponent {
-                // x ** 0 => 1.
-                U256::ZERO => self.fold_const(1),
-                // x ** 1 => x.
-                U256::ONE => {
-                    let [a, _] = self.popn();
-                    self.push(a);
-                }
-                // x ** 2 => x * x.
-                _ if exponent == 2 => {
-                    let [a, _] = self.popn();
-                    let r = self.bcx.imul(a, a);
-                    self.push(r);
-                }
-                _ => {
-                    let sp = self.sp_after_inputs();
-                    let _ = self.call_builtin(Builtin::Pow, &[sp]);
-                }
+        let [base, _] = self.const_operands();
+        let exponent = self.bytecode.exp_static_exponent(self.current_inst.unwrap());
+        match exponent {
+            // x ** 0 => 1.
+            Some(U256::ZERO) => self.fold_const(1),
+            // x ** 1 => x.
+            Some(U256::ONE) => {
+                let [a, _] = self.popn();
+                self.push(a);
             }
+            // x ** 2 => x * x.
+            Some(e) if e == 2 => {
+                let [a, _] = self.popn();
+                let r = self.bcx.imul(a, a);
+                self.push(r);
+            }
+            // x ** e => x ** e, with the gas already paid.
+            Some(_) => {
+                let sp = self.sp_after_inputs();
+                let _ = self.call_builtin(Builtin::Pow, &[sp]);
+            }
+            None => {}
+        }
+        if exponent.is_some() {
             return true;
         }
         match base {

@@ -142,10 +142,9 @@ pub unsafe fn __revmc_builtin_exp<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
-    let rev![base, exponent_ptr] = sp;
-    let exponent = exponent_ptr.to_u256();
-    ecx.gas.spend(ecx.gas_params().exp_cost(exponent))?;
-    *exponent_ptr = base.to_u256().pow(exponent).into();
+    let rev![_, exponent] = &*sp;
+    ecx.gas.spend(ecx.gas_params().exp_cost(exponent.to_u256()))?;
+    unsafe { __revmc_builtin_pow::<T>(sp) };
     Ok(())
 }
 
