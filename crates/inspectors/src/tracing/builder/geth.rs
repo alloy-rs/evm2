@@ -81,11 +81,11 @@ fn struct_log_json_len(log: &StructLog) -> usize {
 }
 
 /// A frame awaiting tree assembly, with visibility inherited by children in the forward pass.
-struct PendingCallFrame<T> {
+struct PendingCallFrame {
     /// Whether this call and its ancestors permit descendant logs. Independent of whether
     /// the frame itself contains logs.
     logs_visible: bool,
-    frame: T,
+    frame: CallFrame,
 }
 
 #[cfg(test)]

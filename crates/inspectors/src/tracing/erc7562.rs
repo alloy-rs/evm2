@@ -15,7 +15,7 @@ use crate::tracing::{
     GethTraceBuilder, TracingInspector, TracingInspectorConfig, keccak::memory_copy_padded,
     utils::load_account_code,
 };
-use alloc::{collections::BTreeSet, format, vec::Vec};
+use alloc::{borrow::Cow, collections::BTreeSet, format, vec::Vec};
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, Log, U256, map::HashMap};
 use alloy_rpc_types_trace::geth::{
@@ -30,8 +30,8 @@ use evm2::{
 /// Inspector that collects what geth's `erc7562Tracer` reports for a transaction.
 #[derive(Clone, Debug)]
 pub struct Erc7562Inspector {
-    /// The tracer config.
-    config: Erc7562Config,
+    /// Whether the result lists logs.
+    with_log: bool,
     /// The opcodes that the used opcode counts leave out, one bit per opcode.
     ignored: U256,
     /// Records the call tree.
@@ -69,26 +69,22 @@ struct LastStep {
 impl Erc7562Inspector {
     /// Returns an inspector that collects the result of the given tracer config.
     pub fn new(config: Erc7562Config) -> Self {
-        let mut ignored = U256::ZERO;
-        let defaults = (op::PUSH0..=op::SWAP16).chain(DEFAULT_IGNORED_OPCODES);
-        for op in if config.ignored_opcodes.is_empty() {
-            defaults.collect()
+        let with_log = config.with_log.unwrap_or_default();
+        let ignored_opcodes = if config.ignored_opcodes.is_empty() {
+            (op::PUSH0..=op::SWAP16).chain(DEFAULT_IGNORED_OPCODES).collect()
         } else {
-            config.ignored_opcodes.clone()
-        } {
+            config.ignored_opcodes
+        };
+        let mut ignored = U256::ZERO;
+        for op in ignored_opcodes {
             ignored.set_bit(usize::from(op), true);
         }
         let calls =
             TracingInspector::new(TracingInspectorConfig::from_geth_call_config(&CallConfig {
-                with_log: config.with_log,
+                with_log: Some(with_log),
                 ..Default::default()
             }));
-        Self { config, ignored, calls, frames: Vec::new(), keccak: BTreeSet::new(), last: None }
-    }
-
-    /// Returns the tracer config.
-    pub const fn config(&self) -> &Erc7562Config {
-        &self.config
+        Self { with_log, ignored, calls, frames: Vec::new(), keccak: BTreeSet::new(), last: None }
     }
 
     /// Clears what the inspector collected, to trace the next transaction.
@@ -112,21 +108,22 @@ impl Erc7562Inspector {
         result: &TxResultExt<E>,
     ) -> Erc7562Frame {
         self.calls.recover_runtime_oog_root(tx, result);
+        self.calls.set_transaction_gas_limit(tx.gas_limit());
+        self.calls.set_transaction_caller(tx.signer());
         let nodes = self.calls.traces.nodes();
-        let include_logs = self.config.with_log.unwrap_or_default();
 
         // Parents precede their children, so a frame knows whether its parent shows logs.
         let mut frames = Vec::<(bool, Erc7562Frame)>::with_capacity(nodes.len());
         for (idx, node) in nodes.iter().enumerate() {
             let counters = self.frames.get(idx).cloned().unwrap_or_default();
-            let logs_visible = include_logs
+            let logs_visible = self.with_log
                 && !node.trace.is_error()
                 && node.parent.is_none_or(|parent| frames[parent].0);
             let call = node.geth_empty_call_frame(logs_visible);
             let frame = Erc7562Frame {
                 call_frame_type: GethTraceBuilder::convert_call_kind(node.kind()),
-                from: if idx == 0 { tx.signer() } else { call.from },
-                gas: if idx == 0 { tx.gas_limit() } else { call.gas.to() },
+                from: call.from,
+                gas: call.gas.to(),
                 gas_used: if idx == 0 { result.tx_gas_used() } else { call.gas_used.to() },
                 to: call.to,
                 input: call.input,
@@ -170,18 +167,17 @@ impl Erc7562Inspector {
         }
     }
 
-    /// Returns the data a `KECCAK256` with the operands hashes, if geth records it.
-    fn preimage<T: EvmTypes>(
-        interp: &Interpreter<'_, '_, T>,
+    /// Returns the data that a `KECCAK256` with these operands hashes, if geth records it.
+    fn preimage<'a, T: EvmTypes>(
+        interp: &'a Interpreter<'_, '_, T>,
         offset: Option<U256>,
         length: Option<U256>,
-    ) -> Option<Bytes> {
+    ) -> Option<Cow<'a, [u8]>> {
         // The operands are truncated to 64 bits, and geth fails on a negative one.
         let (offset, length) = (offset?.as_limbs()[0], length?.as_limbs()[0]);
         i64::try_from(offset).ok()?;
         i64::try_from(length).ok()?;
         memory_copy_padded(interp.memory().as_slice(), offset, length)
-            .map(|preimage| Bytes::copy_from_slice(&preimage))
     }
 
     /// Returns the size of the code of the account, without loading the account.
@@ -191,7 +187,7 @@ impl Erc7562Inspector {
             .account_info_untracked(address)
             .ok()
             .flatten()
-            .and_then(|info| load_account_code(state.initial_mut(), &info).ok().flatten());
+            .and_then(|info| load_account_code(state.overlay_db_mut(), &info).ok().flatten());
         code.map_or(0, |code| code.len() as u64)
     }
 }
@@ -224,7 +220,7 @@ const fn is_call(op: u8) -> bool {
     matches!(op, op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL)
 }
 
-fn address(word: U256) -> Address {
+fn word_to_address(word: U256) -> Address {
     Address::from_word(word.into())
 }
 
@@ -243,36 +239,8 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
         };
         // A return does not leave its frame's last instruction to the frame that resumes.
         let last = if matches!(op, op::RETURN | op::REVERT) { None } else { self.last };
-        let idx = self.calls.last_trace_idx();
+        let frame = &mut self.frames[self.calls.last_trace_idx()];
 
-        // What the instruction reads from the interpreter, before the frame is borrowed.
-        let (mut sized, mut slot, mut preimage) = (None, None, None);
-        match op {
-            op::EXTCODESIZE | op::EXTCODECOPY | op::EXTCODEHASH => sized = top.map(address),
-            op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL => {
-                sized = second.map(address);
-            }
-            op::SLOAD => slot = top.map(B256::from),
-            op::KECCAK256 => preimage = Self::preimage(interp, top, second),
-            _ => {}
-        }
-        let size = sized
-            .filter(|address| !self.frames[idx].contract_size.contains_key(address))
-            .map(|address| (address, Self::code_size(interp, &address)));
-        // The value of a slot that an `SLOAD` reads before the frame wrote or read it.
-        let read = slot
-            .filter(|slot| {
-                let slots = &self.frames[idx].accessed_slots;
-                !slots.reads.contains_key(slot) && !slots.writes.contains_key(slot)
-            })
-            .map(|slot| {
-                let address = interp.message().destination;
-                let value =
-                    interp.host().state_mut().storage_slot_untracked(&address, &slot.into());
-                (slot, B256::from(value.unwrap_or_default()))
-            });
-
-        let frame = &mut self.frames[idx];
         // Only the last `EXTCODE*` instruction per address would matter, but geth lists them all,
         // except an `EXTCODESIZE` that `ISZERO` consumes.
         if let Some(last) = last
@@ -280,10 +248,7 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
             && let Some(top) = last.top
             && !(last.op == op::EXTCODESIZE && op == op::ISZERO)
         {
-            frame.ext_code_access_info.push(address(top));
-        }
-        if let Some((address, size)) = size {
-            frame.contract_size.insert(address, ContractSize { contract_size: size, opcode: op });
+            frame.ext_code_access_info.push(word_to_address(top));
         }
         if last.is_some_and(|last| last.op == op::GAS) && !is_call(op) {
             *frame.used_opcodes.entry(op::GAS).or_default() += 1;
@@ -291,22 +256,59 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
         if op != op::GAS && !self.ignored.bit(usize::from(op)) {
             *frame.used_opcodes.entry(op).or_default() += 1;
         }
+
         let slots = &mut frame.accessed_slots;
-        if let Some((slot, value)) = read {
-            slots.reads.entry(slot).or_default().push(value);
-        }
-        match (op, top) {
-            (op::SSTORE, Some(slot)) => *slots.writes.entry(slot.into()).or_default() += 1,
-            (op::TLOAD, Some(slot)) => *slots.transient_reads.entry(slot.into()).or_default() += 1,
-            (op::TSTORE, Some(slot)) => {
-                *slots.transient_writes.entry(slot.into()).or_default() += 1;
+        match op {
+            op if is_ext(op) || is_call(op) => {
+                // The code size of the account that the instruction addresses.
+                if let Some(word) = if is_ext(op) { top } else { second } {
+                    let address = word_to_address(word);
+                    if !frame.contract_size.contains_key(&address) {
+                        let contract_size = Self::code_size(interp, &address);
+                        frame
+                            .contract_size
+                            .insert(address, ContractSize { contract_size, opcode: op });
+                    }
+                }
+            }
+            op::SLOAD => {
+                // The value of a slot that the frame did not write or read yet.
+                if let Some(slot) = top.map(B256::from)
+                    && !slots.reads.contains_key(&slot)
+                    && !slots.writes.contains_key(&slot)
+                {
+                    let address = interp.message().destination;
+                    let value =
+                        interp.host().state_mut().storage_slot_untracked(&address, &slot.into());
+                    slots.reads.entry(slot).or_default().push(value.unwrap_or_default().into());
+                }
+            }
+            op::SSTORE => {
+                if let Some(slot) = top {
+                    *slots.writes.entry(slot.into()).or_default() += 1;
+                }
+            }
+            op::TLOAD => {
+                if let Some(slot) = top {
+                    *slots.transient_reads.entry(slot.into()).or_default() += 1;
+                }
+            }
+            op::TSTORE => {
+                if let Some(slot) = top {
+                    *slots.transient_writes.entry(slot.into()).or_default() += 1;
+                }
+            }
+            op::KECCAK256 => {
+                if let Some(preimage) = Self::preimage(interp, top, second)
+                    && !self.keccak.contains(&*preimage)
+                {
+                    self.keccak.insert(Bytes::from(preimage.into_owned()));
+                }
             }
             _ => {}
         }
-        if let Some(preimage) = preimage {
-            self.keccak.insert(preimage);
-        }
-        self.last = Some(LastStep { op, top });
+        // Only `EXTCODE*` and `GAS` look at the instruction that ran before them.
+        self.last = (is_ext(op) || op == op::GAS).then_some(LastStep { op, top });
     }
 
     fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {

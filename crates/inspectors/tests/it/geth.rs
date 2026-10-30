@@ -498,6 +498,57 @@ fn test_geth_erc7562_counts_like_geth() {
     assert!(frame.calls.iter().all(|call| call.keccak.is_empty()));
 }
 
+#[test]
+fn test_geth_erc7562_contract_size_reads_accepted_state() {
+    let (root, target) = (
+        address!("1000000000000000000000000000000000000001"),
+        address!("1000000000000000000000000000000000000002"),
+    );
+    let spec = SpecId::CANCUN;
+    let mut code = vec![op::PUSH20];
+    code.extend_from_slice(target.as_slice());
+    code.extend_from_slice(&[op::EXTCODESIZE, op::STOP]);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &root,
+        AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+    );
+    let block = *Context::mainnet().block();
+    let mut inspector =
+        DebugInspector::new(GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default()))
+            .unwrap();
+    let mut evm = Evm::<BaseEvmTypes>::new(
+        spec,
+        block,
+        ethereum_tx_registry(spec),
+        db.clone(),
+        Precompiles::base(spec),
+    );
+    // The code is in the accepted state only, like that of an earlier transaction of the block.
+    evm.overlay_db_mut().insert_account_info(
+        &target,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(Bytes::from_static(&[op::STOP; 3]))),
+            ..Default::default()
+        },
+    );
+    evm.set_inspector(&mut inspector);
+    let tx = TxEnv {
+        gas_limit: 1_000_000,
+        gas_price: 0,
+        kind: TransactTo::Call(root),
+        ..Default::default()
+    };
+    let envelope = tx.envelope();
+    let res = evm.transact(&envelope).unwrap().detach();
+    drop(evm);
+
+    let trace = inspector.get_result(None, &envelope, &block, &res, &mut db).unwrap();
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+    let size = &frame.contract_size[&target];
+    assert_eq!((size.contract_size, size.opcode), (3, op::EXTCODESIZE));
+}
+
 fn trace_contract(
     spec: SpecId,
     opts: GethDebugTracingOptions,
@@ -2313,28 +2364,36 @@ fn test_geth_failed_root_logs() {
                 }
             }
 
-            let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config {
-                with_log: Some(true),
-                ..Default::default()
-            });
-            let mut inspector = DebugInspector::new(opts).unwrap();
-            let mut evm = context.build_mainnet().with_inspector(&mut inspector);
-            let res = evm
-                .inspect_tx(TxEnv {
-                    kind: if create { TxKind::Create } else { TxKind::Call(contract) },
-                    data: if create { code.clone() } else { Bytes::new() },
-                    gas_limit: 100_000,
+            for with_log in [false, true] {
+                let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config {
+                    with_log: Some(with_log),
                     ..Default::default()
-                })
-                .unwrap();
-            let (ctx, inspector) = evm.ctx_inspector();
-            let tx = ctx.tx().envelope();
-            let block = *ctx.block();
-            let trace =
-                inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
-            let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
-            assert_eq!(frame.error.as_deref(), error);
-            assert_eq!(frame.logs.len(), usize::from(error.is_none()));
+                });
+                let mut inspector = DebugInspector::new(opts).unwrap();
+                let mut evm = context.clone().build_mainnet().with_inspector(&mut inspector);
+                let res = evm
+                    .inspect_tx(TxEnv {
+                        kind: if create { TxKind::Create } else { TxKind::Call(contract) },
+                        data: if create { code.clone() } else { Bytes::new() },
+                        gas_limit: 100_000,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                let (ctx, inspector) = evm.ctx_inspector();
+                let tx = ctx.tx().envelope();
+                let block = *ctx.block();
+                let trace =
+                    inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+                let GethTrace::Erc7562Tracer(frame) = trace else {
+                    panic!("Expected Erc7562Tracer")
+                };
+                let expected_logs = usize::from(with_log && error.is_none());
+                assert_eq!(frame.error.as_deref(), error);
+                assert_eq!(frame.logs.len(), expected_logs);
+                if expected_logs == 0 {
+                    assert_eq!(serde_json::to_value(frame).unwrap().get("logs"), None);
+                }
+            }
         }
     }
 }
