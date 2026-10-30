@@ -662,8 +662,10 @@ pub struct CallTraceStep {
     pub returndata: Bytes,
     /// Remaining gas before step execution
     pub gas_remaining: u64,
-    /// Transaction-wide refund counter before step execution, or after it for `SSTORE` and
-    /// `SELFDESTRUCT`, which add their refund while charging gas.
+    /// Transaction-wide refund counter before step execution.
+    ///
+    /// Geth reads it after the gas function of the opcode, so its `SSTORE` and `SELFDESTRUCT`
+    /// steps already include their own refund.
     pub gas_refund_counter: u64,
     /// Total gas used before step execution
     pub gas_used: u64,
