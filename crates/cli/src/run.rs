@@ -279,7 +279,7 @@ impl RunArgs {
 
         match self.n_iters {
             0 => {}
-            1 if !self.interpret || self.jit_only => prepared.sanity_check(!self.no_gas)?,
+            1 if !self.interpret && !self.jit_only => prepared.sanity_check(!self.no_gas)?,
             _ => {
                 if self.interpret || !self.jit_only {
                     bench(self.n_iters, &format!("{name}/interpreter"), || {
