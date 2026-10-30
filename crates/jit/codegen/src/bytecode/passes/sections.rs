@@ -1,6 +1,7 @@
 use crate::bytecode::{Bytecode, Inst, InstFlags};
 use core::{fmt, ops::Range};
 use evm2::interpreter::op;
+use evm2_jit_context::MAX_FRAME_GAS;
 use smallvec::SmallVec;
 
 /// A gas section tracks the total base gas cost of a sequence of instructions.
@@ -27,10 +28,10 @@ impl fmt::Debug for GasSection {
 impl GasSection {
     /// The largest gas cost a section can charge.
     ///
-    /// Remaining gas is a signed 64-bit counter that can be slightly negative before a deferred
-    /// check. Capping at half its range keeps subtracting a section from it from wrapping
-    /// positive, while the cap still exceeds any gas a frame can hold.
-    pub(crate) const MAX_GAS_COST: u64 = i64::MAX as u64 / 2;
+    /// A frame holds at most [`MAX_FRAME_GAS`], so a section costing more always runs it out of
+    /// gas. Capping one above that bound keeps the charge exceeding any frame's gas, and keeps
+    /// subtracting it from a slightly negative remaining gas from wrapping.
+    pub(crate) const MAX_GAS_COST: u64 = MAX_FRAME_GAS + 1;
 
     /// Returns `true` if the section is empty.
     #[inline]
@@ -338,6 +339,7 @@ mod tests {
         passes::block_analysis::tests::{analyze_asm, analyze_asm_spec, analyze_code_spec},
     };
     use evm2::{SpecId, interpreter::op};
+    use evm2_jit_context::MAX_FRAME_GAS;
 
     /// Returns the gas section cost for the first non-dead instruction (the section head).
     fn section_gas(src: &str) -> u64 {
@@ -415,12 +417,18 @@ mod tests {
     }
 
     #[test]
-    fn section_gas_caps_below_signed_range() {
+    fn section_gas_exceeds_any_frame_when_capped() {
+        // A section costing more than a frame can hold charges more than any frame has, so it
+        // runs out of gas even for a frame holding exactly `MAX_FRAME_GAS`.
         let mut analysis = super::GasSectionAnalysis::default();
+        analysis.process_extra(MAX_FRAME_GAS + 1);
+        assert!(analysis.section().gas_cost > MAX_FRAME_GAS);
         analysis.process_extra(u64::MAX);
-        analysis.process(1);
         assert_eq!(analysis.section().gas_cost, super::GasSection::MAX_GAS_COST);
-        assert!(super::GasSection::MAX_GAS_COST > u32::MAX as u64);
+        // A section that fits is charged exactly.
+        let mut analysis = super::GasSectionAnalysis::default();
+        analysis.process_extra(MAX_FRAME_GAS);
+        assert_eq!(analysis.section().gas_cost, MAX_FRAME_GAS);
     }
 
     #[test]

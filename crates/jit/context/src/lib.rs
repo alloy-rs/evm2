@@ -26,6 +26,14 @@ mod arch;
 use arch::evm2_jit_entry;
 pub use arch::evm2_jit_exit;
 
+/// The most remaining gas a frame can have to run compiled code.
+///
+/// Compiled code keeps the remaining gas in a signed 64-bit counter that a deferred check reads,
+/// so it can briefly hold a small negative deficit. Half the signed range leaves room for any
+/// section charge, which codegen caps just above this bound, to be subtracted without wrapping.
+/// Frames with more gas run on the interpreter.
+pub const MAX_FRAME_GAS: u64 = i64::MAX as u64 / 2;
+
 /// The EVM bytecode compiler runtime context.
 ///
 /// This is a simple wrapper around the interpreter's resources, allowing the compiled function to
@@ -342,7 +350,7 @@ impl EvmCompilerFn {
     /// # Safety
     ///
     /// The caller must ensure that the function is safe to call for this interpreter state, and
-    /// that the remaining gas is at most `i64::MAX`.
+    /// that the remaining gas is at most [`MAX_FRAME_GAS`].
     #[inline]
     pub unsafe fn call_with_interpreter<'ctx, 'frame, 'host, T: EvmTypesHost>(
         self,
@@ -370,7 +378,7 @@ impl EvmCompilerFn {
     /// # Safety
     ///
     /// The caller must ensure that the arguments are valid, that the function is safe to call, and
-    /// that the remaining gas is at most `i64::MAX`.
+    /// that the remaining gas is at most [`MAX_FRAME_GAS`].
     #[inline]
     pub unsafe fn call<T: EvmTypesHost>(
         self,
