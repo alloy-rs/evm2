@@ -2,7 +2,7 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, hex, keccak256, map::B256Map};
 use clap::ValueEnum;
 use evm2::{
-    BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId,
+    BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
@@ -26,8 +26,6 @@ use std::{
 
 const BENCH_CALLER: Address = Address::new([0x11; 20]);
 const BENCH_TARGET: Address = Address::new([0xcc; 20]);
-/// The Osaka transaction gas limit cap, valid for every spec.
-const BYTECODE_GAS_LIMIT: u64 = 1 << 24;
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct RunArgs {
@@ -728,7 +726,8 @@ fn parse_bytecode_bench(bench: &Bench, bytecode: &[u8]) -> eyre::Result<Prepared
     let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
     let code_hash = bytecode.hash_slow();
     db.insert_account_info(&BENCH_TARGET, AccountInfo::default().with_code(bytecode.clone()));
-    let gas_limit = bench.gas_limit.unwrap_or(BYTECODE_GAS_LIMIT);
+    let gas_limit =
+        bench.gas_limit.unwrap_or_else(|| Version::base(SpecId::OSAKA).tx_gas_limit_cap);
     let tx = TxLegacy {
         chain_id: None,
         nonce: 0,
