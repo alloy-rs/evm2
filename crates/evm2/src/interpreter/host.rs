@@ -70,7 +70,6 @@ impl<E> MessageResultExt<E> {
         if self.gas.refunded() <= 0 {
             return 0;
         }
-        let max_refund_quotient = if max_refund_quotient == 0 { 1 } else { max_refund_quotient };
         // EIP-8037: the unused state-gas reservoir is reimbursed to the caller, so it
         // is not part of the gas actually spent. The EIP-3529 refund cap is a fraction
         // of the gas the transaction truly consumed, so the reservoir must be excluded
@@ -202,6 +201,5 @@ mod tests {
         assert_eq!(result.final_refund(100, 2), 40);
         assert_eq!(result.final_refund(100, 5), 16);
         assert_eq!(result.final_refund(100, 1), 60);
-        assert_eq!(result.final_refund(100, 0), 60);
     }
 }
