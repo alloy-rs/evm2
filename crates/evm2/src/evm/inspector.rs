@@ -72,6 +72,12 @@ impl InspectorConfig {
         Self { steps: OpcodeSet::ALL }
     }
 
+    /// Creates a config that calls no step hooks.
+    #[inline]
+    pub const fn without_steps() -> Self {
+        Self { steps: OpcodeSet::EMPTY }
+    }
+
     /// Sets the opcodes for which [`Inspector::step`] and [`Inspector::step_end`] are called.
     ///
     /// The EVM may call the step hooks for more opcodes than set, for example when several
@@ -231,7 +237,7 @@ pub struct NoopInspector(());
 impl<T: EvmTypesHost> Inspector<T> for NoopInspector {
     #[inline]
     fn inspector_config(&self) -> InspectorConfig {
-        InspectorConfig::new().with_steps(OpcodeSet::EMPTY)
+        InspectorConfig::without_steps()
     }
 }
 
@@ -610,6 +616,8 @@ mod tests {
         logs: Vec<Log>,
         /// Stops the parent frame when a child message ends.
         stop_after_child: bool,
+        /// Stops the frame in `step_end` of this opcode.
+        stop_in_step_end: Option<u8>,
         /// Stops every frame before it runs.
         stop_on_init: bool,
     }
@@ -644,6 +652,9 @@ mod tests {
         fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
             let opcode = self.running.pop().unwrap();
             self.step_ends.push((opcode, interp.gas().remaining(), interp.stack().to_vec()));
+            if self.stop_in_step_end == Some(opcode) {
+                interp.set_stop(InstrStop::Revert);
+            }
         }
 
         fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
@@ -812,6 +823,33 @@ mod tests {
             inspector,
         );
         assert_eq!(result, full);
+        assert_eq!(inspector.creates, 0);
+    }
+
+    #[test]
+    fn step_end_stop_wins_over_a_reload() {
+        let (db, code) = config_test_code();
+        let run = |inspector| {
+            run_evm_with_inspector_db(
+                db.clone(),
+                code.clone(),
+                &MessageExt::default(),
+                1_000_000,
+                inspector,
+            )
+        };
+        let (full, _, _) = run(ConfigInspector {
+            stop_in_step_end: Some(op::CALL),
+            ..ConfigInspector::new(OpcodeSet::ALL)
+        });
+        assert_eq!(full.stop, InstrStop::Revert);
+        // The child message of the stepped CALL changes the steps while its `step_end` stops.
+        let (result, inspector, _) = run(ConfigInspector {
+            stop_in_step_end: Some(op::CALL),
+            ..ConfigInspector::new(opcode_set([op::CALL])).switching_to(opcode_set([op::SSTORE]))
+        });
+        assert_eq!(result, full);
+        // The frame stopped at the CALL, before the later CREATE.
         assert_eq!(inspector.creates, 0);
     }
 

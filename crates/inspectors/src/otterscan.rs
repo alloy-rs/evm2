@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, U256};
 use alloy_rpc_types_trace::otterscan::{InternalOperation, OperationType};
 use evm2::{
-    EvmTypesHost, Inspector, InspectorConfig, OpcodeSet,
+    EvmTypesHost, Inspector, InspectorConfig,
     interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 
@@ -53,7 +53,7 @@ impl InternalOperationsInspector {
 
 impl<T: EvmTypesHost> Inspector<T> for InternalOperationsInspector {
     fn inspector_config(&self) -> InspectorConfig {
-        InspectorConfig::new().with_steps(OpcodeSet::EMPTY)
+        InspectorConfig::without_steps()
     }
 
     fn call(

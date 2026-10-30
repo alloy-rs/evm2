@@ -11,8 +11,7 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, OpcodeSet,
-    TxResultWithState,
+    DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, TxResultWithState,
     env::BlockEnv,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
@@ -304,7 +303,7 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
 
     #[inline]
     fn inspector_config(&self) -> InspectorConfig {
-        let mut config = InspectorConfig::new().with_steps(OpcodeSet::EMPTY);
+        let mut config = InspectorConfig::without_steps();
         each_member!(&self, |member| config =
             config.union(Inspector::<T>::inspector_config(member)));
         config
