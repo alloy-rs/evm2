@@ -1,4 +1,4 @@
-use crate::interpreter::InstrStop;
+use crate::{constants::STACK_LIMIT, interpreter::InstrStop};
 use evm2_macros::instruction;
 
 #[instruction]
@@ -25,6 +25,7 @@ pub fn swap<const N: usize>() -> Result {
 
 #[instruction(no_stack_preamble)]
 pub fn dupn(cx: _) -> Result {
+    check_stack(stack.len(), 1, true)?;
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.dup(n)
@@ -32,6 +33,7 @@ pub fn dupn(cx: _) -> Result {
 
 #[instruction(no_stack_preamble)]
 pub fn swapn(cx: _) -> Result {
+    check_stack(stack.len(), 2, false)?;
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.exchange(0, n)
@@ -39,9 +41,24 @@ pub fn swapn(cx: _) -> Result {
 
 #[instruction(no_stack_preamble)]
 pub fn exchange(cx: _) -> Result {
+    check_stack(stack.len(), 2, false)?;
     let (n, m) = decode_pair(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.exchange(n, m)
+}
+
+/// Checks the stack bounds of an opcode before it decodes its immediate, as the reference
+/// implementation of Ethereum execution does: at least `min` words, and room for one more word if
+/// `grows`.
+#[inline(always)]
+const fn check_stack(len: usize, min: usize, grows: bool) -> crate::interpreter::Result {
+    if len < min {
+        return Err(InstrStop::StackUnderflow);
+    }
+    if grows && len == STACK_LIMIT {
+        return Err(InstrStop::StackOverflow);
+    }
+    Ok(())
 }
 
 const fn decode_single(x: u8) -> Option<usize> {
@@ -98,6 +115,24 @@ mod tests {
 
         let interp = run(RunConfig::new([op::PUSH0, op::EXCHANGE, 0x8e]).spec(SpecId::AMSTERDAM));
         assert_matches!(interp.err, InstrStop::StackUnderflow);
+    }
+
+    #[test]
+    fn stack_bounds_come_before_immediate_decoding() {
+        // `0x5b` is not a valid `DUPN`, `SWAPN` or `EXCHANGE` immediate.
+        for (code, expected) in [
+            (vec![op::DUPN, 0x5b], InstrStop::StackUnderflow),
+            (vec![op::PUSH0, op::SWAPN, 0x5b], InstrStop::StackUnderflow),
+            (vec![op::PUSH0, op::EXCHANGE, 0x5b], InstrStop::StackUnderflow),
+            (
+                [vec![op::PUSH0; StackMut::CAPACITY], vec![op::DUPN, 0x5b]].concat(),
+                InstrStop::StackOverflow,
+            ),
+            (vec![op::PUSH0, op::PUSH0, op::DUPN, 0x5b], InstrStop::InvalidImmediateEncoding),
+        ] {
+            let interp = run(RunConfig::new(code.clone()).spec(SpecId::AMSTERDAM));
+            assert_eq!(interp.err, expected, "{code:x?}");
+        }
     }
 
     #[test]
