@@ -226,6 +226,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         &mut self,
         tx: SystemTx,
     ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, 'a, T>, HandlerError>> + Send + '_
+    where
+        'a: 'static,
     {
         self.assert_erased_send();
         let stack = self.async_stack();
