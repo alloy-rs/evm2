@@ -2111,6 +2111,13 @@ tests! {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 33, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
         }),
+        // The section head affords the static gas, and the resize then uses the gas that the
+        // later instructions need.
+        mstore_resize_uses_gas_of_later_instructions(@raw {
+            bytecode: &asm("PUSH 3 JUMP JUMPDEST PUSH0 PUSH0 MSTORE PUSH 1 PUSH 2 ADD POP STOP"),
+            gas_limit: 31,
+            expected_return: InstrStop::OutOfGas,
+        }),
         mload_overflow6(@raw {
             bytecode: &[op::ADDRESS, op::MLOAD],
             expected_return: InstrStop::InvalidOperandOOG,
@@ -3860,4 +3867,20 @@ fn lsr_wrapping_countdown_compiles() {
     compiler.set_single_error(true);
     compiler.set_inspect_stack(false);
     unsafe { compiler.jit("lsr_wrapping_countdown", &code[..], DEF_SPEC) }.unwrap();
+}
+
+/// `single_error` reports a failure inside compiled code as `OutOfGas`, whatever the interpreter's
+/// stop reason is.
+#[cfg(feature = "llvm")]
+#[test]
+fn single_error_reports_out_of_gas() {
+    init_tracing();
+    let mut compiler = EvmCompiler::new_llvm(false).unwrap();
+    compiler.set_single_error(true);
+    let test_case = TestCase {
+        bytecode: &[op::ADD],
+        expected_return: InstrStop::StackUnderflow,
+        ..Default::default()
+    };
+    run_test_case(&test_case, &mut compiler);
 }

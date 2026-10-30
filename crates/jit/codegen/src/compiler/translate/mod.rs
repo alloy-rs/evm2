@@ -1560,6 +1560,15 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.load(i64_type, addr, "ecx.gas.remaining")
     }
 
+    /// Adds `delta` to the remaining gas and returns the new value.
+    fn add_gas_remaining(&mut self, delta: i64) -> B::Value {
+        let remaining = self.load_gas_remaining();
+        let remaining = self.bcx.iadd_imm(remaining, delta);
+        let addr = self.gas_remaining_addr();
+        self.bcx.store(remaining, addr);
+        remaining
+    }
+
     /// Saves the local `stack_bytes` to `stack_len_arg` as a number of words.
     fn save_stack_len(&mut self) {
         let stack_bytes = self.stack_bytes.load(&mut self.bcx, "stack_bytes");
@@ -1782,6 +1791,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// the last check reaches [`GAS_CHECK_THRESHOLD`]. The check is signed, so a skipped deficit
     /// stays visible as negative remaining gas. Sections that return or call builtins that charge
     /// gas check at their head; [`build_gas_check`](Self::build_gas_check) covers the rest.
+    ///
+    /// A section that checks at its head and cannot afford its static gas fails there with
+    /// `OutOfGas`, even if the interpreter would run out of gas at a memory resize before that
+    /// point.
     fn charge_section_gas(&mut self, head: Inst) {
         if !self.config.gas_metering {
             return;
@@ -1860,8 +1873,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// Ensures the memory is large enough for `offset + len` bytes, calling the `mresize`
     /// builtin on the cold path if needed. Returns the pointer to `mem_base + offset`.
-    fn build_ensure_memory(&mut self, offset: B::Value, len: u64) -> B::Value {
-        let (base, addend) = self.memory_offset_parts(offset);
+    fn build_ensure_memory(&mut self, offset_word: B::Value, len: u64) -> B::Value {
+        let (base, addend) = self.memory_offset_parts(offset_word);
         let end = addend + len;
         let ensured =
             self.ensured_memory.iter().find(|&&(b, ..)| b == base).map(|&(_, lo, hi)| (lo, hi));
@@ -1869,10 +1882,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // `base + addend` for `addend >= lo` fits in 64 bits.
         let fits = ensured.is_some_and(|(lo, _)| lo <= addend);
         let offset = if fits {
-            self.bcx.ireduce(self.isize_type, offset)
+            self.bcx.ireduce(self.isize_type, offset_word)
         } else {
             // 63 bits lets us avoid overflow in the addition below.
-            self.u256_to_u64_saturating(offset, 63)
+            self.u256_to_u64_saturating(offset_word, 63)
         };
         // An earlier access in this section already ensured this range.
         if fits && ensured.is_some_and(|(_, hi)| end <= hi) {
@@ -1894,6 +1907,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let isize_type = self.isize_type;
         let len_const = self.bcx.iconst(isize_type, len as i64);
         let min_size = self.bcx.iadd(offset, len_const);
+        // `offset` is clamped to 63 bits, so a wider one needs its exact value.
+        let exact = (!fits).then_some((offset_word, len_const));
 
         let direct_resize_size = self
             .current_inst
@@ -1901,7 +1916,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             .unwrap_or_default();
         // Analysis proved this access always grows memory to exactly `min_size`.
         if direct_resize_size != 0 {
-            self.call_fallible_builtin(Builtin::Mresize, &[self.ecx, min_size]);
+            self.build_mresize(min_size, exact);
             self.cached_mem_base = None;
             return self.build_memory_addr(offset);
         }
@@ -1919,9 +1934,46 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
         self.if_then(exceeds, |this| {
             this.bcx.set_current_block_cold();
-            this.call_fallible_builtin(Builtin::Mresize, &[this.ecx, min_size]);
+            this.build_mresize(min_size, exact);
         });
         self.build_memory_addr(offset)
+    }
+
+    /// Calls the `mresize` builtin for the current memory access.
+    ///
+    /// `exact` is the unclamped offset word and the access length, when `min_size` was built from
+    /// a clamped offset. The call then fails like the interpreter's `to_usize` for an offset that
+    /// does not fit in 64 bits, and resizes with the exact end of the access otherwise.
+    ///
+    /// The section head already charged the static gas of the instructions after the access, but
+    /// the interpreter charges the resize before them. This adds that gas back around the resize,
+    /// so the stop reason is the one of the instruction that runs out of gas, and fails with
+    /// `OutOfGas` if the resize used that gas.
+    fn build_mresize(&mut self, mut min_size: B::Value, exact: Option<(B::Value, B::Value)>) {
+        let owed = match self.current_inst {
+            Some(inst) if self.config.gas_metering => self.bytecode.inst(inst).gas_owed(),
+            _ => 0,
+        };
+        let unchecked_gas = self.unchecked_gas;
+        if owed != 0 {
+            self.add_gas_remaining(owed as i64);
+        }
+        self.build_gas_check();
+        if let Some((offset_word, len)) = exact {
+            let u64_max = self.bcx.iconst_256(U256::from(u64::MAX));
+            let too_large = self.bcx.icmp(IntCC::UnsignedGreaterThan, offset_word, u64_max);
+            self.build_check(too_large, InstrStop::InvalidOperandOOG);
+            let offset = self.bcx.ireduce(self.isize_type, offset_word);
+            min_size = self.bcx.uadd_sat(offset, len);
+        }
+        self.call_fallible_builtin(Builtin::Mresize, &[self.ecx, min_size]);
+        if owed != 0 {
+            let remaining = self.add_gas_remaining(-(owed as i64));
+            // The resize may have used the gas owed to the instructions after the access.
+            let out_of_gas = self.bcx.icmp_imm(IntCC::SignedLessThan, remaining, 0);
+            self.build_check(out_of_gas, InstrStop::OutOfGas);
+        }
+        self.unchecked_gas = unchecked_gas;
     }
 
     /// Splits a value into a base value and a constant addend.

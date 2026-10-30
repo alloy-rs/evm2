@@ -77,7 +77,8 @@ impl StackSection {
 pub(crate) struct GasSectionAnalysis {
     gas_cost: u64,
     start_inst: Inst,
-    /// `GAS` instructions in the section, with the section gas up to and including each one.
+    /// `GAS` and memory-access instructions in the section, with the section gas up to and
+    /// including each one.
     gas_insts: SmallVec<[(Inst, u64); 2]>,
 }
 
@@ -100,7 +101,8 @@ impl GasSectionAnalysis {
         self.gas_cost += gas;
     }
 
-    /// Records a `GAS` instruction after accumulating its base gas.
+    /// Records an instruction that observes or fails on the remaining gas, after accumulating its
+    /// base gas.
     fn process_gas(&mut self, inst: Inst) {
         self.gas_insts.push((inst, self.gas_cost));
     }
@@ -231,7 +233,7 @@ impl SectionsAnalysis {
         let (inp, out) = data.stack_io();
         self.stack.process(inp, out);
         self.gas.process(data.base_gas);
-        if data.opcode == op::GAS {
+        if matches!(data.opcode, op::GAS | op::MLOAD | op::MSTORE | op::MSTORE8) {
             self.gas.process_gas(inst);
         }
 
@@ -427,6 +429,21 @@ mod tests {
             .map(|(_, data)| data.gas_owed())
             .collect::<Vec<_>>();
         assert_eq!(owed, [3 + 3 + 110 + 2 + 2 + 100, 2 + 100]);
+    }
+
+    #[test]
+    fn memory_access_owes_rest_of_section() {
+        // PUSH0(2) PUSH0(2) MSTORE(3) PUSH0(2) MLOAD(3) POP(2) PUSH0(2) PUSH0(2) MSTORE8(3)
+        let bytecode = analyze_asm_spec(
+            "PUSH0 PUSH0 MSTORE PUSH0 MLOAD POP PUSH0 PUSH0 MSTORE8",
+            SpecId::CANCUN,
+        );
+        let owed = bytecode
+            .iter_insts()
+            .filter(|(_, data)| matches!(data.opcode, op::MSTORE | op::MLOAD | op::MSTORE8))
+            .map(|(_, data)| data.gas_owed())
+            .collect::<Vec<_>>();
+        assert_eq!(owed, [2 + 3 + 2 + 2 + 2 + 3, 2 + 2 + 2 + 3, 0]);
     }
 
     #[test]

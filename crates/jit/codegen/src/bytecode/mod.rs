@@ -997,7 +997,8 @@ pub(crate) struct InstData {
     /// - `JUMPDEST`: program counter in low 31 bits, reachable flag in high bit
     ///   ([`InstData::JUMPDEST_REACHABLE`]).
     /// - `JUMP | JUMPI` with [`InstFlags::STATIC_JUMP`]: target instruction index.
-    /// - `GAS`: static gas of the rest of its gas section, which the section head already charged.
+    /// - `GAS | MLOAD | MSTORE | MSTORE8`: static gas of the rest of its gas section, which the
+    ///   section head already charged.
     /// - otherwise: unused.
     pub(crate) data: u32,
     /// The gas section this instruction belongs to.
@@ -1105,17 +1106,18 @@ impl InstData {
     /// High bit of `data` set when a `JUMPDEST` is a reachable static jump target.
     pub(crate) const JUMPDEST_REACHABLE: u32 = 1 << 31;
 
-    /// Returns the static gas that the section head charged for instructions after this `GAS`.
+    /// Returns the static gas that the section head charged for instructions after this `GAS`,
+    /// `MLOAD`, `MSTORE` or `MSTORE8`.
     #[inline]
     pub(crate) fn gas_owed(&self) -> u32 {
-        debug_assert_eq!(self.opcode, op::GAS);
+        debug_assert!(matches!(self.opcode, op::GAS | op::MLOAD | op::MSTORE | op::MSTORE8));
         self.data
     }
 
-    /// Sets the static gas charged ahead of this `GAS` instruction.
+    /// Sets the static gas charged ahead of this instruction.
     #[inline]
     pub(crate) fn set_gas_owed(&mut self, gas: u32) {
-        debug_assert_eq!(self.opcode, op::GAS);
+        debug_assert!(matches!(self.opcode, op::GAS | op::MLOAD | op::MSTORE | op::MSTORE8));
         self.data = gas;
     }
 

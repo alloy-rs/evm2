@@ -452,10 +452,10 @@ pub fn run_test_case<B: Backend>(test_case: &TestCase<'_>, compiler: &mut EvmCom
     compiler.set_inspect_stack(test_case.inspect_stack.unwrap_or(true));
     // compiler.set_debug_assertions(false);
     let f = unsafe { compiler.jit("test", bytecode, spec_id) }.unwrap();
-    run_compiled_test_case(test_case, f);
+    run_compiled_test_case(test_case, f, compiler.single_error());
 }
 
-fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
+fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn, single_error: bool) {
     let TestCase { bytecode, spec_id, modify_message, assert_host, .. } = *test_case;
 
     let (_, host_after_jit) = with_evm_context_and_host_modified(
@@ -463,7 +463,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
         spec_id,
         modify_message,
         |ecx, stack, stack_len| {
-            run_compiled_test_case_with_context(test_case, f, ecx, stack, stack_len);
+            run_compiled_test_case_with_context(test_case, f, single_error, ecx, stack, stack_len);
         },
     );
 
@@ -475,6 +475,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
 fn run_compiled_test_case_with_context(
     test_case: &TestCase<'_>,
     f: EvmCompilerFn,
+    single_error: bool,
     ecx: &mut EvmContext<'_, '_, '_>,
     stack: &mut EvmStack,
     stack_len: &mut usize,
@@ -547,22 +548,10 @@ fn run_compiled_test_case_with_context(
 
     let actual_return = unsafe { f.call(ecx, stack, stack_len) };
 
-    if matches!(
-        actual_return,
-        // We can have a stack overflow/underflow before other error codes due to sections.
-        |InstrStop::StackOverflow| InstrStop::StackUnderflow
-            // Any OOG is equivalent. We skip `InvalidOperand` sometimes.
-            | InstrStop::OutOfGas
-            | InstrStop::MemoryOOG
-            | InstrStop::MemoryLimitOOG
-            | InstrStop::InvalidOperandOOG
-    ) {
-        assert_eq!(
-            actual_return.is_halt(),
-            expected_return.is_halt(),
-            "return value mismatch: {actual_return:?} != {expected_return:?}"
-        );
-    } else {
+    // `single_error` reports every failure inside compiled code as `OutOfGas`. Builtin halts keep
+    // their own codes, so every other stop reason is exact.
+    let collapsed = single_error && actual_return == InstrStop::OutOfGas && halts;
+    if !collapsed {
         assert_eq!(actual_return, expected_return, "return value mismatch");
     }
 
