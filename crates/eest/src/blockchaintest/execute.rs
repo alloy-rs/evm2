@@ -1879,6 +1879,8 @@ mod tests {
                         number: U256::ONE,
                         gas_limit: U256::from(30_000_000),
                         receipt_trie: B256::ZERO,
+                        excess_blob_gas: Some(U256::ZERO),
+                        blob_gas_used: Some(U256::ZERO),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -2048,6 +2050,8 @@ mod tests {
                         hash: block_hash,
                         number: U256::ONE,
                         gas_limit: U256::from(30_000_000),
+                        excess_blob_gas: Some(U256::ZERO),
+                        blob_gas_used: Some(U256::ZERO),
                         ..Default::default()
                     }),
                     ..Default::default()
