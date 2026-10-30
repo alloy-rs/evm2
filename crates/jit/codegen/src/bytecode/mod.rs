@@ -361,7 +361,7 @@ impl<'a> Bytecode<'a> {
             redirects: FxHashMap::default(),
             cfg: Cfg::default(),
             config: AnalysisConfig::default(),
-            compiler_gas_limit: 100_000,
+            compiler_gas_limit: DEFAULT_COMPILER_GAS_LIMIT,
             compiler_gas_used: 0,
         }
     }

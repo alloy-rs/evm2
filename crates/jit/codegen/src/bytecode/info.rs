@@ -11,8 +11,6 @@ pub struct OpcodeInfo(u32);
 impl OpcodeInfo {
     /// The unknown flag.
     pub const UNKNOWN: u32 = 1 << 31;
-    /// The dynamic flag.
-    pub const DYNAMIC: u32 = 1 << 30;
     /// The disabled flag.
     pub const DISABLED: u32 = 1 << 29;
     /// The host-instruction flag.
@@ -32,12 +30,6 @@ impl OpcodeInfo {
     #[inline]
     pub const fn is_unknown(self) -> bool {
         self.0 == Self::UNKNOWN
-    }
-
-    /// Returns `true` if the gas cost is dynamic.
-    #[inline]
-    pub const fn is_dynamic(self) -> bool {
-        self.0 & Self::DYNAMIC != 0
     }
 
     /// Returns `true` if the opcode is known, but disabled in the current EVM
@@ -86,12 +78,6 @@ impl OpcodeInfo {
         self.0 = Self::UNKNOWN;
     }
 
-    /// Sets the dynamic flag.
-    #[inline]
-    pub const fn set_dynamic(&mut self) {
-        self.0 |= Self::DYNAMIC;
-    }
-
     /// Sets the disabled flag.
     #[inline]
     pub const fn set_disabled(&mut self) {
@@ -117,68 +103,9 @@ pub const fn op_info_map(spec_id: SpecId) -> &'static [OpcodeInfo; 256] {
     &MAPS[spec_id as usize]
 }
 
-/// Opcodes with a dynamic gas component that also have a base (static) cost deducted upfront.
-/// Only the dynamic part is paid in builtins.
-const DYNAMIC_WITH_BASE_GAS: &[u8] = &[
-    op::EXP,
-    op::KECCAK256,
-    op::BALANCE,
-    op::CALLDATACOPY,
-    op::CODECOPY,
-    op::EXTCODESIZE,
-    op::EXTCODECOPY,
-    op::RETURNDATACOPY,
-    op::EXTCODEHASH,
-    op::MLOAD,
-    op::MSTORE,
-    op::MSTORE8,
-    op::MCOPY,
-    op::LOG0,
-    op::LOG1,
-    op::LOG2,
-    op::LOG3,
-    op::LOG4,
-    op::SLOAD,
-    op::CALL,
-    op::CALLCODE,
-    op::DELEGATECALL,
-    op::STATICCALL,
-    op::SELFDESTRUCT,
-];
-
-/// Opcodes whose gas cost is entirely dynamic — computed fully in builtins at runtime.
+/// Opcodes whose builtin pays the whole gas cost, including the static part, at runtime. Core
+/// gives them no static gas, so a host cannot change it without running its own instruction.
 const FULLY_DYNAMIC: &[u8] = &[op::SSTORE, op::CREATE, op::CREATE2];
-
-/// Opcodes that are gated behind a specific `SpecId`, paired with the spec they were introduced in.
-const SPEC_GATED_OPCODES: &[(u8, SpecId)] = &[
-    (op::SHL, SpecId::PETERSBURG),
-    (op::SHR, SpecId::PETERSBURG),
-    (op::SAR, SpecId::PETERSBURG),
-    (op::CLZ, SpecId::OSAKA),
-    (op::RETURNDATASIZE, SpecId::BYZANTIUM),
-    (op::RETURNDATACOPY, SpecId::BYZANTIUM),
-    (op::EXTCODEHASH, SpecId::PETERSBURG),
-    (op::CHAINID, SpecId::ISTANBUL),
-    (op::SELFBALANCE, SpecId::ISTANBUL),
-    (op::BASEFEE, SpecId::LONDON),
-    (op::BLOBHASH, SpecId::CANCUN),
-    (op::BLOBBASEFEE, SpecId::CANCUN),
-    (op::TLOAD, SpecId::CANCUN),
-    (op::TSTORE, SpecId::CANCUN),
-    (op::MCOPY, SpecId::CANCUN),
-    (op::PUSH0, SpecId::SHANGHAI),
-    (op::DELEGATECALL, SpecId::HOMESTEAD),
-    (op::CREATE2, SpecId::PETERSBURG),
-    (op::STATICCALL, SpecId::BYZANTIUM),
-    (op::REVERT, SpecId::BYZANTIUM),
-    (op::DUPN, SpecId::AMSTERDAM),
-    (op::SWAPN, SpecId::AMSTERDAM),
-    (op::EXCHANGE, SpecId::AMSTERDAM),
-    (op::SLOTNUM, SpecId::AMSTERDAM),
-];
-
-/// Opcodes defined by the opcode table but intentionally disabled for compiled execution.
-const UNSUPPORTED_OPCODES: &[u8] = &[];
 
 const fn contains(haystack: &[u8], needle: u8) -> bool {
     let mut i = 0;
@@ -196,7 +123,6 @@ const fn make_map<const BASE_SPEC_ID: u32>() -> [OpcodeInfo; 256] {
         BASE_SPEC_ID,
         { u32::MAX },
     > as EvmConfig<BaseEvmTypes>>::OPCODE_CONFIG;
-    let spec_id = SpecId::try_from_u32(BASE_SPEC_ID).expect("invalid spec id");
     let mut map = [OpcodeInfo(OpcodeInfo::UNKNOWN); 256];
 
     let mut i = 0u16;
@@ -209,47 +135,23 @@ const fn make_map<const BASE_SPEC_ID: u32>() -> [OpcodeInfo; 256] {
             continue;
         }
 
-        // Mark unsupported opcodes as disabled rather than
-        // unknown, so they return `NotActivated` instead of `OpcodeNotFound` at runtime.
-        if contains(UNSUPPORTED_OPCODES, op) {
-            map[op as usize].set_disabled();
-            i += 1;
-            continue;
-        }
-
-        let is_fully_dynamic = contains(FULLY_DYNAMIC, op);
-        let is_dynamic_with_base = contains(DYNAMIC_WITH_BASE_GAS, op);
-
-        // Fully dynamic opcodes have their entire gas cost handled in builtins.
-        let gas = if is_fully_dynamic {
-            0u16
+        // Mark opcodes the version leaves out as disabled rather than unknown, so they return
+        // `NotActivated` instead of `OpcodeNotFound` at runtime. `INVALID` is never in a config
+        // and keeps its own stop reason.
+        let mut info = OpcodeInfo::new(0);
+        if !config.is_defined(op) && op != op::INVALID {
+            info.set_disabled();
         } else {
             let static_gas = config.static_gas(op) as u64;
             assert!(
                 static_gas <= OpcodeInfo::MASK as u64,
                 "static gas exceeds OpcodeInfo capacity"
             );
-            static_gas as u16
-        };
-
-        let mut info = OpcodeInfo::new(gas);
-
-        if is_fully_dynamic || is_dynamic_with_base {
-            info.set_dynamic();
+            info.set_gas(static_gas as u16);
         }
 
         map[op as usize] = info;
         i += 1;
-    }
-
-    // Apply spec-gating: mark opcodes as disabled if the current spec is before their introduction.
-    let mut j = 0;
-    while j < SPEC_GATED_OPCODES.len() {
-        let (op, required_spec) = SPEC_GATED_OPCODES[j];
-        if !spec_id.enables(required_spec) {
-            map[op as usize].set_disabled();
-        }
-        j += 1;
     }
 
     map
@@ -302,10 +204,9 @@ pub(crate) fn opcode_infos(view: &OpcodeView, spec_id: SpecId) -> [OpcodeInfo; 2
             continue;
         }
         let mut info = base[i];
-        info.set_gas(if contains(FULLY_DYNAMIC, op) && !host { 0 } else { view.static_gas(op) });
+        info.set_gas(view.static_gas(op));
         if host {
             info.set_host();
-            info.set_dynamic();
         }
         map[i] = info;
     }
@@ -315,6 +216,27 @@ pub(crate) fn opcode_infos(view: &OpcodeView, spec_id: SpecId) -> [OpcodeInfo; 2
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evm2::OpcodeConfig;
+
+    #[test]
+    fn matches_core_opcode_config() {
+        for spec in 0..SpecId::COUNT as u32 {
+            let spec_id = SpecId::try_from_u32(spec).unwrap();
+            let config = OpcodeConfig::<BaseEvmTypes>::base_for_spec(spec_id);
+            let map = op_info_map(spec_id);
+            for op in 0..=u8::MAX {
+                let info = map[op as usize];
+                if OpCode::new(op).is_none() {
+                    assert!(info.is_unknown(), "{spec_id:?} {op:#04x}");
+                } else if op == op::INVALID || config.is_defined(op) {
+                    assert!(!info.is_unknown() && !info.is_disabled(), "{spec_id:?} {op:#04x}");
+                    assert_eq!(info.base_gas(), config.static_gas(op), "{spec_id:?} {op:#04x}");
+                } else {
+                    assert!(info.is_disabled(), "{spec_id:?} {op:#04x}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_clz_flags() {
@@ -362,9 +284,8 @@ mod tests {
         assert_eq!(cancun[op::MUL as usize].base_gas(), 5);
         assert_eq!(cancun[op::ADDMOD as usize].base_gas(), 8);
 
-        // EXP: base 10, dynamic.
+        // EXP: static gas only; the dynamic part is paid in builtins.
         assert_eq!(cancun[op::EXP as usize].base_gas(), 10);
-        assert!(cancun[op::EXP as usize].is_dynamic());
 
         // PUSH/DUP/SWAP gas.
         assert_eq!(cancun[op::PUSH1 as usize].base_gas(), 3);
@@ -378,13 +299,10 @@ mod tests {
         assert_eq!(cancun[op::LOG2 as usize].base_gas(), 375);
         assert_eq!(cancun[op::LOG3 as usize].base_gas(), 375);
         assert_eq!(cancun[op::LOG4 as usize].base_gas(), 375);
-        assert!(cancun[op::LOG0 as usize].is_dynamic());
 
-        // Memory ops: dynamic with base cost 3.
+        // Memory ops: static gas only.
         assert_eq!(cancun[op::MLOAD as usize].base_gas(), 3);
-        assert!(cancun[op::MLOAD as usize].is_dynamic());
         assert_eq!(cancun[op::KECCAK256 as usize].base_gas(), 30);
-        assert!(cancun[op::KECCAK256 as usize].is_dynamic());
 
         // Transient storage (Cancun).
         assert_eq!(cancun[op::TLOAD as usize].base_gas(), 100);
@@ -412,18 +330,16 @@ mod tests {
         assert!(pre_shanghai[op::PUSH0 as usize].is_disabled());
         assert!(!cancun[op::PUSH0 as usize].is_disabled());
 
-        // Dynamic-with-base-gas opcodes: base gas varies by spec.
+        // Static gas of opcodes with a dynamic component varies by spec.
         let frontier = op_info_map(SpecId::FRONTIER);
         assert_eq!(frontier[op::SLOAD as usize].base_gas(), 50);
         assert_eq!(frontier[op::SELFDESTRUCT as usize].base_gas(), 0);
-        assert!(frontier[op::SELFDESTRUCT as usize].is_dynamic());
         assert_eq!(frontier[op::CALL as usize].base_gas(), 40);
         assert_eq!(frontier[op::BALANCE as usize].base_gas(), 20);
         assert_eq!(frontier[op::EXTCODESIZE as usize].base_gas(), 20);
         let tangerine = op_info_map(SpecId::TANGERINE);
         assert_eq!(tangerine[op::SLOAD as usize].base_gas(), 200);
         assert_eq!(tangerine[op::SELFDESTRUCT as usize].base_gas(), 5000);
-        assert!(tangerine[op::SELFDESTRUCT as usize].is_dynamic());
         assert_eq!(tangerine[op::CALL as usize].base_gas(), 700);
         assert_eq!(tangerine[op::BALANCE as usize].base_gas(), 400);
         assert_eq!(tangerine[op::EXTCODESIZE as usize].base_gas(), 700);
