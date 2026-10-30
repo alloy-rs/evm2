@@ -696,7 +696,7 @@ pub struct CallTraceStep {
     /// underflow or an out of gas. An error raised inside the opcode, such as an invalid jump,
     /// leaves it `None`, like the struct log of geth.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub error: Option<String>,
+    pub error: Option<Box<str>>,
     /// Immediate bytes of the step
     pub immediate_bytes: Option<Bytes>,
     /// Optional complementary decoded step data.
@@ -715,7 +715,7 @@ impl CallTraceStep {
     ) -> StructLog {
         StructLog {
             depth,
-            error: self.error.clone(),
+            error: self.error.as_deref().map(ToString::to_string),
             gas: self.gas_remaining,
             gas_cost: self.gas_cost,
             state_gas_cost: self.state_gas_cost,

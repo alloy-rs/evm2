@@ -11,7 +11,7 @@ use crate::{
         utils::{CODE_DEPOSIT_OUT_OF_GAS, fails_before_body, fmt_geth_halt, gas_used},
     },
 };
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256};
 use alloy_rpc_types_trace::parity::StorageDelta;
@@ -596,11 +596,7 @@ impl TracingInspector {
     ///
     /// Invoked on [Inspector::step_end].
     #[cold]
-    fn fill_step_on_step_end<T: EvmTypes>(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
-        error: Option<String>,
-    ) {
+    fn fill_step_on_step_end<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let Some((trace_idx, step_idx)) = self.step_stack.pop() else {
             return;
         };
@@ -691,7 +687,11 @@ impl TracingInspector {
 
         // set the status
         step.status = interp.result().err();
-        step.error = error;
+        if let Some(stop) = step.status
+            && stop.is_halt()
+        {
+            step.error = step_error(stop, interp);
+        }
 
         if step.status.is_some_and(|status| status.is_halt()) {
             return;
@@ -725,6 +725,15 @@ impl TracingInspector {
                 );
             }
         }
+    }
+
+    /// Records the error geth reports for the opcode that halted the current frame.
+    ///
+    /// Invoked on [Inspector::step_end], where the interpreter still holds the opcode and the stack
+    /// it halted on.
+    #[cold]
+    fn record_halt<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>, stop: InstrStop) {
+        self.last_trace().trace.geth_error = fmt_geth_halt(stop, interp);
     }
 
     /// Restores a root omitted when evm2 halts during runtime gas charging, before its hooks run.
@@ -781,16 +790,13 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        let halt = interp.result().err().filter(|stop| stop.is_halt());
-        let error = halt.and_then(|stop| fmt_geth_halt(stop, interp));
-        // geth's struct logger only sees the errors raised before the opcode runs.
-        let step_error =
-            halt.filter(|stop| fails_before_body(*stop, interp)).and_then(|_| error.clone());
         if self.config.record_steps {
-            self.fill_step_on_step_end(interp, step_error);
+            self.fill_step_on_step_end(interp);
         }
-        if let Some(error) = error {
-            self.last_trace().trace.geth_error = Some(error);
+        if let Err(stop) = interp.result()
+            && stop.is_halt()
+        {
+            self.record_halt(interp, stop);
         }
         self.budget.halt(interp, true);
     }
@@ -991,6 +997,14 @@ fn storage_slot(stack: &[U256], op: u8) -> Option<Box<(U256, U256)>> {
         }
         _ => None,
     }
+}
+
+/// Returns the error geth's struct logger reports for the opcode that halted with `stop`.
+///
+/// The struct logger only sees the errors raised before the opcode runs.
+#[cold]
+fn step_error<T: EvmTypes>(stop: InstrStop, interp: &Interpreter<'_, '_, T>) -> Option<Box<str>> {
+    fails_before_body(stop, interp).then(|| fmt_geth_halt(stop, interp)).flatten().map(Into::into)
 }
 
 /// Returns the memory range whose contents after execution the opcode reports, derived from its
