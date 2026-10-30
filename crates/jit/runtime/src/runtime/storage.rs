@@ -21,8 +21,8 @@ pub struct RuntimeCacheKey {
 }
 
 impl Hash for RuntimeCacheKey {
-    /// Feeds the hasher one word: the code hash is a keccak digest, so any 8 bytes of it are
-    /// uniformly distributed, and the map's seeded hasher still mixes the word.
+    /// Feeds the hasher one word. The code hash is a keccak digest, so any 8 bytes of it are
+    /// uniformly distributed, and the map's hasher still mixes the word.
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         let prefix = u64::from_le_bytes(*self.code_hash.first_chunk().unwrap());
