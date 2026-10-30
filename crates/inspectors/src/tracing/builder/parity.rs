@@ -13,7 +13,7 @@ use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
 use evm2::{
-    EvmTypesHost, SpecId, TxResultExt, TxResultWithState,
+    AccountInfo, EvmTypesHost, SpecId, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase, PendingState},
     interpreter::InstrStop,
 };
@@ -126,7 +126,7 @@ impl ParityTraceBuilder {
     /// Warning: If `trace_types` contains [TraceType::StateDiff] the returned [StateDiff] will not
     /// be filled. Use [ParityTraceBuilder::into_trace_results_with_state] or
     /// [populate_state_diff] to populate the balance and nonce changes for the [StateDiff]
-    /// using the database.
+    /// using the pending state and the database for bytecode.
     pub fn into_trace_results<E>(
         self,
         res: &TxResultExt<E>,
@@ -142,7 +142,8 @@ impl ParityTraceBuilder {
     /// Consumes the inspector and returns the trace results according to the configured trace
     /// types.
     ///
-    /// This also takes the database to populate the balance and nonce changes for the [StateDiff].
+    /// This also takes the pending state and a database (used for bytecode) to populate the
+    /// [StateDiff].
     ///
     /// Note: this is considered a convenience method that takes the state changes after inspecting
     /// a transaction with the [TracingInspector](crate::tracing::TracingInspector).
@@ -162,8 +163,7 @@ impl ParityTraceBuilder {
     /// state, without cloning the state into a result container.
     ///
     /// Populates state diffs when requested by `trace_types`. VM bytecode comes from the recorded
-    /// frames. The database must represent the state before the transaction's changes are
-    /// committed.
+    /// frames. The database is only used to load bytecode by hash.
     pub fn into_trace_results_with_state_parts<E>(
         self,
         result: &TxResultExt<E>,
@@ -477,32 +477,32 @@ where
 /// Populates [StateDiff] given the [PendingState] of a transaction and a database.
 ///
 /// Loops over all state accounts in the accounts diff that contains all accounts that are included
-/// in the [PendingState] and compares the balance and nonce against what's in the `db`, which
-/// should point to the beginning of the transaction.
+/// in the [PendingState] and compares the balance and nonce against the account as it was at the
+/// start of the transaction, which the pending state records. The `db` is only used to load
+/// bytecode by hash.
 pub fn populate_state_diff(
     state_diff: &mut StateDiff,
     db: &mut dyn DynDatabase,
     pending: &PendingState,
 ) -> DbResult<()> {
     let state = TxState::from_pending(pending);
+    let absent = AccountInfo::default();
     for (addr, changed_acc) in state.accounts.iter() {
-        let db_acc = db.get_account(addr)?;
-
         // An account created and destroyed in this transaction has no net change unless it
         // already existed, for example with a prefunded balance.
-        if changed_acc.current.is_none() && db_acc.is_none() {
+        if changed_acc.current.is_none() && changed_acc.original.is_none() {
             continue;
         }
 
-        let existed = db_acc.is_some();
-        let db_acc = db_acc.unwrap_or_default();
+        let existed = changed_acc.original.is_some();
+        let original = changed_acc.original.as_ref().unwrap_or(&absent);
         let entry = state_diff.entry(*addr).or_default();
 
         // Use the finalized account state: selfdestruct can preserve a balance-only account.
         if changed_acc.current.is_none() {
-            entry.balance = Delta::Removed(db_acc.balance);
-            entry.nonce = Delta::Removed(U64::from(db_acc.nonce));
-            entry.code = Delta::Removed(load_account_code(db, &db_acc)?.unwrap_or_default());
+            entry.balance = Delta::Removed(original.balance);
+            entry.nonce = Delta::Removed(U64::from(original.nonce));
+            entry.code = Delta::Removed(load_account_code(db, original)?.unwrap_or_default());
             // Deletion wipes all storage, which the removed account implies. PendingState
             // holds only accessed slots, so listing them would produce a partial diff.
             continue;
@@ -526,8 +526,8 @@ pub fn populate_state_diff(
             }
         } else {
             // EIP-7702 can change code without creating the account, even if execution reverts.
-            if db_acc.code_hash != info.code_hash {
-                let original_account_code = load_account_code(db, &db_acc)?.unwrap_or_default();
+            if original.code_hash != info.code_hash {
+                let original_account_code = load_account_code(db, original)?.unwrap_or_default();
                 let present_account_code = load_account_code(db, info)?.unwrap_or_default();
                 entry.code = Delta::changed(original_account_code, present_account_code);
             }
@@ -541,24 +541,24 @@ pub fn populate_state_diff(
             }
 
             // check if the account was changed at all
-            if entry.storage.is_empty() && &db_acc == info && !changed_acc.selfdestructed {
+            if entry.storage.is_empty() && original == info && !changed_acc.selfdestructed {
                 // clear the entry if the account was not changed
                 state_diff.remove(addr);
                 continue;
             }
 
-            entry.balance = if db_acc.balance == info.balance {
+            entry.balance = if original.balance == info.balance {
                 Delta::Unchanged
             } else {
-                Delta::Changed(ChangedType { from: db_acc.balance, to: info.balance })
+                Delta::Changed(ChangedType { from: original.balance, to: info.balance })
             };
 
             // this is relevant for the caller and contracts
-            entry.nonce = if db_acc.nonce == info.nonce {
+            entry.nonce = if original.nonce == info.nonce {
                 Delta::Unchanged
             } else {
                 Delta::Changed(ChangedType {
-                    from: U64::from(db_acc.nonce),
+                    from: U64::from(original.nonce),
                     to: U64::from(info.nonce),
                 })
             };
