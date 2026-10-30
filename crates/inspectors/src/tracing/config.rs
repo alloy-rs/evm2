@@ -99,7 +99,7 @@ pub struct TracingInspectorConfig {
     /// [`CallTraceStep::contract_size`](crate::tracing::types::CallTraceStep::contract_size), as
     /// geth's ERC-7562 tracer does.
     ///
-    /// Only set by [`Self::from_geth_erc7562_config`], not by [`Self::all`]; it requires
+    /// Only set by [`Self::from_geth_erc7562_config`] and [`Self::all`]; it requires
     /// [`Self::record_steps`].
     pub record_contract_sizes: bool,
 }
@@ -121,7 +121,7 @@ impl TracingInspectorConfig {
             record_logs: true,
             record_immediate_bytes: true,
             record_step_deltas: true,
-            record_contract_sizes: false,
+            record_contract_sizes: true,
         }
     }
 
@@ -416,13 +416,6 @@ impl TracingInspectorConfig {
         self
     }
 
-    /// Configure whether the tracer should record contract sizes, see
-    /// [`Self::record_contract_sizes`].
-    pub const fn set_contract_sizes(mut self, record_contract_sizes: bool) -> Self {
-        self.record_contract_sizes = record_contract_sizes;
-        self
-    }
-
     /// Configure whether the tracer should record the bytecode executed by each frame.
     pub const fn set_bytecode(mut self, record_bytecode: bool) -> Self {
         self.record_bytecode = record_bytecode;
@@ -465,6 +458,13 @@ impl TracingInspectorConfig {
     /// Configure whether the tracer should record immediate bytes
     pub const fn set_immediate_bytes(mut self, record_immediate_bytes: bool) -> Self {
         self.record_immediate_bytes = record_immediate_bytes;
+        self
+    }
+
+    /// Configure whether the tracer should record contract sizes, see
+    /// [`Self::record_contract_sizes`].
+    pub const fn set_contract_sizes(mut self, record_contract_sizes: bool) -> Self {
+        self.record_contract_sizes = record_contract_sizes;
         self
     }
 
