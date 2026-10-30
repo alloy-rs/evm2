@@ -127,16 +127,11 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
             }
             gas.sync_after_exec(state, dynamic_gas);
         }
-        Err(e) => {
+        Err(_) => {
             gas.sync_before_exec(state, false);
-            r = Err(match super::stack_error_before_gas(op, stack.len()) {
-                Some(stack_error) => {
-                    // A failed charge leaves a wrapped counter; halts spend all gas anyway.
-                    gas.burn(state);
-                    stack_error
-                }
-                None => e,
-            });
+            // A failed charge leaves a wrapped counter; the halt spends all gas anyway.
+            gas.burn(state);
+            r = Err(super::static_gas_halt(op, stack.len()));
         }
     }
     if M::INSPECT {

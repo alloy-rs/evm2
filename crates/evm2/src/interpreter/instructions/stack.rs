@@ -25,40 +25,39 @@ pub fn swap<const N: usize>() -> Result {
 
 #[instruction(no_stack_preamble)]
 pub fn dupn(cx: _) -> Result {
-    check_stack(stack.len(), 1, true)?;
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
-        .ok_or(InstrStop::InvalidImmediateEncoding)?;
+        .ok_or_else(|| invalid_immediate(stack.len(), 1, true))?;
     stack.dup(n)
 }
 
 #[instruction(no_stack_preamble)]
 pub fn swapn(cx: _) -> Result {
-    check_stack(stack.len(), 2, false)?;
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
-        .ok_or(InstrStop::InvalidImmediateEncoding)?;
+        .ok_or_else(|| invalid_immediate(stack.len(), 2, false))?;
     stack.exchange(0, n)
 }
 
 #[instruction(no_stack_preamble)]
 pub fn exchange(cx: _) -> Result {
-    check_stack(stack.len(), 2, false)?;
     let (n, m) = decode_pair(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
-        .ok_or(InstrStop::InvalidImmediateEncoding)?;
+        .ok_or_else(|| invalid_immediate(stack.len(), 2, false))?;
     stack.exchange(n, m)
 }
 
-/// Checks the stack bounds of an opcode before it decodes its immediate, as the reference
-/// implementation of Ethereum execution does: at least `min` words, and room for one more word if
-/// `grows`.
-#[inline(always)]
-const fn check_stack(len: usize, min: usize, grows: bool) -> crate::interpreter::Result {
+/// Returns the halt of an opcode whose immediate does not decode.
+///
+/// The reference implementation of Ethereum execution checks the stack bounds before it decodes
+/// the immediate, so a stack with fewer than `min` words, or no room for the `grows` result, halts
+/// with a stack error first.
+#[cold]
+const fn invalid_immediate(len: usize, min: usize, grows: bool) -> InstrStop {
     if len < min {
-        return Err(InstrStop::StackUnderflow);
+        InstrStop::StackUnderflow
+    } else if grows && len == STACK_LIMIT {
+        InstrStop::StackOverflow
+    } else {
+        InstrStop::InvalidImmediateEncoding
     }
-    if grows && len == STACK_LIMIT {
-        return Err(InstrStop::StackOverflow);
-    }
-    Ok(())
 }
 
 const fn decode_single(x: u8) -> Option<usize> {

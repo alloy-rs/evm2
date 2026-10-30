@@ -52,14 +52,15 @@ const fn instruction_len(op: u8) -> usize {
     }
 }
 
-/// Returns the stack error of an opcode that failed to charge its static gas.
+/// Returns the halt of an opcode that failed to charge its static gas.
 ///
 /// The instruction checks its stack bounds after the static gas, while the reference
 /// implementation of Ethereum execution checks them first. When both fail it reports the stack
-/// error, so a failed charge must name it. Runs on the failure path only.
+/// error, so a failed charge reports it too, and is out of gas otherwise. Runs on the failure path
+/// only.
 #[cold]
 #[inline(never)]
-fn stack_error_before_gas(op: u8, stack_len: usize) -> Option<InstrStop> {
+fn static_gas_halt(op: u8, stack_len: usize) -> InstrStop {
     let op = OpCode::new_or_unknown(op);
     let (inputs, outputs) = (usize::from(op.inputs()), usize::from(op.outputs()));
     let min_stack = match op.get() {
@@ -68,11 +69,11 @@ fn stack_error_before_gas(op: u8, stack_len: usize) -> Option<InstrStop> {
         _ => inputs,
     };
     if stack_len < min_stack {
-        Some(InstrStop::StackUnderflow)
+        InstrStop::StackUnderflow
     } else if stack_len + outputs > STACK_LIMIT + inputs {
-        Some(InstrStop::StackOverflow)
+        InstrStop::StackOverflow
     } else {
-        None
+        InstrStop::OutOfGas
     }
 }
 
