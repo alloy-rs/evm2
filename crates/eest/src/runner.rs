@@ -127,6 +127,7 @@ pub(crate) const CREATE_COLLISION_IGNORED_TESTS: &[&str] = &[
 /// [`CREATE_COLLISION_IGNORED_TESTS`].
 pub(crate) const MAIN_CREATE_COLLISION_IGNORED_TESTS: &[&str] = &["eip7610_create_collision"];
 
+/// The ignore lists of every state suite.
 pub(crate) fn ignored_tests() -> Vec<IgnoreList> {
     vec![
         IgnoreList::new(IGNORED_TESTS),

@@ -1,5 +1,3 @@
-#[cfg(feature = "jit")]
-use crate::execution::CompiledMode;
 use crate::{
     discover::find_json_tests,
     env::STATE_TEST_SUBDIR_ENV,
@@ -11,6 +9,9 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
+
+#[cfg(feature = "jit")]
+use crate::execution::CompiledMode;
 
 const NEXTEST_ENV: &str = "NEXTEST";
 const COMPILED_EEST_SUBSET_ENV: &str = "EVM2_COMPILED_EEST_SUBSET";
@@ -38,7 +39,8 @@ pub(crate) struct TestRoot {
 
 impl TestRoot {
     /// Whether this is the optional EEST `main` root: `statetests` or `blockchain_tests`, with an
-    /// optional compiled-mode suffix.
+    /// optional compiled-mode suffix. The names come from the root constructors in the `env`
+    /// modules, so keep them in sync.
     fn is_main(&self) -> bool {
         let mut parts = self.name.split("::");
         matches!(parts.next(), Some("statetests" | "blockchain_tests"))
