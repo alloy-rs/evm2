@@ -404,6 +404,100 @@ fn test_geth_erc7562_tracer() {
     }
 }
 
+#[test]
+fn test_geth_erc7562_counts_like_geth() {
+    let (root, target, failing, empty) = (
+        address!("1000000000000000000000000000000000000001"),
+        address!("1000000000000000000000000000000000000002"),
+        address!("1000000000000000000000000000000000000003"),
+        address!("1000000000000000000000000000000000000004"),
+    );
+    let push_address = |code: &mut Vec<u8>, address: Address| {
+        code.push(op::PUSH20);
+        code.extend_from_slice(address.as_slice());
+    };
+    // A call with no value, no data and no return data.
+    let call = |code: &mut Vec<u8>, address: Address, gas: &[u8]| {
+        code.extend_from_slice(&hex!("60006000600060006000"));
+        push_address(code, address);
+        code.extend_from_slice(gas);
+        code.extend_from_slice(&[op::CALL, op::POP]);
+    };
+    let mut code = vec![op::GAS, op::POP];
+    // `ISZERO` after `EXTCODESIZE` is a check, not an access.
+    push_address(&mut code, target);
+    code.extend_from_slice(&[op::EXTCODESIZE, op::ISZERO, op::POP]);
+    push_address(&mut code, target);
+    code.extend_from_slice(&[op::EXTCODESIZE, op::POP]);
+    // The second call runs out of gas at its `KECCAK256`, and `GAS` before a call does not count.
+    call(&mut code, empty, &[op::GAS]);
+    call(&mut code, failing, &hex!("6028"));
+    // The same preimage twice, from a range that memory does not reach yet.
+    for _ in 0..2 {
+        code.extend_from_slice(&hex!("60206000"));
+        code.extend_from_slice(&[op::KECCAK256, op::POP]);
+    }
+    code.push(op::STOP);
+    let target_code = Bytes::from_static(&[op::STOP]);
+    let failing_code = Bytes::from_static(&hex!("6001600020"));
+
+    let mut db = CacheDB::<EmptyDB>::default();
+    for (address, code) in [
+        (root, Bytes::from(code)),
+        (target, target_code),
+        (failing, failing_code),
+        (empty, Bytes::from_static(&[op::STOP, op::STOP])),
+    ] {
+        db.insert_account_info(
+            &address,
+            AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
+        );
+    }
+    let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default());
+    let mut inspector = DebugInspector::new(opts).unwrap();
+    let mut evm = Context::mainnet().with_db(db).build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(root),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+
+    // `GAS` counts unless a call follows, and the ignored opcodes do not count.
+    assert_eq!(
+        frame.used_opcodes,
+        HashMap::from_iter([
+            (op::GAS, 1),
+            (op::EXTCODESIZE, 2),
+            (op::CALL, 2),
+            (op::KECCAK256, 2),
+            (op::STOP, 1),
+        ])
+    );
+    assert_eq!(frame.ext_code_access_info, [format!("{target:?}")]);
+    let size = |address: Address| frame.contract_size[&address].clone();
+    assert_eq!(
+        [size(target), size(empty), size(failing)].map(|size| (size.contract_size, size.opcode)),
+        [(1, op::EXTCODESIZE), (2, op::CALL), (5, op::CALL)]
+    );
+    assert!(!frame.out_of_gas);
+    assert_eq!(frame.calls.len(), 2);
+    assert_eq!(frame.calls[0].used_opcodes, HashMap::from_iter([(op::STOP, 1)]));
+    // A frame that fails at its `KECCAK256` still counts it and leaves its preimage.
+    assert!(frame.calls[1].out_of_gas);
+    assert_eq!(frame.calls[1].used_opcodes, HashMap::from_iter([(op::KECCAK256, 1)]));
+    // The preimages of all frames are on the root, sorted and without repeats.
+    assert_eq!(frame.keccak, [Bytes::from_static(&[0]), Bytes::from(vec![0; 32])]);
+    assert!(frame.calls.iter().all(|call| call.keccak.is_empty()));
+}
+
 fn trace_contract(
     spec: SpecId,
     opts: GethDebugTracingOptions,
@@ -1864,22 +1958,14 @@ fn test_geth_opcode_limit() {
 
 #[test]
 fn test_geth_opcode_limit_ignores_named_tracers() {
-    for tracer in
-        [GethDebugBuiltInTracerType::CallTracer, GethDebugBuiltInTracerType::Erc7562Tracer]
-    {
-        let opts = GethDebugTracingOptions {
-            tracer: Some(GethDebugTracerType::BuiltInTracer(tracer)),
-            config: GethDefaultTracingOptions { limit: Some(2), ..Default::default() },
-            ..Default::default()
-        };
-        let inspector = DebugInspector::new(opts).unwrap();
-        let config = match &inspector {
-            DebugInspector::CallTracer(inspector, _)
-            | DebugInspector::Erc7562Tracer(inspector, _) => inspector.config(),
-            _ => panic!("unexpected tracer"),
-        };
-        assert_eq!(config.step_limit, None);
-    }
+    let opts = GethDebugTracingOptions {
+        tracer: Some(GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer)),
+        config: GethDefaultTracingOptions { limit: Some(2), ..Default::default() },
+        ..Default::default()
+    };
+    let inspector = DebugInspector::new(opts).unwrap();
+    let DebugInspector::CallTracer(inspector, _) = &inspector else { panic!("unexpected tracer") };
+    assert_eq!(inspector.config().step_limit, None);
 }
 
 #[test]
@@ -2197,7 +2283,7 @@ fn test_geth_failed_root_logs() {
             let mut inspector = TracingInspector::new(
                 TracingInspectorConfig::from_geth_call_config(&CallConfig::default().with_log()),
             );
-            let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+            let mut evm = context.clone().build_mainnet().with_inspector(&mut inspector);
             let res = evm
                 .inspect_tx(TxEnv {
                     kind: if create { TxKind::Create } else { TxKind::Call(contract) },
@@ -2225,20 +2311,30 @@ fn test_geth_failed_root_logs() {
                         assert_eq!(serde_json::to_value(frame).unwrap().get("logs"), None);
                     }
                 }
-
-                let frame = builder
-                    .geth_erc7562_traces(
-                        Erc7562Config { with_log: Some(with_log), ..Default::default() },
-                        res.result.tx_gas_used(),
-                        &mut EmptyDB::default(),
-                    )
-                    .unwrap();
-                assert_eq!(frame.error.as_deref(), error);
-                assert_eq!(frame.logs.len(), expected_logs);
-                if expected_logs == 0 {
-                    assert_eq!(serde_json::to_value(frame).unwrap().get("logs"), None);
-                }
             }
+
+            let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config {
+                with_log: Some(true),
+                ..Default::default()
+            });
+            let mut inspector = DebugInspector::new(opts).unwrap();
+            let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+            let res = evm
+                .inspect_tx(TxEnv {
+                    kind: if create { TxKind::Create } else { TxKind::Call(contract) },
+                    data: if create { code.clone() } else { Bytes::new() },
+                    gas_limit: 100_000,
+                    ..Default::default()
+                })
+                .unwrap();
+            let (ctx, inspector) = evm.ctx_inspector();
+            let tx = ctx.tx().envelope();
+            let block = *ctx.block();
+            let trace =
+                inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+            let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+            assert_eq!(frame.error.as_deref(), error);
+            assert_eq!(frame.logs.len(), usize::from(error.is_none()));
         }
     }
 }

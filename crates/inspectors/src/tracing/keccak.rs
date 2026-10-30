@@ -109,7 +109,7 @@ impl<T: EvmTypes> Inspector<T> for Keccak256PreimageInspector {
 /// Returns the `size` bytes of `memory` at `offset`, zero padded past its end.
 ///
 /// Returns `None` if the range reaches more than [`MEMORY_PAD_LIMIT`] past the end of memory.
-fn memory_copy_padded(memory: &[u8], offset: u64, size: u64) -> Option<Cow<'_, [u8]>> {
+pub(crate) fn memory_copy_padded(memory: &[u8], offset: u64, size: u64) -> Option<Cow<'_, [u8]>> {
     let end = offset.saturating_add(size);
     if end.saturating_sub(memory.len() as u64) > MEMORY_PAD_LIMIT {
         return None;

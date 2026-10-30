@@ -5,20 +5,18 @@ use crate::tracing::{
     types::{CallKind, CallTraceNode, CallTraceStepStackItem},
     utils::load_account_code,
 };
-use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, format, vec, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, vec, vec::Vec};
 use alloy_primitives::{
     Address, B256, Bytes, U256,
-    map::{AddressSet, Entry, HashMap},
+    map::{AddressSet, HashMap},
 };
 use alloy_rpc_types_trace::geth::{
     AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode, GethDefaultTracingOptions,
-    PreStateConfig, PreStateFrame, PreStateMode, StructLog,
-    erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
+    PreStateConfig, PreStateFrame, PreStateMode, StructLog, erc7562::CallFrameType,
 };
 use evm2::{
     EvmFeatures, EvmTypesHost, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase},
-    interpreter::{InstrStop, op},
 };
 
 /// The smallest size in bytes of the JSON of a struct log,
@@ -551,180 +549,6 @@ impl<'a> GethTraceBuilder<'a> {
         pre.retain(|addr, _pre_state| !empty_before.contains(addr));
     }
 
-    /// Traces ERC-7562 calls using the call tracer.
-    pub fn geth_erc7562_traces(
-        &self,
-        opts: Erc7562Config,
-        gas_used: u64,
-        db: &mut dyn DynDatabase,
-    ) -> DbResult<Erc7562Frame> {
-        if self.nodes.is_empty() {
-            return Ok(Default::default());
-        }
-
-        let include_logs = opts.with_log.unwrap_or_default();
-        // only the root frame's own fields are needed, its children are assembled below
-        let mut top_call = {
-            let root_logs_visible = include_logs && !self.nodes[0].trace.is_error();
-            let mut root = self.nodes[0].geth_empty_call_frame(root_logs_visible);
-            root.gas_used = U256::from(gas_used);
-            Some(root)
-        };
-
-        let mut frames: Vec<PendingCallFrame<Erc7562Frame>> = Vec::with_capacity(self.nodes.len());
-
-        for (idx, node) in self.nodes.iter().enumerate() {
-            let trace = &node.trace;
-
-            let mut accessed_slots = AccessedSlots::default();
-            let mut used_opcodes = HashMap::default();
-            let mut contract_size = HashMap::default();
-            let mut ext_code_access_info = Vec::new();
-            let mut keccak = Vec::new();
-            let mut out_of_gas = trace.status.is_some_and(InstrStop::is_out_of_gas);
-
-            for step in &trace.steps {
-                let op = step.op.get();
-                out_of_gas |= step.status.is_some_and(InstrStop::is_out_of_gas);
-
-                // Skip if opcode is ignored
-                if opts.ignored_opcodes.contains(&op) {
-                    continue;
-                }
-
-                // Count used opcodes
-                *used_opcodes.entry(op).or_insert(0) += 1;
-
-                // Accessed storage slots
-                match op {
-                    op::SLOAD => {
-                        if let Some(stack) = &step.stack
-                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
-                        {
-                            let slot: B256 = (*slot).into();
-                            let already_read = accessed_slots.reads.contains_key(&slot);
-                            let already_written = accessed_slots.writes.contains_key(&slot);
-                            if !already_read
-                                && !already_written
-                                && let Some(change) = &step.storage_change
-                            {
-                                let value: B256 = change.value.into();
-                                accessed_slots.reads.entry(slot).or_default().push(value);
-                            }
-                        }
-                    }
-                    op::SSTORE => {
-                        if let Some(stack) = &step.stack
-                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
-                        {
-                            let slot: B256 = (*slot).into();
-                            *accessed_slots.writes.entry(slot).or_insert(0) += 1;
-                        }
-                    }
-                    op::TLOAD => {
-                        if let Some(stack) = &step.stack
-                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
-                        {
-                            let slot: B256 = (*slot).into();
-                            *accessed_slots.transient_reads.entry(slot).or_insert(0) += 1;
-                        }
-                    }
-                    op::TSTORE => {
-                        if let Some(stack) = &step.stack
-                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
-                        {
-                            let slot: B256 = (*slot).into();
-                            *accessed_slots.transient_writes.entry(slot).or_insert(0) += 1;
-                        }
-                    }
-                    _ => {}
-                }
-
-                if matches!(op, op::EXTCODESIZE | op::EXTCODECOPY | op::EXTCODEHASH)
-                    && let Some(stack) = &step.stack
-                    && let Some(item) = stack.get(stack.len().saturating_sub(1))
-                {
-                    let address = Address::from_word((*item).into());
-                    ext_code_access_info.push(format!("{address:?}"));
-                    if let Entry::Vacant(e) = contract_size.entry(address)
-                        && let Some(account) = db.get_account(&address)?
-                        && let Some(code) = load_account_code(db, &account)?
-                    {
-                        e.insert(ContractSize { contract_size: code.len() as u64, opcode: op });
-                    }
-                }
-
-                // KECCAK preimages from returndata
-                if op == op::KECCAK256
-                    && step.status.is_none()
-                    && let (Some(stack), Some(memory)) = (&step.stack, &step.memory)
-                    && stack.len() >= 2
-                {
-                    let offset = stack[stack.len() - 1];
-                    let len = stack[stack.len() - 2];
-                    if let (Ok(offset), Ok(len)) = (usize::try_from(offset), usize::try_from(len)) {
-                        let mut data = vec![0; len];
-                        if offset < memory.0.len() {
-                            let end = (offset + len).min(memory.0.len());
-                            let copy_len = end - offset;
-                            data[..copy_len].copy_from_slice(&memory.0[offset..end]);
-                        }
-                        keccak.push(Bytes::from(data));
-                    }
-                }
-            }
-
-            let include_logs = include_logs
-                && !trace.is_error()
-                && node.parent.is_none_or(|parent| frames[parent].logs_visible);
-            let call_frame = if idx == 0 {
-                top_call.take().unwrap()
-            } else {
-                self.nodes[idx].geth_empty_call_frame(include_logs)
-            };
-
-            let call_frame_type = Self::convert_call_kind(node.kind());
-
-            frames.push(PendingCallFrame {
-                logs_visible: include_logs,
-                frame: Erc7562Frame {
-                    call_frame_type,
-                    from: call_frame.from,
-                    gas: call_frame.gas.to(),
-                    gas_used: call_frame.gas_used.to(),
-                    to: call_frame.to,
-                    input: call_frame.input,
-                    output: call_frame.output,
-                    error: call_frame.error,
-                    revert_reason: call_frame.revert_reason,
-                    logs: call_frame.logs,
-                    value: call_frame.value,
-                    accessed_slots,
-                    ext_code_access_info,
-                    used_opcodes,
-                    contract_size,
-                    out_of_gas,
-                    keccak,
-                    calls: vec![],
-                },
-            });
-        }
-
-        // Assemble tree, see `geth_call_traces_inner` for the ordering logic
-        loop {
-            let PendingCallFrame { mut frame, .. } = frames.pop().expect("call frames not empty");
-            let idx = frames.len();
-            frame.calls.reverse();
-            let node = &self.nodes[idx];
-            if let Some(parent) = node.parent {
-                frames[parent].frame.calls.push(frame);
-            } else {
-                debug_assert!(frames.is_empty(), "only one root node has no parent");
-                return Ok(frame);
-            }
-        }
-    }
-
     /// Converts a CallKind to a CallFrameType.
     pub const fn convert_call_kind(kind: CallKind) -> CallFrameType {
         match kind {
@@ -751,7 +575,7 @@ mod tests {
         AccountInfo, DatabaseError,
         bytecode::Bytecode,
         evm::{CacheDB, DbResult, DynDatabase, EmptyDB},
-        interpreter::{InstrStop, Word},
+        interpreter::{InstrStop, Word, op},
     };
 
     struct FailingDb {
@@ -838,20 +662,11 @@ mod tests {
                     CallConfig { with_log: Some(with_log), ..Default::default() },
                     0,
                 );
-                let erc = builder
-                    .geth_erc7562_traces(
-                        Erc7562Config { with_log: Some(with_log), ..Default::default() },
-                        0,
-                        &mut EmptyDB::default(),
-                    )
-                    .unwrap();
-                let mut pending = vec![(&call, &erc)];
+                let mut pending = vec![&call];
                 let mut visited = Vec::new();
-                while let Some((call, erc)) = pending.pop() {
+                while let Some(call) = pending.pop() {
                     let idx = call.to.unwrap().as_slice()[19] as usize;
                     visited.push(idx);
-                    assert_eq!(call.to, erc.to);
-                    assert_eq!(call.logs, erc.logs);
                     let visible = with_log && !root_failed && (idx == 0 || idx >= 5);
                     assert_eq!(call.logs.len(), if visible { 2 } else { 0 }, "node {idx}");
                     if visible {
@@ -861,8 +676,7 @@ mod tests {
                             assert_eq!(log.data, Some(Bytes::from(vec![idx as u8, log_idx as u8])));
                         }
                     }
-                    assert_eq!(call.calls.len(), erc.calls.len());
-                    pending.extend(call.calls.iter().zip(&erc.calls).rev());
+                    pending.extend(call.calls.iter().rev());
                 }
                 assert_eq!(visited, [0, 1, 2, 3, 4, 5, 6]);
             }
