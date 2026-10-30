@@ -59,21 +59,18 @@ impl StorageOverlay {
         self.wiped || self.changed_slots().next().is_some()
     }
 
-    /// Rereads the slots that hold zero in the overlay after the account's creation was rolled
+    /// Rereads the slots first loaded under the account's creation after that creation was rolled
     /// back.
     ///
-    /// A slot first loaded under the creation cached zero instead of its backing value, and the
-    /// rollback restores its zero current value. A slot that fails to reload is evicted, so its
-    /// next load reports the error.
+    /// Such a slot cached zero instead of its backing value, and the rollback restores its zero
+    /// current value. A slot that fails to reload keeps its zero and its marker, so its read stays
+    /// in the overlay for the BAL and its next load rereads it and reports the error.
     pub(super) fn reload_zeroed(&mut self, address: &Address, database: &mut dyn DynDatabase) {
-        self.slots.retain(|key, slot| {
-            if !slot.value.original.is_zero() || !slot.value.current.is_zero() {
-                return true;
+        for (key, slot) in &mut self.slots {
+            if slot.created_zero {
+                let _ = slot.reload_created_zero(address, key, database);
             }
-            let Ok(value) = database.get_storage(address, key) else { return false };
-            slot.value = Tracked::new(value);
-            true
-        });
+        }
     }
 }
 
@@ -88,6 +85,9 @@ pub struct StorageSlot {
     pub value: Tracked<Word>,
     /// Whether the slot was warmed during execution this transaction, for EIP-2929 gas accounting.
     pub is_warm: bool,
+    /// Whether the slot was first loaded while its account was created in the transaction, so it
+    /// cached zero instead of its backing value. Rolling that creation back reloads the slot.
+    pub(crate) created_zero: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -99,11 +99,24 @@ impl StorageSlot {
         if wiped { !self.value.current.is_zero() } else { self.value.is_changed() }
     }
 
+    /// Rereads a zero cached under a creation that was rolled back.
+    #[cold]
+    pub(super) fn reload_created_zero(
+        &mut self,
+        address: &Address,
+        key: &Word,
+        database: &mut dyn DynDatabase,
+    ) -> DbResult<()> {
+        self.value = Tracked::new(database.get_storage(address, key)?);
+        self.created_zero = false;
+        Ok(())
+    }
+
     /// Creates a freshly loaded slot whose original and current values are `value`, with the given
-    /// EIP-2929 warmth.
+    /// EIP-2929 warmth. `created_zero` marks a zero cached without a database read.
     #[inline]
-    fn loaded(value: Word, is_warm: bool) -> Self {
-        Self { value: Tracked::new(value), is_warm, _non_exhaustive: () }
+    fn loaded(value: Word, is_warm: bool, created_zero: bool) -> Self {
+        Self { value: Tracked::new(value), is_warm, created_zero, _non_exhaustive: () }
     }
 }
 
@@ -250,6 +263,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && is_cold {
                     return Err(LoadError::ColdLoadSkipped);
                 }
+                // A rollback that failed to reload the slot leaves it for this load to retry.
+                if slot.created_zero && !created {
+                    slot.reload_created_zero(address, &key, &mut inner.database)?;
+                }
                 (slot, is_cold)
             }
             hash_map::Entry::Vacant(entry) => {
@@ -266,7 +283,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 } else {
                     inner.database.get_storage(address, &key)?
                 };
-                (entry.insert(StorageSlot::loaded(value, is_warm)), !is_warm)
+                (entry.insert(StorageSlot::loaded(value, is_warm, created)), !is_warm)
             }
         };
         if WARM && is_cold {
@@ -298,6 +315,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub(crate) fn zero_loaded(&mut self) {
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value.set_current(Word::ZERO);
+            slot.created_zero = false;
         });
     }
 }
