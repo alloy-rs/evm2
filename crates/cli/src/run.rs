@@ -169,9 +169,9 @@ impl RunArgs {
         let default_aot_dir = || std::env::temp_dir().join("evm2-cli").join(&bench_name);
         let mut aot_dir = None;
         let mut pending_jit = None;
+        let entry_bytecode = bench_entry.entry_bytecode()?;
 
         {
-            let bytecode = bench_entry.entry_bytecode()?;
             let compile_spec_id = bench_entry.spec_id;
 
             let mut compiler = EvmCompiler::new_llvm(self.aot)?;
@@ -199,7 +199,7 @@ impl RunArgs {
                 compiler.set_frame_pointers(false);
             }
 
-            let parsed = compiler.parse(bytecode.as_slice().into(), compile_spec_id)?;
+            let parsed = compiler.parse(entry_bytecode.as_slice().into(), compile_spec_id)?;
             if self.display || self.parse_only {
                 println!("{name}()\n{parsed:#}");
             }
@@ -243,7 +243,7 @@ impl RunArgs {
             } else if self.load.is_none() {
                 let func = unsafe { compiler.jit_function(f_id)? };
                 let mut functions = B256Map::default();
-                functions.insert(keccak256(&bytecode), func);
+                functions.insert(keccak256(&entry_bytecode), func);
                 compiler.clear_ir()?;
                 pending_jit = Some((compiler, functions));
             }
@@ -259,7 +259,8 @@ impl RunArgs {
         let (prepared, _compiler, _lib);
         if let Some(ref load_path) = load_path {
             let lib;
-            (prepared, lib) = PreparedBench::load_from_library(&bench_entry, load_path, name)?;
+            (prepared, lib) =
+                PreparedBench::load_from_library(&bench_entry, load_path, name, &entry_bytecode)?;
             _compiler = None;
             _lib = Some(lib);
         } else if let Some((mut compiler, functions)) = pending_jit {
@@ -277,7 +278,7 @@ impl RunArgs {
 
         match self.n_iters {
             0 => {}
-            1 if !self.interpret || self.jit_only => prepared.sanity_check()?,
+            1 if !self.interpret || self.jit_only => prepared.sanity_check(!self.no_gas)?,
             _ => {
                 if self.interpret || !self.jit_only {
                     bench(self.n_iters, &format!("{name}/interpreter"), || {
@@ -583,20 +584,16 @@ impl PreparedBench {
         bench: &Bench,
         lib_path: &Path,
         symbol_name: &str,
+        entry_bytecode: &[u8],
     ) -> eyre::Result<(Self, libloading::Library)> {
-        let (name, accounts, block, db, tx) = parse_bench(bench)?;
+        let (name, _, block, db, tx) = parse_bench(bench)?;
         let lib = unsafe { libloading::Library::new(lib_path) }?;
-        let mut functions = B256Map::default();
-        for account in &accounts {
-            if account.bytecode.is_empty() || functions.contains_key(&account.code_hash) {
-                continue;
-            }
-            let func = unsafe {
-                let sym: libloading::Symbol<'_, EvmCompilerFn> = lib.get(symbol_name.as_bytes())?;
-                *sym
-            };
-            functions.insert(account.code_hash, func);
-        }
+        // The library holds only the entry contract; other contracts run on the interpreter.
+        let func = unsafe {
+            let sym: libloading::Symbol<'_, EvmCompilerFn> = lib.get(symbol_name.as_bytes())?;
+            *sym
+        };
+        let functions = B256Map::from_iter([(keccak256(entry_bytecode), func)]);
 
         Ok((
             Self {
@@ -623,7 +620,7 @@ impl PreparedBench {
         evm.transact(&self.tx).map(evm2::ExecutedTx::commit).map_err(Into::into)
     }
 
-    fn sanity_check(&self) -> eyre::Result<()> {
+    fn sanity_check(&self, compare_gas: bool) -> eyre::Result<()> {
         let interpreter = self.run_interpreter()?;
         let jit = self.run_jit()?;
         if self.assert_success {
@@ -636,7 +633,9 @@ impl PreparedBench {
             );
         }
         eyre::ensure!(
-            interpreter.status == jit.status,
+            interpreter.status == jit.status
+                && interpreter.output == jit.output
+                && (!compare_gas || interpreter.total_gas_spent == jit.total_gas_spent),
             "interpreter and JIT results differ:\n  interpreter: {:?}\n  JIT: {:?}",
             interpreter,
             jit
