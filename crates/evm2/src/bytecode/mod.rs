@@ -335,23 +335,17 @@ impl Bytecode {
         *self.inner().hash.get_or_init(|| keccak256(self.original_byte_slice()))
     }
 
-    /// Caches `hash` as the hash of the original bytecode unless it is already cached.
+    /// Caches `hash` as the hash of the original bytecode unless one is already cached.
     ///
-    /// The caller must guarantee that `hash` is the keccak256 of [`Self::original_byte_slice`];
-    /// this lets [`Self::hash_slow`] return without hashing the code. Empty bytecode always has
-    /// the empty code hash, and the zero hash marks an unknown code hash, so this does nothing
-    /// for either.
+    /// `hash` must be the keccak256 of [`Self::original_byte_slice`]. Does nothing for empty
+    /// bytecode or the zero hash.
     #[inline]
     pub fn seed_hash(&self, hash: B256) {
         if self.is_empty() || hash.is_zero() {
             return;
         }
-        let cell = &self.inner().hash;
-        match cell.get() {
-            Some(cached) => debug_assert_eq!(*cached, hash, "seeded hash differs from cached hash"),
-            None => {
-                let _ = cell.set(hash);
-            }
+        if let Err(cached) = self.inner().hash.set(hash) {
+            debug_assert_eq!(cached, hash, "seeded hash differs from cached hash");
         }
     }
 
