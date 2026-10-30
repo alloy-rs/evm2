@@ -107,10 +107,14 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Returns which opcodes get [`Self::step`] and [`Self::step_end`] calls.
     ///
-    /// Read when a frame starts and after each `CALL`, `CALLCODE`, `DELEGATECALL`, `STATICCALL`,
-    /// `CREATE` and `CREATE2` returns into the frame, so a child message may change the answer.
-    /// The default asks for every opcode. Call, create, log and self-destruct hooks run
-    /// regardless.
+    /// Read when a frame starts and after each instruction that can run a child message (`CALL`,
+    /// `CALLCODE`, `DELEGATECALL`, `STATICCALL`, `CREATE`, `CREATE2` and custom instructions
+    /// flagged `message`), so a child message may change the answer. A change that a hook makes
+    /// itself, such as in [`Self::step`], takes effect at the next of those points. The default
+    /// asks for every opcode. Call, create, log and self-destruct hooks run regardless.
+    ///
+    /// The EVM may call the step hooks for more opcodes than asked for, for example when several
+    /// inspectors share a frame, so a hook must ignore the opcodes it does not handle.
     #[inline]
     fn config(&self) -> InspectorConfig {
         InspectorConfig::new()
@@ -219,7 +223,12 @@ pub(crate) fn boxed_inspector<'a, T: EvmTypesHost>(
 #[derive(Clone, Debug, Default)]
 pub struct NoopInspector(());
 
-impl<T: EvmTypesHost> Inspector<T> for NoopInspector {}
+impl<T: EvmTypesHost> Inspector<T> for NoopInspector {
+    #[inline]
+    fn config(&self) -> InspectorConfig {
+        InspectorConfig::new().with_steps(OpcodeSet::EMPTY)
+    }
+}
 
 impl<'a, T: EvmTypesHost> core::ops::Deref for dyn Inspector<T> + 'a {
     type Target = dyn NonStaticAny + 'a;
@@ -249,8 +258,9 @@ mod tests {
         ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
-            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageResult,
-            MessageResultExt, Word, instructions as instr, op,
+            GasTracker, Host, InstrStop, Interpreter, InterpreterState, Message, MessageExt,
+            MessageResult, MessageResultExt, Pc, StackMut, Word, instructions as instr, op,
+            private::Instruction,
         },
         registry::TxRegistry,
         test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
@@ -826,43 +836,58 @@ mod tests {
         }
     }
 
-    /// The base config with `CALL` also installed at [`CUSTOM_CALL`].
-    struct CustomCallConfig;
+    /// The base config with the instruction `I` also installed at [`CUSTOM_CALL`].
+    struct CustomCallConfig<I>(core::marker::PhantomData<I>);
 
     const CUSTOM_CALL: u8 = 0xb0;
 
-    impl EvmConfig<BaseEvmTypes> for CustomCallConfig {
+    impl<I: Instruction<BaseEvmTypes>> EvmConfig<BaseEvmTypes> for CustomCallConfig<I> {
         const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
         const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
             let mut config =
                 OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
-            config.set_instruction::<instr::call<BaseEvmTypes>>(CUSTOM_CALL, 100);
+            config.set_instruction::<I>(CUSTOM_CALL, 100);
             config
         };
     }
 
-    #[test]
-    fn custom_message_opcode_publishes_position_and_rereads_the_steps() {
+    /// `CALL` without the `message` flag.
+    struct UnflaggedCall;
+
+    impl Instruction<BaseEvmTypes> for UnflaggedCall {
+        fn execute(
+            pc: &mut Pc,
+            stack: StackMut<'_>,
+            state: &mut InterpreterState<'_, '_, BaseEvmTypes>,
+        ) -> crate::interpreter::Result {
+            instr::call::<BaseEvmTypes>::execute(pc, stack, state)
+        }
+    }
+
+    /// Runs a call to a child through [`CUSTOM_CALL`], which runs the instruction `I`.
+    fn run_custom_call<I: Instruction<BaseEvmTypes>>(
+        inspector: ConfigInspector,
+    ) -> (MessageResult<BaseEvmTypes>, ConfigInspector) {
         let mut code = call_code(Address::from([0x66; 20]));
         code.extend([CUSTOM_CALL, op::GAS, op::POP, op::STOP]);
-        let run = |inspector: ConfigInspector| {
-            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-                ExecutionConfig::for_config::<CustomCallConfig>(),
-                SpecId::OSAKA,
-                BlockEnvExt::default(),
-                TxRegistry::new(),
-                InMemoryDB::default(),
-                Precompiles::base(SpecId::OSAKA),
-            );
-            evm.set_inspector(inspector);
-            let mut message = MessageExt {
-                gas_limit: 100_000,
-                code: legacy_bytecode(code.clone()),
-                ..Default::default()
-            };
-            let result = Host::execute_message(&mut evm, &mut message).unwrap();
-            (result, evm.clear_inspector_as::<ConfigInspector>().unwrap())
-        };
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_config::<CustomCallConfig<I>>(),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(inspector);
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
+        (result, *evm.clear_inspector_as::<ConfigInspector>().unwrap())
+    }
+
+    #[test]
+    fn custom_message_opcode_publishes_position_and_rereads_the_steps() {
+        let run = run_custom_call::<instr::call<BaseEvmTypes>>;
         let (expected, full) = run(ConfigInspector::new(OpcodeSet::ALL));
         assert_eq!(full.call_sites, [(CUSTOM_CALL, 7)]);
 
@@ -873,6 +898,14 @@ mod tests {
         assert_eq!(inspector.call_sites, full.call_sites);
         let gas = full.steps.iter().position(|record| record.0 == op::GAS).unwrap();
         assert_eq!(inspector.steps, [full.steps[gas].clone()]);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "without the `message` flag")]
+    fn child_message_from_an_unflagged_instruction_is_caught() {
+        // Nothing else shows the missing flag under the default config that steps everything.
+        run_custom_call::<UnflaggedCall>(ConfigInspector::new(OpcodeSet::ALL));
     }
 
     #[test]

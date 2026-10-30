@@ -16,7 +16,7 @@ use alloy_rpc_types_trace::geth::{
     PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Precompiles, Version,
+    BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Inspector, OpcodeSet, Precompiles, Version,
     ethereum::ethereum_tx_registry,
 };
 use evm2_inspectors::tracing::{
@@ -2311,6 +2311,27 @@ fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
         inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
     let GethTrace::JS(preimages) = &frame.0[&key] else { panic!("expected a JSON object") };
     assert_eq!(preimages.as_object().unwrap().len(), 1);
+}
+
+#[test]
+fn mux_and_debug_inspector_forward_the_steps_of_their_members() {
+    let steps = |inspector: &dyn Inspector<BaseEvmTypes>| inspector.config().steps;
+    let four_byte = GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FourByteTracer);
+    let keccak = GethDebugTracerType::JsTracer(KECCAK256_PREIMAGE_TRACER.into());
+    let mux = |tracers: &[&GethDebugTracerType]| {
+        let config = MuxConfig(tracers.iter().map(|tracer| ((*tracer).clone(), None)).collect());
+        MuxInspector::try_from_config(config).unwrap()
+    };
+
+    // The 4byte tracer only needs message hooks, and the keccak tracer steps every opcode.
+    assert_eq!(steps(&mux(&[&four_byte])), OpcodeSet::EMPTY);
+    assert_eq!(steps(&mux(&[&four_byte, &keccak])), OpcodeSet::ALL);
+    let options: GethDebugTracingOptions =
+        serde_json::from_value(serde_json::json!({"tracer": "4byteTracer"})).unwrap();
+    assert_eq!(steps(&DebugInspector::new(options).unwrap()), OpcodeSet::EMPTY);
+    let options: GethDebugTracingOptions =
+        serde_json::from_value(serde_json::json!({"tracer": "keccak256PreimageTracer"})).unwrap();
+    assert_eq!(steps(&DebugInspector::new(options).unwrap()), OpcodeSet::ALL);
 }
 
 #[test]

@@ -3,7 +3,7 @@
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypesHost, OpcodeConfig,
     evm::config::SelectorOpcodeConfig,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, op},
+    interpreter::{Interpreter, InterpreterState, Pc, RawStack, op},
     trustme,
 };
 use core::hint::cold_path;
@@ -59,7 +59,7 @@ fn stop_if_config_changed<T: EvmTypesHost>(state: &mut InterpreterState<'_, '_, 
     let changed = state.inspector_config_changed();
     if changed {
         cold_path();
-        state.set_result(Err(InstrStop::ReloadTable));
+        state.request_reload();
     }
     changed
 }
@@ -199,7 +199,6 @@ where
                     [C::BASE_SPEC_ID as usize],
             ),
         );
-    #[cfg(tco)]
     pub(crate) const WATCH_INSTRUCTIONS: &'static InstrTable<T> =
         &make_table::<T, C, NoInspector, WatchInspector>(
             Some(
@@ -239,7 +238,6 @@ where
 {
     pub(crate) const INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
         &make_selector_tables::<T, F, NoInspector, NoInspector, CUSTOM_SPEC_ID>();
-    #[cfg(tco)]
     pub(crate) const WATCH_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
         &make_selector_tables::<T, F, NoInspector, WatchInspector, CUSTOM_SPEC_ID>();
     pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
@@ -263,9 +261,9 @@ trait InspectMode<T: EvmTypesHost> {
     /// the stack borrow.
     const INSPECT: bool;
 
-    /// Whether the dispatch checks, after each message opcode, that the inspector's config still
-    /// matches the frame's table, without calling step hooks: in the handlers on the tail-call
-    /// backend, and in the loop on the others.
+    /// Whether the message opcode handlers publish the frame's position for the message hooks
+    /// and check, after the instruction, that the inspector's config still matches the frame's
+    /// table, without calling step hooks.
     const WATCH: bool = false;
 
     /// Whether the inspector steps every opcode, so the dispatch loop need not look at the set.
@@ -289,10 +287,9 @@ impl<T: EvmTypesHost> InspectMode<T> for NoInspector {
     fn step_end(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
 }
 
-/// Mode that checks the inspector's config after message opcodes without calling step hooks. The
-/// tail-call backend uses it for the message opcodes of the watch table, which inspected frames
-/// run on for opcodes outside the inspector's steps; the other backends run their loop in this
-/// mode when the inspector wants no steps.
+/// Mode of the message opcodes of the watch table, which inspected frames run on for opcodes
+/// outside the inspector's steps. The loop of the loop backends also runs in this mode when the
+/// inspector wants no steps.
 struct WatchInspector;
 
 impl<T: EvmTypesHost> InspectMode<T> for WatchInspector {
@@ -306,30 +303,15 @@ impl<T: EvmTypesHost> InspectMode<T> for WatchInspector {
     fn step_end(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
 }
 
-struct DynInspector;
+/// Mode of the inspect table's handlers. `ALL` is the loop mode of an inspector that steps every
+/// opcode, so the loop need not look at the set.
+struct DynInspector<const ALL: bool = false>;
 
-/// Loop mode of [`DynInspector`] for an inspector that steps every opcode.
-#[cfg(not(tco))]
-struct DynAllInspector;
-
-#[cfg(not(tco))]
-impl<T: EvmTypesHost> InspectMode<T> for DynAllInspector {
+impl<T: EvmTypesHost, const ALL: bool> InspectMode<T> for DynInspector<ALL> {
     const INSPECT: bool = true;
-    const ALL_STEPS: bool = true;
-
-    #[inline(always)]
-    fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {
-        state.inspect_step(pc, stack_len);
-    }
-
-    #[inline(always)]
-    fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {
-        state.inspect_step_end(pc, stack_len);
-    }
-}
-
-impl<T: EvmTypesHost> InspectMode<T> for DynInspector {
-    const INSPECT: bool = true;
+    const WATCH: bool = true;
+    #[cfg(not(tco))]
+    const ALL_STEPS: bool = ALL;
 
     #[inline(always)]
     fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {

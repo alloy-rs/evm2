@@ -26,7 +26,7 @@ use alloc::format;
 use alloy_primitives::{Selector, hex, map::HashMap};
 use alloy_rpc_types_trace::geth::FourByteFrame;
 use evm2::{
-    EvmTypes, Inspector,
+    EvmTypes, Inspector, InspectorConfig, OpcodeSet,
     interpreter::{Interpreter, Message, MessageResult},
 };
 
@@ -45,6 +45,10 @@ impl FourByteInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for FourByteInspector {
+    fn config(&self) -> InspectorConfig {
+        InspectorConfig::new().with_steps(OpcodeSet::EMPTY)
+    }
+
     fn call(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,

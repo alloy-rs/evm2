@@ -46,6 +46,13 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
+    /// Whether the dispatch left the run because the inspector's config changed, not because the
+    /// frame stopped.
+    reload_table: bool,
+    /// Whether an instruction that can run a child message is executing, for the debug check that
+    /// every such instruction is flagged.
+    #[cfg(debug_assertions)]
+    message_op: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table, for the tail-call backend.
     #[cfg(tco)]
@@ -112,6 +119,9 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             host: None,
             inspector: None,
             steps: OpcodeSet::EMPTY,
+            reload_table: false,
+            #[cfg(debug_assertions)]
+            message_op: false,
             #[cfg(tco)]
             inspect_table: None,
             spec: SpecId::DEFAULT,
@@ -431,6 +441,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         Ok(stop)
     }
 
+    /// Returns whether an instruction flagged as running child messages is executing.
+    #[cfg(debug_assertions)]
+    pub(crate) const fn in_message_op(&self) -> bool {
+        self.message_op
+    }
+
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, host: &mut T::Host<'host>) -> Result<InstrStop, ExecutionError> {
@@ -557,9 +573,10 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             let instructions = self.select_inspect_table();
             // SAFETY: The table is a static one, or the one `self` holds until the next selection.
             let stop = dispatch::run(self, unsafe { &*instructions });
-            if stop != InstrStop::ReloadTable {
+            if !self.reload_table {
                 return stop;
             }
+            self.reload_table = false;
             self.result = Ok(());
         }
     }
@@ -574,11 +591,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         // SAFETY: `run_inner` installed the inspector, which is valid for this run.
         let inspector = unsafe { self.inspector.unwrap_unchecked().as_ref() };
         self.steps = inspector.config().steps;
+        if self.steps == OpcodeSet::EMPTY {
+            return config.watch_instructions;
+        }
         #[cfg(tco)]
         {
-            if self.steps == OpcodeSet::EMPTY {
-                return config.watch_instructions;
-            }
             if self.steps == OpcodeSet::ALL {
                 return config.inspect_instructions;
             }
@@ -586,7 +603,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             // opcodes in the set. The table lives in this interpreter and is rebuilt when the set
             // or the config differs from the previous run's, so the pooled interpreters of a deep
             // call stack mostly reuse theirs.
-            let source: *const InstrTable<T> = config.inspect_instructions;
+            let source = core::ptr::from_ref(config.inspect_instructions);
             let table = self.inspect_table.get_or_insert_with(|| {
                 Box::new(SparseTable {
                     steps: OpcodeSet::EMPTY,
@@ -608,11 +625,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         }
         #[cfg(not(tco))]
         {
-            if self.steps == OpcodeSet::EMPTY {
-                config.instructions
-            } else {
-                config.inspect_instructions
-            }
+            config.inspect_instructions
         }
     }
 
@@ -684,14 +697,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.steps
     }
 
-    /// Returns the active opcode config without borrowing the interpreter.
-    #[inline]
-    #[cfg(not(tco))]
-    pub(crate) fn opcode_config(&self) -> &'host crate::OpcodeConfig<T> {
-        // SAFETY: The host is installed for the whole run and outlives it.
-        unsafe { self.0.execution_config_detached() }.opcode_config()
-    }
-
     /// Returns whether the inspector's config no longer matches the table this frame runs on.
     ///
     /// Not inlined, so the config it builds does not grow the stack of a message opcode handler,
@@ -702,6 +707,31 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         // frame executes.
         let inspector = unsafe { self.0.inspector.unwrap_unchecked().as_ref() };
         inspector.config().steps != self.0.steps
+    }
+
+    /// Leaves the dispatch so that the frame continues on the table for the inspector's config.
+    #[inline]
+    pub(crate) const fn request_reload(&mut self) {
+        self.0.reload_table = true;
+        self.0.result = Err(InstrStop::Stop);
+    }
+
+    /// Marks the start of an instruction that can run a child message.
+    #[inline(always)]
+    pub(crate) const fn begin_message_op(&mut self) {
+        #[cfg(debug_assertions)]
+        {
+            self.0.message_op = true;
+        }
+    }
+
+    /// Marks the end of an instruction that can run a child message.
+    #[inline(always)]
+    pub(crate) const fn end_message_op(&mut self) {
+        #[cfg(debug_assertions)]
+        {
+            self.0.message_op = false;
+        }
     }
 
     #[inline]
@@ -841,14 +871,26 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
+        let mut reload = false;
+        if self.0.result.is_err() {
             cold_path();
-            // Failed charges may leave a wrapped counter until frame settlement.
-            self.0.gas.set_remaining(0);
+            if self.0.reload_table {
+                // The message handler asked for a reload; the hook sees the instruction's result.
+                self.0.reload_table = false;
+                self.0.result = Ok(());
+                reload = true;
+            } else if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
+                // Failed charges may leave a wrapped counter until frame settlement.
+                self.0.gas.set_remaining(0);
+            }
         }
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step_end(&mut self.0);
+        }
+        // A stop the hook set wins over the reload.
+        if reload && self.0.result.is_ok() {
+            self.request_reload();
         }
     }
 

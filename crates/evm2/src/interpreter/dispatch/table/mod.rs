@@ -1,5 +1,5 @@
 use super::{
-    DynAllInspector, DynInspector, InspectMode, NoInspector, WatchInspector, inc_pc, run_state,
+    DynInspector, InspectMode, NoInspector, WatchInspector, inc_pc, run_state,
     stop_if_config_changed,
 };
 use crate::{
@@ -113,6 +113,12 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     let instruction = C::OPCODE_CONFIG.instruction(op);
     let instr = instruction.instr;
     let dynamic_gas = instruction.dynamic_gas;
+    let message = (M::INSPECT || M::WATCH) && C::OPCODE_CONFIG.is_message_opcode(op);
+    if message {
+        // The message hooks see the instruction's position, even if no step hook published it.
+        state.set_pc_stack_len(pc.as_ptr(), stack.len());
+        state.begin_message_op();
+    }
     let r;
     match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
@@ -128,15 +134,23 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
             r = Err(e);
         }
     }
+    if message {
+        state.end_message_op();
+    }
     if M::INSPECT {
         // A hook that ran inside the instruction may have stopped the frame; keep that stop.
         if let Err(e) = r {
             state.set_result(Err(e));
+        } else if message && state.result().is_ok() {
+            // A step hook may follow in the loop, so the reload waits for it.
+            stop_if_config_changed(state);
         }
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
         return (Pc::new(core::ptr::null()), gas);
+    } else if message && state.result().is_ok() {
+        stop_if_config_changed(state);
     }
     (pc, gas)
 }
@@ -152,9 +166,9 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
             return run_inner::<T, WatchInspector>(state, pc, stack, instructions);
         }
         if state.steps() == OpcodeSet::ALL {
-            return run_inner::<T, DynAllInspector>(state, pc, stack, instructions);
+            return run_inner::<T, DynInspector<true>>(state, pc, stack, instructions);
         }
-        return run_inner::<T, DynInspector>(state, pc, stack, instructions);
+        return run_inner::<T, DynInspector<false>>(state, pc, stack, instructions);
     }
     run_inner::<T, NoInspector>(state, pc, stack, instructions)
 }
@@ -171,15 +185,9 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
     // The hooks run here, outside the stack borrow, because a hook may access the stack through
     // the interpreter and no handler may hold the borrow meanwhile.
     let steps = if M::INSPECT { state.steps() } else { OpcodeSet::EMPTY };
-    let opcode_config = (M::INSPECT || M::WATCH).then(|| state.opcode_config());
     loop {
         let op = cursor.pc().op();
         let step = M::INSPECT && (M::ALL_STEPS || steps.contains(op));
-        let message = opcode_config.is_some_and(|config| config.is_message_opcode(op));
-        if message {
-            // The message hooks see the message opcode, even if the hooks do not step it.
-            state.set_pc_stack_len(cursor.pc().as_ptr(), cursor.stack_len());
-        }
         if step {
             imp::sync_loop_state(state, loop_state);
             M::step(state, cursor.pc(), cursor.stack_len());
@@ -205,14 +213,12 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
             if state.result().is_err() {
                 return finish_run(state, cursor, loop_state);
             }
+        } else if M::WATCH {
+            // The message handlers stop the frame with a real `pc`, the others with a NULL one.
+            if cursor.pc().as_ptr().is_null() || state.result().is_err() {
+                return finish_run(state, cursor, loop_state);
+            }
         } else if cursor.pc().as_ptr().is_null() {
-            return finish_run(state, cursor, loop_state);
-        }
-        if message
-            // A message hook may have stopped this frame, and the plain handlers do not look.
-            && (state.result().is_err() || stop_if_config_changed(state))
-        {
-            // Continue after the instruction on the table for the new config, if it changed.
             return finish_run(state, cursor, loop_state);
         }
     }

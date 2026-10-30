@@ -39,9 +39,10 @@ use syn::{
 ///   checks.
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
-/// - `#[instruction(message)]`: Marks an instruction that can run a child message. An inspected
-///   frame publishes its position for the message hooks and reads the inspector's config again
-///   after each such instruction.
+/// - `#[instruction(message)]`: Marks an instruction that can run a child message, and implies
+///   `dynamic_gas` for the dispatch. An inspected frame publishes its position for the message
+///   hooks and reads the inspector's config again after each such instruction, so a message
+///   instruction without the flag may show hooks a stale position and miss config changes.
 /// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete EVM type
 ///   family instead of generating a generic implementation.
 /// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic EVM
@@ -303,6 +304,8 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
     });
     let dynamic_gas = instruction_attrs.dynamic_gas;
     let message = instruction_attrs.message;
+    // The message hooks may change the gas, so the dispatch must publish and reload it.
+    let dynamic_gas_const = dynamic_gas || message;
     quote! {
         #(#fn_attrs)*
         #[allow(non_camel_case_types)]
@@ -313,7 +316,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         impl #struct_generics evm2::interpreter::private::Instruction<#evm_types> for #ident #type_generics
         #where_clause
         {
-            const DYNAMIC_GAS: bool = #dynamic_gas;
+            const DYNAMIC_GAS: bool = #dynamic_gas_const;
             const MESSAGE: bool = #message;
 
             #[inline]

@@ -1355,6 +1355,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         };
         // SAFETY: The frame outlives the hook invocations below.
         let frame = unsafe { trustme::decouple_lt_mut(frame) };
+        #[cfg(debug_assertions)]
+        if top_frame.is_none() {
+            debug_assert!(
+                frame.in_message_op(),
+                "a child message came from an instruction without the `message` flag"
+            );
+        }
 
         let inspected = if is_create {
             inspector.create(frame, message)
