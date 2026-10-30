@@ -549,6 +549,7 @@ mod tests {
         for (stack, op, expected) in [
             (&[][..], op::CREATE, InstrStop::StackUnderflow),
             (&[0, 0, 0][..], op::CREATE2, InstrStop::StackUnderflow),
+            (&[0, 0, 0, 0][..], op::CREATE2, InstrStop::StateChangeDuringStaticCall),
             (&[u64::MAX, 0, 0][..], op::CREATE, InstrStop::InvalidOperandOOG),
             (&[0, 0, 0][..], op::CREATE, InstrStop::StateChangeDuringStaticCall),
         ] {

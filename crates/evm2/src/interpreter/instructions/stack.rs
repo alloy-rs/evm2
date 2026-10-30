@@ -1,4 +1,4 @@
-use crate::{constants::STACK_LIMIT, interpreter::InstrStop};
+use crate::interpreter::{InstrStop, StackMut};
 use evm2_macros::instruction;
 
 #[instruction]
@@ -53,7 +53,7 @@ pub fn exchange(cx: _) -> Result {
 const fn invalid_immediate(len: usize, min: usize, grows: bool) -> InstrStop {
     if len < min {
         InstrStop::StackUnderflow
-    } else if grows && len == STACK_LIMIT {
+    } else if grows && len == StackMut::CAPACITY {
         InstrStop::StackOverflow
     } else {
         InstrStop::InvalidImmediateEncoding

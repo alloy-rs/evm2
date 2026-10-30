@@ -447,7 +447,7 @@ tests! {
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         swapn_invalid_imm(@raw {
-            bytecode: &[op::PUSH0, op::SWAPN, 0x5B],
+            bytecode: &[op::PUSH0, op::PUSH0, op::SWAPN, 0x5B],
             spec_id: SpecId::AMSTERDAM,
             expected_return: InstrStop::InvalidImmediateEncoding,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,

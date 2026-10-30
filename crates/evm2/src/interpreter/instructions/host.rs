@@ -236,6 +236,8 @@ mod tests {
         // The stack bounds come first, then the memory size and gas, then write protection.
         for (stack, op, expected) in [
             (&[1][..], op::LOG1, InstrStop::StackUnderflow),
+            (&[0, 0][..], op::LOG1, InstrStop::StackUnderflow),
+            (&[1_u64 << 40, 0][..], op::LOG0, InstrStop::OutOfGas),
             (&[][..], op::LOG0, InstrStop::StackUnderflow),
             (&[u64::MAX, u64::MAX][..], op::LOG0, InstrStop::InvalidOperandOOG),
             (&[0, 0][..], op::LOG0, InstrStop::StateChangeDuringStaticCall),
