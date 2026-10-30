@@ -20,7 +20,10 @@ use crate::{
     forks::is_fork_skipped,
     state::{insert_account_with_storage, parse_bytecode},
     trace::{self, Eip3155Tracer},
-    tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
+    tx::{
+        TxFields, TxSigner, build_recovered_tx, rpc_access_list, signature_from_vrs,
+        signed_authorizations,
+    },
 };
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
@@ -514,7 +517,7 @@ fn execute_block(
                 transaction_index,
                 total_transactions,
             });
-            let tx = match build_tx(raw_tx) {
+            let tx = match build_tx(raw_tx, spec) {
                 Ok(tx) => tx,
                 Err(_err) if should_fail => {
                     return Ok(BlockResolution::Discard);
@@ -1090,28 +1093,38 @@ fn blob_params_for_timestamp(timestamp: U256, spec: SpecId) -> BlobParams {
     }
 }
 
-fn build_tx(raw: &Transaction) -> Result<RecoveredTxEnvelope, TestErrorKind> {
-    let caller = raw.sender.ok_or(TestErrorKind::MissingSender)?;
+fn build_tx(raw: &Transaction, spec: SpecId) -> Result<RecoveredTxEnvelope, TestErrorKind> {
     let gas_limit = raw.gas_limit.try_into().map_err(|_| TestErrorKind::Overflow("gasLimit"))?;
     let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
+    let tx_type = raw.tx_type();
+    let (signature, legacy_chain_id) = signature_from_vrs(raw.r, raw.s, raw.v, tx_type == 0)?;
 
-    Ok(build_recovered_tx(TxFields {
-        tx_type: Some(raw.tx_type()),
-        caller,
-        kind: raw.kind(),
-        data: raw.data.clone(),
-        gas_limit,
-        nonce,
-        value: raw.value,
-        chain_id: raw.chain_id,
-        gas_price: raw.gas_price,
-        max_fee_per_gas: raw.max_fee_per_gas,
-        max_priority_fee_per_gas: raw.max_priority_fee_per_gas,
-        access_list: access_list(raw)?,
-        authorization_list: signed_authorizations(raw.authorization_list.as_deref())?,
-        blob_versioned_hashes: raw.blob_versioned_hashes.clone(),
-        max_fee_per_blob_gas: raw.max_fee_per_blob_gas,
-    })?)
+    let tx = build_recovered_tx(
+        TxFields {
+            tx_type: Some(tx_type),
+            kind: raw.kind(),
+            data: raw.data.clone(),
+            gas_limit,
+            nonce,
+            value: raw.value,
+            // A legacy transaction signs its chain ID through `v`, so `v` decides it.
+            chain_id: if tx_type == 0 { legacy_chain_id.map(U256::from) } else { raw.chain_id },
+            gas_price: raw.gas_price,
+            max_fee_per_gas: raw.max_fee_per_gas,
+            max_priority_fee_per_gas: raw.max_priority_fee_per_gas,
+            access_list: access_list(raw)?,
+            authorization_list: signed_authorizations(raw.authorization_list.as_deref())?,
+            blob_versioned_hashes: raw.blob_versioned_hashes.clone(),
+            max_fee_per_blob_gas: raw.max_fee_per_blob_gas,
+        },
+        TxSigner::Signature { signature, spec },
+    )?;
+    if let Some(expected) = raw.sender
+        && expected != tx.signer()
+    {
+        return Err(TestErrorKind::SenderMismatch { recovered: tx.signer(), expected });
+    }
+    Ok(tx)
 }
 
 fn access_list(raw: &Transaction) -> Result<Option<RpcAccessList>, TestErrorKind> {

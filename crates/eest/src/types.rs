@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::tx::{AccessListItem, TestAuthorization};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use evm2::SpecId;

@@ -46,9 +46,17 @@ pub(crate) enum TestErrorKind {
     /// Numeric value overflowed the target type.
     #[error("value overflows {0}")]
     Overflow(&'static str),
-    /// Sender is required in blockchain tests.
-    #[error("transaction sender is required")]
-    MissingSender,
+    /// Signed transaction has an invalid signature.
+    #[error("{0}")]
+    InvalidSignedTransaction(String),
+    /// Sender recovered from the signature differs from the fixture's sender.
+    #[error("sender mismatch: recovered {recovered}, fixture {expected}")]
+    SenderMismatch {
+        /// Sender recovered from the signature.
+        recovered: alloy_primitives::Address,
+        /// Sender declared by the fixture.
+        expected: alloy_primitives::Address,
+    },
     /// An ommer is not old enough, or is too old, to receive a block reward.
     #[error("invalid ommer age: block {block_number}, ommer {ommer_number}")]
     InvalidOmmerAge {
@@ -131,6 +139,9 @@ impl From<TxBuildError> for TestErrorKind {
             TxBuildError::Overflow(name) => Self::Overflow(name),
             TxBuildError::BuildTransaction(error) => Self::BuildTransaction(error),
             TxBuildError::SerdeDeserialize(error) => Self::SerdeDeserialize(error),
+            error @ (TxBuildError::Decode(_)
+            | TxBuildError::InvalidV(_)
+            | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error.to_string()),
         }
     }
 }

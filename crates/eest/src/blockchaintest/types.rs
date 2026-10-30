@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::tx::{AccessListItem, TestAuthorization};
 use alloy_eip7928::BlockAccessList;
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, TxKind, U256};

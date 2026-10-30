@@ -1,11 +1,21 @@
-use alloy_consensus::{TypedTransaction, transaction::Recovered};
-use alloy_eips::eip7702::SignedAuthorization;
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_consensus::{
+    EthereumTxEnvelope, SignableTransaction, TxEip4844, TypedTransaction,
+    crypto::{RecoveryError, secp256k1},
+    transaction::Recovered,
+};
+use alloy_eips::{
+    eip2718::{Decodable2718, Eip2718Error},
+    eip7702::SignedAuthorization,
+};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rpc_types_eth::{
     AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
     TransactionRequest,
 };
-use evm2::ethereum::{RecoveredTxEnvelope, TxEnvelope};
+use evm2::{
+    SpecId,
+    ethereum::{RecoveredTxEnvelope, TxEnvelope},
+};
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -67,14 +77,29 @@ pub(crate) enum TxBuildError {
     /// JSON decoding failed.
     #[error(transparent)]
     SerdeDeserialize(#[from] serde_json::Error),
+    /// Signed transaction bytes could not be decoded.
+    #[error("could not decode signed transaction: {0}")]
+    Decode(#[from] Eip2718Error),
+    /// Signature `v` value is not valid for the transaction type.
+    #[error("invalid signature v value: {0}")]
+    InvalidV(U256),
+    /// Sender could not be recovered from the signature.
+    #[error("could not recover sender: {0}")]
+    Recover(#[from] RecoveryError),
+}
+
+/// Where a transaction's sender comes from.
+pub(crate) enum TxSigner {
+    /// Sender taken from the fixture, for fixtures that carry no signature.
+    Fixture(Address),
+    /// Sender recovered from the signature, as the fork at `spec` validates it.
+    Signature { signature: Signature, spec: SpecId },
 }
 
 /// Common transaction fields already selected from a fixture.
 pub(crate) struct TxFields {
     /// Explicit transaction type.
     pub(crate) tx_type: Option<u8>,
-    /// Recovered or explicit sender.
-    pub(crate) caller: Address,
     /// Transaction recipient, or create.
     pub(crate) kind: TxKind,
     /// Transaction calldata.
@@ -104,9 +129,11 @@ pub(crate) struct TxFields {
 }
 
 /// Builds an evm2 recovered transaction envelope from common fixture fields.
-pub(crate) fn build_recovered_tx(fields: TxFields) -> Result<RecoveredTxEnvelope, TxBuildError> {
+pub(crate) fn build_recovered_tx(
+    fields: TxFields,
+    signer: TxSigner,
+) -> Result<RecoveredTxEnvelope, TxBuildError> {
     let mut request = TransactionRequest::default()
-        .from(fields.caller)
         .gas_limit(fields.gas_limit)
         .nonce(fields.nonce)
         .value(fields.value)
@@ -162,7 +189,55 @@ pub(crate) fn build_recovered_tx(fields: TxFields) -> Result<RecoveredTxEnvelope
 
     let tx =
         request.build_consensus_tx().map_err(|err| TxBuildError::BuildTransaction(err.error))?;
-    Ok(recovered_envelope(tx, fields.caller))
+    let caller = match signer {
+        TxSigner::Fixture(caller) => caller,
+        TxSigner::Signature { signature, spec } => {
+            recover_sender(&signature, tx.signature_hash(), spec)?
+        }
+    };
+    Ok(recovered_envelope(tx, caller))
+}
+
+/// Decodes an EIP-2718 signed transaction and recovers its sender.
+pub(crate) fn decode_recovered_tx(
+    bytes: &[u8],
+    spec: SpecId,
+) -> Result<RecoveredTxEnvelope, TxBuildError> {
+    let tx = EthereumTxEnvelope::<TxEip4844>::decode_2718_exact(bytes)?;
+    let caller = recover_sender(tx.signature(), tx.signature_hash(), spec)?;
+    Ok(Recovered::new_unchecked(tx.into(), caller))
+}
+
+/// Splits a fixture `v` value into the signature parity and, for legacy transactions, the EIP-155
+/// chain ID it encodes.
+pub(crate) fn signature_from_vrs(
+    r: U256,
+    s: U256,
+    v: U256,
+    legacy: bool,
+) -> Result<(Signature, Option<u64>), TxBuildError> {
+    let invalid = || TxBuildError::InvalidV(v);
+    let v_u64 = u64::try_from(v).map_err(|_| invalid())?;
+    let (y_parity, chain_id) = match (legacy, v_u64) {
+        (false, 0 | 1) => (v_u64 == 1, None),
+        (true, 27 | 28) => (v_u64 == 28, None),
+        (true, 35..) => ((v_u64 - 35) % 2 == 1, Some((v_u64 - 35) / 2)),
+        _ => return Err(invalid()),
+    };
+    Ok((Signature::new(r, s, y_parity), chain_id))
+}
+
+fn recover_sender(
+    signature: &Signature,
+    hash: B256,
+    spec: SpecId,
+) -> Result<Address, RecoveryError> {
+    // EIP-2 rejects high-`s` signatures from Homestead on.
+    if spec.enables(SpecId::HOMESTEAD) {
+        secp256k1::recover_signer(signature, hash)
+    } else {
+        secp256k1::recover_signer_unchecked(signature, hash)
+    }
 }
 
 /// Converts EEST access list items into RPC access list items.
