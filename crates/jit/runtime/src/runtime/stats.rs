@@ -11,6 +11,8 @@ pub(crate) struct RuntimeStats {
     pub(crate) lookup_misses: AtomicU64,
     /// Total lookup events dropped due to event-queue overflow.
     pub(crate) events_dropped: AtomicU64,
+    /// Total frames that fell back to the interpreter although the runtime is enabled.
+    pub(crate) interpreter_fallbacks: AtomicU64,
     /// Total control commands dropped because the command channel was full.
     pub(crate) commands_dropped: AtomicU64,
     /// Total number of entries evicted (idle + budget).
@@ -62,6 +64,14 @@ pub struct RuntimeStatsSnapshot {
     pub lookup_misses: u64,
     /// Total lookup events dropped due to event-queue overflow.
     pub events_dropped: u64,
+    /// Total frames that fell back to the interpreter although the runtime is enabled.
+    ///
+    /// Counted in [`blocking`](super::RuntimeConfig::blocking) mode, where every lookup that does
+    /// not return a compiled function is a fallback: a failed or timed-out compilation, a full
+    /// pending-job cap, a saturated worker pool, a program evicted before use, or empty bytecode.
+    /// A failed compilation is also counted once in `compilations_failed`; this counter counts
+    /// every frame, including later frames of the same failed code.
+    pub interpreter_fallbacks: u64,
     /// Total control commands dropped because the command channel was full.
     ///
     /// Pause/resume commands are best-effort and dropped instead of blocking the caller when
@@ -142,6 +152,7 @@ impl RuntimeStats {
             lookup_hits: self.lookup_hits.load(Ordering::Relaxed),
             lookup_misses: self.lookup_misses.load(Ordering::Relaxed),
             events_dropped: self.events_dropped.load(Ordering::Relaxed),
+            interpreter_fallbacks: self.interpreter_fallbacks.load(Ordering::Relaxed),
             commands_dropped: self.commands_dropped.load(Ordering::Relaxed),
             resident_entries: gauges.resident_entries,
             events_queued: gauges.events_queued,

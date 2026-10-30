@@ -105,7 +105,7 @@ pub(crate) struct BackendInner {
     enabled: AtomicBool,
     /// Whether the backend thread has been spawned and is draining the command channel.
     started: AtomicBool,
-    /// Blocking mode: every lookup synchronously compiles and never falls back.
+    /// Blocking mode: every lookup synchronously compiles and counts each fallback.
     blocking: bool,
     host: config::HostConfig,
     /// Key of the last opcode config and spec that matched the host's opcode table.
@@ -177,6 +177,7 @@ impl JitBackend {
         if config.blocking {
             config.enabled = true;
             config.tuning.jit_hot_threshold = 0;
+            config.tuning.jit_max_bytecode_len = 0;
         }
         #[cfg(not(unix))]
         if config.jit_mode == JitMode::OutOfProcess {
@@ -334,8 +335,18 @@ impl JitBackend {
     /// If the function is already compiled, returns it immediately. Otherwise, enqueues
     /// a synchronous JIT compilation request and blocks until the result is available.
     /// Returns [`LookupDecision::Unavailable`] if the bytecode is ineligible for
-    /// compilation (see [`RuntimeTuning::should_compile`]) or compilation fails.
+    /// compilation (see [`RuntimeTuning::should_compile`]) or compilation does not produce a
+    /// resident program. Each such miss is counted in
+    /// [`interpreter_fallbacks`](RuntimeStatsSnapshot::interpreter_fallbacks).
     pub fn lookup_blocking(&self, req: LookupRequest) -> LookupDecision {
+        let decision = self.lookup_blocking_inner(req);
+        if let LookupDecision::Unavailable(_) = decision {
+            self.inner.shared.stats.interpreter_fallbacks.fetch_add(1, Ordering::Relaxed);
+        }
+        decision
+    }
+
+    fn lookup_blocking_inner(&self, req: LookupRequest) -> LookupDecision {
         if !self.inner.tuning.should_compile(&req.code) {
             return LookupDecision::Unavailable(LookupMissReason::Ineligible);
         }
