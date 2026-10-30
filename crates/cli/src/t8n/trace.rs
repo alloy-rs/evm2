@@ -324,6 +324,7 @@ fn fails_before_logging(error: &str, op: u8, state_gas_oog: bool) -> bool {
         return !state_gas_oog;
     }
     error.contains("Stack")
+        || error.contains("InitCodeSizeLimit")
         || error.contains("Static") && !matches!(op, op::TSTORE | op::LOG0..=op::LOG4)
 }
 
