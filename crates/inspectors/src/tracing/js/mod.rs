@@ -577,7 +577,11 @@ impl JsInspector {
         };
         // Geth fills the log in its step hook, which a tracer without `step` never runs, so
         // `fault` sees an empty log with only the error set.
-        let info = if self.step_fn.is_none() { StepInfo::empty(info.error) } else { info };
+        let info = if self.step_fn.is_none() {
+            StepInfo { error: info.error, ..Default::default() }
+        } else {
+            info
+        };
         let (stack, memory, host) = interp.stack_memory_host();
         let res = self.reusable_db.with_state_scope(host.state_mut(), || {
             self.reusable_step_log.with_scope(

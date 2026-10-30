@@ -272,15 +272,15 @@ pub(crate) struct StepInfo<'a> {
     pub(crate) call_id: u64,
 }
 
-impl StepInfo<'_> {
-    /// The log of a tracer whose step hook never ran: everything is zero but the error.
-    pub(crate) fn empty(error: Option<String>) -> Self {
+impl Default for StepInfo<'_> {
+    /// The log of a tracer whose step hook never ran: everything is zero.
+    fn default() -> Self {
         static NO_INPUT: Bytes = Bytes::new();
-        StepInfo {
+        Self {
             cost: 0,
             refund: 0,
             depth: 0,
-            error,
+            error: None,
             caller: Address::ZERO,
             contract: Address::ZERO,
             value: U256::ZERO,
