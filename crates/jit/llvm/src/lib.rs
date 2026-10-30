@@ -26,7 +26,7 @@ use std::{
     mem::ManuallyDrop,
     path::Path,
     sync::{
-        Arc, Once, OnceLock,
+        Arc, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -114,7 +114,7 @@ type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, FxBuildHasher>;
 #[must_use]
 pub struct EvmLlvmBackend {
     cx: &'static Context,
-    _dh: dh::DiagnosticHandlerGuard,
+    dh: dh::DiagnosticHandlerGuard,
     /// LLVM debug info builder and compile unit, created lazily when `debug_file` is set.
     /// Dropped before `module`, which its builder refers to.
     di_state: Option<DiState>,
@@ -272,20 +272,20 @@ impl GlobalOrcJit {
     }
 
     /// Creates a fresh JITDylib for a compiler.
-    fn create_jit_dylib(&self) -> orc::JITDylibRef {
+    fn create_jit_dylib(&self) -> Result<orc::JITDylibRef> {
+        // Create the process symbol generator first, so a failure leaves no dylib behind.
+        // It lets the JITDylib resolve libc and other process-level symbols (e.g. printf,
+        // memcpy) that JIT-compiled code may reference.
+        let prefix = self.jit.get_global_prefix();
+        let generator = orc::DefinitionGenerator::for_current_process(prefix).map_err(error_msg)?;
         let id = self.next_dylib_id.fetch_add(1, Ordering::Relaxed);
         let name = CString::new(format!("evm2_jit.compiler.{id}")).unwrap();
         let es = self.jit.get_execution_session();
         let jd = es.create_bare_jit_dylib(&name);
         // Link against the builtins JD so compiled code can resolve builtin symbols.
         jd.add_to_link_order(self.builtins_jd);
-        // Attach a process symbol generator so the JITDylib can resolve libc and other
-        // process-level symbols (e.g. printf, memcpy) that JIT-compiled code may reference.
-        let prefix = self.jit.get_global_prefix();
-        if let Ok(generator) = orc::DefinitionGenerator::for_current_process(prefix) {
-            jd.add_generator(generator);
-        }
-        jd
+        jd.add_generator(generator);
+        Ok(jd)
     }
 
     /// Removes a JITDylib from the ExecutionSession, freeing all its resources.
@@ -393,7 +393,7 @@ impl fmt::Debug for OrcJitState {
 impl OrcJitState {
     fn new(debug_support: bool, profiling_support: bool, simple_perf: bool) -> Result<Self> {
         let global = GlobalOrcJit::get(debug_support, profiling_support, simple_perf)?;
-        let jd = global.create_jit_dylib();
+        let jd = global.create_jit_dylib()?;
         let jd_guard = Arc::new(JitDylibGuard { global, jd });
         Ok(Self {
             global,
@@ -494,7 +494,7 @@ impl EvmLlvmBackend {
         let config = BackendConfig::default();
         init()?;
 
-        let target_info = TargetInfo::new();
+        let target_info = TargetInfo::new()?;
         let target = &target_info.target;
         let machine = target
             .create_target_machine(
@@ -544,7 +544,7 @@ impl EvmLlvmBackend {
         let ty_ptr = cx.ptr_type();
         Ok(Self {
             cx,
-            _dh: dh::DiagnosticHandlerGuard::new(cx),
+            dh: dh::DiagnosticHandlerGuard::new(cx),
             bcx,
             module,
             machine,
@@ -737,7 +737,7 @@ impl EvmLlvmBackend {
         symbols: &[(CString, usize)],
     ) -> Result<(usize, orc::ResourceTracker, Arc<JitDylibGuard>)> {
         let orc = self.ensure_orc()?;
-        let jd = orc.global.create_jit_dylib();
+        let jd = orc.global.create_jit_dylib()?;
         let jd_guard = Arc::new(JitDylibGuard { global: orc.global, jd });
         let (addr, tracker) = link_jit_object_in_dylib(orc, jd, symbol_name, object, symbols)?;
         Ok((addr, tracker, jd_guard))
@@ -869,9 +869,11 @@ impl Backend for EvmLlvmBackend {
     }
 
     fn dump_disasm(&mut self, path: &Path) -> Result<()> {
-        self.machine
+        let result = self
+            .machine
             .write_to_file(self.module(), LLVMCodeGenFileType::LLVMAssemblyFile, path)
-            .map_err(error_msg)
+            .map_err(error_msg);
+        self.dh.check(result)
     }
 
     fn build_function(
@@ -976,14 +978,16 @@ impl Backend for EvmLlvmBackend {
             }
         });
         let opts = PassBuilderOptions::create();
-        self.module().run_passes(passes, &self.machine, &opts).map_err(error_msg)
+        let result = self.module().run_passes(passes, &self.machine, &opts).map_err(error_msg);
+        self.dh.check(result)
     }
 
     fn write_object<W: std::io::Write>(&mut self, mut w: W) -> Result<()> {
         let buffer = self
             .machine
             .write_to_memory_buffer(self.module(), LLVMCodeGenFileType::LLVMObjectFile)
-            .map_err(error_msg)?;
+            .map_err(error_msg);
+        let buffer = self.dh.check(buffer)?;
         w.write_all(buffer.as_slice())?;
         Ok(())
     }
@@ -993,14 +997,16 @@ impl Backend for EvmLlvmBackend {
         self.commit_staged_module()?;
         let name_str = self.id_to_name(id);
         let name = CString::new(name_str).unwrap();
+        let dh = &self.dh;
         let orc = self.orc.as_mut().unwrap();
         // Capture the compiled object buffer during lookup. LLJIT compiles lazily:
         // add_module_with_rt just registers the module, actual compilation happens
         // in lookup_in when the symbol is first requested.
         let mut captured = None;
         let _guard = ScopedObjCapture::install(&mut captured);
-        let addr = orc.global.jit.lookup_in(orc.jd(), &name).map_err(error_msg)?;
+        let addr = orc.global.jit.lookup_in(orc.jd(), &name).map_err(error_msg);
         drop(_guard);
+        let addr = dh.check(addr)?;
         if captured.is_some() {
             orc.last_compiled_object = captured;
         }
@@ -1084,15 +1090,20 @@ struct TargetInfo {
 }
 
 impl TargetInfo {
-    fn new() -> &'static Self {
-        static HOST_TARGET_INFO: OnceLock<TargetInfo> = OnceLock::new();
-        HOST_TARGET_INFO.get_or_init(|| {
-            let triple = TargetMachine::get_default_triple().to_owned();
-            let target = Target::from_triple(&triple).unwrap();
-            let cpu = TargetMachine::get_host_cpu_name().to_string_lossy().into_owned();
-            let features = TargetMachine::get_host_cpu_features().to_string_lossy().into_owned();
-            Self { target, triple, cpu, features }
-        })
+    fn new() -> Result<&'static Self> {
+        static HOST_TARGET_INFO: OnceLock<Result<TargetInfo, String>> = OnceLock::new();
+        HOST_TARGET_INFO
+            .get_or_init(|| {
+                let triple = TargetMachine::get_default_triple().to_owned();
+                let target = Target::from_triple(&triple)
+                    .map_err(|e| e.to_string_lossy().trim_end().to_string())?;
+                let cpu = TargetMachine::get_host_cpu_name().to_string_lossy().into_owned();
+                let features =
+                    TargetMachine::get_host_cpu_features().to_string_lossy().into_owned();
+                Ok(Self { target, triple, cpu, features })
+            })
+            .as_ref()
+            .map_err(|e| eyre::eyre!("{e}"))
     }
 }
 
@@ -1847,17 +1858,14 @@ fn build_pass_pipeline(with_licm: bool) -> String {
 }
 
 fn init() -> Result<()> {
-    let mut init_result = Ok(());
-    static INIT: Once = Once::new();
-    INIT.call_once(|| init_result = init_());
-    init_result
+    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    match INIT.get_or_init(|| init_().map_err(|e| e.to_string())) {
+        Ok(()) => Ok(()),
+        Err(e) => Err(eyre::eyre!("{e}")),
+    }
 }
 
 fn init_() -> Result<()> {
-    // TODO: This also reports "PLEASE submit a bug report to..." when the segfault is
-    // outside of LLVM.
-    // enable_llvm_pretty_stack_trace();
-
     extern "C" fn report_fatal_error(msg: *const std::ffi::c_char) {
         let msg_cstr = unsafe { std::ffi::CStr::from_ptr(msg) };
         let msg = msg_cstr.to_string_lossy();
@@ -2099,4 +2107,58 @@ fn error_msg(msg: LLVMString) -> evm2_jit_backend::Error {
 
 fn fmt_ty(ty: Type) -> impl std::fmt::Display {
     ty.print_to_string().to_str().unwrap().trim_matches('"').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llvm_sys::{LLVMInlineAsmDialect, core::*};
+
+    /// An error diagnostic LLVM raises while emitting code must fail `write_object`, and must not
+    /// leak into the next backend.
+    #[test]
+    fn diagnostic_error_fails_write_object() {
+        const ARGS: usize = 24;
+
+        let mut backend = EvmLlvmBackend::new(true).unwrap();
+        unsafe {
+            let cx = backend.cx.raw();
+            let void = LLVMVoidTypeInContext(cx);
+            let i32 = LLVMInt32TypeInContext(cx);
+            let function_ty = LLVMFunctionType(void, std::ptr::null_mut(), 0, 0);
+            let function = LLVMAddFunction(backend.module.as_mut_ptr(), c"f".as_ptr(), function_ty);
+            let entry = LLVMAppendBasicBlockInContext(cx, function, c"entry".as_ptr());
+            let builder = LLVMCreateBuilderInContext(cx);
+            LLVMPositionBuilderAtEnd(builder, entry);
+
+            // More register inputs than the target has registers.
+            let mut param_tys = [i32; ARGS];
+            let asm_ty = LLVMFunctionType(void, param_tys.as_mut_ptr(), ARGS as u32, 0);
+            let constraints = vec!["r"; ARGS].join(",");
+            let asm = LLVMGetInlineAsm(
+                asm_ty,
+                c"".as_ptr().cast_mut(),
+                0,
+                constraints.as_ptr().cast::<std::ffi::c_char>().cast_mut(),
+                constraints.len(),
+                1,
+                0,
+                LLVMInlineAsmDialect::LLVMInlineAsmDialectATT,
+                0,
+            );
+            let mut args = [LLVMConstInt(i32, 1, 0); ARGS];
+            LLVMBuildCall2(builder, asm_ty, asm, args.as_mut_ptr(), ARGS as u32, c"".as_ptr());
+            LLVMBuildRetVoid(builder);
+            LLVMDisposeBuilder(builder);
+        }
+
+        let err = backend.write_object(Vec::new()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "LLVM error: inline assembly requires more registers than available"
+        );
+
+        let mut backend = EvmLlvmBackend::new(true).unwrap();
+        backend.write_object(Vec::new()).unwrap();
+    }
 }
