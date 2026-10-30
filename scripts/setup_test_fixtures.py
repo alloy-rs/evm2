@@ -96,7 +96,7 @@ def env_flag(name: str) -> bool:
 
 
 def main_fixture() -> Fixture:
-    if env_flag("EVM2_STATETEST_STABLE") or env_flag("EVM2_BLOCKCHAINTEST_STABLE") or env_flag("EVM2_EEST_STABLE"):
+    if env_flag("EVM2_EEST_STABLE"):
         dest = MAIN_STABLE_DIR
         tar_name = os.environ.get("MAIN_TAR", "fixtures_stable.tar.gz")
         label = "main stable"
