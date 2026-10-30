@@ -273,8 +273,8 @@ fn execute_case(
     let mut db_stats_counts = DbStatsCounts::default();
     // `evm2 capture` keeps only the accounts the blocks touch and zeroes the genesis state
     // root, so its blocks' state roots can't be reproduced. Receipt roots still check them.
-    let compare_state_root =
-        config.compare_state_root && !test_case.genesis_block_header.state_root.is_zero();
+    let captured = test_case.genesis_block_header.state_root.is_zero();
+    let compare_state_root = config.compare_state_root && !captured;
 
     hook.case_started(CaseStarted { name, total_blocks, network: test_case.network });
 
@@ -305,6 +305,7 @@ fn execute_case(
             &mut block_env,
             &mut parent_block_hash,
             &mut parent_header,
+            captured,
             hook,
             resources,
             config.trace,
@@ -393,6 +394,7 @@ fn execute_block<'a>(
     block_env: &mut BlockEnv,
     parent_block_hash: &mut Option<B256>,
     parent_header: &mut &'a BlockHeader,
+    captured: bool,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
     trace: bool,
@@ -480,8 +482,10 @@ fn execute_block<'a>(
             ));
         }
 
+        // A captured case's genesis header is the first block's own header, not its parent's.
+        let parent = (!(captured && block_index == 0)).then_some(*parent_header);
         if let Some(header) = block_header(block)
-            && let Err(reason) = validate_block_header(block, header, parent_header, schedule, spec)
+            && let Err(reason) = validate_block_header(block, header, parent, schedule, spec)
         {
             return reject_block(should_fail, path, name, reason);
         }
@@ -719,6 +723,7 @@ fn execute_block<'a>(
             next_block_env,
             block_ommers(block),
             block_withdrawals(block),
+            captured,
         ) {
             // A failed post-block system call (e.g. SYSTEM_CONTRACT_CALL_FAILED) invalidates the
             // block, mirroring execution-specs raising `InvalidBlock`.
@@ -888,7 +893,7 @@ fn block_ommers(block: &Block) -> &[BlockHeader] {
 fn validate_block_header(
     block: &Block,
     header: &BlockHeader,
-    parent: &BlockHeader,
+    parent: Option<&BlockHeader>,
     schedule: &ForkSchedule,
     spec: SpecId,
 ) -> Result<(), String> {
@@ -909,6 +914,7 @@ fn validate_block_header(
     if header.blob_gas_used.is_none() {
         return Err("block header is missing blobGasUsed".to_string());
     }
+    let Some(parent) = parent else { return Ok(()) };
     let expected_excess_blob_gas =
         schedule.blob_params(header.timestamp, spec).next_block_excess_blob_gas_osaka(
             parent.excess_blob_gas.unwrap_or_default().saturating_to(),
@@ -964,7 +970,7 @@ fn pre_block_system_calls(
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(root.as_slice()),
             "eip4788",
-            false,
+            SystemCallCheck::None,
         )?;
     }
     if spec.enables(SpecId::PRAGUE)
@@ -976,7 +982,7 @@ fn pre_block_system_calls(
             HISTORY_STORAGE_ADDRESS,
             Bytes::copy_from_slice(hash.as_slice()),
             "eip2935",
-            false,
+            SystemCallCheck::None,
         )?;
     }
     Ok(())
@@ -989,7 +995,10 @@ fn post_block_transition(
     block: BlockEnv,
     ommers: &[BlockHeader],
     withdrawals: &[Withdrawal],
+    captured: bool,
 ) -> Result<(), TestErrorKind> {
+    // A captured case keeps only the accounts its blocks touch, so the system contracts are absent.
+    let check = if captured { SystemCallCheck::Outcome } else { SystemCallCheck::OutcomeAndCode };
     let reward = block_reward(spec, ommers.len());
     if reward != 0 {
         increment_balance(evm, block_state, block.beneficiary, U256::from(reward))?;
@@ -1031,7 +1040,7 @@ fn post_block_transition(
             WITHDRAWAL_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7002",
-            true,
+            check,
         )?;
         run_system_call(
             evm,
@@ -1039,7 +1048,7 @@ fn post_block_transition(
             evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7251",
-            true,
+            check,
         )?;
     }
 
@@ -1051,7 +1060,7 @@ fn post_block_transition(
             evm2::evm::BUILDER_DEPOSIT_REQUEST_ADDRESS,
             Bytes::new(),
             "eip8282_deposit",
-            true,
+            check,
         )?;
         run_system_call(
             evm,
@@ -1059,10 +1068,22 @@ fn post_block_transition(
             evm2::evm::BUILDER_EXIT_REQUEST_ADDRESS,
             Bytes::new(),
             "eip8282_exit",
-            true,
+            check,
         )?;
     }
     Ok(())
+}
+
+/// What a system call must satisfy for the block to be valid.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SystemCallCheck {
+    /// The call may fail (EIP-4788, EIP-2935).
+    None,
+    /// The call must succeed.
+    Outcome,
+    /// The target must have code, and the call must succeed (execution-specs
+    /// `process_checked_system_transaction`).
+    OutcomeAndCode,
 }
 
 fn run_system_call(
@@ -1071,11 +1092,11 @@ fn run_system_call(
     address: Address,
     data: Bytes,
     label: &'static str,
-    checked: bool,
+    check: SystemCallCheck,
 ) -> Result<(), TestErrorKind> {
     // A checked call to a target without code is an invalid block (execution-specs
     // `SYSTEM_CONTRACT_EMPTY`); the EVM itself treats it as a successful no-op.
-    if checked {
+    if check == SystemCallCheck::OutcomeAndCode {
         let info = evm
             .read_account_info(&address)
             .map_err(|code| TestErrorKind::UnexpectedFailure(code.to_string()))?;
@@ -1088,7 +1109,7 @@ fn run_system_call(
     let executed = evm.system_call(SystemTx::new(address, data))?;
     if !executed.result().status {
         // A failed unchecked call keeps the state accesses it recorded, which a BAL lists as reads.
-        if !checked {
+        if check == SystemCallCheck::None {
             let _ = executed.commit_to(block_state);
             return Ok(());
         }

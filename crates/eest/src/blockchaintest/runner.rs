@@ -132,7 +132,7 @@ fn should_ignore(name: &str) -> bool {
 
 #[rustfmt::skip]
 pub(crate) const IGNORED_TESTS: &[&str] = &[
-    // These validate block RLP encoding or full blob sidecar rejection, which this runner does not decode/validate.
+    // These validate block RLP structure or full blob sidecar rejection, which this runner does not decode/validate.
     "cancun/eip4844_blobs/test_invalid_blob_tx_contract_creation.json",
     "cancun/eip4844_blobs/test_reject_valid_full_blob_in_block_rlp.json",
     // The same tests were renamed into subdirectories on BAL releases.
