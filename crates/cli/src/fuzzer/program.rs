@@ -420,6 +420,7 @@ impl Program {
             1 => vec![op::STOP],
             2 => vec![op::PUSH1, 0, op::PUSH1, 0, op::RETURN],
             3 if self.allow_opcodes(rng, spec, &[op::REVERT]) => {
+                self.mark_opcode(op::REVERT);
                 vec![op::PUSH1, 0, op::PUSH1, 0, op::REVERT]
             }
             _ => vec![
@@ -772,5 +773,22 @@ mod tests {
             }
         }
         assert!(seen.contains(wanted), "{seen:?}");
+    }
+
+    #[test]
+    fn initcode_with_undefined_opcode_is_tagged() {
+        let revert_initcode = [op::PUSH1, 0, op::PUSH1, 0, op::REVERT];
+        let mut rng = Gen::new(1);
+        let mut found = false;
+        for _ in 0..1024 {
+            let mut program = Program::default();
+            program.spec = SpecId::FRONTIER;
+            program.create(&mut rng, SpecId::FRONTIER);
+            if program.code.windows(revert_initcode.len()).any(|code| code == revert_initcode) {
+                found = true;
+                assert!(program.features.contains(FuzzFeatures::FORK_INVALID_OPCODE));
+            }
+        }
+        assert!(found);
     }
 }
