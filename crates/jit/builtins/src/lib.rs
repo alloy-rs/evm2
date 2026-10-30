@@ -393,14 +393,24 @@ pub unsafe fn __revmc_builtin_blob_hash<T: EvmTypesHost>(
     *index_ptr = ecx.tx_env().blob_hashes.get(index_usize).copied().unwrap_or_default().into();
 }
 
-/// Resizes memory to `min_size` bytes.
+#[inline]
+pub unsafe fn __revmc_builtin_mresize<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    min_size: u64,
+) -> BuiltinResult {
+    ensure_memory(ecx, min_size as usize, 0)
+}
+
+/// Resizes memory to `min_size` bytes, with the exact stop reasons of the interpreter.
+///
+/// Used instead of [`__revmc_builtin_mresize`] when compiled code keeps distinct failure results.
 ///
 /// `owed` is the static gas that the section head charged for the instructions after the access.
 /// The interpreter charges the resize before them, so the resize runs with that gas added back,
 /// and leaves the remaining gas negative if the resize used it. Compiled code checks it later.
 /// `offset_too_large` means the access offset does not fit in 64 bits.
 #[inline]
-pub unsafe fn __revmc_builtin_mresize<T: EvmTypesHost>(
+pub unsafe fn __revmc_builtin_mresize_exact<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     min_size: u64,
     owed: u64,
@@ -1112,7 +1122,8 @@ mod abi {
         __revmc_builtin_self_balance(ecx: &mut EvmContext<'_, '_, '_, T>, slot: &mut EvmWord) -> BuiltinResult;
         __revmc_builtin_difficulty(ecx: &EvmContext<'_, '_, '_, T>, slot: &mut EvmWord);
         __revmc_builtin_blob_hash(ecx: &EvmContext<'_, '_, '_, T>, index_ptr: &mut EvmWord);
-        __revmc_builtin_mresize(ecx: &mut EvmContext<'_, '_, '_, T>, min_size: u64, owed: u64, offset_too_large: u8) -> BuiltinResult;
+        __revmc_builtin_mresize(ecx: &mut EvmContext<'_, '_, '_, T>, min_size: u64) -> BuiltinResult;
+        __revmc_builtin_mresize_exact(ecx: &mut EvmContext<'_, '_, '_, T>, min_size: u64, owed: u64, offset_too_large: u8) -> BuiltinResult;
         __revmc_builtin_sload(ecx: &mut EvmContext<'_, '_, '_, T>, index: &mut EvmWord) -> BuiltinResult;
         __revmc_builtin_sload_c(ecx: &mut EvmContext<'_, '_, '_, T>, index: &mut EvmWord, key: u64) -> BuiltinResult;
         __revmc_builtin_sstore(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;

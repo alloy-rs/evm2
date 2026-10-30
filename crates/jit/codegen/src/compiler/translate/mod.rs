@@ -1900,6 +1900,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let min_size = self.bcx.iadd(offset, len_const);
         // `offset` is clamped to 63 bits, so a wider one needs its exact value.
         let exact = (!fits).then_some((offset_word, len_const));
+        // Exact stop reasons cost more code, so `single_error` leaves them out.
+        let exact_halts = !self.config.single_error;
 
         let direct_resize_size = self
             .current_inst
@@ -1907,8 +1909,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             .unwrap_or_default();
         // Analysis proved this access always grows memory to exactly `min_size`.
         if direct_resize_size != 0 {
-            self.build_mresize(min_size, exact);
-            self.leave_owed_gas_unchecked();
+            self.build_mresize(min_size, exact, exact_halts);
+            if exact_halts {
+                self.leave_owed_gas_unchecked();
+            }
             self.cached_mem_base = None;
             return self.build_memory_addr(offset);
         }
@@ -1926,9 +1930,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
         self.if_then(exceeds, |this| {
             this.bcx.set_current_block_cold();
-            this.build_mresize(min_size, exact);
+            this.build_mresize(min_size, exact, exact_halts);
         });
-        self.leave_owed_gas_unchecked();
+        if exact_halts {
+            self.leave_owed_gas_unchecked();
+        }
         self.build_memory_addr(offset)
     }
 
@@ -1952,14 +1958,23 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// Calls the `mresize` builtin for the current memory access.
     ///
-    /// `exact` is the unclamped offset word and the access length, when `min_size` was built from
-    /// a clamped offset. The builtin then fails like the interpreter's `to_usize` for an offset
-    /// that does not fit in 64 bits, and resizes with the exact end of the access otherwise.
+    /// With `exact_halts`, the call has the exact stop reasons of the interpreter. `exact` is then
+    /// the unclamped offset word and the access length, when `min_size` was built from a clamped
+    /// offset. The builtin fails like the interpreter's `to_usize` for an offset that does not fit
+    /// in 64 bits, and resizes with the exact end of the access otherwise.
     ///
-    /// The builtin also gets the static gas that the section head charged for the instructions
-    /// after the access, so that the stop reason is the one of the instruction that runs out of
-    /// gas.
-    fn build_mresize(&mut self, mut min_size: B::Value, exact: Option<(B::Value, B::Value)>) {
+    /// It also gets the static gas that the section head charged for the instructions after the
+    /// access, so that the stop reason is the one of the instruction that runs out of gas.
+    fn build_mresize(
+        &mut self,
+        mut min_size: B::Value,
+        exact: Option<(B::Value, B::Value)>,
+        exact_halts: bool,
+    ) {
+        if !exact_halts {
+            self.call_fallible_builtin(Builtin::Mresize, &[self.ecx, min_size]);
+            return;
+        }
         let owed = self.memory_access_gas_owed();
         let owed = self.bcx.iconst(self.isize_type, owed as i64);
         let mut offset_too_large = self.bcx.iconst(self.i8_type, 0);
@@ -1970,7 +1985,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             let offset = self.bcx.ireduce(self.isize_type, offset_word);
             min_size = self.bcx.uadd_sat(offset, len);
         }
-        let _ = self.call_builtin(Builtin::Mresize, &[self.ecx, min_size, owed, offset_too_large]);
+        let _ =
+            self.call_builtin(Builtin::MresizeExact, &[self.ecx, min_size, owed, offset_too_large]);
     }
 
     /// Splits a value into a base value and a constant addend.

@@ -231,6 +231,7 @@ macro_rules! builtins {
                 const SLOADC: u8 = _0_1;
 
                 const MRESIZE: u8 = _0_0;
+                const MRESIZEEXACT: u8 = _0_0;
 
                 const LOG: u8 = _0_0;
                 const HOSTINSTRUCTION: u8 = _0_0;
@@ -329,7 +330,8 @@ builtins! {
     SelfBalance    = __revmc_builtin_self_balance(@[ecx] ptr, @[sp] ptr) None,
     Difficulty     = __revmc_builtin_difficulty(@[ecx_ro] ptr, @[sp] ptr) None,
     BlobHash       = __revmc_builtin_blob_hash(@[ecx_ro] ptr, @[sp] ptr) None,
-    Mresize        = __revmc_builtin_mresize(@[ecx] ptr, usize, usize, u8) None,
+    Mresize        = __revmc_builtin_mresize(@[ecx] ptr, usize) None,
+    MresizeExact   = __revmc_builtin_mresize_exact(@[ecx] ptr, usize, usize, u8) None,
     Sload          = __revmc_builtin_sload(@[ecx] ptr, @[sp] ptr) None,
     SloadC         = __revmc_builtin_sload_c(@[ecx] ptr, @[sp] ptr, usize) None,
     Sstore         = __revmc_builtin_sstore(@[ecx] ptr, @[sp] ptr) None,
@@ -349,7 +351,7 @@ builtins! {
 impl Builtin {
     pub const fn call_conv(self) -> CallConv {
         match self {
-            Self::Mresize => CallConv::Cold,
+            Self::Mresize | Self::MresizeExact => CallConv::Cold,
             _ => CallConv::Default,
         }
     }
