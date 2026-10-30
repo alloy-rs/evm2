@@ -1571,12 +1571,16 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     fn validate_create_output(&self, gas: &mut Gas, output: &mut Bytes) -> Result<(), InstrStop> {
-        if self.feature(EvmFeatures::CODE_SIZE_CHECK) && output.len() > self.version().max_code_size
-        {
-            return Err(InstrStop::CreateContractSizeLimit);
-        }
+        let oversized = self.feature(EvmFeatures::CODE_SIZE_CHECK)
+            && output.len() > self.version().max_code_size;
         if self.feature(EvmFeatures::EIP3541) && output.first().is_some_and(|byte| *byte == 0xef) {
             return Err(InstrStop::CreateContractStartingWithEF);
+        }
+        // The code deposit gas is charged before the size check, except with EIP-8037. Without
+        // EIP-2 a failed deposit creates the contract with empty code, so the size check cannot
+        // wait for it.
+        if oversized && (self.feature(EvmFeatures::EIP8037) || !self.feature(EvmFeatures::EIP2)) {
+            return Err(InstrStop::CreateContractSizeLimit);
         }
 
         let code_deposit_gas = output
@@ -1593,6 +1597,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Ok(());
         }
         gas.spend(code_deposit_gas)?;
+        if oversized {
+            return Err(InstrStop::CreateContractSizeLimit);
+        }
 
         // EIP-8037: hashing the deployed bytecode to compute its code_hash costs
         // execution keccak word gas, and depositing the code costs state gas. The
@@ -4137,7 +4144,7 @@ mod tests {
             kind: MessageKind::Create,
             destination: created,
             caller,
-            gas_limit: 100_000,
+            gas_limit: 10_000_000,
             code,
             ..MessageExt::default()
         };

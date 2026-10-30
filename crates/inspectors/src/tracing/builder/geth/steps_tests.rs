@@ -33,28 +33,36 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
         }),
         storage_slot: (op == op::SSTORE).then(|| Box::new((U256::ZERO, U256::from(pc)))),
         status: (op == op::REVERT).then_some(InstrStop::Revert),
+        error: None,
         immediate_bytes: None,
         decoded: None,
     }
 }
 
 #[test]
-fn struct_log_errors_exclude_reverts() {
-    for (status, has_error) in [
-        (None, false),
-        (Some(InstrStop::Stop), false),
-        (Some(InstrStop::Return), false),
-        (Some(InstrStop::Revert), false),
-        (Some(InstrStop::OutOfFunds), false),
-        (Some(InstrStop::CallTooDeep), false),
-        (Some(InstrStop::OutOfGas), true),
-        (Some(InstrStop::StackUnderflow), true),
-        (Some(InstrStop::OpcodeNotFound), true),
+fn struct_log_reports_the_step_error() {
+    let mut step = test_step(0, op::JUMP);
+    let log = step.convert_to_geth_struct_log(&Default::default(), 1, None);
+    assert_eq!(log.error, None);
+
+    step.status = Some(InstrStop::StackUnderflow);
+    step.error = Some("stack underflow (0 <=> 1)".into());
+    let log = step.convert_to_geth_struct_log(&Default::default(), 1, None);
+    assert_eq!(log.error.as_deref(), Some("stack underflow (0 <=> 1)"));
+}
+
+#[test]
+fn struct_log_names_opcodes_like_geth() {
+    for (byte, name) in [
+        (op::JUMP, "JUMP"),
+        (0xd0, "DATALOAD"),
+        (0xe5, "JUMPF"),
+        (0xf9, "EXTDELEGATECALL"),
+        (0xfb, "EXTSTATICCALL"),
+        (0x0c, "opcode 0xc not defined"),
     ] {
-        let mut step = test_step(0, op::REVERT);
-        step.status = status;
-        let log = step.convert_to_geth_struct_log(&Default::default(), 1, None);
-        assert_eq!(log.error.is_some(), has_error, "{status:?}");
+        let log = test_step(0, byte).convert_to_geth_struct_log(&Default::default(), 1, None);
+        assert_eq!(log.op, name);
     }
 }
 

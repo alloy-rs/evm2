@@ -677,7 +677,9 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return;
         }
         let result = interp.result().err();
-        let is_fault = result.is_some_and(|stop| should_fault(stop, pending.instruction.op));
+        // Geth reports validation failures through step; execution failures also invoke fault.
+        let is_fault = result
+            .is_some_and(|stop| !stop.is_success() && !utils::fails_before_body(stop, interp));
         let error = result.and_then(|stop| utils::fmt_error_msg(stop, TraceStyle::Geth));
         if self.step_fn.is_none() {
             if !is_fault {
@@ -1048,21 +1050,6 @@ struct FaultStep {
     pc: u64,
     op: u8,
     gas: u64,
-}
-
-// Geth reports validation failures through step; execution failures also invoke fault.
-const fn should_fault(stop: InstrStop, opcode: u8) -> bool {
-    match stop {
-        InstrStop::StackUnderflow
-        | InstrStop::StackOverflow
-        | InstrStop::CreateInitCodeSizeLimit
-        | InstrStop::CallNotAllowedInsideStatic => false,
-        // LOG and TSTORE check write protection during execution, unlike these opcodes.
-        InstrStop::StateChangeDuringStaticCall => {
-            !matches!(opcode, op::SSTORE | op::CREATE | op::CREATE2 | op::SELFDESTRUCT)
-        }
-        _ => !stop.is_success() && !stop.is_out_of_gas(),
-    }
 }
 
 // Preserve native error kinds and source positions, but omit Boa's multiline backtrace.

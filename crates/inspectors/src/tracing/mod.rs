@@ -8,7 +8,7 @@ use crate::{
             CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
             TraceMemberOrder,
         },
-        utils::gas_used,
+        utils::{CODE_DEPOSIT_OUT_OF_GAS, fails_before_body, fmt_geth_halt, gas_used},
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -566,6 +566,7 @@ impl TracingInspector {
             storage_change: None,
             storage_slot,
             status: None,
+            error: None,
 
             // This is never populated in `TracingInspector`.
             decoded: None,
@@ -686,6 +687,11 @@ impl TracingInspector {
 
         // set the status
         step.status = interp.result().err();
+        if let Some(stop) = step.status
+            && stop.is_halt()
+        {
+            step.error = step_error(stop, interp);
+        }
 
         if step.status.is_some_and(|status| status.is_halt()) {
             return;
@@ -719,6 +725,15 @@ impl TracingInspector {
                 );
             }
         }
+    }
+
+    /// Records the error geth reports for the opcode that halted the current frame.
+    ///
+    /// Invoked on [Inspector::step_end], where the interpreter still holds the opcode and the stack
+    /// it halted on.
+    #[cold]
+    fn record_halt<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>, stop: InstrStop) {
+        self.last_trace().trace.geth_error = fmt_geth_halt(stop, interp);
     }
 
     /// Restores a root omitted when evm2 halts during runtime gas charging, before its hooks run.
@@ -777,6 +792,11 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.config.record_steps {
             self.fill_step_on_step_end(interp);
+        }
+        if let Err(stop) = interp.result()
+            && stop.is_halt()
+        {
+            self.record_halt(interp, stop);
         }
         self.budget.halt(interp, true);
     }
@@ -895,7 +915,13 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
+        let trace_idx = self.last_trace_idx();
         self.fill_trace_on_call_end(result);
+        // An initcode that runs out of gas halts in a step, which reports its own error.
+        let trace = &mut self.traces.arena[trace_idx].trace;
+        if result.stop == InstrStop::OutOfGas && trace.geth_error.is_none() {
+            trace.geth_error = Some(CODE_DEPOSIT_OUT_OF_GAS.into());
+        }
     }
 
     fn selfdestruct(
@@ -971,6 +997,14 @@ fn storage_slot(stack: &[U256], op: u8) -> Option<Box<(U256, U256)>> {
         }
         _ => None,
     }
+}
+
+/// Returns the error geth's struct logger reports for the opcode that halted with `stop`.
+///
+/// The struct logger only sees the errors raised before the opcode runs.
+#[cold]
+fn step_error<T: EvmTypes>(stop: InstrStop, interp: &Interpreter<'_, '_, T>) -> Option<Box<str>> {
+    fails_before_body(stop, interp).then(|| fmt_geth_halt(stop, interp)).flatten().map(Into::into)
 }
 
 /// Returns the memory range whose contents after execution the opcode reports, derived from its
