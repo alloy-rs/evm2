@@ -2118,6 +2118,18 @@ tests! {
             gas_limit: 31,
             expected_return: InstrStop::OutOfGas,
         }),
+        mload_dyn_offset_2_pow_64(@raw {
+            bytecode: &asm("PUSH9 0x010000000000000000 PUSH0 MSTORE PUSH0 MLOAD MLOAD"),
+            expected_return: InstrStop::InvalidOperandOOG,
+        }),
+        mload_dyn_offset_u64_max(@raw {
+            bytecode: &asm("PUSH8 0xffffffffffffffff PUSH0 MSTORE PUSH0 MLOAD MLOAD"),
+            expected_return: InstrStop::MemoryOOG,
+        }),
+        mstore8_dyn_offset_u64_max(@raw {
+            bytecode: &asm("PUSH8 0xffffffffffffffff PUSH0 MSTORE PUSH0 MLOAD PUSH1 1 SWAP1 MSTORE8"),
+            expected_return: InstrStop::MemoryOOG,
+        }),
         mload_overflow6(@raw {
             bytecode: &[op::ADDRESS, op::MLOAD],
             expected_return: InstrStop::InvalidOperandOOG,

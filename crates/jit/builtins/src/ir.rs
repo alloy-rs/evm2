@@ -329,7 +329,7 @@ builtins! {
     SelfBalance    = __revmc_builtin_self_balance(@[ecx] ptr, @[sp] ptr) None,
     Difficulty     = __revmc_builtin_difficulty(@[ecx_ro] ptr, @[sp] ptr) None,
     BlobHash       = __revmc_builtin_blob_hash(@[ecx_ro] ptr, @[sp] ptr) None,
-    Mresize        = __revmc_builtin_mresize(@[ecx] ptr, usize, usize, usize) None,
+    Mresize        = __revmc_builtin_mresize(@[ecx] ptr, usize, usize, u8) None,
     Sload          = __revmc_builtin_sload(@[ecx] ptr, @[sp] ptr) None,
     SloadC         = __revmc_builtin_sload_c(@[ecx] ptr, @[sp] ptr, usize) None,
     Sstore         = __revmc_builtin_sstore(@[ecx] ptr, @[sp] ptr) None,

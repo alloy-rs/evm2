@@ -393,29 +393,29 @@ pub unsafe fn __revmc_builtin_blob_hash<T: EvmTypesHost>(
     *index_ptr = ecx.tx_env().blob_hashes.get(index_usize).copied().unwrap_or_default().into();
 }
 
-/// Resizes memory for an access of `len` bytes at `offset`.
+/// Resizes memory to `min_size` bytes.
 ///
-/// A `len` of `u64::MAX` means that the offset does not fit in 64 bits. `owed` is the static gas
-/// that the section head charged for the instructions after the access. The interpreter charges
-/// the resize before them, so the resize runs with that gas added back, and fails with
-/// `OutOfGas` if it left the instructions after the access unpaid.
+/// `owed` is the static gas that the section head charged for the instructions after the access.
+/// The interpreter charges the resize before them, so the resize runs with that gas added back,
+/// and fails with `OutOfGas` if it left the instructions after the access unpaid.
+/// `offset_too_large` means the access offset does not fit in 64 bits.
 #[inline]
 pub unsafe fn __revmc_builtin_mresize<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
-    offset: u64,
-    len: u64,
+    min_size: u64,
     owed: u64,
+    offset_too_large: u8,
 ) -> BuiltinResult {
     // Compiled code subtracts gas without a check, so the remaining gas may be negative.
     let remaining = ecx.gas.remaining().wrapping_add(owed);
     if (remaining as i64) < 0 {
         return Err(InstrStop::OutOfGas.into());
     }
-    if len == u64::MAX {
+    if offset_too_large != 0 {
         return Err(InstrStop::InvalidOperandOOG.into());
     }
     ecx.gas.set_remaining(remaining);
-    ensure_memory(ecx, offset as usize, len as usize)?;
+    ensure_memory(ecx, min_size as usize, 0)?;
     let remaining = ecx.gas.remaining().wrapping_sub(owed);
     ecx.gas.set_remaining(remaining);
     if (remaining as i64) < 0 {
@@ -1116,7 +1116,7 @@ mod abi {
         __revmc_builtin_self_balance(ecx: &mut EvmContext<'_, '_, '_, T>, slot: &mut EvmWord) -> BuiltinResult;
         __revmc_builtin_difficulty(ecx: &EvmContext<'_, '_, '_, T>, slot: &mut EvmWord);
         __revmc_builtin_blob_hash(ecx: &EvmContext<'_, '_, '_, T>, index_ptr: &mut EvmWord);
-        __revmc_builtin_mresize(ecx: &mut EvmContext<'_, '_, '_, T>, offset: u64, len: u64, owed: u64) -> BuiltinResult;
+        __revmc_builtin_mresize(ecx: &mut EvmContext<'_, '_, '_, T>, min_size: u64, owed: u64, offset_too_large: u8) -> BuiltinResult;
         __revmc_builtin_sload(ecx: &mut EvmContext<'_, '_, '_, T>, index: &mut EvmWord) -> BuiltinResult;
         __revmc_builtin_sload_c(ecx: &mut EvmContext<'_, '_, '_, T>, index: &mut EvmWord, key: u64) -> BuiltinResult;
         __revmc_builtin_sstore(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
