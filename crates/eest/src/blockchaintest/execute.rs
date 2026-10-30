@@ -918,18 +918,22 @@ fn validate_block_header(
     let blob_params = schedule.blob_params(header.timestamp, spec);
     let parent_excess = parent.excess_blob_gas.unwrap_or_default();
     let parent_used = parent.blob_gas_used.unwrap_or_default();
-    // Reject parent values that the excess blob gas formula cannot add or scale without overflow.
+    let parent_base_fee = parent.base_fee_per_gas.unwrap_or_default();
+    // Reject parent values that `BlobParams` cannot take as `u64`, or that its excess blob gas
+    // formula cannot add or scale without overflow.
     if parent_used > U256::from(blob_params.max_blob_gas_per_block())
         || parent_excess.saturating_add(parent_used) > U256::from(u64::MAX)
+        || parent_base_fee > U256::from(u64::MAX)
     {
         return Err(format!(
-            "parent blob gas fields out of range: excess {parent_excess}, used {parent_used}"
+            "parent header fields out of range: excess blob gas {parent_excess}, blob gas used \
+             {parent_used}, base fee {parent_base_fee}"
         ));
     }
     let expected_excess_blob_gas = blob_params.next_block_excess_blob_gas_osaka(
         parent_excess.to(),
         parent_used.to(),
-        parent.base_fee_per_gas.unwrap_or_default().saturating_to(),
+        parent_base_fee.to(),
     );
     if header.excess_blob_gas != Some(U256::from(expected_excess_blob_gas)) {
         return Err(format!(
