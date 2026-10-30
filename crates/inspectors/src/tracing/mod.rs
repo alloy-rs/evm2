@@ -8,7 +8,7 @@ use crate::{
             CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
             TraceMemberOrder,
         },
-        utils::gas_used,
+        utils::{gas_used, load_account_code},
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -542,6 +542,22 @@ impl TracingInspector {
             None
         };
 
+        let contract_size = if self.config.record_contract_sizes
+            && matches!(op.get(), op::EXTCODESIZE | op::EXTCODECOPY | op::EXTCODEHASH)
+            && let Some(item) = interp.stack().as_slice().last()
+        {
+            let address = Address::from_word((*item).into());
+            let state = interp.host().state_mut();
+            // A database error leaves the size unrecorded instead of reporting no code.
+            state.account_info_untracked(&address).ok().and_then(|info| {
+                let Some(info) = info else { return Some(0) };
+                let code = load_account_code(state.overlay_db_mut(), &info).ok()?;
+                Some(code.map_or(0, |code| code.len() as u64))
+            })
+        } else {
+            None
+        };
+
         let step_idx = node.trace.steps.len();
         node.trace.steps.push(CallTraceStep {
             pc: interp.pc(),
@@ -553,6 +569,7 @@ impl TracingInspector {
             gas_refund_counter: interp.gas().refunded() as u64,
             gas_used,
             immediate_bytes,
+            contract_size,
 
             // These fields will be populated in `step_end`.
             push_stack: None,

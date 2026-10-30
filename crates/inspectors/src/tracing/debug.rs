@@ -302,8 +302,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx.signer());
                 inspector
                     .geth_builder()
-                    .geth_erc7562_traces(config.clone(), res.result.tx_gas_used(), db)
-                    .map_err(DebugInspectorError::Database)?
+                    .geth_erc7562_traces(config.clone(), res.result.tx_gas_used())
                     .into()
             }
             Self::Keccak256Preimage(inspector) => GethTrace::JS(inspector.json_result()?),

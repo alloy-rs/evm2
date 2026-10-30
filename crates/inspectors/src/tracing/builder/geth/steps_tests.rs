@@ -3,10 +3,7 @@ use crate::tracing::types::{
     CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason,
 };
 use alloc::string::String;
-use evm2::{
-    evm::EmptyDB,
-    interpreter::{InstrStop, opcode::OpCode},
-};
+use evm2::interpreter::{InstrStop, opcode::OpCode};
 
 fn test_step(pc: usize, op: u8) -> CallTraceStep {
     CallTraceStep {
@@ -34,6 +31,7 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
         storage_slot: (op == op::SSTORE).then(|| Box::new((U256::ZERO, U256::from(pc)))),
         status: (op == op::REVERT).then_some(InstrStop::Revert),
         immediate_bytes: None,
+        contract_size: None,
         decoded: None,
     }
 }
@@ -101,9 +99,7 @@ fn erc7562_keccak_preimages_require_successful_steps() {
                 },
                 ..Default::default()
             }]);
-            let frame = builder
-                .geth_erc7562_traces(Erc7562Config::default(), 0, &mut EmptyDB::default())
-                .unwrap();
+            let frame = builder.geth_erc7562_traces(Erc7562Config::default(), 0);
             let expected = if status.is_none() { vec![Bytes::from(expected)] } else { vec![] };
             assert_eq!(frame.keccak, expected, "status {status:?}, offset {offset}, len {len}");
         }
@@ -143,8 +139,7 @@ fn erc7562_classifies_all_out_of_gas_statuses() {
                 if ignored {
                     config.ignored_opcodes.push(op::KECCAK256);
                 }
-                let frame =
-                    builder.geth_erc7562_traces(config, 0, &mut EmptyDB::default()).unwrap();
+                let frame = builder.geth_erc7562_traces(config, 0);
                 assert_eq!(
                     frame.out_of_gas, expected,
                     "status {status:?}, frame_status {frame_status}, ignored {ignored}"

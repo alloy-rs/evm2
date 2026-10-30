@@ -686,6 +686,13 @@ pub struct CallTraceStep {
     pub status: Option<InstrStop>,
     /// Immediate bytes of the step
     pub immediate_bytes: Option<Bytes>,
+    /// Code size of the target of an `EXTCODESIZE`, `EXTCODECOPY` or `EXTCODEHASH` step, read
+    /// when the step runs (zero for an account without code).
+    ///
+    /// Only set if
+    /// [`record_contract_sizes`](crate::tracing::TracingInspectorConfig::record_contract_sizes)
+    /// is enabled.
+    pub contract_size: Option<u64>,
     /// Optional complementary decoded step data.
     pub decoded: Option<Box<DecodedTraceStep>>,
 }
