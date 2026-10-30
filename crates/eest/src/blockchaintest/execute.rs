@@ -2150,6 +2150,8 @@ mod tests {
                         gas_used: U256::from(43_105),
                         base_fee_per_gas: Some(U256::ZERO),
                         timestamp: U256::ONE,
+                        excess_blob_gas: Some(U256::ZERO),
+                        blob_gas_used: Some(U256::ZERO),
                         ..BlockHeader::default()
                     }),
                     transactions: Some(vec![Transaction {
