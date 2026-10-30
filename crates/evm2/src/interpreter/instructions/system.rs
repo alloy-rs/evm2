@@ -226,6 +226,31 @@ fn prepare_call<T: EvmTypesHost>(
     Ok(new_account_state_gas)
 }
 
+#[instruction(no_stack_preamble, dynamic_gas)]
+pub fn call(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::Call)
+}
+
+#[instruction(no_stack_preamble, dynamic_gas)]
+pub fn callcode(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::CallCode)
+}
+
+#[instruction(no_stack_preamble, dynamic_gas)]
+pub fn delegatecall(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::DelegateCall)
+}
+
+#[instruction(no_stack_preamble, dynamic_gas)]
+pub fn staticcall(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::StaticCall)
+}
+
+#[instruction(no_stack_preamble, dynamic_gas)]
+pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
+    create_inner(stack, cx.gas, cx.state, *cx.pc, IS_CREATE2)
+}
+
 #[inline(never)]
 fn call_inner<T: EvmTypesHost>(
     stack: StackMut<'_>,
@@ -301,31 +326,6 @@ pub fn call_with<T: EvmTypesHost>(
     state.swap_return_data(&mut result.output);
     stack.push_u64(result.stop.is_success() as u64)?;
     state.after_message(pc)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn call(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::Call)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn callcode(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::CallCode)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn delegatecall(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::DelegateCall)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn staticcall(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::StaticCall)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
-    create_inner(stack, cx.gas, cx.state, *cx.pc, IS_CREATE2)
 }
 
 #[inline(never)]
