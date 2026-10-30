@@ -71,6 +71,11 @@ pub struct RuntimeStatsSnapshot {
     /// pending-job cap, a saturated worker pool, a program evicted before use, or empty bytecode.
     /// A failed compilation is also counted once in `compilations_failed`; this counter counts
     /// every frame, including later frames of the same failed code.
+    ///
+    /// Also counts frames whose gas exceeds `i64::MAX`, and hosts that the runtime rejects
+    /// because their type, gas schedule, or opcode table differs from the compiled code's. A
+    /// rejected host is counted once per support check, not once per frame, because the caller
+    /// then stops asking the runtime to run frames.
     pub interpreter_fallbacks: u64,
     /// Total control commands dropped because the command channel was full.
     ///

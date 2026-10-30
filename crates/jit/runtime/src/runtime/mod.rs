@@ -218,6 +218,11 @@ impl JitBackend {
         Ok(this)
     }
 
+    /// Counts a frame that ran on the interpreter because the runtime could not run it.
+    pub(crate) fn count_interpreter_fallback(&self) {
+        self.inner.shared.stats.interpreter_fallbacks.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Checks that generated code uses the field layout of the interpreter type `T`.
     #[inline]
     pub(crate) fn supports_host_type<T: evm2::EvmTypesHost>(&self) -> bool {
@@ -225,18 +230,43 @@ impl JitBackend {
     }
 
     /// Checks that generated code matches the interpreter type, gas schedule, and opcode table.
+    ///
+    /// An enabled backend counts a rejection as an interpreter fallback and logs the reason,
+    /// because the caller then runs every frame on the interpreter. Compiled code is not keyed
+    /// by gas schedule, so a host whose schedule differs from the backend's is never compiled
+    /// for.
     pub(crate) fn supports_host<T: evm2::EvmTypesHost>(
         &self,
         config: &evm2::ExecutionConfig<T>,
     ) -> bool {
-        self.supports_host_type::<T>()
-            && config.version().gas_params
-                == *self
-                    .inner
-                    .gas_params
-                    .as_ref()
-                    .unwrap_or(&evm2::Version::base(config.base_spec_id()).gas_params)
-            && self.opcodes_match(config)
+        let Some(reason) = self.host_mismatch(config) else { return true };
+        if self.enabled() {
+            self.count_interpreter_fallback();
+            warn!(spec_id = ?config.base_spec_id(), reason, "host unsupported, running the interpreter");
+        }
+        false
+    }
+
+    /// Returns why generated code does not match `config`, or `None` if it does.
+    fn host_mismatch<T: evm2::EvmTypesHost>(
+        &self,
+        config: &evm2::ExecutionConfig<T>,
+    ) -> Option<&'static str> {
+        if !self.supports_host_type::<T>() {
+            return Some("host type differs from the one the backend was built for");
+        }
+        let gas_params = self
+            .inner
+            .gas_params
+            .as_ref()
+            .unwrap_or(&evm2::Version::base(config.base_spec_id()).gas_params);
+        if config.version().gas_params != *gas_params {
+            return Some("gas schedule differs from the one the backend compiles with");
+        }
+        if !self.opcodes_match(config) {
+            return Some("opcode table differs from the one the backend compiles with");
+        }
+        None
     }
 
     /// Checks the active opcode config against the host's opcode table.
@@ -323,7 +353,7 @@ impl JitBackend {
     pub fn lookup_blocking(&self, req: LookupRequest) -> LookupDecision {
         let decision = self.lookup_blocking_inner(req);
         if let LookupDecision::Unavailable(_) = decision {
-            self.inner.shared.stats.interpreter_fallbacks.fetch_add(1, Ordering::Relaxed);
+            self.count_interpreter_fallback();
         }
         decision
     }
