@@ -1091,7 +1091,32 @@ impl<'a> State<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evm::{Database, Db};
     use alloc::vec;
+
+    /// A database whose accounts exist but whose storage cannot be read.
+    #[derive(Debug)]
+    struct StorageReadsFailDb;
+
+    impl Database for StorageReadsFailDb {
+        type Error = core::fmt::Error;
+
+        fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok(Some(AccountInfo::default().with_balance(Word::from(1))))
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
+        }
+
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
+            Err(core::fmt::Error)
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
+        }
+    }
 
     #[test]
     fn committed_copy_matches_committed_clone() {
@@ -1154,14 +1179,12 @@ mod tests {
     }
 
     #[test]
-    fn created_account_reads_unloaded_slots_as_zero() {
+    fn created_account_reads_unloaded_slots_as_zero_without_a_database_read() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
         let (key, written) = (Word::from(1), Word::from(2));
         let features = EvmFeatures::empty();
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        let mut state = State::new(db);
+        let mut state = State::new(Db::new(StorageReadsFailDb));
 
         let checkpoint = state.checkpoint();
         state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
@@ -1172,12 +1195,11 @@ mod tests {
 
         state.rollback(checkpoint, features);
         assert!(!state.accounts[&address].discards_storage());
-        assert_eq!(state.storage_slot(&address, written).unwrap().current(), Word::ZERO);
-        assert!(!state.take_pending_state().is_changed());
+        assert!(state.storage_slot(&address, Word::from(3)).is_err());
     }
 
     #[test]
-    fn marked_created_account_reads_and_commits_its_baseline() {
+    fn marked_created_account_reads_database_storage() {
         let address = Address::with_last_byte(2);
         let (written, unwritten) = (Word::from(1), Word::from(2));
         let mut db = CacheDB::default();

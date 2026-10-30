@@ -257,11 +257,11 @@ impl Account {
     /// Returns whether the account was created with empty storage, so its unloaded slots read as
     /// zero without a database read.
     ///
-    /// A creation only reaches an address with zero nonce and empty code, and such an account
-    /// holds no storage: execution-specs checks only nonce and code for a deployable address, and
-    /// EIP-8253 gives the mainnet accounts with storage and no code a nonce of one, so EIP-684
-    /// rejects a creation there. The database is therefore never read for a created account, though
-    /// a strict BAL must still cover the slots.
+    /// A creation only reaches an address with zero nonce and empty code, and evm2 assumes such an
+    /// account holds no storage: execution-specs checks only nonce and code for a deployable
+    /// address, and EIP-8253 gives the mainnet accounts with storage and no code a nonce of one, so
+    /// EIP-684 rejects a creation there. The database is therefore never read for a created
+    /// account, though a strict BAL must still cover the slots.
     #[inline]
     pub(crate) const fn discards_storage(&self) -> bool {
         self.flags.contains(AccountFlags::DISCARDS_STORAGE)
