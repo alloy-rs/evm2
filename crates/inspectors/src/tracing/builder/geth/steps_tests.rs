@@ -18,7 +18,6 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
         returndata: Bytes::from(vec![pc as u8]),
         gas_remaining: 1000 - pc as u64,
         gas_refund_counter: 0,
-        gas_used: pc as u64,
         gas_cost: 1,
         state_gas_cost: None,
         state_gas_reservoir: None,

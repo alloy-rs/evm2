@@ -1,6 +1,5 @@
 //! EVM to IR translation.
 
-use super::default_attrs;
 use crate::{
     Backend, Builder, Bytecode, EvmContext, Inst, InstData, InstFlags, IntCC, Result, StackSection,
     decode_pair, decode_single,
@@ -11,10 +10,10 @@ use evm2::{
     env::{BlockEnv, TxEnv},
     interpreter::{InstrStop, Interpreter, Message, op},
 };
-use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
+use evm2_jit_backend::{BackendTypes, Pointer, TypeMethods};
 use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
 use oxc_index::IndexVec;
-use std::{mem, ops::Range};
+use std::{fmt::Write, mem, ops::Range};
 
 mod peephole;
 
@@ -162,10 +161,6 @@ impl HostLayout {
 
 /// A list of incoming values for a block. Represents a `phi` node.
 type Incoming<B> = Vec<(<B as BackendTypes>::Value, <B as BackendTypes>::BasicBlock)>;
-
-/// A list of `switch` targets.
-#[allow(dead_code)]
-type SwitchTargets<B> = Vec<(u64, <B as BackendTypes>::BasicBlock)>;
 
 pub(super) struct FunctionCx<'a, B: Backend> {
     // Configuration.
@@ -529,8 +524,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             self.bcx.set_debug_location(self.inst_lines[inst], 1);
         }
 
-        // self.call_printf(format_printf!("{}\n", self.op_block_name("")), &[]);
-
         let branch_to_next_opcode = |this: &mut Self| {
             debug_assert!(
                 !this.bytecode.is_instr_diverging(inst),
@@ -648,10 +641,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // skip the real logic and just write the result.
         // The inputs are not loaded; we simply adjust the stack offset to consume them and
         // push the folded constant. This turns e.g. `PUSH 3, PUSH 4, ADD` into a single
-        // store of `7`.
-        // Pure ops with a known-constant output: skip the opcode logic and just
-        // store the folded constant. Works for single-output arithmetic (ADD, MUL,
-        // ...) and DUP (which adds one new TOS without consuming its input).
+        // store of `7`. Works for single-output arithmetic (ADD, MUL, ...) and DUP (which adds
+        // one new TOS without consuming its input).
         if out >= 1
             && let Some(const_out) = self.bytecode.foldable_output(inst)
         {
@@ -1016,13 +1007,13 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 let offset = self.pop();
                 let addr = self.build_ensure_memory(offset, 32);
                 let value = self.bcx.load_aligned(self.word_type, addr, 1, "mload.value");
-                let value = if self.little_endian() { self.bcx.bswap(value) } else { value };
+                let value = self.bcx.bswap(value);
                 self.push(value);
             }
             op::MSTORE => {
                 let [offset, value] = self.popn();
                 let addr = self.build_ensure_memory(offset, 32);
-                let value = if self.little_endian() { self.bcx.bswap(value) } else { value };
+                let value = self.bcx.bswap(value);
                 self.bcx.store_aligned(value, addr, 1);
             }
             op::MSTORE8 => {
@@ -1325,7 +1316,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 if d.is_dead_code() {
                     continue;
                 }
-                use std::fmt::Write;
                 let _ = write!(
                     section_dump,
                     "\n  ic{i} pc={} {:?} io={:?} flags={:?} gas={:?} stack={:?}{}{}",
@@ -1974,15 +1964,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.load(ptr_type, mem_base_field, "ecx.mem_base")
     }
 
-    /*
-    /// Builds a check, failing if the condition is false.
-    ///
-    /// `if success_cond { ... } else { return ret }`
-    fn build_failure_inv(&mut self, success_cond: B::Value, ret: InstrStop) {
-        self.build_failure_imm_inner(false, success_cond, ret);
-    }
-    */
-
     /// Emits under/overflow bounds checks for a stack section.
     fn check_stack_bounds(&mut self, stack_section: StackSection) {
         let inp = stack_section.inputs;
@@ -2208,15 +2189,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         block
     }
 
-    #[allow(dead_code)]
-    fn call_printf(&mut self, template: &std::ffi::CStr, values: &[B::Value]) {
-        let mut args = Vec::with_capacity(values.len() + 1);
-        args.push(self.bcx.cstr_const(template));
-        args.extend_from_slice(values);
-        let printf = self.bcx.get_printf_function();
-        let _ = self.bcx.call(printf, &args);
-    }
-
     /// Build a call to a fallible builtin.
     ///
     /// The builtin longjmps on error, so no return value check is needed.
@@ -2229,10 +2201,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     #[must_use]
     fn call_builtin(&mut self, builtin: Builtin, args: &[B::Value]) -> Option<B::Value> {
         let function = self.builtin_function(builtin);
-        // self.call_printf(
-        //     format_printf!("{} - calling {}\n", self.op_block_name(""), builtin.name()),
-        //     &[],
-        // );
         let invalidate_mem_base =
             !self.current_inst.is_some_and(|inst| self.can_skip_ensure_memory(inst));
         let value = self.bcx.call(function, args);
@@ -2290,18 +2258,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.current_block().expect("no blocks")
     }
 
-    const fn little_endian(&self) -> bool {
-        true
-    }
-
-    /*
-    /// Creates a named block.
-    fn create_block(&mut self, name: &str) -> B::BasicBlock {
-        let name = self.op_block_name(name);
-        self.bcx.create_block(&name)
-    }
-    */
-
     /// Creates a named block after the given block.
     fn create_block_after(&mut self, after: B::BasicBlock, name: &str) -> B::BasicBlock {
         let name = self.op_block_name(name);
@@ -2329,78 +2285,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 }
 
-/// IR builtins.
-impl<B: Backend> FunctionCx<'_, B> {
-    #[allow(dead_code)]
-    #[must_use]
-    fn call_ir_builtin(
-        &mut self,
-        name: &str,
-        args: &[B::Value],
-        arg_types: &[B::Type],
-        ret: Option<B::Type>,
-        build: impl FnOnce(&mut Self),
-    ) -> Option<B::Value> {
-        let prefix = "__revmc_ir_builtin_";
-        let name = &format!("{prefix}{name}")[..];
-
-        // self.call_printf(format_printf!("{} - calling {name}\n", self.op_block_name("")), &[]);
-
-        debug_assert_eq!(args.len(), arg_types.len());
-        let linkage = evm2_jit_backend::Linkage::Private;
-        // SAFETY: `this` aliases `self` to work around the borrow checker: we need `self.bcx`
-        // borrowed by `get_or_build_function` while also swapping `self.bcx` inside the closure.
-        // The closure's `bcx` is a fresh builder (not `self.bcx`), so the swap is safe.
-        let debug_location = self
-            .config
-            .debug
-            .then(|| self.current_inst.map(|inst| self.inst_lines[inst]))
-            .flatten();
-        self.bcx.clear_debug_location();
-
-        let this = unsafe { &mut *(self as *mut Self) };
-        let f = self.bcx.get_or_build_function(name, arg_types, ret, linkage, |bcx| {
-            let prev_return_block = this.return_block.take();
-            let prev_failure_block = this.failure_block.take();
-            // SAFETY: `this.bcx` and `bcx` are non-overlapping (bcx is a fresh builder).
-            unsafe { std::ptr::swap(&mut this.bcx, bcx) };
-
-            for attr in default_attrs::for_fn().chain(std::iter::once(Attribute::NoUnwind)) {
-                this.bcx.add_function_attribute(None, attr, FunctionAttributeLocation::Function)
-            }
-            for i in 0..this.bcx.num_fn_params() as u32 {
-                for attr in default_attrs::for_param() {
-                    this.bcx.add_function_attribute(None, attr, FunctionAttributeLocation::Param(i))
-                }
-            }
-            build(this);
-
-            // SAFETY: same as above.
-            unsafe { std::ptr::swap(&mut this.bcx, bcx) };
-            this.failure_block = prev_failure_block;
-            this.return_block = prev_return_block;
-        });
-        if let Some(line) = debug_location {
-            self.bcx.set_debug_location(line, 1);
-        }
-        self.bcx.call(f, args)
-    }
-}
-
-// HACK: Need these structs' fields to be public for `offset_of!`.
-// `pf == private_fields`.
-#[allow(dead_code)]
-mod pf {
-    use super::*;
-
-    #[repr(C)] // See core::ptr::metadata::PtrComponents
-    pub(super) struct Slice {
-        pub(super) ptr: *const u8,
-        pub(super) len: usize,
-    }
-    const _: [(); mem::size_of::<&'static [u8]>()] = [(); mem::size_of::<Slice>()];
-}
-
 fn get_field<B: Builder>(bcx: &mut B, ptr: B::Value, offset: usize, name: &str) -> B::Value {
     // A field at offset 0 is `ptr` itself; a zero GEP would only clutter the IR.
     if offset == 0 {
@@ -2409,12 +2293,3 @@ fn get_field<B: Builder>(bcx: &mut B, ptr: B::Value, offset: usize, name: &str) 
     let offset = bcx.iconst(bcx.type_ptr_sized_int(), offset as i64);
     bcx.gep(bcx.type_int(8), ptr, &[offset], name)
 }
-
-#[allow(unused)]
-macro_rules! format_printf {
-    ($($t:tt)*) => {
-        &std::ffi::CString::new(format!($($t)*)).unwrap()
-    };
-}
-#[allow(unused)]
-use format_printf;

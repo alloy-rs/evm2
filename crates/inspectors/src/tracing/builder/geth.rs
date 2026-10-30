@@ -1,6 +1,5 @@
 //! Geth trace builder
 use crate::tracing::{
-    final_refunded,
     types::{CallKind, CallTraceNode, CallTraceStepStackItem},
     utils::load_account_code,
 };
@@ -229,7 +228,7 @@ impl<'a> GethTraceBuilder<'a> {
     ) -> DefaultFrame {
         self.geth_traces_inner(
             gas.tx_gas_used(),
-            Some((gas.execution_gas_spent(), gas.state_gas_spent(), final_refunded(gas))),
+            Some((gas.execution_gas_spent(), gas.state_gas_spent(), gas.final_refunded())),
             return_value,
             opts,
             None,
@@ -300,7 +299,7 @@ impl<'a> GethTraceBuilder<'a> {
         self.geth_call_traces_inner(
             opts,
             gas.tx_gas_used(),
-            Some((gas.execution_gas_spent(), gas.state_gas_spent(), final_refunded(gas))),
+            Some((gas.execution_gas_spent(), gas.state_gas_spent(), gas.final_refunded())),
         )
     }
 
