@@ -579,7 +579,11 @@ impl EvmDbReader for ChangesDbReader<'_> {
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
         if let Some(account) = self.changes.accounts.get(address) {
-            if let Some(slot) = account.storage.get(slot) {
+            // A wiped account's slots that the transaction only read hold their value from before
+            // the wipe, so only the slots it changed count.
+            if let Some(slot) = account.storage.get(slot)
+                && !(account.wiped && slot.original == slot.current)
+            {
                 return Ok(slot.current);
             }
             // A deleted or wiped account has only the storage it wrote. So does one created from
@@ -1234,7 +1238,10 @@ mod tests {
         };
         let alive = Some(AccountInfo::default());
         state.accounts.insert(plain, account(false, alive.clone(), U256::from(1), 5));
-        state.accounts.insert(wiped, account(true, alive.clone(), U256::from(1), 6));
+        let mut wiped_account = account(true, alive.clone(), U256::from(1), 6);
+        // A slot loaded before the wipe and not rewritten.
+        wiped_account.storage.insert(U256::from(3), Tracked::new(U256::from(9)));
+        state.accounts.insert(wiped, wiped_account);
         state.accounts.insert(deleted, account(false, None, U256::from(1), 0));
         let created_account =
             TxAccount { created: true, ..account(false, alive.clone(), U256::from(1), 4) };
@@ -1255,6 +1262,7 @@ mod tests {
             // A wiped account only keeps what it wrote afterwards.
             (wiped, 1, 6),
             (wiped, 2, 0),
+            (wiped, 3, 0),
             // A deleted account has no storage.
             (deleted, 1, 0),
             (deleted, 2, 0),
