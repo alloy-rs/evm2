@@ -997,7 +997,6 @@ impl Backend for EvmLlvmBackend {
         self.commit_staged_module()?;
         let name_str = self.id_to_name(id);
         let name = CString::new(name_str).unwrap();
-        let dh = &self.dh;
         let orc = self.orc.as_mut().unwrap();
         // Capture the compiled object buffer during lookup. LLJIT compiles lazily:
         // add_module_with_rt just registers the module, actual compilation happens
@@ -1006,9 +1005,20 @@ impl Backend for EvmLlvmBackend {
         let _guard = ScopedObjCapture::install(&mut captured);
         let addr = orc.global.jit.lookup_in(orc.jd(), &name).map_err(error_msg);
         drop(_guard);
-        let addr = dh.check(addr)?;
+        let compiled = addr.is_ok();
+        let addr = match self.dh.check(addr) {
+            Ok(addr) => addr,
+            Err(e) => {
+                // ORC compiled the whole module and keeps it, so later lookups would return the
+                // broken code without the error.
+                if compiled && let Err(free_err) = unsafe { self.free_function(id) } {
+                    warn!("failed to free function after an LLVM error: {free_err}");
+                }
+                return Err(e);
+            }
+        };
         if captured.is_some() {
-            orc.last_compiled_object = captured;
+            self.orc.as_mut().unwrap().last_compiled_object = captured;
         }
         Ok(addr)
     }
