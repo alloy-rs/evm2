@@ -476,8 +476,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         // SAFETY: `pc` is in bounds.
         let offset = pc;
         let mut pc = Pc::new(unsafe { bytecode.as_ptr().add(offset) });
-        let opcode = pc.op();
-        let instr = config.opcode_config().instruction(opcode).instr;
+        let instr = config.opcode_config().instruction(pc.op()).instr;
         self.stack_len = stack_len;
         let this: *mut Self = self;
         // SAFETY: Instructions must not access the stack through `InterpreterState` while the
@@ -492,16 +491,31 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         instr(&mut pc, stack.reborrow(), state)?;
         // Compiled code continues at the next instruction.
         if pc.as_ptr() != start {
-            return Err(self.fail(ExecutionError::Fatal(
-                format!(
-                    "host instruction {} (0x{opcode:02x}) at pc {offset} moved the program \
-                     counter, which compiled code cannot follow",
-                    OpCode::new_or_unknown(opcode).as_str(),
-                )
-                .into(),
-            )));
+            return Err(self.fail_host_instruction(
+                offset,
+                format_args!("moved the program counter, which compiled code cannot follow"),
+            ));
         }
         Ok(self.stack_len)
+    }
+
+    /// Records a fatal error for the host instruction at `pc` that compiled code cannot continue
+    /// after.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pc` is out of bounds.
+    #[doc(hidden)]
+    pub fn fail_host_instruction(&mut self, pc: usize, detail: fmt::Arguments<'_>) -> InstrStop {
+        let opcode = OpCode::new_or_unknown(self.original_bytecode_slice()[pc]);
+        self.fail(ExecutionError::Fatal(
+            format!(
+                "host instruction {} (0x{:02x}) at pc {pc} {detail}",
+                opcode.as_str(),
+                opcode.get()
+            )
+            .into(),
+        ))
     }
 
     #[inline(never)]

@@ -15,12 +15,10 @@ extern crate tracing;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, keccak256};
 use core::cmp::min;
 use evm2::{
-    AnyError, BaseEvmTypes, EvmTypesHost, ExecutionError,
+    BaseEvmTypes, EvmTypesHost,
     bytecode::Bytecode,
     constants::BLOCK_HASH_HISTORY,
-    interpreter::{
-        Host, MessageExt, MessageKind, Word, derive_create_destination, i256, opcode::OpCode,
-    },
+    interpreter::{Host, MessageExt, MessageKind, Word, derive_create_destination, i256},
     utils::read_word_padded,
     version::{EvmFeatures, GasId},
 };
@@ -521,57 +519,35 @@ pub unsafe fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
     ecx.return_data_len = ecx.interpreter().return_data().len();
     ecx.refresh_memory_cache();
     let new_len = result?;
-    // Compiled code relies on memory never shrinking, and on the opcode's stack effect.
+    // Compiled code relies on the opcode's stack effect, and on memory never shrinking.
     let expected_len = len - inputs + outputs;
+    if new_len != expected_len {
+        return Err(ecx
+            .interpreter_mut()
+            .fail_host_instruction(
+                pc,
+                format_args!(
+                    "left {new_len} stack items, but compiled code expects {expected_len} from \
+                     the opcode's fixed inputs and outputs"
+                ),
+            )
+            .into());
+    }
     let new_memory_len = ecx.memory().len();
-    if new_len != expected_len || new_memory_len < memory_len {
-        let violation = if new_len != expected_len {
-            HostInstructionViolation::Stack { expected: expected_len, actual: new_len }
-        } else {
-            HostInstructionViolation::MemoryShrank { before: memory_len, after: new_memory_len }
-        };
-        let opcode = OpCode::new_or_unknown(ecx.interpreter().original_bytecode_slice()[pc]);
-        let error = HostInstructionError { opcode, pc, violation };
-        return Err(ecx.interpreter_mut().fail(ExecutionError::Fatal(AnyError::new(error))).into());
+    if new_memory_len < memory_len {
+        return Err(ecx
+            .interpreter_mut()
+            .fail_host_instruction(
+                pc,
+                format_args!(
+                    "shrank memory from {memory_len} to {new_memory_len} bytes, but compiled \
+                     code expects memory never to shrink"
+                ),
+            )
+            .into());
     }
     Ok(())
 }
-
-/// How a host instruction broke an assumption compiled code makes about its opcode.
-#[derive(Debug)]
-enum HostInstructionViolation {
-    Stack { expected: usize, actual: usize },
-    MemoryShrank { before: usize, after: usize },
-}
-
-/// A host instruction that compiled code cannot continue after.
-#[derive(Debug)]
-struct HostInstructionError {
-    opcode: OpCode,
-    pc: usize,
-    violation: HostInstructionViolation,
-}
-
-impl core::fmt::Display for HostInstructionError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self { opcode, pc, violation } = self;
-        write!(f, "host instruction {} (0x{:02x}) at pc {pc} ", opcode.as_str(), opcode.get())?;
-        match violation {
-            HostInstructionViolation::Stack { expected, actual } => write!(
-                f,
-                "left {actual} stack items, but compiled code expects {expected} \
-                 from the opcode's fixed inputs and outputs"
-            ),
-            HostInstructionViolation::MemoryShrank { before, after } => write!(
-                f,
-                "shrank memory from {before} to {after} bytes, but compiled code expects \
-                 memory never to shrink"
-            ),
-        }
-    }
-}
-
-impl core::error::Error for HostInstructionError {}
 
 #[inline]
 pub unsafe fn __revmc_builtin_mcopy<T: EvmTypesHost>(
