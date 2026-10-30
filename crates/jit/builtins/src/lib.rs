@@ -692,7 +692,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         code: Bytecode::new_legacy(code.clone()),
         input: code,
         value,
-        code_address: caller,
+        code_address: destination,
         caller_is_static: false,
         salt,
         ext: T::MessageExt::default(),
