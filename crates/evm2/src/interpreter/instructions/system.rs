@@ -231,7 +231,7 @@ fn call_inner<T: EvmTypesHost>(
     stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
-    pc: &mut Pc,
+    pc: Pc,
     kind: MessageKind,
 ) -> Result {
     call_with(stack, gas, state, pc, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
@@ -242,7 +242,7 @@ fn call_inner<T: EvmTypesHost>(
 /// This is the body of [`call`], [`callcode`], [`delegatecall`] and [`staticcall`], for custom
 /// call instructions that need extra behavior. Use it from an
 /// `#[instruction(no_stack_preamble, dynamic_gas)]` function with `stack`, `cx.gas`,
-/// `cx.state` and `cx.pc`.
+/// `cx.state` and `*cx.pc`.
 ///
 /// `before` runs after every charge the opcode makes, the EIP-8037 new-account state gas
 /// included, and after the forwarded gas is taken from `gas`, right before the child message
@@ -261,7 +261,7 @@ pub fn call_with<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
-    pc: &mut Pc,
+    pc: Pc,
     kind: MessageKind,
     before: impl FnOnce(&mut Gas, &mut InterpreterState<'_, '_, T>, &mut Message<T>) -> Result,
     after: impl FnOnce(
@@ -303,27 +303,27 @@ pub fn call_with<T: EvmTypesHost>(
 
 #[instruction(no_stack_preamble, dynamic_gas)]
 pub fn call(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, cx.pc, MessageKind::Call)
+    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::Call)
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
 pub fn callcode(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, cx.pc, MessageKind::CallCode)
+    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::CallCode)
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
 pub fn delegatecall(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, cx.pc, MessageKind::DelegateCall)
+    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::DelegateCall)
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
 pub fn staticcall(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, cx.pc, MessageKind::StaticCall)
+    call_inner(stack, cx.gas, cx.state, *cx.pc, MessageKind::StaticCall)
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
 pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
-    create_inner(stack, cx.gas, cx.state, cx.pc, IS_CREATE2)
+    create_inner(stack, cx.gas, cx.state, *cx.pc, IS_CREATE2)
 }
 
 #[inline(never)]
@@ -331,7 +331,7 @@ fn create_inner<T: EvmTypesHost>(
     stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
-    pc: &mut Pc,
+    pc: Pc,
     is_create2: bool,
 ) -> Result {
     create_with(stack, gas, state, pc, is_create2, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
@@ -357,7 +357,7 @@ pub fn create_with<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
-    pc: &mut Pc,
+    pc: Pc,
     is_create2: bool,
     before: impl FnOnce(&mut Gas, &mut InterpreterState<'_, '_, T>, &mut Message<T>) -> Result,
     after: impl FnOnce(
@@ -1100,7 +1100,7 @@ mod tests {
             stack,
             cx.gas,
             cx.state,
-            cx.pc,
+            *cx.pc,
             MessageKind::Call,
             |gas, _, message| {
                 message.gas_limit -= KEPT_GAS;
@@ -1119,7 +1119,7 @@ mod tests {
             stack,
             cx.gas,
             cx.state,
-            cx.pc,
+            *cx.pc,
             false,
             |gas, _, message| {
                 message.gas_limit -= KEPT_GAS;

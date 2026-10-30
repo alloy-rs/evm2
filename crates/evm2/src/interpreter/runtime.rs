@@ -720,7 +720,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     /// changed while the child message ran, instead leaves the dispatch after the instruction at
     /// `pc`, so the frame continues on the table for the new config.
     #[inline(always)]
-    pub(crate) const fn after_message(&mut self, pc: &mut Pc) -> Result {
+    pub(crate) const fn after_message(&mut self, mut pc: Pc) -> Result {
         if self.0.reload_pending {
             cold_path();
             self.0.reload_pending = false;
