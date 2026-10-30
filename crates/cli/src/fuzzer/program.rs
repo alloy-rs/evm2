@@ -781,8 +781,7 @@ mod tests {
         let mut rng = Gen::new(1);
         let mut found = false;
         for _ in 0..1024 {
-            let mut program = Program::default();
-            program.spec = SpecId::FRONTIER;
+            let mut program = Program { spec: SpecId::FRONTIER, ..Default::default() };
             program.create(&mut rng, SpecId::FRONTIER);
             if program.code.windows(revert_initcode.len()).any(|code| code == revert_initcode) {
                 found = true;
