@@ -262,9 +262,6 @@ pub trait Backend: BackendTypes + TypeMethods {
     fn write_object<W: std::io::Write>(&mut self, w: W) -> Result<()>;
     fn jit_function(&mut self, id: Self::FuncId) -> Result<usize>;
 
-    /// Returns the name of a compiled function by its ID.
-    fn function_name(&self, id: Self::FuncId) -> Option<&str>;
-
     /// Returns the estimated sizes of compiled functions as `(name, size)` pairs.
     fn function_sizes(&self) -> Vec<(String, usize)> {
         Vec::new()
@@ -292,11 +289,9 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn create_block(&mut self, name: &str) -> Self::BasicBlock;
     fn create_block_after(&mut self, after: Self::BasicBlock, name: &str) -> Self::BasicBlock;
     fn switch_to_block(&mut self, block: Self::BasicBlock);
-    fn seal_block(&mut self, block: Self::BasicBlock);
     fn seal_all_blocks(&mut self);
     fn set_current_block_cold(&mut self);
     fn current_block(&mut self) -> Option<Self::BasicBlock>;
-    fn block_addr(&mut self, block: Self::BasicBlock) -> Option<Self::Value>;
 
     fn add_comment_to_current_inst(&mut self, comment: &str);
 
@@ -307,20 +302,13 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn clear_debug_location(&mut self) {}
 
     fn fn_param(&mut self, index: usize) -> Self::Value;
-    fn num_fn_params(&self) -> usize;
 
     fn bool_const(&mut self, value: bool) -> Self::Value;
     /// Sign-extends negative values to `ty`.
     fn iconst(&mut self, ty: Self::Type, value: i64) -> Self::Value;
-    fn uconst(&mut self, ty: Self::Type, value: u64) -> Self::Value;
     fn iconst_256(&mut self, value: impl TryInto<U256>) -> Self::Value;
-    fn cstr_const(&mut self, value: &std::ffi::CStr) -> Self::Value {
-        self.str_const(value.to_str().unwrap())
-    }
-    fn str_const(&mut self, value: &str) -> Self::Value;
     /// Returns a pointer to a private constant global array of `ty` holding `values`.
     fn const_array(&mut self, ty: Self::Type, values: &[u64]) -> Self::Value;
-    fn nullptr(&mut self) -> Self::Value;
 
     fn new_stack_slot(&mut self, ty: Self::Type, name: &str) -> Pointer<Self> {
         Pointer::new_stack_slot(self, ty, name)
@@ -357,7 +345,6 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn icmp(&mut self, cond: IntCC, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
     fn icmp_imm(&mut self, cond: IntCC, lhs: Self::Value, rhs: i64) -> Self::Value;
     fn is_null(&mut self, ptr: Self::Value) -> Self::Value;
-    fn is_not_null(&mut self, ptr: Self::Value) -> Self::Value;
 
     fn br(&mut self, dest: Self::BasicBlock);
     fn brif(
@@ -383,7 +370,6 @@ pub trait Builder: BackendTypes + TypeMethods {
         targets: &[(u64, Self::BasicBlock)],
         default_is_cold: bool,
     );
-    fn br_indirect(&mut self, address: Self::Value, destinations: &[Self::BasicBlock]);
     fn phi(&mut self, ty: Self::Type, incoming: &[(Self::Value, Self::BasicBlock)]) -> Self::Value;
     fn select(
         &mut self,
@@ -404,12 +390,6 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn isub_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;
     fn imul_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;
 
-    // `(result, overflow)`
-    fn uadd_overflow(&mut self, lhs: Self::Value, rhs: Self::Value) -> (Self::Value, Self::Value);
-    fn usub_overflow(&mut self, lhs: Self::Value, rhs: Self::Value) -> (Self::Value, Self::Value);
-
-    fn uadd_sat(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
-
     fn umax(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
     fn umin(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
     fn bswap(&mut self, value: Self::Value) -> Self::Value;
@@ -421,9 +401,7 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn clz(&mut self, value: Self::Value) -> Self::Value;
     fn popcnt(&mut self, value: Self::Value) -> Self::Value;
 
-    fn bitor_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;
     fn bitand_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;
-    fn bitxor_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;
 
     fn ishl(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
     fn ushr(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
@@ -433,9 +411,6 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn sext(&mut self, ty: Self::Type, value: Self::Value) -> Self::Value;
     #[doc(alias = "trunc")]
     fn ireduce(&mut self, to: Self::Type, value: Self::Value) -> Self::Value;
-
-    /// Converts an integer value to a pointer.
-    fn inttoptr(&mut self, value: Self::Value, ty: Self::Type) -> Self::Value;
 
     fn gep(
         &mut self,
@@ -457,29 +432,11 @@ pub trait Builder: BackendTypes + TypeMethods {
         tail_call: TailCallKind,
     ) -> Option<Self::Value>;
 
-    /// Returns `Some(is_value_compile_time)`, or `None` if unsupported.
-    fn is_compile_time_known(&mut self, value: Self::Value) -> Option<Self::Value>;
-
     fn memcpy(&mut self, dst: Self::Value, src: Self::Value, len: Self::Value);
-    fn memcpy_inline(&mut self, dst: Self::Value, src: Self::Value, len: i64) {
-        let len = self.iconst(self.type_int(64), len);
-        self.memcpy(dst, src, len);
-    }
 
     fn unreachable(&mut self);
 
-    fn get_or_build_function(
-        &mut self,
-        name: &str,
-        params: &[Self::Type],
-        ret: Option<Self::Type>,
-        linkage: Linkage,
-        build: impl FnOnce(&mut Self),
-    ) -> Self::Function;
-
     fn get_function(&mut self, name: &str) -> Option<Self::Function>;
-
-    fn get_printf_function(&mut self) -> Self::Function;
 
     /// Adds a function to the module that's located at `address`.
     ///

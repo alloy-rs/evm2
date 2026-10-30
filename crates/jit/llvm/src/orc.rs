@@ -1978,7 +1978,7 @@ mod tests {
             bcx.position_at_end(bb);
             bcx.build_int_compare(
                 LLVMIntPredicate::LLVMIntEQ,
-                cx.i64_type().const_null(),
+                cx.i64_type().const_int(0, false),
                 cx.i64_type().const_int(u64::MAX, false),
                 "a",
             );

@@ -1032,10 +1032,6 @@ impl Backend for EvmLlvmBackend {
         Ok(addr)
     }
 
-    fn function_name(&self, id: Self::FuncId) -> Option<&str> {
-        self.function_names.get(&id).map(|s| s.as_str())
-    }
-
     fn function_sizes(&self) -> Vec<(String, usize)> {
         let Some(orc) = &self.orc else { return Vec::new() };
         let Some(data) = orc.last_compiled_object.as_deref() else { return Vec::new() };
@@ -1152,42 +1148,6 @@ impl std::ops::DerefMut for EvmLlvmBuilder<'_> {
 }
 
 impl EvmLlvmBuilder<'_> {
-    #[allow(dead_code)]
-    fn extract_value(&mut self, value: Value, index: u32, name: &str) -> Value {
-        self.bcx.build_extract_value(value, index, self.name(name))
-    }
-
-    fn memcpy_inner(&mut self, dst: Value, src: Value, len: Value, inline: bool) {
-        let volatile = self.bool_const(false);
-        let len_ty = len.get_type();
-        let name =
-            format!("llvm.memcpy{}.p0.p0.{}", if inline { ".inline" } else { "" }, fmt_ty(len_ty),);
-        let memcpy = self.get_or_add_function(&name, |this| {
-            this.ty_void.fn_type(&[this.ty_ptr, this.ty_ptr, len_ty, this.ty_i1], false)
-        });
-        self.bcx.build_call(memcpy, &[dst, src, len, volatile], "");
-    }
-
-    #[allow(dead_code)]
-    fn call_overflow_function(&mut self, name: &str, lhs: Value, rhs: Value) -> (Value, Value) {
-        let f = self.get_overflow_function(name, lhs.get_type());
-        let result = self.call(f, &[lhs, rhs]).unwrap();
-        (self.extract_value(result, 0, "result"), self.extract_value(result, 1, "overflow"))
-    }
-
-    #[allow(dead_code)]
-    fn get_overflow_function(&mut self, name: &str, ty: Type) -> Function {
-        let name = format!("llvm.{name}.with.overflow.{}", fmt_ty(ty));
-        self.get_or_add_function(&name, |this| {
-            this.fn_type(Some(this.cx.struct_type(&[ty, this.ty_i1], false)), &[ty, ty])
-        })
-    }
-
-    fn get_sat_function(&mut self, name: &str, ty: Type) -> Function {
-        let name = format!("llvm.{name}.sat.{}", fmt_ty(ty));
-        self.get_or_add_function(&name, |this| this.fn_type(Some(ty), &[ty, ty]))
-    }
-
     fn get_or_add_function(
         &mut self,
         name: &str,
@@ -1265,11 +1225,6 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.bcx.position_at_end(block);
     }
 
-    fn seal_block(&mut self, block: Self::BasicBlock) {
-        let _ = block;
-        // Nothing to do.
-    }
-
     fn seal_all_blocks(&mut self) {
         // Nothing to do.
     }
@@ -1283,10 +1238,6 @@ impl Builder for EvmLlvmBuilder<'_> {
 
     fn current_block(&mut self) -> Option<Self::BasicBlock> {
         self.bcx.get_insert_block()
-    }
-
-    fn block_addr(&mut self, block: Self::BasicBlock) -> Option<Self::Value> {
-        unsafe { block.get_address() }
     }
 
     fn add_comment_to_current_inst(&mut self, comment: &str) {
@@ -1317,20 +1268,12 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.function.get_nth_param(index as _).unwrap()
     }
 
-    fn num_fn_params(&self) -> usize {
-        self.function.count_params() as usize
-    }
-
     fn bool_const(&mut self, value: bool) -> Self::Value {
         self.ty_i1.const_int(value as u64, false)
     }
 
     fn iconst(&mut self, ty: Self::Type, value: i64) -> Self::Value {
         ty.const_int(value as u64, value.is_negative())
-    }
-
-    fn uconst(&mut self, ty: Self::Type, value: u64) -> Self::Value {
-        ty.const_int(value, false)
     }
 
     fn iconst_256(&mut self, value: impl TryInto<U256>) -> Self::Value {
@@ -1344,10 +1287,6 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.ty_i256.const_int_from_hex(&self.scratch)
     }
 
-    fn str_const(&mut self, value: &str) -> Self::Value {
-        self.bcx.build_global_string_ptr(value, "")
-    }
-
     fn const_array(&mut self, ty: Self::Type, values: &[u64]) -> Self::Value {
         let values = values.iter().map(|&v| ty.const_int(v, false)).collect::<Vec<_>>();
         let init = ty.const_array(&values);
@@ -1357,10 +1296,6 @@ impl Builder for EvmLlvmBuilder<'_> {
         global.set_linkage(convert_linkage(evm2_jit_backend::Linkage::Private));
         global.set_unnamed_address(LLVMUnnamedAddr::LLVMGlobalUnnamedAddr);
         global.as_pointer_value()
-    }
-
-    fn nullptr(&mut self) -> Self::Value {
-        self.ty_ptr.const_null()
     }
 
     fn new_stack_slot_raw(&mut self, ty: Self::Type, name: &str) -> Self::StackSlot {
@@ -1450,10 +1385,6 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.bcx.build_is_null(ptr, "")
     }
 
-    fn is_not_null(&mut self, ptr: Self::Value) -> Self::Value {
-        self.bcx.build_is_not_null(ptr, "")
-    }
-
     fn br(&mut self, dest: Self::BasicBlock) {
         self.bcx.build_unconditional_branch(dest);
     }
@@ -1494,10 +1425,6 @@ impl Builder for EvmLlvmBuilder<'_> {
             let weights = iter::once(1).chain(iter::repeat_n(DEFAULT_WEIGHT, targets.len()));
             self.set_branch_weights(inst, weights);
         }
-    }
-
-    fn br_indirect(&mut self, address: Self::Value, destinations: &[Self::BasicBlock]) {
-        self.bcx.build_indirect_branch(address, destinations);
     }
 
     fn phi(&mut self, ty: Self::Type, incoming: &[(Self::Value, Self::BasicBlock)]) -> Self::Value {
@@ -1556,26 +1483,6 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.imul(lhs, rhs)
     }
 
-    // - [Avoid using arithmetic intrinsics](https://llvm.org/docs/Frontend/PerformanceTips.html)
-    // - [Don't use usub.with.overflow intrinsic](https://github.com/rust-lang/rust/pull/103299)
-    // - [for unsigned add overflow the recommended pattern is x + y < x](https://github.com/rust-lang/rust/pull/124114#issuecomment-2066173305)
-    fn uadd_overflow(&mut self, lhs: Self::Value, rhs: Self::Value) -> (Self::Value, Self::Value) {
-        let result = self.iadd(lhs, rhs);
-        let overflow = self.icmp(IntCC::UnsignedLessThan, result, rhs);
-        (result, overflow)
-    }
-
-    fn usub_overflow(&mut self, lhs: Self::Value, rhs: Self::Value) -> (Self::Value, Self::Value) {
-        let result = self.isub(lhs, rhs);
-        let overflow = self.icmp(IntCC::UnsignedLessThan, lhs, rhs);
-        (result, overflow)
-    }
-
-    fn uadd_sat(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        let f = self.get_sat_function("uadd", lhs.get_type());
-        self.call(f, &[lhs, rhs]).unwrap()
-    }
-
     fn umax(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
         let ty = lhs.get_type();
         let name = format!("llvm.umax.{}", fmt_ty(ty));
@@ -1629,19 +1536,9 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.call(ctpop, &[value]).unwrap()
     }
 
-    fn bitor_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value {
-        let rhs = self.iconst(lhs.get_type(), rhs);
-        self.bitor(lhs, rhs)
-    }
-
     fn bitand_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value {
         let rhs = self.iconst(lhs.get_type(), rhs);
         self.bitand(lhs, rhs)
-    }
-
-    fn bitxor_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value {
-        let rhs = self.iconst(lhs.get_type(), rhs);
-        self.bitxor(lhs, rhs)
     }
 
     fn ishl(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
@@ -1666,10 +1563,6 @@ impl Builder for EvmLlvmBuilder<'_> {
 
     fn ireduce(&mut self, to: Self::Type, value: Self::Value) -> Self::Value {
         self.bcx.build_int_truncate(value, to, "")
-    }
-
-    fn inttoptr(&mut self, value: Self::Value, ty: Self::Type) -> Self::Value {
-        self.bcx.build_int_to_ptr(value, ty, "")
     }
 
     fn gep(
@@ -1698,71 +1591,22 @@ impl Builder for EvmLlvmBuilder<'_> {
         callsite.value()
     }
 
-    fn is_compile_time_known(&mut self, value: Self::Value) -> Option<Self::Value> {
-        let ty = value.get_type();
-        let name = format!("llvm.is.constant.{}", fmt_ty(ty));
-        let f = self.get_or_add_function(&name, |this| this.fn_type(Some(this.ty_i1), &[ty]));
-        Some(self.call(f, &[value]).unwrap())
-    }
-
     fn memcpy(&mut self, dst: Self::Value, src: Self::Value, len: Self::Value) {
-        self.memcpy_inner(dst, src, len, false);
-    }
-
-    fn memcpy_inline(&mut self, dst: Self::Value, src: Self::Value, len: i64) {
-        let len = self.iconst(self.ty_i64, len);
-        self.memcpy_inner(dst, src, len, true);
+        let volatile = self.bool_const(false);
+        let len_ty = len.get_type();
+        let name = format!("llvm.memcpy.p0.p0.{}", fmt_ty(len_ty));
+        let memcpy = self.get_or_add_function(&name, |this| {
+            this.ty_void.fn_type(&[this.ty_ptr, this.ty_ptr, len_ty, this.ty_i1], false)
+        });
+        self.bcx.build_call(memcpy, &[dst, src, len, volatile], "");
     }
 
     fn unreachable(&mut self) {
         self.bcx.build_unreachable();
     }
 
-    fn get_or_build_function(
-        &mut self,
-        name: &str,
-        params: &[Self::Type],
-        ret: Option<Self::Type>,
-        linkage: evm2_jit_backend::Linkage,
-        build: impl FnOnce(&mut Self),
-    ) -> Self::Function {
-        if let Some(function) = self.module().get_function(name) {
-            return function;
-        }
-
-        let before = self.current_block();
-
-        let func_ty = self.fn_type(ret, params);
-        let function = self.module().add_function(name, func_ty, Some(convert_linkage(linkage)));
-        cpp::set_dso_local(function);
-        let prev_function = std::mem::replace(&mut self.function, function);
-
-        let entry = self.cx.append_basic_block(function, self.name("entry"));
-        self.bcx.position_at_end(entry);
-        build(self);
-        if let Some(before) = before {
-            self.bcx.position_at_end(before);
-        }
-
-        self.function = prev_function;
-
-        function
-    }
-
     fn get_function(&mut self, name: &str) -> Option<Self::Function> {
         self.module().get_function(name)
-    }
-
-    fn get_printf_function(&mut self) -> Self::Function {
-        let name = "printf";
-        if let Some(function) = self.module().get_function(name) {
-            return function;
-        }
-
-        let ty = self.cx.void_type().fn_type(&[self.ty_ptr], true);
-        let function = self.module().add_function(name, ty, Some(LLVMLinkage::LLVMExternalLinkage));
-        cpp::set_dso_local(function);
-        function
     }
 
     fn add_function(

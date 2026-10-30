@@ -108,18 +108,6 @@ impl Context {
         Type(unsafe { LLVMPointerTypeInContext(self.raw, 0) })
     }
 
-    /// An anonymous struct type.
-    pub(crate) fn struct_type(&self, fields: &[Type], packed: bool) -> Type {
-        Type(unsafe {
-            LLVMStructTypeInContext(
-                self.raw,
-                fields.as_ptr().cast_mut().cast(),
-                fields.len() as u32,
-                packed as LLVMBool,
-            )
-        })
-    }
-
     /// Appends a basic block to `function`.
     pub(crate) fn append_basic_block(&self, function: Function, name: &str) -> Block {
         let name = to_c_str(name);
@@ -425,11 +413,6 @@ impl Type {
         })
     }
 
-    /// Creates the null constant of this type.
-    pub(crate) fn const_null(self) -> Value {
-        Value(unsafe { LLVMConstNull(self.0) })
-    }
-
     /// Returns the textual IR of the type.
     pub(crate) fn print_to_string(self) -> LLVMString {
         unsafe { LLVMString::from_raw(LLVMPrintTypeToString(self.0)) }
@@ -663,23 +646,6 @@ impl Block {
         let inst = unsafe { LLVMGetLastInstruction(self.0) };
         (!inst.is_null()).then_some(Inst(inst))
     }
-
-    /// Returns the address of the block, or `None` for an entry block or a detached block.
-    ///
-    /// # Safety
-    ///
-    /// The block must belong to a function that is not deleted.
-    pub(crate) unsafe fn get_address(self) -> Option<Value> {
-        unsafe {
-            let parent = LLVMGetBasicBlockParent(self.0);
-            // Taking the address of the entry block is illegal.
-            if parent.is_null() || LLVMGetPreviousBasicBlock(self.0).is_null() {
-                return None;
-            }
-            let address = LLVMBlockAddress(parent, self.0);
-            (!address.is_null()).then_some(Value(address))
-        }
-    }
 }
 
 impl fmt::Debug for Block {
@@ -847,19 +813,6 @@ impl Builder {
         })
     }
 
-    /// Builds a global string constant and returns a pointer to it.
-    pub(crate) fn build_global_string_ptr(&self, value: &str, name: &str) -> Value {
-        let value = to_c_str(value);
-        let name = to_c_str(name);
-        Value(unsafe { LLVMBuildGlobalString(self.raw, value.as_ptr(), name.as_ptr()) })
-    }
-
-    /// Builds an extraction of the field `index` of an aggregate.
-    pub(crate) fn build_extract_value(&self, aggregate: Value, index: u32, name: &str) -> Value {
-        let name = to_c_str(name);
-        Value(unsafe { LLVMBuildExtractValue(self.raw, aggregate.0, index, name.as_ptr()) })
-    }
-
     /// Builds a `phi` of `ty` with the given incoming values.
     pub(crate) fn build_phi(&self, ty: Type, incoming: &[(Value, Block)], name: &str) -> Value {
         let name = to_c_str(name);
@@ -900,12 +853,6 @@ impl Builder {
     pub(crate) fn build_is_null(&self, ptr: Value, name: &str) -> Value {
         let name = to_c_str(name);
         Value(unsafe { LLVMBuildIsNull(self.raw, ptr.0, name.as_ptr()) })
-    }
-
-    /// Builds a comparison of a pointer with non-null.
-    pub(crate) fn build_is_not_null(&self, ptr: Value, name: &str) -> Value {
-        let name = to_c_str(name);
-        Value(unsafe { LLVMBuildIsNotNull(self.raw, ptr.0, name.as_ptr()) })
     }
 
     /// Builds a bitwise not.
@@ -961,8 +908,6 @@ impl Builder {
         build_int_s_extend => LLVMBuildSExt,
         /// Builds a truncation to `ty`.
         build_int_truncate => LLVMBuildTrunc,
-        /// Builds an integer to pointer conversion.
-        build_int_to_ptr => LLVMBuildIntToPtr,
     }
 
     /// Builds a `ret` with no value.
@@ -1010,17 +955,6 @@ impl Builder {
                 LLVMAddCase(switch, value.0, block.0);
             }
             Inst(switch)
-        }
-    }
-
-    /// Builds an indirect branch to `address`, which is one of `destinations`.
-    pub(crate) fn build_indirect_branch(&self, address: Value, destinations: &[Block]) -> Inst {
-        unsafe {
-            let branch = LLVMBuildIndirectBr(self.raw, address.0, destinations.len() as u32);
-            for dest in destinations {
-                LLVMAddDestination(branch, dest.0);
-            }
-            Inst(branch)
         }
     }
 
