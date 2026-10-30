@@ -25,7 +25,7 @@ use crate::{
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
 use alloy_eips::{eip2718::Typed2718, eip4844::DATA_GAS_PER_BLOB, eip7840::BlobParams};
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, aliases::U512};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
@@ -919,19 +919,14 @@ fn validate_block_header(
     let parent_excess = parent.excess_blob_gas.unwrap_or_default();
     let parent_used = parent.blob_gas_used.unwrap_or_default();
     // Reject parent values that the excess blob gas formula cannot add or scale without overflow.
-    // The EIP-7918 reserve price comparison is exact only while the reserve price stays below the
-    // saturated `u128` blob fee, which a base fee up to `u128::MAX` guarantees. Before Osaka the
-    // base fee does not enter the formula.
-    let parent_base_fee = parent.base_fee_per_gas.unwrap_or_default();
     if parent_used > U256::from(blob_params.max_blob_gas_per_block())
         || parent_excess.saturating_add(parent_used) > U256::from(u64::MAX)
-        || (blob_params.blob_base_cost != 0 && parent_base_fee > U256::from(u128::MAX))
     {
         return Err(format!(
-            "parent header fields out of range: excess blob gas {parent_excess}, blob gas used \
-             {parent_used}, base fee {parent_base_fee}"
+            "parent blob gas fields out of range: excess {parent_excess}, used {parent_used}"
         ));
     }
+    let parent_base_fee = parent.base_fee_per_gas.unwrap_or_default();
     let expected_excess_blob_gas =
         next_excess_blob_gas(&blob_params, parent_excess.to(), parent_used.to(), parent_base_fee);
     if header.excess_blob_gas != Some(U256::from(expected_excess_blob_gas)) {
@@ -946,8 +941,7 @@ fn validate_block_header(
 /// Returns the excess blob gas of the block after a parent with these values (execution-specs
 /// `calculate_excess_blob_gas`, with the EIP-7918 reserve price from Osaka). Unlike
 /// [`BlobParams::next_block_excess_blob_gas_osaka`], the reserve price comparison takes a base
-/// fee wider than `u64`. The caller bounds the base fee so that the `U256` product cannot
-/// overflow and the saturated `u128` blob fee cannot change the comparison.
+/// fee of any width.
 fn next_excess_blob_gas(
     params: &BlobParams,
     parent_excess: u64,
@@ -959,16 +953,40 @@ fn next_excess_blob_gas(
     if excess < target {
         return 0;
     }
-    let reserve_price = U256::from(params.blob_base_cost) * parent_base_fee;
-    let blob_price =
-        U256::from(DATA_GAS_PER_BLOB) * U256::from(params.calc_blob_fee(parent_excess));
-    if reserve_price > blob_price {
+    if reserve_price_exceeds_blob_price(params, parent_excess, parent_base_fee) {
         parent_excess
             + parent_used * (params.max_blob_count - params.target_blob_count)
                 / params.max_blob_count
     } else {
         excess - target
     }
+}
+
+/// Returns whether `blob_base_cost * base_fee > DATA_GAS_PER_BLOB * blob_price` for the blob price
+/// at this excess blob gas, in unbounded integer arithmetic like execution-specs. The blob price
+/// is the EIP-4844 `fake_exponential` sum, which this stops accumulating once it reaches the
+/// reserve price, so every product stays far below the 512-bit limit.
+fn reserve_price_exceeds_blob_price(
+    params: &BlobParams,
+    excess_blob_gas: u64,
+    base_fee: U256,
+) -> bool {
+    let reserve_price = U512::from(params.blob_base_cost) * U512::from(base_fee);
+    let denominator = U512::from(params.update_fraction);
+    let numerator = U512::from(excess_blob_gas);
+    let gas_per_blob = U512::from(DATA_GAS_PER_BLOB);
+    let mut term = U512::from(params.min_blob_fee) * denominator;
+    let mut sum = U512::ZERO;
+    let mut index = U512::ONE;
+    while !term.is_zero() {
+        sum += term;
+        if gas_per_blob * (sum / denominator) >= reserve_price {
+            return false;
+        }
+        term = term * numerator / (denominator * index);
+        index += U512::ONE;
+    }
+    reserve_price > gas_per_blob * (sum / denominator)
 }
 
 /// Resolves an invalid block: it is discarded when the fixture expects an exception, and a test
@@ -1950,6 +1968,30 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error.kind, super::TestErrorKind::ReceiptRootMismatch { .. }));
+    }
+
+    #[test]
+    fn next_excess_blob_gas_matches_blob_params_and_keeps_full_width_base_fees() {
+        let params = BlobParams::osaka();
+        for excess in [0, 786_432, 5_000_000, 249_036_800, 400_000_000] {
+            for used in [0, 131_072, 786_432] {
+                for base_fee in [0, 1, 1_000_000_000, u64::MAX] {
+                    assert_eq!(
+                        next_excess_blob_gas(&params, excess, used, U256::from(base_fee)),
+                        params.next_block_excess_blob_gas_osaka(excess, used, base_fee),
+                    );
+                }
+            }
+        }
+
+        // The reserve price, 2^256, exceeds the blob price, so the reserve branch applies.
+        assert_eq!(next_excess_blob_gas(&params, 786_432, 0, U256::ONE << 243), 786_432);
+        // The blob price exceeds `u128`, and 2^145 times it still exceeds this reserve price, so
+        // the target subtraction applies.
+        assert_eq!(
+            next_excess_blob_gas(&params, 1_000_000_000, 786_432, U256::ONE << 140),
+            1_000_000_000,
+        );
     }
 
     #[test]
