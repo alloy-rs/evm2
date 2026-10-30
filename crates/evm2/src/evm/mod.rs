@@ -1787,9 +1787,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
         let is_cold = account.warm();
 
-        let (balance, nonce, code_hash, exists, is_empty) = match account.get() {
-            Some(info) => (info.balance, info.nonce, info.code_hash, true, info.is_empty()),
-            None => (Word::ZERO, 0, B256::ZERO, false, true),
+        let is_empty_for_new_account_gas = account.is_empty_for_new_account_gas(self.features);
+        let (balance, nonce, code_hash, is_empty) = match account.get() {
+            Some(info) => (info.balance, info.nonce, info.code_hash, info.is_empty()),
+            None => (Word::ZERO, 0, B256::ZERO, true),
         };
 
         // load code
@@ -1803,19 +1804,11 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             nonce,
             code_hash,
             code,
-            exists,
             is_empty,
+            is_empty_for_new_account_gas,
             is_cold,
             _non_exhaustive: (),
         })
-    }
-
-    fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> Result<bool, DatabaseError> {
-        Ok(self.state.account(address)?.is_empty_for_new_account_gas(features))
     }
 
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError> {
@@ -1920,19 +1913,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, HostError> {
         let features = self.features;
-        let eip2929 = features.contains(EvmFeatures::EIP2929);
         let (is_cold, target_is_empty_for_new_account_gas) =
-            match self.state.account_with_skip(target, eip2929 && skip_cold_load) {
-                Ok(mut account) => {
-                    let is_cold = account.warm() && eip2929;
-                    (is_cold, account.is_empty_for_new_account_gas(features))
-                }
+            match self.state.account_with_skip(target, skip_cold_load) {
+                Ok(mut account) => (account.warm(), account.is_empty_for_new_account_gas(features)),
                 Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
                 Err(code) => return Err(code.into()),
             };
-        if skip_cold_load && is_cold {
-            return Err(InstrStop::OutOfGas.into());
-        }
         let (previously_destroyed, balance, should_destroy) = {
             let account = self.state.account(contract)?;
             let should_destroy = !features.contains(EvmFeatures::EIP6780) || account.is_created();
@@ -1977,10 +1963,11 @@ pub struct AccountLoad {
     pub code_hash: B256,
     /// Account bytecode.
     pub code: Bytecode,
-    /// Whether the account exists in state.
-    pub exists: bool,
     /// Whether the account is empty.
     pub is_empty: bool,
+    /// Whether the account is empty for new-account gas: absent or empty under EIP-161, absent
+    /// and untouched before it.
+    pub is_empty_for_new_account_gas: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
