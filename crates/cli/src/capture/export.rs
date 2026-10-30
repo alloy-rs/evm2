@@ -50,7 +50,7 @@ pub(super) fn suite(capture: &CapturedCase) -> Result<BlockchainTest, CaptureErr
             network,
             seal_engine: SealEngine::NoProof,
             config: Some(ChainConfig {
-                chainid: U256::from(1),
+                chainid: U256::ONE,
                 blob_schedule: mainnet_blob_schedule(blob_fork),
             }),
         },
@@ -150,11 +150,11 @@ fn network(capture: &CapturedCase, blob_fork: Option<BlobFork>) -> Result<ForkSp
         SpecId::SHANGHAI => Ok(ForkSpec::Shanghai),
         SpecId::CANCUN => Ok(ForkSpec::Cancun),
         SpecId::PRAGUE => Ok(ForkSpec::Prague),
-        SpecId::OSAKA => match blob_fork {
-            Some(BlobFork::Bpo1) => Ok(ForkSpec::BPO1),
-            Some(BlobFork::Bpo2) => Ok(ForkSpec::BPO2),
-            _ => Ok(ForkSpec::Osaka),
-        },
+        SpecId::OSAKA => Ok(match blob_fork {
+            Some(BlobFork::Bpo1) => ForkSpec::BPO1,
+            Some(BlobFork::Bpo2) => ForkSpec::BPO2,
+            _ => ForkSpec::Osaka,
+        }),
         SpecId::AMSTERDAM => Ok(ForkSpec::Amsterdam),
         _ => Err(CaptureError::UnsupportedSpec(first.spec_id)),
     }
