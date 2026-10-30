@@ -661,8 +661,6 @@ pub struct CallTraceStep {
     pub gas_remaining: u64,
     /// Gas refund counter before step execution
     pub gas_refund_counter: u64,
-    /// Total gas used before step execution
-    pub gas_used: u64,
     // Fields filled in `step_end`
     /// Gas cost of step execution
     pub gas_cost: u64,
