@@ -5,13 +5,11 @@
 //! - Fire-and-forget lookup-observed events to the backend thread.
 //! - Background JIT compilation for hot keys (threshold-based promotion).
 
-use crate::{
-    EvmCompilerFn,
-    eyre::{self, WrapErr},
-};
+use crate::eyre::{self, WrapErr};
 use alloy_primitives::B256;
-use api::LoadedLibrary;
-use backend::{Command, CompileJitRequest, EventQueue, PrepareAotRequest, ResidentMap};
+use backend::{
+    Command, CompileJitRequest, EventQueue, JitObjectLinker, PrepareAotRequest, ResidentMap,
+};
 use crossbeam_channel as chan;
 use crossbeam_queue::ArrayQueue;
 use evm2::SpecId;
@@ -657,6 +655,7 @@ impl JitBackend {
         info!(count = artifacts.len(), "loading AOT artifacts");
 
         let config_hash = storage::compile_config_hash(config);
+        let mut linker = JitObjectLinker::new(config.host.resolver);
         let mut out: Vec<(RuntimeCacheKey, Arc<CompiledProgram>)> =
             Vec::with_capacity(artifacts.len());
         let mut loaded = 0u64;
@@ -677,7 +676,7 @@ impl JitBackend {
                 continue;
             }
 
-            match Self::load_artifact(&artifact_key, &stored) {
+            match linker.link_stored(key, &stored) {
                 Ok(program) => {
                     out.push((key, Arc::new(program)));
                     loaded += 1;
@@ -695,22 +694,6 @@ impl JitBackend {
 
         info!(loaded, failed, skipped, "AOT preload complete");
         Ok(out)
-    }
-
-    /// Loads a single artifact: `dlopen`s the dylib path and resolves the symbol.
-    fn load_artifact(key: &ArtifactKey, stored: &StoredArtifact) -> eyre::Result<CompiledProgram> {
-        let library = unsafe { libloading::Library::new(&stored.dylib_path) }
-            .wrap_err_with(|| format!("dlopen {:?}", stored.dylib_path))?;
-
-        let func: EvmCompilerFn = unsafe {
-            let sym: libloading::Symbol<'_, EvmCompilerFn> = library
-                .get(stored.manifest.symbol_name.as_bytes())
-                .wrap_err_with(|| format!("symbol '{}'", stored.manifest.symbol_name))?;
-            *sym
-        };
-
-        let library = Arc::new(LoadedLibrary::new(library));
-        Ok(CompiledProgram::new_aot(key.runtime, func, library))
     }
 
     /// Applies a clear before startup, or queues it after the backend takes ownership.

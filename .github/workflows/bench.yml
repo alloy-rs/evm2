@@ -78,7 +78,7 @@ jobs:
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "commit must be a full SHA" >&2; exit 1; }
           git merge-base --is-ancestor "$COMMIT" HEAD || { echo "$COMMIT is not in this ref's history" >&2; exit 1; }
           # bench.py builds against the LLVM version the old code requires.
-          llvm="$(git show "$COMMIT:crates/jit/llvm/Cargo.toml" | sed -nE 's/.*"llvm([0-9]+)-[0-9]+".*/\1/p')"
+          llvm="$(git show "$COMMIT:crates/jit/llvm/Cargo.toml" | sed -nE -e 's/.*"llvm([0-9]+)-[0-9]+".*/\1/p' -e 's/^llvm-sys = "([0-9]+)[0-9]"$/\1/p')"
           if ! command -v "llvm-config-$llvm" >/dev/null; then
             sudo .github/scripts/install_llvm_ubuntu.sh "$llvm" dev
           fi
@@ -176,7 +176,7 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" && "$BASELINE_FOUND" != "true" ]]; then
             args+=(--diff "$BASE_SHA" --base-output target/jit-bench/baseline)
             # bench.py builds each side against the LLVM version it requires.
-            base_llvm="$(git show "$BASE_SHA:crates/jit/llvm/Cargo.toml" | sed -nE 's/.*"llvm([0-9]+)-[0-9]+".*/\1/p')"
+            base_llvm="$(git show "$BASE_SHA:crates/jit/llvm/Cargo.toml" | sed -nE -e 's/.*"llvm([0-9]+)-[0-9]+".*/\1/p' -e 's/^llvm-sys = "([0-9]+)[0-9]"$/\1/p')"
             if ! command -v "llvm-config-$base_llvm" >/dev/null; then
               sudo .github/scripts/install_llvm_ubuntu.sh "$base_llvm" dev
             fi

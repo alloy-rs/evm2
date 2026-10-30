@@ -325,31 +325,6 @@ pub enum ForkSpec {
     Amsterdam,
 }
 
-impl ForkSpec {
-    /// Returns true if this fork name represents a transition fork.
-    pub(crate) const fn is_transition(self) -> bool {
-        matches!(
-            self,
-            Self::FrontierToHomesteadAt5
-                | Self::HomesteadToDaoAt5
-                | Self::HomesteadToEIP150At5
-                | Self::EIP158ToByzantiumAt5
-                | Self::ByzantiumToConstantinopleAt5
-                | Self::ByzantiumToConstantinopleFixAt5
-                | Self::BerlinToLondonAt5
-                | Self::ParisToShanghaiAtTime15k
-                | Self::ShanghaiToCancunAtTime15k
-                | Self::CancunToPragueAtTime15k
-                | Self::PragueToOsakaAtTime15k
-                | Self::OsakaToBPO1AtTime15k
-                | Self::BPO1ToBPO2AtTime15k
-                | Self::BPO2ToBPO3AtTime15k
-                | Self::BPO3ToBPO4AtTime15k
-                | Self::BPO2ToAmsterdamAtTime15k
-        )
-    }
-}
-
 /// Possible seal engines.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub enum SealEngine {
