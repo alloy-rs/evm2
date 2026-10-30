@@ -705,6 +705,14 @@ impl EvmLlvmBackend {
         Ok(())
     }
 
+    /// Removes the committed module that contains `id`, with the code of all its functions.
+    fn remove_committed_module(&mut self, id: u32) -> Result<()> {
+        let Some(orc) = &mut self.orc else { return Ok(()) };
+        let Some(tracker_idx) = orc.committed_functions.remove(&id) else { return Ok(()) };
+        orc.committed_functions.retain(|_, idx| *idx != tracker_idx);
+        orc.loaded_trackers[tracker_idx].remove().map_err(error_msg)
+    }
+
     /// Returns pending absolute symbols collected while translating the current JIT module.
     pub fn pending_symbol_names(&self) -> Vec<CString> {
         self.orc
@@ -1010,9 +1018,10 @@ impl Backend for EvmLlvmBackend {
             Ok(addr) => addr,
             Err(e) => {
                 // ORC compiled the whole module and keeps it, so later lookups would return the
-                // broken code without the error.
-                if compiled && let Err(free_err) = unsafe { self.free_function(id) } {
-                    warn!("failed to free function after an LLVM error: {free_err}");
+                // broken code without the error. Remove the module's code but keep the function
+                // names, so a later lookup fails with an error instead of a missing name.
+                if compiled && let Err(remove_err) = self.remove_committed_module(id) {
+                    warn!("failed to remove module after an LLVM error: {remove_err}");
                 }
                 return Err(e);
             }
