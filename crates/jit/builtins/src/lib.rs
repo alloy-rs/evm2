@@ -525,9 +525,32 @@ pub unsafe fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
     ecx.return_data_len = ecx.interpreter().return_data().len();
     ecx.refresh_memory_cache();
     let new_len = result?;
-    // Compiled code relies on memory never shrinking, and on the opcode's stack effect.
-    if new_len != len - inputs + outputs || ecx.memory().len() < memory_len {
-        return Err(InstrStop::FatalExternalError.into());
+    // Compiled code relies on the opcode's stack effect, and on memory never shrinking.
+    let expected_len = len - inputs + outputs;
+    if new_len != expected_len {
+        return Err(ecx
+            .interpreter_mut()
+            .fail_host_instruction(
+                pc,
+                format_args!(
+                    "left {new_len} stack items, but compiled code expects {expected_len} from \
+                     the opcode's fixed inputs and outputs"
+                ),
+            )
+            .into());
+    }
+    let new_memory_len = ecx.memory().len();
+    if new_memory_len < memory_len {
+        return Err(ecx
+            .interpreter_mut()
+            .fail_host_instruction(
+                pc,
+                format_args!(
+                    "shrank memory from {memory_len} to {new_memory_len} bytes, but compiled \
+                     code expects memory never to shrink"
+                ),
+            )
+            .into());
     }
     Ok(())
 }
@@ -699,7 +722,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         code: Bytecode::new_legacy(code.clone()),
         input: code,
         value,
-        code_address: caller,
+        code_address: destination,
         caller_is_static: false,
         salt,
         ext: T::MessageExt::default(),

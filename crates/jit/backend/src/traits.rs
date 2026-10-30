@@ -48,9 +48,9 @@ impl Default for BackendConfig {
             opt_level: OptimizationLevel::Default,
             is_dumping: false,
             debug_assertions: cfg!(debug_assertions),
-            debug_support: true,
+            debug_support: false,
             profiling_support: false,
-            simple_perf: true,
+            simple_perf: false,
             debug_file: None,
         }
     }
@@ -527,9 +527,9 @@ mod tests {
         assert_eq!(config.opt_level, OptimizationLevel::Default);
         assert!(!config.is_dumping);
         assert_eq!(config.debug_assertions, cfg!(debug_assertions));
-        assert!(config.debug_support);
+        assert!(!config.debug_support);
         assert!(!config.profiling_support);
-        assert!(config.simple_perf);
+        assert!(!config.simple_perf);
         assert_eq!(config.debug_file, None);
     }
 

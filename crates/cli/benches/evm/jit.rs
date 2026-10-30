@@ -101,7 +101,7 @@ impl PreparedBench {
             spec,
             block: case.block(),
             db: case.state(),
-            tx: case.tx(spec),
+            tx: case.tx(),
             entry_bytecode: case.entry_bytecode(),
             functions: Arc::new(functions),
         })
@@ -114,11 +114,12 @@ impl PreparedBench {
         let jit = self.run_jit().unwrap_or_else(|err| {
             panic!("{} JIT benchmark transaction must execute: {err:?}", self.name)
         });
-        assert_eq!(
-            interpreter.status, jit.status,
-            "{} interpreter and JIT status differ",
-            self.name
+        assert!(
+            interpreter.status,
+            "{} benchmark transaction must succeed: {:?}",
+            self.name, interpreter.stop
         );
+        assert_eq!(interpreter, jit, "{} interpreter and JIT results differ", self.name);
     }
 
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {

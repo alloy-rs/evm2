@@ -40,7 +40,8 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let envelope = req.envelope;
-    if tx.authorization_list.is_empty() {
+    let auth_count = tx.authorizations().len();
+    if auth_count == 0 {
         return Err(HandlerError::EmptyAuthorizationList);
     }
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);
@@ -65,7 +66,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         access_list_storage_keys,
         tx.value,
     );
-    intrinsic += eip7702_authorization_gas(req.host.version(), tx.authorization_list.len());
+    intrinsic += eip7702_authorization_gas(req.host.version(), auth_count);
     // EIP-2780 (ethereum/EIPs#11844): the per-auth state-dependent charges are applied at the
     // runtime gas phase, so no state gas is charged at the intrinsic phase (pre-Amsterdam there is
     // none either). A transaction that passes the intrinsic check but cannot afford the runtime
@@ -136,11 +137,11 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     let (auth_oog, state_refund, execution_refund) = if req.host.feature(EvmFeatures::EIP2780) {
         let mut auth_charges =
             RuntimeAuthCharges::new(req.host.version(), &mut tx_gas, caller, tx.to, tx.value);
-        let oog = apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_charges)?;
+        let oog = apply_auth_list(req.host, chain_id, tx.authorizations(), &mut auth_charges)?;
         (oog, 0, 0)
     } else {
         let mut auth_refunds = AuthRefunds::new(req.host.version());
-        apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_refunds)?;
+        apply_auth_list(req.host, chain_id, tx.authorizations(), &mut auth_refunds)?;
         let AuthRefunds { state_refund, execution_refund, .. } = auth_refunds;
         tx_gas.set_reservoir(tx_gas.reservoir() + state_refund);
         (false, state_refund, execution_refund)
@@ -459,14 +460,14 @@ impl AuthAccounting for AuthRefunds {
 /// their delegation is applied. An accounting out-of-gas aborts the list without loading the
 /// remaining authorities — keeping them out of the EIP-7928 block access list — and returns
 /// `true`; the caller is responsible for rolling back the partially applied delegations.
-pub fn apply_auth_list<'a, 'b, T: EvmTypes, A: Eip7702Authorization + 'b>(
+pub fn apply_auth_list<'a, T: EvmTypes, A: Eip7702Authorization>(
     host: &mut Evm<'a, T>,
     chain_id: u64,
-    authorizations: impl IntoIterator<Item = &'b A>,
+    authorizations: impl IntoIterator<Item = A>,
     accounting: &mut impl AuthAccounting,
 ) -> HandlerResult<bool> {
     for authorization in authorizations {
-        let Some((authority, auth)) = validate_one_auth(host, chain_id, authorization)? else {
+        let Some((authority, auth)) = validate_one_auth(host, chain_id, &authorization)? else {
             accounting.rejected();
             continue;
         };
@@ -496,7 +497,7 @@ pub trait Eip7702Authorization {
     fn authority(&self) -> Option<Address>;
 }
 
-impl Eip7702Authorization for LazyAuthorization {
+impl Eip7702Authorization for LazyAuthorization<'_> {
     fn chain_id(&self) -> U256 {
         *Self::chain_id(self)
     }
