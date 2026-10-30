@@ -198,10 +198,7 @@ impl<ExtDB> CacheDB<ExtDB> {
 
     #[inline]
     fn insert_contract_inner(contracts: &mut B256Map<Bytecode>, info: &mut AccountInfo) {
-        // Backing databases may report the empty code hash as zero.
-        if info.code_hash.is_zero() {
-            info.code_hash = KECCAK256_EMPTY;
-        }
+        normalize_code_hash(info);
         if let Some(code) = &info.code
             && !code.is_empty()
         {
@@ -361,6 +358,11 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
             }
         };
 
+        // The cache fields are public, so entries written directly can still carry a zero hash.
+        if let Some(info) = &mut account {
+            normalize_code_hash(info);
+        }
+
         // Apply the resolved BAL account's info at the current block access index.
         if let Some(bal_account) = bal_account {
             self.bal_context.populate_bal_account(bal_account, &mut account);
@@ -370,6 +372,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
     #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+        let code_hash = if code_hash.is_zero() { &KECCAK256_EMPTY } else { code_hash };
         match self.cache.contracts.entry(*code_hash) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => Ok(entry.insert(self.db.get_code_by_hash(code_hash)?).clone()),
@@ -424,6 +427,14 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
             Entry::Occupied(entry) => Ok(*entry.get()),
             Entry::Vacant(entry) => Ok(*entry.insert(self.db.get_block_hash(number)?)),
         }
+    }
+}
+
+/// Maps a zero code hash, which some databases use for no code, to the empty code hash.
+#[inline]
+fn normalize_code_hash(info: &mut AccountInfo) {
+    if info.code_hash.is_zero() {
+        info.code_hash = KECCAK256_EMPTY;
     }
 }
 
@@ -589,8 +600,16 @@ mod tests {
         assert_eq!(loaded.code_hash, KECCAK256_EMPTY);
 
         let mut cache = CacheDB::new(crate::evm::EmptyDB::default());
-        cache.insert_account_info(&address, zero_hash);
+        cache.insert_account_info(&address, zero_hash.clone());
         assert_eq!(cache.account_info(&address).unwrap().code_hash, KECCAK256_EMPTY);
+
+        let mut incoming = Cache::default();
+        incoming.accounts.insert(address, Some(zero_hash));
+        let mut cache = CacheDB::new(crate::evm::EmptyDB::default());
+        cache.cache.merge(incoming);
+        let loaded = cache.get_account(&address).unwrap().unwrap();
+        assert_eq!(loaded.code_hash, KECCAK256_EMPTY);
+        assert_eq!(cache.get_code_by_hash(&B256::ZERO).unwrap(), Bytecode::default());
     }
 
     #[test]
