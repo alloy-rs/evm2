@@ -297,10 +297,11 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     ///
     /// Only called during transaction finalization (selfdestruct and EIP-161 dead-account
     /// deletion), after the last revertible scope, so the wipe is not journaled. Loaded slot
-    /// entries are kept with their values reset to zero: wiped slots resolve to zero on re-load,
-    /// and resetting `original` alongside `current` turns the transaction's prior writes into
-    /// unchanged reads, which keeps a destroyed account's storage accesses visible to the EIP-7928
-    /// block access list (execution-specs `destroy_storage` converts writes to reads).
+    /// entries are kept with their `current` value reset to zero and their `original` value kept:
+    /// wiped slots resolve to zero on re-load, and the reset turns the transaction's prior writes
+    /// into unchanged reads of the slot's original value, which keeps a destroyed account's storage
+    /// accesses visible to the EIP-7928 block access list (execution-specs `destroy_storage`
+    /// converts writes to reads).
     #[inline]
     pub fn wipe(&mut self) {
         self.storage.wiped = true;
