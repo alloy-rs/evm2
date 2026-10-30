@@ -795,6 +795,20 @@ mod tests {
             // The frame stopped at the CALL, before the later CREATE.
             assert_eq!(inspector.creates, 0);
         }
+        // The stop wins over a reload for the changed steps.
+        let inspector = ConfigInspector {
+            stop_after_child: true,
+            ..ConfigInspector::new(OpcodeSet::EMPTY).switching_to(OpcodeSet::ALL)
+        };
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db.clone(),
+            code.clone(),
+            &MessageExt::default(),
+            1_000_000,
+            inspector,
+        );
+        assert_eq!(result, full);
+        assert_eq!(inspector.creates, 0);
     }
 
     #[test]

@@ -724,10 +724,13 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         if self.0.reload_pending {
             cold_path();
             self.0.reload_pending = false;
-            // SAFETY: `pc` is at a message instruction, which a next instruction follows.
-            unsafe { pc.advance_unchecked(1) };
-            self.0.reload_pc = pc.as_ptr();
-            self.request_reload();
+            // A stop that a hook set wins over the reload.
+            if self.0.result.is_ok() {
+                // SAFETY: `pc` is at a message instruction, which a next instruction follows.
+                unsafe { pc.advance_unchecked(1) };
+                self.0.reload_pc = pc.as_ptr();
+                self.request_reload();
+            }
         }
         self.0.result
     }
