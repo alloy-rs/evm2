@@ -33,7 +33,12 @@ impl<T: EvmTypesHost> InterpreterRunner<T> for JitInterpreterRunner {
         interpreter: &mut Interpreter<'frame, 'host, T>,
         host: &mut T::Host<'host>,
     ) -> Option<InstrStop> {
-        debug_assert!(self.supports(host.execution_config()), "unsupported host");
+        // The field layout the compiled code reads depends on the host type, so this check keeps
+        // direct calls memory safe. Direct callers must check `supports` for the gas schedule and
+        // opcode table.
+        if !self.backend.supports_host_type::<T>() {
+            return None;
+        }
         run_supported(&self.backend, interpreter, host)
     }
 
@@ -953,6 +958,14 @@ mod custom_host_tests {
         };
         assert!(supports(&backend));
         assert!(!supports(&wrong));
+        assert_eq!(
+            InterpreterRunner::<CustomTypes>::run(
+                &JitInterpreterRunner::new(wrong.clone()),
+                &mut fresh,
+                &mut host,
+            ),
+            None
+        );
         assert_eq!(fresh.run(&mut host).unwrap(), InstrStop::Return);
         assert_eq!(fresh.output(), expected_output);
     }

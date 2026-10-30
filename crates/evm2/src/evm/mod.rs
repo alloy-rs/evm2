@@ -198,9 +198,6 @@ pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + '
     ///
     /// The EVM calls this only while [`Self::supports`] holds for the active execution config;
     /// other callers must check it first.
-    ///
-    /// The EVM calls the runner through a borrow of the `Arc` stored in `host`, so the runner
-    /// must not replace or swap `*host`.
     fn run<'frame, 'host>(
         &self,
         interpreter: &mut Interpreter<'frame, 'host, T>,
@@ -1763,20 +1760,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
-        let runner = guard
-            .evm
-            .interpreter_runner
-            .as_deref()
-            .filter(|_| guard.evm.runner_supported)
-            .map(NonNull::from);
+        let runner =
+            guard.evm.interpreter_runner.as_ref().filter(|_| guard.evm.runner_supported).cloned();
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(guard.evm, inspector)
         } else if let Some(runner) = runner
-            // SAFETY: The runner lives in the `Arc` stored in `self`. The setters assert `!running`,
-            // and `InterpreterRunner::run` forbids replacing `*host`, so the `Arc` is neither
-            // replaced nor dropped during this call and the pointee outlives it. It is called
-            // through a pointer because it also receives `&mut Evm`.
-            && let Some(stop) = unsafe { runner.as_ref() }.run(interp_ref, guard.evm)
+            && let Some(stop) = runner.run(interp_ref, guard.evm)
         {
             interp_ref.finish_run(stop)
         } else {
