@@ -87,11 +87,6 @@ impl super::DispatchGas for RemainingGas {
             self.set(state.gas_mut().remaining());
         }
     }
-
-    #[inline(always)]
-    fn burn<T: EvmTypesHost>(&mut self, _state: &mut InterpreterState<'_, '_, T>) {
-        self.set(0);
-    }
 }
 
 extern_table! {

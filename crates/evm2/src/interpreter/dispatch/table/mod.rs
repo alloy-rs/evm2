@@ -69,8 +69,6 @@ trait DispatchGas: Copy {
         state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
     );
-
-    fn burn<T: EvmTypesHost>(&mut self, state: &mut InterpreterState<'_, '_, T>);
 }
 
 impl DispatchGas for () {
@@ -98,11 +96,6 @@ impl DispatchGas for () {
         _dynamic_gas: bool,
     ) {
     }
-
-    #[inline(always)]
-    fn burn<T: EvmTypesHost>(&mut self, state: &mut InterpreterState<'_, '_, T>) {
-        state.gas_mut().set_remaining(0);
-    }
 }
 
 #[cold] // Not cold, but avoids MIR inlining.
@@ -127,11 +120,9 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
             }
             gas.sync_after_exec(state, dynamic_gas);
         }
-        Err(_) => {
+        Err(e) => {
             gas.sync_before_exec(state, false);
-            // A failed charge leaves a wrapped counter; the halt spends all gas anyway.
-            gas.burn(state);
-            r = Err(super::static_gas_halt(op, stack.len()));
+            r = Err(e);
         }
     }
     if M::INSPECT {

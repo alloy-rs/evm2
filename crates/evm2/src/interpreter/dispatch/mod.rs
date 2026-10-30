@@ -2,9 +2,8 @@
 
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypesHost, OpcodeConfig,
-    constants::STACK_LIMIT,
     evm::config::SelectorOpcodeConfig,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, op, opcode::OpCode},
+    interpreter::{Interpreter, InterpreterState, Pc, RawStack, op},
     trustme,
 };
 
@@ -49,31 +48,6 @@ const fn instruction_len(op: u8) -> usize {
         op::PUSH1..=op::PUSH32 => (op - op::PUSH1 + 2) as usize,
         op::DUPN | op::SWAPN | op::EXCHANGE => 2,
         _ => 1,
-    }
-}
-
-/// Returns the halt of an opcode that failed to charge its static gas.
-///
-/// The instruction checks its stack bounds after the static gas, while the reference
-/// implementation of Ethereum execution checks them first. When both fail it reports the stack
-/// error, so a failed charge reports it too, and is out of gas otherwise. Runs on the failure path
-/// only.
-#[cold]
-#[inline(never)]
-fn static_gas_halt(op: u8, stack_len: usize) -> InstrStop {
-    let op = OpCode::new_or_unknown(op);
-    let (inputs, outputs) = (usize::from(op.inputs()), usize::from(op.outputs()));
-    let min_stack = match op.get() {
-        op::DUPN => 1,
-        op::SWAPN | op::EXCHANGE => 2,
-        _ => inputs,
-    };
-    if stack_len < min_stack {
-        InstrStop::StackUnderflow
-    } else if stack_len + outputs > STACK_LIMIT + inputs {
-        InstrStop::StackOverflow
-    } else {
-        InstrStop::OutOfGas
     }
 }
 

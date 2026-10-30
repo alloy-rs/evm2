@@ -63,9 +63,15 @@ extern_table! {
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
             }
         }
-        if pre_step::<T, C>(&mut remaining_gas, OP).is_err() {
+        if let Err(e) = pre_step::<T, C>(&mut remaining_gas, OP) {
             cold_path();
-            tail_return!(pre_step_failed::<T, M>(pc, stack, remaining_gas, state, instructions));
+            state.set_result(Err(e));
+            if M::INSPECT {
+                state.gas_mut().set_remaining(remaining_gas.get());
+                M::step_end(state, pc, stack.len());
+                remaining_gas.set(state.gas_mut().remaining());
+            }
+            tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         if M::INSPECT || dynamic_gas {
             state.gas_mut().set_remaining(remaining_gas.get());
@@ -102,31 +108,6 @@ extern_table! {
         let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
         let instr = instructions_t[pc.op() as usize];
         tail_return!(instr(pc, stack, remaining_gas, state, instructions));
-    }
-}
-
-extern_table! {
-    #[inline(never)]
-    #[cold]
-    fn pre_step_failed<T: EvmTypesHost, M: InspectMode<T>>(
-        pc: Pc,
-        stack: RawStack<'_>,
-        mut remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, '_, T>,
-        instructions: *const (),
-    ) {
-        let halt = super::static_gas_halt(pc.op(), stack.len());
-        if halt != InstrStop::OutOfGas {
-            // A failed charge leaves a wrapped counter; the halt spends all gas anyway.
-            remaining_gas.set(0);
-        }
-        state.set_result(Err(halt));
-        if M::INSPECT {
-            state.gas_mut().set_remaining(remaining_gas.get());
-            M::step_end(state, pc, stack.len());
-            remaining_gas.set(state.gas_mut().remaining());
-        }
-        tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
     }
 }
 
