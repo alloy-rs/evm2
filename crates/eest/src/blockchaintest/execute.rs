@@ -1512,6 +1512,12 @@ mod tests {
         *,
     };
     #[cfg(feature = "jit")]
+    use crate::tx::recover_address;
+    #[cfg(feature = "jit")]
+    use alloy_consensus::{SignableTransaction, TxLegacy, crypto::secp256k1};
+    #[cfg(feature = "jit")]
+    use alloy_primitives::{TxKind, to_eip155_v};
+    #[cfg(feature = "jit")]
     use evm2::interpreter::op;
     use std::collections::BTreeMap;
 
@@ -1968,8 +1974,18 @@ mod tests {
 
     #[cfg(feature = "jit")]
     fn execute_simple_storage_block(mode: ExecutionMode) -> ExecuteSummary {
-        let caller = Address::from([0x11; 20]);
+        let secret = B256::with_last_byte(1);
+        let caller = recover_address(secret.as_slice()).unwrap();
         let target = Address::from([0x22; 20]);
+        let unsigned = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 100_000,
+            to: TxKind::Call(target),
+            ..Default::default()
+        };
+        let signature = secp256k1::sign_message(secret, unsigned.signature_hash()).unwrap();
         let genesis_hash = B256::with_last_byte(1);
         let block_hash = B256::with_last_byte(2);
         let mut pre = BTreeMap::new();
@@ -2043,9 +2059,9 @@ mod tests {
                         gas_limit: U256::from(100_000),
                         gas_price: Some(U256::ZERO),
                         nonce: U256::ZERO,
-                        r: U256::ZERO,
-                        s: U256::ZERO,
-                        v: U256::ZERO,
+                        r: signature.r(),
+                        s: signature.s(),
+                        v: U256::from(to_eip155_v(signature.v() as u8, 1)),
                         value: U256::ZERO,
                         to: Some(target),
                         chain_id: Some(U256::ONE),
