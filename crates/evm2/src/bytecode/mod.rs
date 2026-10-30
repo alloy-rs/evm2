@@ -88,8 +88,7 @@ struct HashCell {
 
 impl HashCell {
     const fn new() -> Self {
-        const ZERO: AtomicUsize = AtomicUsize::new(0);
-        Self { set: AtomicBool::new(false), words: [ZERO; HASH_WORDS] }
+        Self { set: AtomicBool::new(false), words: [const { AtomicUsize::new(0) }; HASH_WORDS] }
     }
 
     fn with(hash: B256) -> Self {
