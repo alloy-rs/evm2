@@ -335,6 +335,20 @@ impl Bytecode {
         *self.inner().hash.get_or_init(|| keccak256(self.original_byte_slice()))
     }
 
+    /// Caches `hash` as the hash of the original bytecode unless one is already cached.
+    ///
+    /// `hash` must be the keccak256 of [`Self::original_byte_slice`]. Does nothing for empty
+    /// bytecode or the zero hash.
+    #[inline]
+    pub fn seed_hash(&self, hash: B256) {
+        if self.is_empty() || hash.is_zero() {
+            return;
+        }
+        if self.inner().hash.set(hash).is_err() {
+            debug_assert_eq!(self.hash_slow(), hash, "seeded hash differs from cached hash");
+        }
+    }
+
     /// Returns a reference to the potentially padded bytecode bytes.
     #[inline]
     pub fn bytes(&self) -> &Bytes {
@@ -492,6 +506,30 @@ mod tests {
         assert_eq!(bytecode.eip7702_address(), Some(address));
         assert_eq!(bytecode.original_bytes().len(), EIP7702_BYTECODE_LEN);
         assert_eq!(&bytecode.original_byte_slice()[..3], &[0xEF, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn seed_hash_sets_only_an_empty_cache() {
+        let bytecode = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
+        let seed = B256::repeat_byte(0x5e);
+        bytecode.seed_hash(seed);
+        assert_eq!(bytecode.hash_slow(), seed);
+
+        let empty = Bytecode::new();
+        empty.seed_hash(seed);
+        assert_eq!(empty.hash_slow(), KECCAK256_EMPTY);
+        let bytecode = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
+        bytecode.seed_hash(B256::ZERO);
+        assert_eq!(bytecode.hash_slow(), keccak256([0x60, 0x01]));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "seeded hash differs from cached hash")]
+    fn seed_hash_panics_on_conflicting_hash_in_debug() {
+        let bytecode = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
+        bytecode.seed_hash(B256::repeat_byte(0x5e));
+        bytecode.seed_hash(B256::repeat_byte(0x5f));
     }
 
     #[test]

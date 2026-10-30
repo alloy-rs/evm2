@@ -1,5 +1,5 @@
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, hex, keccak256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, hex, keccak256, map::B256Map};
 use clap::ValueEnum;
 use evm2::{
     BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId, Version,
@@ -18,7 +18,6 @@ use evm2_jit_runtime::{
 };
 use std::{
     borrow::Cow,
-    collections::HashMap,
     hint::black_box,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -243,7 +242,7 @@ impl RunArgs {
                 }
             } else if self.load.is_none() {
                 let func = unsafe { compiler.jit_function(f_id)? };
-                let mut functions = HashMap::new();
+                let mut functions = B256Map::default();
                 functions.insert(keccak256(&bytecode), func);
                 compiler.clear_ir()?;
                 pending_jit = Some((compiler, functions));
@@ -538,7 +537,7 @@ struct PreparedBench {
     block: BlockEnv,
     db: InMemoryDB,
     tx: RecoveredTxEnvelope,
-    functions: Arc<HashMap<B256, EvmCompilerFn>>,
+    functions: Arc<B256Map<EvmCompilerFn>>,
     assert_success: bool,
 }
 
@@ -547,14 +546,14 @@ type LlvmCompiler = EvmCompiler<EvmLlvmBackend>;
 impl PreparedBench {
     fn load(bench: &Bench) -> eyre::Result<(Self, LlvmCompiler)> {
         let mut compiler = EvmCompiler::new_llvm(false)?;
-        let prepared = Self::load_with_functions(bench, &mut compiler, HashMap::new())?;
+        let prepared = Self::load_with_functions(bench, &mut compiler, B256Map::default())?;
         Ok((prepared, compiler))
     }
 
     fn load_with_functions(
         bench: &Bench,
         compiler: &mut LlvmCompiler,
-        mut functions: HashMap<B256, EvmCompilerFn>,
+        mut functions: B256Map<EvmCompilerFn>,
     ) -> eyre::Result<Self> {
         let (name, accounts, block, db, tx) = parse_bench(bench)?;
         for account in &accounts {
@@ -587,7 +586,7 @@ impl PreparedBench {
     ) -> eyre::Result<(Self, libloading::Library)> {
         let (name, accounts, block, db, tx) = parse_bench(bench)?;
         let lib = unsafe { libloading::Library::new(lib_path) }?;
-        let mut functions = HashMap::new();
+        let mut functions = B256Map::default();
         for account in &accounts {
             if account.bytecode.is_empty() || functions.contains_key(&account.code_hash) {
                 continue;
@@ -658,7 +657,7 @@ impl PreparedBench {
 
 #[derive(Clone, Debug)]
 struct FixedJitRunner {
-    functions: Arc<HashMap<B256, EvmCompilerFn>>,
+    functions: Arc<B256Map<EvmCompilerFn>>,
 }
 
 impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
