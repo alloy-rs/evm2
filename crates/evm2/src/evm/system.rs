@@ -117,11 +117,17 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
+    ///
+    /// The active inspector observes the call only when [`Evm::set_inspect_system_calls`] is set.
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
-        // System calls are not inspected.
-        let inspector = self.inspector.take();
-        let result = self.execute_system_call(tx);
-        self.inspector = inspector;
+        let result = if self.inspect_system_calls {
+            self.execute_system_call(tx)
+        } else {
+            let inspector = self.inspector.take();
+            let result = self.execute_system_call(tx);
+            self.inspector = inspector;
+            result
+        };
         match result {
             Ok(outcome) => self.finish_executed_tx(outcome),
             Err(error) => {
@@ -240,11 +246,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, Precompiles, SpecId,
+        BaseEvmTypes, Inspector, Precompiles, SpecId,
         bytecode::Bytecode,
         env::BlockEnvExt,
         evm::{AccountInfo, InMemoryDB},
-        interpreter::{GasTracker, InstrStop, Message, op},
+        interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileResult},
         registry::{HandlerError, TxRegistry},
     };
@@ -554,5 +560,67 @@ mod tests {
         assert_eq!(result.state_gas_spent, state_gas);
         assert_eq!(result.total_gas_spent, regular_gas + state_gas);
         assert_eq!(result.execution_gas_spent(), regular_gas);
+    }
+
+    #[derive(Debug, Default)]
+    struct CountingInspector {
+        calls: usize,
+        call_ends: usize,
+        steps: usize,
+    }
+
+    impl Inspector<BaseEvmTypes> for CountingInspector {
+        fn step(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            self.steps += 1;
+        }
+
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            _message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            self.calls += 1;
+            None
+        }
+
+        fn call_end(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            _message: &Message<BaseEvmTypes>,
+            _result: &mut MessageResult<BaseEvmTypes>,
+        ) {
+            self.call_ends += 1;
+        }
+    }
+
+    #[rstest::rstest]
+    #[case(false, 0, 0)]
+    #[case(true, 1, 3)]
+    fn system_call_inspection_is_opt_in(
+        #[case] inspect: bool,
+        #[case] expected_calls: usize,
+        #[case] expected_steps: usize,
+    ) {
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH0, op::STOP]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = TestEvm::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(CountingInspector::default());
+        evm.set_inspect_system_calls(inspect);
+
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
+        assert!(result.result.status);
+
+        let inspector = evm.clear_inspector_as::<CountingInspector>().expect("inspector kept");
+        assert_eq!(inspector.calls, expected_calls);
+        assert_eq!(inspector.call_ends, expected_calls);
+        assert_eq!(inspector.steps, expected_steps);
     }
 }
