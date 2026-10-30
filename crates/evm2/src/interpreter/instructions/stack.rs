@@ -27,34 +27,40 @@ pub fn swap<const N: usize>() -> Result {
 pub fn dupn(cx: _) -> Result {
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
-    stack.dup(n)
+    stack.dup(n as usize)
 }
 
 #[instruction(no_stack_preamble)]
 pub fn swapn(cx: _) -> Result {
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
-    stack.exchange(0, n)
+    stack.exchange(0, n as usize)
 }
 
 #[instruction(no_stack_preamble)]
 pub fn exchange(cx: _) -> Result {
     let (n, m) = decode_pair(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
-    stack.exchange(n, m)
+    stack.exchange(n as usize, m as usize)
 }
 
-const fn decode_single(x: u8) -> Option<usize> {
-    if x <= 90 || x >= 128 { Some(x.wrapping_add(145) as usize) } else { None }
+/// Decodes a `DUPN`/`SWAPN` immediate byte into a stack index.
+///
+/// Returns `None` if the immediate is in the invalid range `[91, 127]`.
+pub const fn decode_single(x: u8) -> Option<u8> {
+    if x <= 90 || x >= 128 { Some(x.wrapping_add(145)) } else { None }
 }
 
-const fn decode_pair(x: u8) -> Option<(usize, usize)> {
+/// Decodes an `EXCHANGE` immediate byte into a pair of stack indices `(n, m)`.
+///
+/// Returns `None` if the immediate is in the invalid range `[82, 127]`.
+pub const fn decode_pair(x: u8) -> Option<(u8, u8)> {
     if x > 81 && x < 128 {
         return None;
     }
-    let k = (x ^ 143) as usize;
-    let q = k / 16;
-    let r = k % 16;
+    let k = (x ^ 143) as u16;
+    let q = (k / 16) as u8;
+    let r = (k % 16) as u8;
     if q < r { Some((q + 1, r + 1)) } else { Some((r + 1, 29 - q)) }
 }
 

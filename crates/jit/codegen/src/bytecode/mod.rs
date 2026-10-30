@@ -5,6 +5,7 @@ use alloy_primitives::U256;
 use bitvec::vec::BitVec;
 use evm2::{
     OpcodeView, SpecId,
+    bytecode::analyze_legacy,
     interpreter::{op, opcode::OpCode},
     version::GasParams,
 };
@@ -1292,19 +1293,8 @@ bitflags::bitflags! {
 /// This is the analysis of every fork: EIP-8024 explicitly leaves it unchanged, so
 /// DUPN/SWAPN/EXCHANGE immediates are scanned as if they were opcodes.
 fn legacy_jumpdests(code: &[u8]) -> BitVec {
-    let mut jumpdests = BitVec::repeat(false, code.len());
-    let mut pc = 0;
-    while pc < code.len() {
-        let opcode = code[pc];
-        if opcode == op::JUMPDEST {
-            jumpdests.set(pc, true);
-        }
-        pc += 1;
-        if let op::PUSH1..=op::PUSH32 = opcode {
-            pc += (opcode - op::PUSH1 + 1) as usize;
-        }
-    }
-    jumpdests
+    let table = analyze_legacy(code);
+    (0..code.len()).map(|pc| table.is_valid(pc)).collect()
 }
 
 fn bitvec_as_bytes<T: bitvec::store::BitStore, O: bitvec::order::BitOrder>(

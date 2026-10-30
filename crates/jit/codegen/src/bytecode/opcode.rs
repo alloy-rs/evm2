@@ -5,6 +5,8 @@ use evm2::{
 };
 use std::{fmt, slice};
 
+pub use evm2::interpreter::instructions::{decode_pair, decode_single};
+
 /// A bytecode iterator that yields opcodes and their immediate data, alongside the program counter.
 ///
 /// Created by calling [`OpcodesIter::with_pc`].
@@ -220,32 +222,12 @@ pub(crate) fn compute_stack_io(op: u8, immediate: Option<&[u8]>) -> Option<(u8, 
     }
 }
 
-/// Decodes a DUPN/SWAPN immediate byte into a stack index.
-///
-/// Returns `None` if the immediate is in the invalid range `[91, 127]`.
-pub const fn decode_single(x: u8) -> Option<u8> {
-    if x <= 90 || x >= 128 { Some(x.wrapping_add(145)) } else { None }
-}
-
 /// Encodes a stack index into a DUPN/SWAPN immediate byte.
 ///
 /// Returns `None` if the value is outside the valid range.
 pub fn encode_single(n: u8) -> Option<u8> {
     let x = n.wrapping_sub(145);
     if decode_single(x) == Some(n) { Some(x) } else { None }
-}
-
-/// Decodes an EXCHANGE immediate byte into a pair of stack indices `(n, m)`.
-///
-/// Returns `None` if the value is outside the valid range.
-pub const fn decode_pair(x: u8) -> Option<(u8, u8)> {
-    if x > 81 && x < 128 {
-        return None;
-    }
-    let k = (x ^ 143) as u16;
-    let q = (k / 16) as u8;
-    let r = (k % 16) as u8;
-    if q < r { Some((q + 1, r + 1)) } else { Some((r + 1, 29 - q)) }
 }
 
 /// Encodes a pair of stack indices into an EXCHANGE immediate byte.
