@@ -99,10 +99,9 @@ impl Bal {
 ///
 /// Changed accounts and storage slots are recorded as writes, loaded-but-unchanged ones -- the
 /// read callbacks -- as reads. An absent account side is the non-existent (default) account, so an
-/// account removed by the transaction records zeroed writes. A storage wipe retracts the account's
-/// storage writes already recorded at this index, so the wiped slots surface as reads whatever an
-/// earlier commit at the same index wrote. The bytecode callback needs no BAL action: code changes
-/// surface through [`StateChangeSink::account`].
+/// account removed by the transaction records zeroed writes. The bytecode and storage-wipe
+/// callbacks need no BAL action: code changes surface through [`StateChangeSink::account`], and a
+/// wiped account's storage surfaces through the storage callbacks.
 #[derive(Debug)]
 pub(super) struct BalWriter<'a> {
     bal: &'a mut Bal,
@@ -127,16 +126,6 @@ impl StateChangeSink for BalWriter<'_> {
             change.original.unwrap_or(&absent),
             change.current.unwrap_or(&absent),
         );
-        Ok(())
-    }
-
-    #[inline]
-    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
-        if let Some(account) = self.bal.accounts.get_mut(&address) {
-            for changes in account.storage.storage.values_mut() {
-                changes.retract(self.index);
-            }
-        }
         Ok(())
     }
 
@@ -590,35 +579,6 @@ mod tests {
             storage.get(&U256::from(6)).unwrap().changes,
             vec![AlloyStorageChange::new(idx(1), U256::from(8))]
         );
-    }
-
-    #[test]
-    fn commit_wipe_retracts_storage_written_at_the_same_index() {
-        let address = Address::with_last_byte(1);
-        let info = AccountInfo::default().with_balance(U256::from(100));
-        let commit = |bal: &mut Bal, wiped: bool, original: u64, current: u64| {
-            let mut overlay = StorageOverlay { wiped, ..Default::default() };
-            overlay.slots.insert(U256::from(5), slot(U256::from(original), U256::from(current)));
-            let account = Account {
-                original: Some(info.clone()),
-                present: Some(info.clone()),
-                storage: overlay,
-                ..Default::default()
-            };
-            let pending = PendingState {
-                accounts: AddressMap::from_iter([(address, account)]),
-                selfdestructs: Default::default(),
-            };
-            bal.commit(idx(1), pending);
-        };
-
-        // A first commit writes the slot; a second commit at the same index wipes it.
-        let mut bal = Bal::new();
-        commit(&mut bal, false, 0, 7);
-        commit(&mut bal, true, 7, 0);
-
-        let storage = &bal.accounts.get(&address).unwrap().storage.storage;
-        assert!(storage.get(&U256::from(5)).unwrap().is_empty());
     }
 
     #[test]
