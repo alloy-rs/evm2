@@ -1872,12 +1872,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // An earlier access at `base + lo` passed its check, so that offset fits in 63 bits, and
         // `base + addend` for `addend >= lo` fits in 64 bits.
         let fits = ensured.is_some_and(|(lo, _)| lo <= addend);
-        let offset = if fits {
-            self.bcx.ireduce(self.isize_type, offset_word)
-        } else {
-            // 63 bits lets us avoid overflow in the addition below.
-            self.u256_to_u64_saturating(offset_word, 63)
-        };
+        let offset = self.bcx.ireduce(self.isize_type, offset_word);
         // An earlier access in this section already ensured this range.
         if fits && ensured.is_some_and(|(_, hi)| end <= hi) {
             return self.build_memory_addr(offset);
@@ -1896,10 +1891,17 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
 
         let isize_type = self.isize_type;
-        let len_const = self.bcx.iconst(isize_type, len as i64);
-        let min_size = self.bcx.iadd(offset, len_const);
-        // `offset` is clamped to 63 bits, so a wider one needs its exact value.
-        let exact = (!fits).then_some((offset_word, len_const));
+        let mut len = self.bcx.iconst(isize_type, len as i64);
+        if !fits {
+            // `offset` is the low 64 bits. A wider offset makes the length `u64::MAX`, which the
+            // builtin reports like the interpreter's `to_usize`.
+            let u64_max = self.bcx.iconst_256(U256::from(u64::MAX));
+            let too_large = self.bcx.icmp(IntCC::UnsignedGreaterThan, offset_word, u64_max);
+            let max = self.bcx.iconst(isize_type, -1);
+            len = self.bcx.select(too_large, max, len);
+        }
+        // Saturates, so that a wider offset always exceeds the memory length.
+        let min_size = self.bcx.uadd_sat(offset, len);
 
         let direct_resize_size = self
             .current_inst
@@ -1907,7 +1909,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             .unwrap_or_default();
         // Analysis proved this access always grows memory to exactly `min_size`.
         if direct_resize_size != 0 {
-            self.build_mresize(min_size, exact);
+            self.build_mresize(offset, len);
             self.cached_mem_base = None;
             return self.build_memory_addr(offset);
         }
@@ -1925,35 +1927,25 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
         self.if_then(exceeds, |this| {
             this.bcx.set_current_block_cold();
-            this.build_mresize(min_size, exact);
+            this.build_mresize(offset, len);
         });
         self.build_memory_addr(offset)
     }
 
-    /// Calls the `mresize` builtin for the current memory access.
+    /// Calls the `mresize` builtin for an access of `len` bytes at `offset`.
     ///
-    /// `exact` is the unclamped offset word and the access length, when `min_size` was built from
-    /// a clamped offset. The builtin then fails like the interpreter's `to_usize` for an offset
-    /// that does not fit in 64 bits, and resizes with the exact end of the access otherwise.
+    /// A `len` of `u64::MAX` means that the offset does not fit in 64 bits.
     ///
     /// The builtin also gets the static gas that the section head charged for the instructions
     /// after the access, so that the stop reason is the one of the instruction that runs out of
     /// gas. It checks the remaining gas, which clears `unchecked_gas`.
-    fn build_mresize(&mut self, mut min_size: B::Value, exact: Option<(B::Value, B::Value)>) {
+    fn build_mresize(&mut self, offset: B::Value, len: B::Value) {
         let owed = match self.current_inst {
             Some(inst) if self.config.gas_metering => self.bytecode.inst(inst).gas_owed(),
             _ => 0,
         };
         let owed = self.bcx.iconst(self.isize_type, owed as i64);
-        let mut offset_too_large = self.bcx.iconst(self.i8_type, 0);
-        if let Some((offset_word, len)) = exact {
-            let u64_max = self.bcx.iconst_256(U256::from(u64::MAX));
-            let too_large = self.bcx.icmp(IntCC::UnsignedGreaterThan, offset_word, u64_max);
-            offset_too_large = self.bcx.zext(self.i8_type, too_large);
-            let offset = self.bcx.ireduce(self.isize_type, offset_word);
-            min_size = self.bcx.uadd_sat(offset, len);
-        }
-        let _ = self.call_builtin(Builtin::Mresize, &[self.ecx, min_size, owed, offset_too_large]);
+        let _ = self.call_builtin(Builtin::Mresize, &[self.ecx, offset, len, owed]);
         self.unchecked_gas = 0;
     }
 
