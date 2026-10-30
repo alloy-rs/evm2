@@ -1,7 +1,6 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, ExecutionError,
-    HostError, SpecId,
+    BaseEvmTypes, DatabaseError, EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
@@ -140,13 +139,6 @@ pub trait Host<T: EvmTypesHost> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError>;
-
-    /// Returns whether an account is empty/non-existent for new-account gas checks.
-    fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> Result<bool, DatabaseError>;
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError>;

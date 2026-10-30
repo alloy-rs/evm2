@@ -667,8 +667,9 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         // failures return above before the destination is accessed.
         if ecx
             .host()
-            .target_is_empty_for_new_account_gas(&destination, version.features)
+            .load_account(&destination, false, false)
             .map_err(|error| ecx.interpreter_mut().fail(error))?
+            .is_empty_for_new_account_gas
         {
             ecx.gas.spend_state(version.gas_params.create_state_gas())?;
             charged_create_state_gas = true;
@@ -893,14 +894,9 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         code_address = delegated_address;
     }
     let features = ecx.version().features;
-    // Check emptiness only when new-account gas can apply: after EIP-161 a zero-value call never
-    // pays it, so it skips the extra account lookup.
     if create_empty_account
         && (!features.contains(EvmFeatures::EIP161) || transfers_value)
-        && ecx
-            .host()
-            .target_is_empty_for_new_account_gas(&to, features)
-            .map_err(|error| ecx.interpreter_mut().fail(error))?
+        && account.is_empty_for_new_account_gas
     {
         cost += version.gas_params.get(GasId::NewAccountCost);
         if features.contains(EvmFeatures::EIP8037) && transfers_value {
