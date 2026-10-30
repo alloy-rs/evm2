@@ -17,7 +17,10 @@ use crate::tracing::{
 };
 use alloc::{borrow::Cow, collections::BTreeSet, format, vec::Vec};
 use alloy_consensus::{Transaction, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, Log, U256, map::HashMap};
+use alloy_primitives::{
+    Address, B256, Bytes, Log, U256,
+    map::{Entry, HashMap},
+};
 use alloy_rpc_types_trace::geth::{
     CallConfig,
     erc7562::{AccessedSlots, ContractSize, Erc7562Config, Erc7562Frame},
@@ -263,11 +266,9 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
                 // The code size of the account that the instruction addresses.
                 if let Some(word) = if is_ext(op) { top } else { second } {
                     let address = word_to_address(word);
-                    if !frame.contract_size.contains_key(&address) {
+                    if let Entry::Vacant(entry) = frame.contract_size.entry(address) {
                         let contract_size = Self::code_size(interp, &address);
-                        frame
-                            .contract_size
-                            .insert(address, ContractSize { contract_size, opcode: op });
+                        entry.insert(ContractSize { contract_size, opcode: op });
                     }
                 }
             }
