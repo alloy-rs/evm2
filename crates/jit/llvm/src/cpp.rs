@@ -33,6 +33,7 @@ unsafe extern "C" {
 
     pub(crate) fn evm2_jit_llvm_lljit_builder_set_concurrent_compiler(
         builder: LLVMOrcLLJITBuilderRef,
+        level: LLVMCodeGenOptLevel,
     );
 
     pub(crate) fn evm2_jit_llvm_execution_session_remove_jit_dylib(

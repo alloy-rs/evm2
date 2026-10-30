@@ -65,23 +65,36 @@ evm2_jit_llvm_jit_dylib_add_to_link_order(LLVMOrcJITDylibRef JD,
   Dylib->addToLinkOrder(*OtherDylib);
 }
 
+static CodeGenOptLevel toCodeGenOptLevel(LLVMCodeGenOptLevel Level) {
+  switch (Level) {
+  case LLVMCodeGenLevelNone:
+    return CodeGenOptLevel::None;
+  case LLVMCodeGenLevelLess:
+    return CodeGenOptLevel::Less;
+  case LLVMCodeGenLevelDefault:
+    return CodeGenOptLevel::Default;
+  case LLVMCodeGenLevelAggressive:
+    return CodeGenOptLevel::Aggressive;
+  }
+  llvm_unreachable("invalid LLVMCodeGenOptLevel");
+}
+
 /// Use ConcurrentIRCompiler (thread-safe, fresh TargetMachine per compilation)
 /// while keeping the default InPlaceTaskDispatcher (no background threads).
 ///
-/// Sets the codegen optimization level to Less (O1), which skips the post-RA
-/// scheduler on CPUs that enable it. The IR optimization passes are run separately with their own
-/// level.
+/// Every compilation uses the given codegen optimization level. The IR
+/// optimization passes are run separately with their own level.
 ///
 /// setSupportConcurrentCompilation(true) would also switch the dispatcher to
 /// DynamicThreadPoolTaskDispatcher, spawning background threads. We only want
 /// the thread-safe compiler, not the thread pool.
 extern "C" void evm2_jit_llvm_lljit_builder_set_concurrent_compiler(
-    LLVMOrcLLJITBuilderRef Builder) {
+    LLVMOrcLLJITBuilderRef Builder, LLVMCodeGenOptLevel Level) {
   auto *B = reinterpret_cast<orc::LLJITBuilder *>(Builder);
   B->setCompileFunctionCreator(
-      [](orc::JITTargetMachineBuilder JTMB)
+      [L = toCodeGenOptLevel(Level)](orc::JITTargetMachineBuilder JTMB)
           -> Expected<std::unique_ptr<orc::IRCompileLayer::IRCompiler>> {
-        JTMB.setCodeGenOptLevel(CodeGenOptLevel::Less);
+        JTMB.setCodeGenOptLevel(L);
         return std::make_unique<orc::ConcurrentIRCompiler>(std::move(JTMB));
       });
 }
@@ -358,22 +371,7 @@ extern "C" void
 evm2_jit_llvm_target_machine_set_opt_level(LLVMTargetMachineRef TM,
                                         LLVMCodeGenOptLevel Level) {
   auto *Machine = reinterpret_cast<TargetMachine *>(TM);
-  CodeGenOptLevel L = CodeGenOptLevel::Default;
-  switch (Level) {
-  case LLVMCodeGenLevelNone:
-    L = CodeGenOptLevel::None;
-    break;
-  case LLVMCodeGenLevelLess:
-    L = CodeGenOptLevel::Less;
-    break;
-  case LLVMCodeGenLevelDefault:
-    L = CodeGenOptLevel::Default;
-    break;
-  case LLVMCodeGenLevelAggressive:
-    L = CodeGenOptLevel::Aggressive;
-    break;
-  }
-  Machine->setOptLevel(L);
+  Machine->setOptLevel(toCodeGenOptLevel(Level));
 }
 
 extern "C" void evm2_jit_llvm_set_dso_local(LLVMValueRef Val, bool Local) {
