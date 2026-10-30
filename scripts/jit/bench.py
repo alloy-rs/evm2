@@ -1054,11 +1054,12 @@ def runtime_args(bench: str, n: int) -> list[str]:
 def sample_iters(side: Side, bench: str) -> int:
     """Return the `N` whose run executes about `RUNTIME_TARGET / RUNTIME_SAMPLES` instructions."""
     n = 10
-    while (
-        counts := perf_counts(side.binary, runtime_args(bench, n))
-    )[0] < RUNTIME_PROBE and n < 10**7:
+    while True:
+        instructions, _, counted = perf_counts(side.binary, runtime_args(bench, n))
+        if instructions >= RUNTIME_PROBE or n >= 10**7:
+            break
         n *= 10
-    per_iter = counts[0] / counted_iters(n, counts[2])
+    per_iter = instructions / counted_iters(n, counted)
     return max(10, int(RUNTIME_TARGET / RUNTIME_SAMPLES / per_iter))
 
 
