@@ -26,10 +26,7 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Called after each instruction executes.
     ///
-    /// If the instruction ran out of gas, the interpreter's remaining gas is unspecified: record
-    /// it in [`Self::step`] instead of reading it here. An inspector that replaces the
-    /// out-of-gas stop with one that is not a halt must also set the remaining gas, as the frame
-    /// keeps whatever is left.
+    /// If the instruction ran out of gas, the interpreter's remaining gas reads 0.
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
@@ -631,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn inspector_can_recover_from_out_of_gas() {
+    fn inspector_gas_is_valid_after_out_of_gas() {
         struct GasInspector {
             recover: bool,
             failures: usize,
@@ -640,6 +637,7 @@ mod tests {
         impl Inspector<BaseEvmTypes> for GasInspector {
             fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 if matches!(interp.result(), Err(InstrStop::OutOfGas | InstrStop::MemoryOOG)) {
+                    assert_eq!(interp.gas().remaining(), 0);
                     self.failures += 1;
                     if self.recover {
                         interp.gas_mut().set_remaining(17);
