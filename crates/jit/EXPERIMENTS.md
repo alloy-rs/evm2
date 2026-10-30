@@ -27,11 +27,11 @@ ones here with the numbers that rejected them.
 - Dropping `relieve_vstack_pressure`, so the virtual stack only stores at
   section boundaries and builtin calls: i256 stores -23%, but JIT size +13%,
   spills ×6 and runtime instructions +9.6% (onchain_lm_v2 +13.5%).
-- Preserving distinct failure results by default (`single_error = false`), so
-  the JIT reports the interpreter's halt reason instead of `OutOfGas`: `opt.s`
-  changed in 23/31 benchmarks, JIT size +4.0%, compile instructions +10.7%
-  (geomean +6.1%) and runtime instructions +3.8% (geomean +0.5%;
-  `onchain_lm_v2` +4.3%, `burntpix` +4.2%, `snailtracer` +2.8%).
+- Making `single_error = false` the default, so the JIT reports the
+  interpreter's halt reason instead of `OutOfGas`: `opt.s` changed in 23/31
+  benchmarks, JIT size +4.0% total, compile instructions +10.7% total (geomean
+  +6.1%) and runtime instructions +3.8% total (geomean +0.5%; `onchain_lm_v2`
+  +4.3%, `burntpix` +4.2%, `snailtracer` +2.8%).
 
 ## Optimization passes
 
