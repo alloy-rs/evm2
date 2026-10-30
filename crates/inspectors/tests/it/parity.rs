@@ -1452,6 +1452,46 @@ fn nested_calls_keep_each_forwarded_cost() {
     assert_eq!(inner.ex.as_ref().unwrap().used, child.ops[6].ex.as_ref().unwrap().used - 100 - 15);
 }
 
+#[test]
+fn parity_traces_leave_out_zero_value_precompile_calls() {
+    let contract = Address::with_last_byte(0x42);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo::default().with_balance(U256::from(1)).with_code(Bytecode::new_raw(
+            // CALL 0x04 with no value, CALL 0x04 with value 1, CALL 0x99 with no value.
+            hex!("5f5f5f5f5f60045af1505f5f5f5f600160045af1505f5f5f5f5f60995af15000").into(),
+        )),
+    );
+    let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
+        TracingInspector::new(TracingInspectorConfig::default_parity()),
+    );
+    evm.inspect_tx(TxEnv {
+        gas_limit: 1_000_000,
+        kind: TransactTo::Call(contract),
+        ..Default::default()
+    })
+    .unwrap();
+
+    let traces = evm.inspector.clone().into_parity_builder().into_transaction_traces();
+    let calls: Vec<_> = traces
+        .iter()
+        .map(|trace| {
+            let Action::Call(call) = &trace.action else { panic!("expected a call") };
+            (call.to, call.value, trace.trace_address.clone())
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            (contract, U256::ZERO, vec![]),
+            (Address::with_last_byte(4), U256::from(1), vec![0]),
+            (Address::with_last_byte(0x99), U256::ZERO, vec![1]),
+        ]
+    );
+    assert_eq!(traces[0].subtraces, 2);
+}
+
 #[path = "parity/vm_bytecode.rs"]
 mod vm_bytecode;
 
