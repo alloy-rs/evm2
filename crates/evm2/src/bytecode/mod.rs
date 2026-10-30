@@ -103,16 +103,18 @@ impl HashCell {
             return None;
         }
         let mut bytes = [0u8; 32];
-        for (chunk, word) in bytes.chunks_exact_mut(size_of::<usize>()).zip(&self.words) {
-            chunk.copy_from_slice(&word.load(Relaxed).to_ne_bytes());
+        for (chunk, word) in
+            bytes.as_chunks_mut::<{ size_of::<usize>() }>().0.iter_mut().zip(&self.words)
+        {
+            *chunk = word.load(Relaxed).to_ne_bytes();
         }
         Some(B256::new(bytes))
     }
 
     #[inline]
     fn set(&self, hash: B256) {
-        for (chunk, word) in hash.chunks_exact(size_of::<usize>()).zip(&self.words) {
-            word.store(usize::from_ne_bytes(chunk.try_into().unwrap()), Relaxed);
+        for (chunk, word) in hash.as_chunks::<{ size_of::<usize>() }>().0.iter().zip(&self.words) {
+            word.store(usize::from_ne_bytes(*chunk), Relaxed);
         }
         self.set.store(true, Release);
     }
