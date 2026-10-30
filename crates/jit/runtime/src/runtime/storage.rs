@@ -4,15 +4,30 @@ use crate::{OptimizationLevel, eyre, runtime::RuntimeConfig};
 use alloy_primitives::{B256, keccak256};
 use dashmap::DashMap;
 use evm2::{SpecId, version::GasId};
-use std::{fs, io::Write, path::PathBuf};
+use std::{
+    fs,
+    hash::{Hash, Hasher},
+    io::Write,
+    path::PathBuf,
+};
 
 /// Runtime cache key: the minimal identity for a compiled program at runtime.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuntimeCacheKey {
     /// The code hash of the contract bytecode.
     pub code_hash: B256,
     /// The EVM spec (hardfork) the code was compiled against.
     pub spec_id: SpecId,
+}
+
+impl Hash for RuntimeCacheKey {
+    /// Feeds the hasher one word: the code hash is a keccak digest, so any 8 bytes of it are
+    /// uniformly distributed, and the map's seeded hasher still mixes the word.
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let prefix = u64::from_le_bytes(*self.code_hash.first_chunk().unwrap());
+        state.write_u64(prefix ^ self.spec_id as u64);
+    }
 }
 
 /// Full artifact identity for persisted artifacts.
