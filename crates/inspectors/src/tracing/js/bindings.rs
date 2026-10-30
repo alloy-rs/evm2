@@ -534,7 +534,7 @@ impl EvmDbReader for StateDbReader<'_, '_> {
     }
 
     fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.account(address)?.load_code()
+        self.state.code_untracked(address)
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {

@@ -684,6 +684,29 @@ impl<'a> State<'a> {
         self.database.get_storage(address, key)
     }
 
+    /// Returns an account's bytecode from the overlay or the backing database.
+    ///
+    /// This is the code-side mirror of [`Self::account_info_untracked`]: a non-loading peek that
+    /// resolves the account without caching it in the overlay, then returns the code held by the
+    /// account info or reads it from the database by code hash. It returns empty bytecode for an
+    /// absent account or the empty code hash. Use [`Self::account`] and
+    /// [`AccountHandle::load_code`] when the account should be loaded and preserved.
+    #[inline(never)]
+    pub fn code_untracked(&mut self, address: &Address) -> DbResult<Bytecode> {
+        let Some(info) = self.account_info_untracked(address)? else {
+            return Ok(Bytecode::default());
+        };
+        if info.is_empty_code_hash() {
+            return Ok(Bytecode::default());
+        }
+        let code = match info.code {
+            Some(code) if !code.is_empty() => code,
+            _ => self.database.get_code_by_hash(&info.code_hash)?,
+        };
+        code.seed_hash(info.code_hash);
+        Ok(code)
+    }
+
     /// Transfers value between accounts.
     pub fn transfer(&mut self, from: &Address, to: &Address, value: &Word) -> DbResult<bool> {
         if value.is_zero() {
