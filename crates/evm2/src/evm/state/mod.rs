@@ -447,13 +447,6 @@ impl<'a> State<'a> {
         }
     }
 
-    /// Reads a storage slot from the committed state (accepted overlay and backing database),
-    /// ignoring the in-flight transaction overlay.
-    #[inline]
-    pub fn read_committed_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        self.inner.database.get_storage(address, key)
-    }
-
     /// Takes logs emitted by the current in-flight transaction.
     #[inline]
     pub(crate) fn take_logs(&mut self) -> Vec<Log> {

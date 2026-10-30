@@ -7,7 +7,6 @@ use crate::tracing::{
         call_kind_js_string, to_bigint, to_uint8_array, to_uint8_array_value,
         uint8_array_from_block,
     },
-    tx_state::TxState,
     types::CallKind,
 };
 use alloc::{
@@ -34,7 +33,7 @@ use core::{
 };
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, DbResult, DynDatabase, State},
+    evm::{AccountInfo, DbResult, DynDatabase, State, TxStateChanges},
     interpreter::{
         Word,
         opcode::{
@@ -463,10 +462,10 @@ impl ReusableEvmDb {
         self.with_scope(&mut StateDbReader { state }, f)
     }
 
-    /// Borrows a transaction's materialized changes and backing database during a callback.
+    /// Borrows a transaction's changes and backing database during a callback.
     pub(crate) fn with_changes_scope<R>(
         &self,
-        changes: &TxState,
+        changes: TxStateChanges<'_>,
         db: &mut dyn DynDatabase,
         f: impl FnOnce() -> R,
     ) -> R {
@@ -538,12 +537,12 @@ impl EvmDbReader for StateDbReader<'_, '_> {
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-        self.state.read_committed_storage(address, slot)
+        self.state.storage_slot_untracked(address, slot)
     }
 }
 
 struct ChangesDbReader<'a> {
-    changes: &'a TxState,
+    changes: TxStateChanges<'a>,
     db: &'a mut dyn DynDatabase,
 }
 
@@ -564,8 +563,8 @@ impl ChangesDbReader<'_> {
 
 impl EvmDbReader for ChangesDbReader<'_> {
     fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        if let Some(account) = self.changes.accounts.get(address) {
-            return Ok(account.current.clone());
+        if let Some(account) = self.changes.account_changes_for(address) {
+            return Ok(account.current.cloned());
         }
         self.db.get_account(address)
     }
@@ -578,7 +577,21 @@ impl EvmDbReader for ChangesDbReader<'_> {
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-        // Storage is always read from the backing database, not the transaction changes.
+        if let Some(account) = self.changes.account_changes_for(address) {
+            // A loaded slot holds its final value, zero if the account was wiped.
+            if let Some(loaded) = account.storage.slots.get(slot) {
+                return Ok(loaded.value.current);
+            }
+            // A deleted or wiped account has only the storage it wrote. So does one created from
+            // nothing: an account that existed before, such as one an embedder resumed on a fresh
+            // overlay, keeps the database as its storage baseline.
+            if account.current.is_none()
+                || account.storage.wiped
+                || (account.created && account.original.is_none())
+            {
+                return Ok(Word::ZERO);
+            }
+        }
         self.db.get_storage(address, slot)
     }
 }
@@ -1098,7 +1111,10 @@ mod tests {
     use alloc::vec;
     use boa_engine::{Source, object::builtins::JsUint8Array};
     use core::convert::Infallible;
-    use evm2::evm::{CacheDB, Database, Db, EmptyDB};
+    use evm2::{
+        PendingState,
+        evm::{CacheDB, Database, Db, EmptyDB},
+    };
 
     /// Records and enters a step with the given pre- and post-execution stack.
     fn with_step<'a, R>(
@@ -1218,12 +1234,12 @@ mod tests {
         let f = result.as_callable().unwrap();
 
         let mut db = CacheDB::new(EmptyDB::default());
-        let state = TxState::default();
+        let state = PendingState::default();
         let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
         {
             let addr = JsValue::from(js_string!(Address::default().to_string()));
             let db_value = reusable_db.value();
-            reusable_db.with_changes_scope(&state, &mut db, || {
+            reusable_db.with_changes_scope(state.changes(), &mut db, || {
                 let res = f.call(&result, &[db_value.clone(), addr.clone()], &mut context).unwrap();
                 assert!(!res.as_boolean().unwrap());
             });
@@ -1237,7 +1253,7 @@ mod tests {
         {
             let addr = JsValue::from(js_string!(addr.to_string()));
             let db_value = reusable_db.value();
-            reusable_db.with_changes_scope(&state, &mut db, || {
+            reusable_db.with_changes_scope(state.changes(), &mut db, || {
                 let res = f.call(&result, &[db_value.clone(), addr.clone()], &mut context).unwrap();
 
                 // account exists
@@ -1271,11 +1287,11 @@ mod tests {
         let setup_fn = obj.get(js_string!("setup"), &mut context).unwrap().as_object().unwrap();
 
         let mut db = CacheDB::new(EmptyDB::default());
-        let state = TxState::default();
+        let state = PendingState::default();
         {
             let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
             let addr = JsValue::from(js_string!(Address::default().to_string()));
-            reusable_db.with_changes_scope(&state, &mut db, || {
+            reusable_db.with_changes_scope(state.changes(), &mut db, || {
                 let _res = setup_fn
                     .call(&(obj.clone().into()), &[reusable_db.value()], &mut context)
                     .unwrap();
@@ -1339,9 +1355,9 @@ mod tests {
             .with_nonce(9)
             .with_code(code.clone());
         let mut db = Db::new(BackingDb { address, account, slot, value });
-        let changes = TxState::default();
+        let changes = PendingState::default();
         let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
-        reusable_db.with_changes_scope(&changes, &mut db, || {
+        reusable_db.with_changes_scope(changes.changes(), &mut db, || {
             let js_db = reusable_db.value().as_object().unwrap();
             let js_addr = JsValue::from(js_string!(address.to_string()));
             let js_slot = JsValue::from(js_string!(B256::from(slot).to_string()));
@@ -1518,10 +1534,10 @@ mod tests {
             let stack = vec![U256::from(42)];
             let memory = RefCell::new(vec![7u8; 32]);
             let contract = Contract::default();
-            let state = TxState::default();
+            let state = PendingState::default();
             let mut database = CacheDB::new(EmptyDB::default());
             let result = catch_unwind(AssertUnwindSafe(|| {
-                db.with_changes_scope(&state, &mut database, || {
+                db.with_changes_scope(state.changes(), &mut database, || {
                     with_step(&log, opcode::STOP, &stack, &memory, &contract, || {
                         assert!(ctx.eval(Source::from_bytes(
                             "savedLog.stack.peek(0) === 42n && savedLog.memory.getUint(0) >> 248n === 7n && savedDb.getBalance('00') === 0n"
