@@ -279,14 +279,23 @@ impl CallTraceNode {
         if self.trace.kind.is_delegate() { self.trace.caller } else { self.trace.address }
     }
 
-    /// Iterates over steps in execution order, matching call opcodes to recorded children.
+    /// Iterates over steps in execution order, pairing each step with the child it called.
+    ///
+    /// A child is recorded right after the step that called it, so the node's `ordering` locates
+    /// it. A call opcode without a following child either failed before entering a frame, e.g. due
+    /// to out of gas (<https://github.com/paradigmxyz/reth/issues/3915>), or called an excluded
+    /// precompile that was not attached to this node.
     pub(crate) fn steps_with_children(&self) -> impl Iterator<Item = CallTraceStepStackItem<'_>> {
-        let mut children = self.children.iter();
-        self.trace.steps.iter().map(move |step| {
-            // A call opcode can fail before a child is recorded, e.g. due to out of gas:
-            // <https://github.com/paradigmxyz/reth/issues/3915>.
-            let call_child_id =
-                if step.is_call_like_op() { children.next().copied() } else { None };
+        let mut ordering = self.ordering.iter().peekable();
+        self.trace.steps.iter().enumerate().map(move |(step_idx, step)| {
+            ordering
+                .find(|member| matches!(member, TraceMemberOrder::Step(idx) if *idx == step_idx));
+            let call_child_id = match ordering.next_if(|member| {
+                step.is_call_like_op() && matches!(member, TraceMemberOrder::Call(_))
+            }) {
+                Some(TraceMemberOrder::Call(child)) => self.children.get(*child).copied(),
+                _ => None,
+            };
             CallTraceStepStackItem { trace_node: self, step, call_child_id }
         })
     }
@@ -661,8 +670,6 @@ pub struct CallTraceStep {
     pub gas_remaining: u64,
     /// Gas refund counter before step execution
     pub gas_refund_counter: u64,
-    /// Total gas used before step execution
-    pub gas_used: u64,
     /// The storage access of an SLOAD/SSTORE. Only set if state diffs are recorded.
     pub storage_change: Option<Box<StorageChange>>,
     // Fields filled in `step_end`

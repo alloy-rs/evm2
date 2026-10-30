@@ -1,6 +1,6 @@
 use super::*;
 use crate::tracing::types::{
-    CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason,
+    CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason, TraceMemberOrder,
 };
 use alloc::string::String;
 use evm2::{
@@ -18,7 +18,6 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
         returndata: Bytes::from(vec![pc as u8]),
         gas_remaining: 1000 - pc as u64,
         gas_refund_counter: 0,
-        gas_used: pc as u64,
         gas_cost: 1,
         state_gas_cost: None,
         state_gas_reservoir: None,
@@ -206,6 +205,18 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
             }
         })
         .collect();
+    // Each call opcode enters the next child, as the inspector records them.
+    for node in &mut nodes {
+        let mut children = 0..node.children.len();
+        for (step_idx, step) in node.trace.steps.iter().enumerate() {
+            node.ordering.push(TraceMemberOrder::Step(step_idx));
+            if step.is_call_like_op()
+                && let Some(child) = children.next()
+            {
+                node.ordering.push(TraceMemberOrder::Call(child));
+            }
+        }
+    }
     nodes[0].trace.steps.last_mut().unwrap().status = Some(InstrStop::OutOfGas);
     // The SLOAD reads the value its delegatecall child wrote.
     nodes[2].trace.steps[2].storage_change = Some(Box::new(StorageChange {
