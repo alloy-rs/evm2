@@ -2793,7 +2793,7 @@ dependencies = [
  "alloy-primitives",
  "cc",
  "evm2-jit-backend",
- "inkwell",
+ "llvm-sys",
  "object",
  "tracing",
 ]
@@ -3584,28 +3584,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "inkwell"
-version = "0.10.0"
-source = "git+https://github.com/TheDan64/inkwell?rev=c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff#c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff"
-dependencies = [
- "bitflags 2.13.2",
- "inkwell_internals",
- "libc",
- "llvm-sys",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "inkwell_internals"
-version = "0.15.0"
-source = "git+https://github.com/TheDan64/inkwell?rev=c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff#c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.9",
 ]
 
 [[package]]

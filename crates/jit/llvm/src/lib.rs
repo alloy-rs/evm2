@@ -10,28 +10,12 @@ use evm2_jit_backend::{
     Backend, BackendConfig, BackendTypes, Builder, CallConv, IntCC, OptimizationLevel, Result,
     TailCallKind, TypeMethods, U256, eyre, format_bytes,
 };
-use inkwell::{
-    AddressSpace, IntPredicate,
-    attributes::{Attribute, AttributeLoc},
-    basic_block::BasicBlock,
-    debug_info::{
-        AsDIScope, DICompileUnit, DIFlags, DIFlagsConstants, DISubprogram, DWARFEmissionKind,
-        DWARFSourceLanguage, DebugInfoBuilder,
-    },
-    module::{FlagBehavior, Module},
-    passes::PassBuilderOptions,
-    support::error_handling::install_fatal_error_handler,
-    targets::{
-        CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
-    },
-    types::{
-        AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, IntType, PointerType,
-        StringRadix, VoidType,
-    },
-    values::{
-        AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue,
-        FunctionValue, InstructionValue, PointerValue, UnnamedAddress,
-    },
+use llvm_sys::{
+    LLVMCallConv, LLVMIntPredicate, LLVMLinkage, LLVMModuleFlagBehavior, LLVMTailCallKind,
+    LLVMUnnamedAddr,
+    error_handling::LLVMInstallFatalErrorHandler,
+    support::LLVMParseCommandLineOptions,
+    target_machine::{LLVMCodeGenFileType, LLVMCodeGenOptLevel, LLVMCodeModel, LLVMRelocMode},
 };
 use object::{Object, ObjectSymbol};
 use std::{
@@ -46,16 +30,16 @@ use std::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
-
-pub use inkwell::{self, context::Context};
+use wrap::{
+    Attribute, AttributeLoc, DICompileUnit, DebugInfoBuilder, Metadata, PassBuilderOptions, Target,
+};
 
 mod cpp;
 
 mod dh;
 pub mod orc;
-
-mod utils;
-pub(crate) use utils::*;
+mod wrap;
+pub use wrap::{Block, Context, Function, Inst, LLVMString, Module, TargetMachine, Type, Value};
 
 /// Branch weight for non-cold branches.
 const DEFAULT_WEIGHT: u32 = 20000;
@@ -131,8 +115,11 @@ type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, FxBuildHasher>;
 pub struct EvmLlvmBackend {
     cx: &'static Context,
     _dh: dh::DiagnosticHandlerGuard,
-    bcx: inkwell::builder::Builder<'static>,
-    module: Module<'static>,
+    /// LLVM debug info builder and compile unit, created lazily when `debug_file` is set.
+    /// Dropped before `module`, which its builder refers to.
+    di_state: Option<DiState>,
+    bcx: wrap::Builder,
+    module: Module,
     machine: TargetMachine,
 
     /// ORC JIT state. `None` in AOT mode.
@@ -145,17 +132,14 @@ pub struct EvmLlvmBackend {
     /// Owned context for AOT mode. `None` in JIT mode.
     _aot_cx: Option<Box<Context>>,
 
-    /// LLVM debug info builder and compile unit, created lazily when `debug_file` is set.
-    di_state: Option<DiState>,
-
-    ty_void: VoidType<'static>,
-    ty_ptr: PointerType<'static>,
-    ty_i1: IntType<'static>,
-    ty_i8: IntType<'static>,
-    ty_i32: IntType<'static>,
-    ty_i64: IntType<'static>,
-    ty_i256: IntType<'static>,
-    ty_isize: IntType<'static>,
+    ty_void: Type,
+    ty_ptr: Type,
+    ty_i1: Type,
+    ty_i8: Type,
+    ty_i32: Type,
+    ty_i64: Type,
+    ty_i256: Type,
+    ty_isize: Type,
 
     aot: bool,
     backend_config: BackendConfig,
@@ -380,7 +364,7 @@ struct OrcJitState {
     /// must run while the tracker handles are still live.
     jd_guard: Arc<JitDylibGuard>,
     /// Functions in the current staging module (not yet committed to JIT).
-    staged_functions: FxHashMap<u32, FunctionValue<'static>>,
+    staged_functions: FxHashMap<u32, Function>,
     /// Absolute symbols collected during translation, flushed to the global
     /// builtins JITDylib before commit.
     pending_symbols: Vec<(CString, usize)>,
@@ -467,19 +451,6 @@ fn link_jit_object_in_dylib(
     Ok((addr, tracker))
 }
 
-/// Wraps a module in a [`orc::ThreadSafeModule`] for transfer to LLJIT.
-///
-/// Uses a raw pointer cast to work around `Module<'ctx>` invariance — the module's
-/// context is genuinely owned by `tscx`.
-fn create_thread_safe_module(
-    tscx: &orc::ThreadSafeContext,
-    module: Module<'static>,
-) -> orc::ThreadSafeModule {
-    let module = std::mem::ManuallyDrop::new(module);
-    // SAFETY: The module was created in the context owned by `tscx`.
-    unsafe { orc::ThreadSafeModule::create_in_context(Module::new(module.as_mut_ptr()), tscx) }
-}
-
 /// Creates an ORC-owned LLVM context, returning a `&'static` reference to it.
 ///
 /// In JIT mode, ORC owns the context via a [`orc::ThreadSafeContext`] so that modules can be
@@ -500,8 +471,8 @@ fn create_orc_context() -> (&'static Context, orc::ThreadSafeContext, Box<Manual
 
 /// LLVM debug info state for a module.
 struct DiState {
-    dibuilder: DebugInfoBuilder<'static>,
-    compile_unit: DICompileUnit<'static>,
+    dibuilder: DebugInfoBuilder,
+    compile_unit: DICompileUnit,
     finalized: bool,
 }
 
@@ -531,8 +502,8 @@ impl EvmLlvmBackend {
                 &target_info.cpu,
                 &target_info.features,
                 convert_opt_level(config.opt_level),
-                if aot { RelocMode::PIC } else { RelocMode::Static },
-                CodeModel::Default,
+                if aot { LLVMRelocMode::LLVMRelocPIC } else { LLVMRelocMode::LLVMRelocStatic },
+                LLVMCodeModel::LLVMCodeModelDefault,
             )
             .ok_or_else(|| eyre::eyre!("failed to create target machine"))?;
 
@@ -568,10 +539,9 @@ impl EvmLlvmBackend {
         let ty_i8 = cx.i8_type();
         let ty_i32 = cx.i32_type();
         let ty_i64 = cx.i64_type();
-        let ty_i256 =
-            cx.custom_width_int_type(std::num::NonZeroU32::new(256).unwrap()).expect("i256");
-        let ty_isize = cx.ptr_sized_int_type(&machine.get_target_data(), None);
-        let ty_ptr = cx.ptr_type(AddressSpace::default());
+        let ty_i256 = cx.int_type(256);
+        let ty_isize = cx.ptr_sized_int_type(&machine.get_target_data());
+        let ty_ptr = cx.ptr_type();
         Ok(Self {
             cx,
             _dh: dh::DiagnosticHandlerGuard::new(cx),
@@ -606,7 +576,7 @@ impl EvmLlvmBackend {
     }
 
     #[inline]
-    const fn module(&self) -> &Module<'static> {
+    const fn module(&self) -> &Module {
         &self.module
     }
 
@@ -621,16 +591,8 @@ impl EvmLlvmBackend {
         Ok(self.orc.as_mut().unwrap())
     }
 
-    fn fn_type(
-        &self,
-        ret: Option<BasicTypeEnum<'static>>,
-        params: &[BasicTypeEnum<'static>],
-    ) -> FunctionType<'static> {
-        let params = params.iter().copied().map(Into::into).collect::<Vec<_>>();
-        match ret {
-            Some(ret) => ret.fn_type(&params, false),
-            None => self.ty_void.fn_type(&params, false),
-        }
+    fn fn_type(&self, ret: Option<Type>, params: &[Type]) -> Type {
+        ret.unwrap_or(self.ty_void).fn_type(params, false)
     }
 
     /// Returns the given name if IR output is being dumped, otherwise an empty string.
@@ -660,12 +622,12 @@ impl EvmLlvmBackend {
         // Add required module flags for debug info.
         self.module().add_basic_value_flag(
             "Debug Info Version",
-            FlagBehavior::Warning,
-            self.ty_i32.const_int(inkwell::debug_info::debug_metadata_version() as u64, false),
+            LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorWarning,
+            self.ty_i32.const_int(wrap::debug_metadata_version() as u64, false),
         );
         self.module().add_basic_value_flag(
             "Dwarf Version",
-            FlagBehavior::Warning,
+            LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorWarning,
             self.ty_i32.const_int(5, false),
         );
 
@@ -681,22 +643,13 @@ impl EvmLlvmBackend {
         flags.push(if self.aot { "--aot" } else { "--jit" });
         let flags = flags.join(" ");
 
-        let (dibuilder, compile_unit) = self.module().create_debug_info_builder(
-            true,
-            DWARFSourceLanguage::C,
+        let (dibuilder, compile_unit) = DebugInfoBuilder::new(
+            self.module(),
             &filename,
             &directory,
             "evm2_jit",
             is_optimized,
             &flags,
-            0,
-            "",
-            DWARFEmissionKind::Full,
-            0,
-            false,
-            false,
-            "",
-            "",
         );
 
         self.di_state = Some(DiState { dibuilder, compile_unit, finalized: false });
@@ -725,7 +678,7 @@ impl EvmLlvmBackend {
 
         let tracker = orc.jd().create_resource_tracker();
 
-        let tsm = create_thread_safe_module(tscx, old_module);
+        let tsm = orc::ThreadSafeModule::create_in_context(old_module, tscx);
         orc.global.jit.add_module_with_rt(tsm, &tracker).map_err(error_msg)?;
 
         let tracker_idx = orc.loaded_trackers.len();
@@ -820,21 +773,21 @@ impl EvmLlvmBackend {
 }
 
 impl BackendTypes for EvmLlvmBackend {
-    type Type = BasicTypeEnum<'static>;
-    type Value = BasicValueEnum<'static>;
-    type StackSlot = PointerValue<'static>;
-    type BasicBlock = BasicBlock<'static>;
-    type Function = FunctionValue<'static>;
-    type Inst = InstructionValue<'static>;
+    type Type = Type;
+    type Value = Value;
+    type StackSlot = Value;
+    type BasicBlock = Block;
+    type Function = Function;
+    type Inst = Inst;
 }
 
 impl TypeMethods for EvmLlvmBackend {
     fn type_ptr(&self) -> Self::Type {
-        self.ty_ptr.into()
+        self.ty_ptr
     }
 
     fn type_ptr_sized_int(&self) -> Self::Type {
-        self.ty_isize.into()
+        self.ty_isize
     }
 
     fn type_int(&self, bits: u32) -> Self::Type {
@@ -846,20 +799,16 @@ impl TypeMethods for EvmLlvmBackend {
             64 => self.ty_i64,
             128 => self.cx.i128_type(),
             256 => self.ty_i256,
-            bits => self
-                .cx
-                .custom_width_int_type(std::num::NonZeroU32::new(bits).unwrap())
-                .expect("custom int type"),
+            bits => self.cx.int_type(bits),
         }
-        .into()
     }
 
     fn type_array(&self, ty: Self::Type, size: u32) -> Self::Type {
-        ty.array_type(size).into()
+        ty.array_type(size)
     }
 
     fn type_bit_width(&self, ty: Self::Type) -> u32 {
-        ty.into_int_type().get_bit_width()
+        ty.bit_width()
     }
 }
 
@@ -890,7 +839,7 @@ impl Backend for EvmLlvmBackend {
             unsafe {
                 cpp::evm2_jit_llvm_target_machine_set_opt_level(
                     self.machine.as_mut_ptr(),
-                    convert_opt_level(config.opt_level).into(),
+                    convert_opt_level(config.opt_level),
                 );
             }
         }
@@ -920,7 +869,9 @@ impl Backend for EvmLlvmBackend {
     }
 
     fn dump_disasm(&mut self, path: &Path) -> Result<()> {
-        self.machine.write_to_file(self.module(), FileType::Assembly, path).map_err(error_msg)
+        self.machine
+            .write_to_file(self.module(), LLVMCodeGenFileType::LLVMAssemblyFile, path)
+            .map_err(error_msg)
     }
 
     fn build_function(
@@ -969,20 +920,9 @@ impl Backend for EvmLlvmBackend {
         // Attach debug info subprogram if debug is active.
         self.ensure_di_state();
         let debug_scope = if let Some(di) = &self.di_state {
-            let file = di.compile_unit.get_file();
-            let subroutine_type =
-                di.dibuilder.create_subroutine_type(file, None, &[], DIFlags::PUBLIC);
-            let subprogram = di.dibuilder.create_function(
-                di.compile_unit.as_debug_info_scope(),
+            let subprogram = di.dibuilder.create_subprogram(
+                di.compile_unit,
                 name,
-                None,
-                file,
-                0,
-                subroutine_type,
-                true,
-                true,
-                0,
-                DIFlags::PUBLIC,
                 self.backend_config.opt_level != OptimizationLevel::None,
             );
             function.set_subprogram(subprogram);
@@ -1036,13 +976,13 @@ impl Backend for EvmLlvmBackend {
             }
         });
         let opts = PassBuilderOptions::create();
-        self.module().run_passes(passes, &self.machine, opts).map_err(error_msg)
+        self.module().run_passes(passes, &self.machine, &opts).map_err(error_msg)
     }
 
     fn write_object<W: std::io::Write>(&mut self, mut w: W) -> Result<()> {
         let buffer = self
             .machine
-            .write_to_memory_buffer(self.module(), FileType::Object)
+            .write_to_memory_buffer(self.module(), LLVMCodeGenFileType::LLVMObjectFile)
             .map_err(error_msg)?;
         w.write_all(buffer.as_slice())?;
         Ok(())
@@ -1137,33 +1077,17 @@ impl Backend for EvmLlvmBackend {
 /// Cached target information for the host machine.
 #[derive(Debug)]
 struct TargetInfo {
-    triple: TargetTriple,
+    triple: CString,
     target: Target,
     cpu: String,
     features: String,
-}
-
-// SAFETY: No mutability is exposed and `TargetTriple` is an owned string.
-unsafe impl std::marker::Send for TargetInfo {}
-unsafe impl std::marker::Sync for TargetInfo {}
-
-impl Clone for TargetInfo {
-    fn clone(&self) -> Self {
-        let triple = TargetTriple::create(self.triple.as_str().to_str().unwrap());
-        Self {
-            target: Target::from_triple(&triple).unwrap(),
-            triple,
-            cpu: self.cpu.clone(),
-            features: self.features.clone(),
-        }
-    }
 }
 
 impl TargetInfo {
     fn new() -> &'static Self {
         static HOST_TARGET_INFO: OnceLock<TargetInfo> = OnceLock::new();
         HOST_TARGET_INFO.get_or_init(|| {
-            let triple = TargetMachine::get_default_triple();
+            let triple = TargetMachine::get_default_triple().to_owned();
             let target = Target::from_triple(&triple).unwrap();
             let cpu = TargetMachine::get_host_cpu_name().to_string_lossy().into_owned();
             let features = TargetMachine::get_host_cpu_features().to_string_lossy().into_owned();
@@ -1177,8 +1101,8 @@ impl TargetInfo {
 #[must_use]
 pub struct EvmLlvmBuilder<'a> {
     backend: &'a mut EvmLlvmBackend,
-    function: FunctionValue<'static>,
-    debug_scope: Option<DISubprogram<'static>>,
+    function: Function,
+    debug_scope: Option<Metadata>,
 }
 
 impl std::ops::Deref for EvmLlvmBuilder<'_> {
@@ -1199,75 +1123,37 @@ impl std::ops::DerefMut for EvmLlvmBuilder<'_> {
 
 impl EvmLlvmBuilder<'_> {
     #[allow(dead_code)]
-    fn extract_value(
-        &mut self,
-        value: BasicValueEnum<'static>,
-        index: u32,
-        name: &str,
-    ) -> BasicValueEnum<'static> {
-        self.bcx.build_extract_value(value.into_struct_value(), index, self.name(name)).unwrap()
+    fn extract_value(&mut self, value: Value, index: u32, name: &str) -> Value {
+        self.bcx.build_extract_value(value, index, self.name(name))
     }
 
-    fn memcpy_inner(
-        &mut self,
-        dst: BasicValueEnum<'static>,
-        src: BasicValueEnum<'static>,
-        len: BasicValueEnum<'static>,
-        inline: bool,
-    ) {
-        let dst = dst.into_pointer_value();
-        let src = src.into_pointer_value();
-        let len = len.into_int_value();
+    fn memcpy_inner(&mut self, dst: Value, src: Value, len: Value, inline: bool) {
         let volatile = self.bool_const(false);
-        let name = format!(
-            "llvm.memcpy{}.p0.p0.{}",
-            if inline { ".inline" } else { "" },
-            fmt_ty(len.get_type().into()),
-        );
         let len_ty = len.get_type();
+        let name =
+            format!("llvm.memcpy{}.p0.p0.{}", if inline { ".inline" } else { "" }, fmt_ty(len_ty),);
         let memcpy = self.get_or_add_function(&name, |this| {
-            this.ty_void.fn_type(
-                &[this.ty_ptr.into(), this.ty_ptr.into(), len_ty.into(), this.ty_i1.into()],
-                false,
-            )
+            this.ty_void.fn_type(&[this.ty_ptr, this.ty_ptr, len_ty, this.ty_i1], false)
         });
-        self.bcx
-            .build_call(memcpy, &[dst.into(), src.into(), len.into(), volatile.into()], "")
-            .unwrap();
+        self.bcx.build_call(memcpy, &[dst, src, len, volatile], "");
     }
 
     #[allow(dead_code)]
-    fn call_overflow_function(
-        &mut self,
-        name: &str,
-        lhs: BasicValueEnum<'static>,
-        rhs: BasicValueEnum<'static>,
-    ) -> (BasicValueEnum<'static>, BasicValueEnum<'static>) {
+    fn call_overflow_function(&mut self, name: &str, lhs: Value, rhs: Value) -> (Value, Value) {
         let f = self.get_overflow_function(name, lhs.get_type());
         let result = self.call(f, &[lhs, rhs]).unwrap();
         (self.extract_value(result, 0, "result"), self.extract_value(result, 1, "overflow"))
     }
 
     #[allow(dead_code)]
-    fn get_overflow_function(
-        &mut self,
-        name: &str,
-        ty: BasicTypeEnum<'static>,
-    ) -> FunctionValue<'static> {
+    fn get_overflow_function(&mut self, name: &str, ty: Type) -> Function {
         let name = format!("llvm.{name}.with.overflow.{}", fmt_ty(ty));
         self.get_or_add_function(&name, |this| {
-            this.fn_type(
-                Some(this.cx.struct_type(&[ty, this.ty_i1.into()], false).into()),
-                &[ty, ty],
-            )
+            this.fn_type(Some(this.cx.struct_type(&[ty, this.ty_i1], false)), &[ty, ty])
         })
     }
 
-    fn get_sat_function(
-        &mut self,
-        name: &str,
-        ty: BasicTypeEnum<'static>,
-    ) -> FunctionValue<'static> {
+    fn get_sat_function(&mut self, name: &str, ty: Type) -> Function {
         let name = format!("llvm.{name}.sat.{}", fmt_ty(ty));
         self.get_or_add_function(&name, |this| this.fn_type(Some(ty), &[ty, ty]))
     }
@@ -1275,8 +1161,8 @@ impl EvmLlvmBuilder<'_> {
     fn get_or_add_function(
         &mut self,
         name: &str,
-        mk_ty: impl FnOnce(&mut Self) -> FunctionType<'static>,
-    ) -> FunctionValue<'static> {
+        mk_ty: impl FnOnce(&mut Self) -> Type,
+    ) -> Function {
         match self.module().get_function(name) {
             Some(function) => function,
             None => {
@@ -1286,29 +1172,22 @@ impl EvmLlvmBuilder<'_> {
         }
     }
 
-    fn set_branch_weights(
-        &self,
-        inst: InstructionValue<'static>,
-        weights: impl IntoIterator<Item = u32>,
-    ) {
+    fn set_branch_weights(&self, inst: Inst, weights: impl IntoIterator<Item = u32>) {
         let weights = weights.into_iter();
-        let mut values = Vec::<BasicMetadataValueEnum<'static>>::with_capacity(
-            1 + weights.size_hint().1.unwrap(),
-        );
-        values.push(self.cx.metadata_string("branch_weights").into());
+        let mut values = Vec::<Metadata>::with_capacity(1 + weights.size_hint().1.unwrap());
+        values.push(self.cx.metadata_string("branch_weights"));
         for weight in weights {
-            values.push(self.ty_i32.const_int(weight as u64, false).into());
+            values.push(self.ty_i32.const_int(weight as u64, false).as_metadata());
         }
         let metadata = self.cx.metadata_node(&values);
         let kind_id = self.cx.get_kind_id("prof");
-        inst.set_metadata(metadata, kind_id).unwrap();
+        inst.set_metadata(metadata, kind_id);
     }
 
-    fn assume_inner(&mut self, cond: BasicValueEnum<'static>) -> CallSiteValue<'static> {
-        let function = self.get_or_add_function("llvm.assume", |this| {
-            this.ty_void.fn_type(&[this.ty_i1.into()], false)
-        });
-        self.bcx.build_call(function, &[cond.into()], "").unwrap()
+    fn assume_inner(&mut self, cond: Value) -> Inst {
+        let function = self
+            .get_or_add_function("llvm.assume", |this| this.ty_void.fn_type(&[this.ty_i1], false));
+        self.bcx.build_call(function, &[cond], "")
     }
 }
 
@@ -1369,7 +1248,7 @@ impl Builder for EvmLlvmBuilder<'_> {
         let true_ = self.bool_const(true);
         let callsite = self.assume_inner(true_);
         let cold = self.cx.create_enum_attribute(Attribute::get_named_enum_kind_id("cold"), 0);
-        callsite.add_attribute(AttributeLoc::Function, cold);
+        callsite.add_call_site_attribute(AttributeLoc::Function, cold);
     }
 
     fn current_block(&mut self) -> Option<Self::BasicBlock> {
@@ -1377,7 +1256,7 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn block_addr(&mut self, block: Self::BasicBlock) -> Option<Self::Value> {
-        unsafe { block.get_address().map(Into::into) }
+        unsafe { block.get_address() }
     }
 
     fn add_comment_to_current_inst(&mut self, comment: &str) {
@@ -1387,20 +1266,14 @@ impl Builder for EvmLlvmBuilder<'_> {
         let Some(block) = self.current_block() else { return };
         let Some(ins) = block.get_last_instruction() else { return };
         let metadata = self.cx.metadata_string(comment);
-        let metadata = self.cx.metadata_node(&[metadata.into()]);
-        ins.set_metadata(metadata, self.cx.get_kind_id("annotation")).unwrap();
+        let metadata = self.cx.metadata_node(&[metadata]);
+        ins.set_metadata(metadata, self.cx.get_kind_id("annotation"));
     }
 
     fn set_debug_location(&mut self, line: u32, col: u32) {
         let Some(scope) = self.debug_scope else { return };
         let Some(di) = &self.di_state else { return };
-        let loc = di.dibuilder.create_debug_location(
-            self.cx,
-            line,
-            col,
-            scope.as_debug_info_scope(),
-            None,
-        );
+        let loc = di.dibuilder.create_debug_location(self.cx, line, col, scope);
         self.bcx.set_current_debug_location(loc);
     }
 
@@ -1419,73 +1292,72 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn bool_const(&mut self, value: bool) -> Self::Value {
-        self.ty_i1.const_int(value as u64, false).into()
+        self.ty_i1.const_int(value as u64, false)
     }
 
     fn iconst(&mut self, ty: Self::Type, value: i64) -> Self::Value {
-        ty.into_int_type().const_int(value as u64, value.is_negative()).into()
+        ty.const_int(value as u64, value.is_negative())
     }
 
     fn uconst(&mut self, ty: Self::Type, value: u64) -> Self::Value {
-        ty.into_int_type().const_int(value, false).into()
+        ty.const_int(value, false)
     }
 
     fn iconst_256(&mut self, value: impl TryInto<U256>) -> Self::Value {
         let value = value.try_into().ok().expect("invalid U256 value");
         if let Ok(low) = value.try_into() {
-            return self.ty_i256.const_int(low, false).into();
+            return self.ty_i256.const_int(low, false);
         }
 
         self.scratch.clear();
         write!(self.scratch, "{value:x}").unwrap();
-        self.ty_i256.const_int_from_string(&self.scratch, StringRadix::Hexadecimal).unwrap().into()
+        self.ty_i256.const_int_from_hex(&self.scratch)
     }
 
     fn str_const(&mut self, value: &str) -> Self::Value {
-        self.bcx.build_global_string_ptr(value, "").unwrap().as_pointer_value().into()
+        self.bcx.build_global_string_ptr(value, "")
     }
 
     fn const_array(&mut self, ty: Self::Type, values: &[u64]) -> Self::Value {
-        let ty = ty.into_int_type();
         let values = values.iter().map(|&v| ty.const_int(v, false)).collect::<Vec<_>>();
         let init = ty.const_array(&values);
-        let global = self.module().add_global(init.get_type(), None, "");
-        global.set_initializer(&init);
+        let global = self.module().add_global(init.get_type(), "");
+        global.set_initializer(init);
         global.set_constant(true);
         global.set_linkage(convert_linkage(evm2_jit_backend::Linkage::Private));
-        global.set_unnamed_address(UnnamedAddress::Global);
-        global.as_pointer_value().into()
+        global.set_unnamed_address(LLVMUnnamedAddr::LLVMGlobalUnnamedAddr);
+        global.as_pointer_value()
     }
 
     fn nullptr(&mut self) -> Self::Value {
-        self.ty_ptr.const_null().into()
+        self.ty_ptr.const_null()
     }
 
     fn new_stack_slot_raw(&mut self, ty: Self::Type, name: &str) -> Self::StackSlot {
         // let ty = self.ty_i8.array_type(size);
-        // let ptr = self.bcx.build_alloca(ty, self.name(name)).unwrap();
-        // ptr.as_instruction().unwrap().set_alignment(align).unwrap();
+        // let ptr = self.bcx.build_alloca(ty, self.name(name));
+        // ptr.as_instruction().unwrap().set_alignment(align);
         // ptr
-        self.bcx.build_alloca(ty, self.name(name)).unwrap()
+        self.bcx.build_alloca(ty, self.name(name))
     }
 
     fn stack_load(&mut self, ty: Self::Type, slot: Self::StackSlot, name: &str) -> Self::Value {
-        self.load(ty, slot.into(), name)
+        self.load(ty, slot, name)
     }
 
     fn stack_store(&mut self, value: Self::Value, slot: Self::StackSlot) {
-        self.store(value, slot.into());
+        self.store(value, slot);
     }
 
     fn stack_addr(&mut self, ty: Self::Type, slot: Self::StackSlot) -> Self::Value {
         let _ = ty;
-        slot.into()
+        slot
     }
 
     fn load(&mut self, ty: Self::Type, ptr: Self::Value, name: &str) -> Self::Value {
-        let value = self.bcx.build_load(ty, ptr.into_pointer_value(), self.name(name)).unwrap();
-        if ty == self.ty_i256.into() {
-            self.current_block().unwrap().get_last_instruction().unwrap().set_alignment(8).unwrap();
+        let value = self.bcx.build_load(ty, ptr, self.name(name));
+        if ty == self.ty_i256 {
+            value.set_alignment(8);
         }
         value
     }
@@ -1497,27 +1369,22 @@ impl Builder for EvmLlvmBuilder<'_> {
         align: usize,
         name: &str,
     ) -> Self::Value {
-        let value = self.bcx.build_load(ty, ptr.into_pointer_value(), self.name(name)).unwrap();
-        self.current_block()
-            .unwrap()
-            .get_last_instruction()
-            .unwrap()
-            .set_alignment(align as u32)
-            .unwrap();
+        let value = self.bcx.build_load(ty, ptr, self.name(name));
+        value.set_alignment(align as u32);
         value
     }
 
     fn store(&mut self, value: Self::Value, ptr: Self::Value) -> Self::Inst {
-        let inst = self.bcx.build_store(ptr.into_pointer_value(), value).unwrap();
-        if value.get_type() == self.ty_i256.into() {
-            inst.set_alignment(8).unwrap();
+        let inst = self.bcx.build_store(ptr, value);
+        if value.get_type() == self.ty_i256 {
+            inst.set_alignment(8);
         }
         inst
     }
 
     fn store_aligned(&mut self, value: Self::Value, ptr: Self::Value, align: usize) {
-        let inst = self.bcx.build_store(ptr.into_pointer_value(), value).unwrap();
-        inst.set_alignment(align as u32).unwrap();
+        let inst = self.bcx.build_store(ptr, value);
+        inst.set_alignment(align as u32);
     }
 
     fn remove_inst(&mut self, inst: Self::Inst) {
@@ -1531,10 +1398,9 @@ impl Builder for EvmLlvmBuilder<'_> {
     fn ret(&mut self, values: &[Self::Value]) {
         match values {
             [] => self.bcx.build_return(None),
-            [value] => self.bcx.build_return(Some(value)),
+            [value] => self.bcx.build_return(Some(*value)),
             values => self.bcx.build_aggregate_return(values),
-        }
-        .unwrap();
+        };
     }
 
     fn assume(&mut self, cond: Self::Value) {
@@ -1542,10 +1408,7 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn icmp(&mut self, cond: IntCC, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx
-            .build_int_compare(convert_intcc(cond), lhs.into_int_value(), rhs.into_int_value(), "")
-            .unwrap()
-            .into()
+        self.bcx.build_int_compare(convert_intcc(cond), lhs, rhs, "")
     }
 
     fn icmp_imm(&mut self, cond: IntCC, lhs: Self::Value, rhs: i64) -> Self::Value {
@@ -1554,15 +1417,15 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn is_null(&mut self, ptr: Self::Value) -> Self::Value {
-        self.bcx.build_is_null(ptr.into_pointer_value(), "").unwrap().into()
+        self.bcx.build_is_null(ptr, "")
     }
 
     fn is_not_null(&mut self, ptr: Self::Value) -> Self::Value {
-        self.bcx.build_is_not_null(ptr.into_pointer_value(), "").unwrap().into()
+        self.bcx.build_is_not_null(ptr, "")
     }
 
     fn br(&mut self, dest: Self::BasicBlock) {
-        self.bcx.build_unconditional_branch(dest).unwrap();
+        self.bcx.build_unconditional_branch(dest);
     }
 
     fn brif(
@@ -1571,7 +1434,7 @@ impl Builder for EvmLlvmBuilder<'_> {
         then_block: Self::BasicBlock,
         else_block: Self::BasicBlock,
     ) {
-        self.bcx.build_conditional_branch(cond.into_int_value(), then_block, else_block).unwrap();
+        self.bcx.build_conditional_branch(cond, then_block, else_block);
     }
 
     fn brif_cold(
@@ -1581,10 +1444,7 @@ impl Builder for EvmLlvmBuilder<'_> {
         else_block: Self::BasicBlock,
         then_is_cold: bool,
     ) {
-        let inst = self
-            .bcx
-            .build_conditional_branch(cond.into_int_value(), then_block, else_block)
-            .unwrap();
+        let inst = self.bcx.build_conditional_branch(cond, then_block, else_block);
         let weights = if then_is_cold { [1, DEFAULT_WEIGHT] } else { [DEFAULT_WEIGHT, 1] };
         self.set_branch_weights(inst, weights);
     }
@@ -1596,10 +1456,10 @@ impl Builder for EvmLlvmBuilder<'_> {
         targets: &[(u64, Self::BasicBlock)],
         default_is_cold: bool,
     ) {
-        let ty = index.get_type().into_int_type();
+        let ty = index.get_type();
         let targets =
             targets.iter().map(|(v, b)| (ty.const_int(*v, false), *b)).collect::<Vec<_>>();
-        let inst = self.bcx.build_switch(index.into_int_value(), default, &targets).unwrap();
+        let inst = self.bcx.build_switch(index, default, &targets);
         if default_is_cold {
             let weights = iter::once(1).chain(iter::repeat_n(DEFAULT_WEIGHT, targets.len()));
             self.set_branch_weights(inst, weights);
@@ -1607,17 +1467,11 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn br_indirect(&mut self, address: Self::Value, destinations: &[Self::BasicBlock]) {
-        let _ = self.bcx.build_indirect_branch(address, destinations).unwrap();
+        self.bcx.build_indirect_branch(address, destinations);
     }
 
     fn phi(&mut self, ty: Self::Type, incoming: &[(Self::Value, Self::BasicBlock)]) -> Self::Value {
-        let incoming = incoming
-            .iter()
-            .map(|(value, block)| (value as &dyn BasicValue<'_>, *block))
-            .collect::<Vec<_>>();
-        let phi = self.bcx.build_phi(ty, "").unwrap();
-        phi.add_incoming(&incoming);
-        phi.as_basic_value()
+        self.bcx.build_phi(ty, incoming, "")
     }
 
     fn select(
@@ -1626,47 +1480,35 @@ impl Builder for EvmLlvmBuilder<'_> {
         then_value: Self::Value,
         else_value: Self::Value,
     ) -> Self::Value {
-        self.bcx.build_select(cond.into_int_value(), then_value, else_value, "").unwrap()
+        self.bcx.build_select(cond, then_value, else_value, "")
     }
 
     fn iadd(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx.build_int_add(lhs.into_int_value(), rhs.into_int_value(), "").unwrap().into()
+        self.bcx.build_int_add(lhs, rhs, "")
     }
 
     fn isub(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx.build_int_sub(lhs.into_int_value(), rhs.into_int_value(), "").unwrap().into()
+        self.bcx.build_int_sub(lhs, rhs, "")
     }
 
     fn imul(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx.build_int_mul(lhs.into_int_value(), rhs.into_int_value(), "").unwrap().into()
+        self.bcx.build_int_mul(lhs, rhs, "")
     }
 
     fn udiv(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx
-            .build_int_unsigned_div(lhs.into_int_value(), rhs.into_int_value(), "")
-            .unwrap()
-            .into()
+        self.bcx.build_int_unsigned_div(lhs, rhs, "")
     }
 
     fn sdiv(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx
-            .build_int_signed_div(lhs.into_int_value(), rhs.into_int_value(), "")
-            .unwrap()
-            .into()
+        self.bcx.build_int_signed_div(lhs, rhs, "")
     }
 
     fn urem(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx
-            .build_int_unsigned_rem(lhs.into_int_value(), rhs.into_int_value(), "")
-            .unwrap()
-            .into()
+        self.bcx.build_int_unsigned_rem(lhs, rhs, "")
     }
 
     fn srem(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx
-            .build_int_signed_rem(lhs.into_int_value(), rhs.into_int_value(), "")
-            .unwrap()
-            .into()
+        self.bcx.build_int_signed_rem(lhs, rhs, "")
     }
 
     fn iadd_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value {
@@ -1726,19 +1568,19 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn bitor(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx.build_or(lhs.into_int_value(), rhs.into_int_value(), "").unwrap().into()
+        self.bcx.build_or(lhs, rhs, "")
     }
 
     fn bitand(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx.build_and(lhs.into_int_value(), rhs.into_int_value(), "").unwrap().into()
+        self.bcx.build_and(lhs, rhs, "")
     }
 
     fn bitxor(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx.build_xor(lhs.into_int_value(), rhs.into_int_value(), "").unwrap().into()
+        self.bcx.build_xor(lhs, rhs, "")
     }
 
     fn bitnot(&mut self, value: Self::Value) -> Self::Value {
-        self.bcx.build_not(value.into_int_value(), "").unwrap().into()
+        self.bcx.build_not(value, "")
     }
 
     fn clz(&mut self, value: Self::Value) -> Self::Value {
@@ -1773,40 +1615,31 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn ishl(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx.build_left_shift(lhs.into_int_value(), rhs.into_int_value(), "").unwrap().into()
+        self.bcx.build_left_shift(lhs, rhs, "")
     }
 
     fn ushr(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx
-            .build_right_shift(lhs.into_int_value(), rhs.into_int_value(), false, "")
-            .unwrap()
-            .into()
+        self.bcx.build_right_shift(lhs, rhs, false, "")
     }
 
     fn sshr(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.bcx
-            .build_right_shift(lhs.into_int_value(), rhs.into_int_value(), true, "")
-            .unwrap()
-            .into()
+        self.bcx.build_right_shift(lhs, rhs, true, "")
     }
 
     fn zext(&mut self, ty: Self::Type, value: Self::Value) -> Self::Value {
-        self.bcx.build_int_z_extend(value.into_int_value(), ty.into_int_type(), "").unwrap().into()
+        self.bcx.build_int_z_extend(value, ty, "")
     }
 
     fn sext(&mut self, ty: Self::Type, value: Self::Value) -> Self::Value {
-        self.bcx.build_int_s_extend(value.into_int_value(), ty.into_int_type(), "").unwrap().into()
+        self.bcx.build_int_s_extend(value, ty, "")
     }
 
     fn ireduce(&mut self, to: Self::Type, value: Self::Value) -> Self::Value {
-        self.bcx.build_int_truncate(value.into_int_value(), to.into_int_type(), "").unwrap().into()
+        self.bcx.build_int_truncate(value, to, "")
     }
 
     fn inttoptr(&mut self, value: Self::Value, ty: Self::Type) -> Self::Value {
-        self.bcx
-            .build_int_to_ptr(value.into_int_value(), ty.into_pointer_type(), "")
-            .unwrap()
-            .into()
+        self.bcx.build_int_to_ptr(value, ty, "")
     }
 
     fn gep(
@@ -1816,17 +1649,7 @@ impl Builder for EvmLlvmBuilder<'_> {
         indexes: &[Self::Value],
         name: &str,
     ) -> Self::Value {
-        let indexes = indexes.iter().map(|idx| idx.into_int_value()).collect::<Vec<_>>();
-        unsafe {
-            self.bcx.build_in_bounds_gep(
-                elem_ty,
-                ptr.into_pointer_value(),
-                &indexes,
-                self.name(name),
-            )
-        }
-        .unwrap()
-        .into()
+        unsafe { self.bcx.build_in_bounds_gep(elem_ty, ptr, indexes, self.name(name)) }
     }
 
     fn tail_call(
@@ -1835,27 +1658,20 @@ impl Builder for EvmLlvmBuilder<'_> {
         args: &[Self::Value],
         tail_call: TailCallKind,
     ) -> Option<Self::Value> {
-        let args = args.iter().copied().map(Into::into).collect::<Vec<_>>();
-        let callsite = self.bcx.build_call(function, &args, "").unwrap();
+        let callsite = self.bcx.build_call(function, args, "");
         if let Some(call_conv) = function_call_conv(function) {
-            unsafe {
-                inkwell::llvm_sys::core::LLVMSetInstructionCallConv(
-                    callsite.as_value_ref(),
-                    call_conv as _,
-                );
-            }
+            callsite.set_call_conv(call_conv);
         }
         if tail_call != TailCallKind::None {
             callsite.set_tail_call_kind(convert_tail_call_kind(tail_call));
         }
-        callsite.try_as_basic_value().basic()
+        callsite.value()
     }
 
     fn is_compile_time_known(&mut self, value: Self::Value) -> Option<Self::Value> {
         let ty = value.get_type();
         let name = format!("llvm.is.constant.{}", fmt_ty(ty));
-        let f =
-            self.get_or_add_function(&name, |this| this.fn_type(Some(this.ty_i1.into()), &[ty]));
+        let f = self.get_or_add_function(&name, |this| this.fn_type(Some(this.ty_i1), &[ty]));
         Some(self.call(f, &[value]).unwrap())
     }
 
@@ -1864,12 +1680,12 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn memcpy_inline(&mut self, dst: Self::Value, src: Self::Value, len: i64) {
-        let len = self.iconst(self.ty_i64.into(), len);
+        let len = self.iconst(self.ty_i64, len);
         self.memcpy_inner(dst, src, len, true);
     }
 
     fn unreachable(&mut self) {
-        self.bcx.build_unreachable().unwrap();
+        self.bcx.build_unreachable();
     }
 
     fn get_or_build_function(
@@ -1913,9 +1729,8 @@ impl Builder for EvmLlvmBuilder<'_> {
             return function;
         }
 
-        let ty = self.cx.void_type().fn_type(&[self.ty_ptr.into()], true);
-        let function =
-            self.module().add_function(name, ty, Some(inkwell::module::Linkage::External));
+        let ty = self.cx.void_type().fn_type(&[self.ty_ptr], true);
+        let function = self.module().add_function(name, ty, Some(LLVMLinkage::LLVMExternalLinkage));
         cpp::set_dso_local(function);
         function
     }
@@ -1946,18 +1761,15 @@ impl Builder for EvmLlvmBuilder<'_> {
         function: Self::Function,
         call_conv: CallConv,
     ) -> Self::Function {
-        let name = function.get_name().to_string_lossy();
+        let name = function.get_name();
         let stub_name = format!("{name}.stub");
         if let Some(stub) = self.module().get_function(&stub_name) {
             return stub;
         }
 
         let func_ty = function.get_type();
-        let stub = self.module().add_function(
-            &stub_name,
-            func_ty,
-            Some(inkwell::module::Linkage::Internal),
-        );
+        let stub =
+            self.module().add_function(&stub_name, func_ty, Some(LLVMLinkage::LLVMInternalLinkage));
         set_function_call_conv(stub, call_conv);
         cpp::set_dso_local(stub);
         self.add_function_attribute(
@@ -1974,11 +1786,8 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.bcx.position_at_end(entry);
         let args =
             (0..stub.count_params()).map(|i| stub.get_nth_param(i).unwrap()).collect::<Vec<_>>();
-        if let Some(value) = self.call(function, &args) {
-            self.bcx.build_return(Some(&value)).unwrap();
-        } else {
-            self.bcx.build_return(None).unwrap();
-        }
+        let value = self.call(function, &args);
+        self.bcx.build_return(value);
 
         if let Some(before) = before {
             self.bcx.position_at_end(before);
@@ -2056,7 +1865,7 @@ fn init_() -> Result<()> {
     }
 
     unsafe {
-        install_fatal_error_handler(report_fatal_error);
+        LLVMInstallFatalErrorHandler(Some(report_fatal_error));
     }
 
     // Collect extra LLVM args from `EVM2_JIT_LLVM_ARGS` env var (space-separated).
@@ -2115,34 +1924,16 @@ fn init_() -> Result<()> {
         c"-capture-tracking-max-uses-to-explore=1000000".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
-    unsafe {
-        inkwell::llvm_sys::support::LLVMParseCommandLineOptions(
-            args.len() as i32,
-            args.as_ptr(),
-            std::ptr::null(),
-        )
-    }
+    unsafe { LLVMParseCommandLineOptions(args.len() as i32, args.as_ptr(), std::ptr::null()) }
     // TODO: https://github.com/llvm/llvm-project/issues/235937
     unsafe { cpp::evm2_jit_llvm_expand_ir_insts_after_lsr() };
 
-    let config = InitializationConfig {
-        asm_parser: false,
-        asm_printer: true,
-        base: true,
-        disassembler: true,
-        info: true,
-        machine_code: true,
-    };
-    Target::initialize_native(&config).map_err(|e| eyre::eyre!(e))?;
+    Target::initialize_native().map_err(|e| eyre::eyre!(e))?;
 
     Ok(())
 }
 
-fn create_module<'ctx>(
-    cx: &'ctx Context,
-    machine: &TargetMachine,
-    aot: bool,
-) -> Result<Module<'ctx>> {
+fn create_module(cx: &Context, machine: &TargetMachine, aot: bool) -> Result<Module> {
     let module_name = "evm";
     let module = cx.create_module(module_name);
     module.set_source_file_name(module_name);
@@ -2151,41 +1942,41 @@ fn create_module<'ctx>(
     if aot {
         module.add_basic_value_flag(
             "PIC Level",
-            FlagBehavior::Error, // TODO: Min
+            LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorError, // TODO: Min
             cx.i32_type().const_int(2, false),
         );
         module.add_basic_value_flag(
             "RtLibUseGOT",
-            FlagBehavior::Warning,
+            LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorWarning,
             cx.i32_type().const_int(1, false),
         );
     }
     Ok(module)
 }
 
-const fn convert_intcc(cond: IntCC) -> IntPredicate {
+const fn convert_intcc(cond: IntCC) -> LLVMIntPredicate {
     match cond {
-        IntCC::Equal => IntPredicate::EQ,
-        IntCC::NotEqual => IntPredicate::NE,
-        IntCC::SignedLessThan => IntPredicate::SLT,
-        IntCC::SignedGreaterThanOrEqual => IntPredicate::SGE,
-        IntCC::SignedGreaterThan => IntPredicate::SGT,
-        IntCC::SignedLessThanOrEqual => IntPredicate::SLE,
-        IntCC::UnsignedLessThan => IntPredicate::ULT,
-        IntCC::UnsignedGreaterThanOrEqual => IntPredicate::UGE,
-        IntCC::UnsignedGreaterThan => IntPredicate::UGT,
-        IntCC::UnsignedLessThanOrEqual => IntPredicate::ULE,
+        IntCC::Equal => LLVMIntPredicate::LLVMIntEQ,
+        IntCC::NotEqual => LLVMIntPredicate::LLVMIntNE,
+        IntCC::SignedLessThan => LLVMIntPredicate::LLVMIntSLT,
+        IntCC::SignedGreaterThanOrEqual => LLVMIntPredicate::LLVMIntSGE,
+        IntCC::SignedGreaterThan => LLVMIntPredicate::LLVMIntSGT,
+        IntCC::SignedLessThanOrEqual => LLVMIntPredicate::LLVMIntSLE,
+        IntCC::UnsignedLessThan => LLVMIntPredicate::LLVMIntULT,
+        IntCC::UnsignedGreaterThanOrEqual => LLVMIntPredicate::LLVMIntUGE,
+        IntCC::UnsignedGreaterThan => LLVMIntPredicate::LLVMIntUGT,
+        IntCC::UnsignedLessThanOrEqual => LLVMIntPredicate::LLVMIntULE,
     }
 }
 
 /// Maps to the codegen level of the target machine, used for AOT and dumps. `Less` skips the
 /// post-RA scheduler on CPUs that enable it (znver), saving about 5% of compile instructions for
 /// no runtime gain. The JIT compiler in `lib.cpp` always uses `Less`, whatever the level.
-const fn convert_opt_level(level: OptimizationLevel) -> inkwell::OptimizationLevel {
+const fn convert_opt_level(level: OptimizationLevel) -> LLVMCodeGenOptLevel {
     match level {
-        OptimizationLevel::None => inkwell::OptimizationLevel::None,
+        OptimizationLevel::None => LLVMCodeGenOptLevel::LLVMCodeGenLevelNone,
         OptimizationLevel::Less | OptimizationLevel::Default | OptimizationLevel::Aggressive => {
-            inkwell::OptimizationLevel::Less
+            LLVMCodeGenOptLevel::LLVMCodeGenLevelLess
         }
     }
 }
@@ -2196,7 +1987,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
     enum AttrValue<'a> {
         String(&'a str),
         Enum(u64),
-        Type(AnyTypeEnum<'a>),
+        Type(Type),
     }
 
     let cpu;
@@ -2229,9 +2020,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::Align(n) => ("align", AttrValue::Enum(n)),
         OurAttr::NonNull => ("nonnull", AttrValue::Enum(0)),
         OurAttr::Dereferenceable(n) => ("dereferenceable", AttrValue::Enum(n)),
-        OurAttr::SRet(n) => {
-            ("sret", AttrValue::Type(bcx.type_array(bcx.ty_i8.into(), n as _).as_any_type_enum()))
-        }
+        OurAttr::SRet(n) => ("sret", AttrValue::Type(bcx.type_array(bcx.ty_i8, n as _))),
         OurAttr::ReadNone => ("readnone", AttrValue::Enum(0)),
         OurAttr::ReadOnly => ("readonly", AttrValue::Enum(0)),
         OurAttr::WriteOnly => ("writeonly", AttrValue::Enum(0)),
@@ -2269,48 +2058,45 @@ const fn convert_attribute_loc(loc: evm2_jit_backend::FunctionAttributeLocation)
     }
 }
 
-fn function_call_conv(function: FunctionValue<'_>) -> Option<u32> {
-    let call_conv =
-        unsafe { inkwell::llvm_sys::core::LLVMGetFunctionCallConv(function.as_value_ref()) };
-    (call_conv != inkwell::llvm_sys::LLVMCallConv::LLVMCCallConv as u32).then_some(call_conv)
+fn function_call_conv(function: Function) -> Option<u32> {
+    let call_conv = function.get_call_conv();
+    (call_conv != LLVMCallConv::LLVMCCallConv as u32).then_some(call_conv)
 }
 
-fn set_function_call_conv(function: FunctionValue<'_>, call_conv: CallConv) {
+fn set_function_call_conv(function: Function, call_conv: CallConv) {
     let Some(call_conv) = convert_call_conv(call_conv) else { return };
-    unsafe {
-        inkwell::llvm_sys::core::LLVMSetFunctionCallConv(function.as_value_ref(), call_conv as _);
-    }
+    function.set_call_conv(call_conv as _);
 }
 
-const fn convert_call_conv(call_conv: CallConv) -> Option<inkwell::llvm_sys::LLVMCallConv> {
+const fn convert_call_conv(call_conv: CallConv) -> Option<LLVMCallConv> {
     match call_conv {
         CallConv::Default => None,
-        CallConv::Cold => Some(inkwell::llvm_sys::LLVMCallConv::LLVMPreserveMostCallConv),
+        CallConv::Cold => Some(LLVMCallConv::LLVMPreserveMostCallConv),
     }
 }
 
-const fn convert_linkage(linkage: evm2_jit_backend::Linkage) -> inkwell::module::Linkage {
+const fn convert_linkage(linkage: evm2_jit_backend::Linkage) -> LLVMLinkage {
     match linkage {
-        evm2_jit_backend::Linkage::Public => inkwell::module::Linkage::External,
-        evm2_jit_backend::Linkage::Import => inkwell::module::Linkage::External,
-        evm2_jit_backend::Linkage::Private => inkwell::module::Linkage::Private,
+        evm2_jit_backend::Linkage::Public => LLVMLinkage::LLVMExternalLinkage,
+        evm2_jit_backend::Linkage::Import => LLVMLinkage::LLVMExternalLinkage,
+        evm2_jit_backend::Linkage::Private => LLVMLinkage::LLVMPrivateLinkage,
     }
 }
 
-const fn convert_tail_call_kind(kind: TailCallKind) -> inkwell::llvm_sys::LLVMTailCallKind {
+const fn convert_tail_call_kind(kind: TailCallKind) -> LLVMTailCallKind {
     match kind {
-        TailCallKind::None => inkwell::llvm_sys::LLVMTailCallKind::LLVMTailCallKindNone,
-        TailCallKind::Tail => inkwell::llvm_sys::LLVMTailCallKind::LLVMTailCallKindTail,
-        TailCallKind::MustTail => inkwell::llvm_sys::LLVMTailCallKind::LLVMTailCallKindMustTail,
-        TailCallKind::NoTail => inkwell::llvm_sys::LLVMTailCallKind::LLVMTailCallKindNoTail,
+        TailCallKind::None => LLVMTailCallKind::LLVMTailCallKindNone,
+        TailCallKind::Tail => LLVMTailCallKind::LLVMTailCallKindTail,
+        TailCallKind::MustTail => LLVMTailCallKind::LLVMTailCallKindMustTail,
+        TailCallKind::NoTail => LLVMTailCallKind::LLVMTailCallKindNoTail,
     }
 }
 
 // No `#[track_caller]` because `map_err` doesn't propagate it.
-fn error_msg(msg: inkwell::support::LLVMString) -> evm2_jit_backend::Error {
+fn error_msg(msg: LLVMString) -> evm2_jit_backend::Error {
     evm2_jit_backend::Error::msg(msg.to_string_lossy().trim_end().to_string())
 }
 
-fn fmt_ty(ty: BasicTypeEnum<'_>) -> impl std::fmt::Display {
+fn fmt_ty(ty: Type) -> impl std::fmt::Display {
     ty.print_to_string().to_str().unwrap().trim_matches('"').to_string()
 }
