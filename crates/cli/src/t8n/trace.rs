@@ -223,10 +223,9 @@ impl JsonlWriter<'_> {
             };
             self.line(line);
             if let Some(error) = fault {
-                let out_of_gas = error.contains("OutOfGas");
-                let memory = fault_memory(log, op, out_of_gas, memory);
+                let memory = fault_memory(log, op, &error, memory);
                 let mut line =
-                    step_line(&fault_log(log, op, out_of_gas), &memory, &self.opcodes, self.memory);
+                    step_line(&fault_log(log, op, &error), &memory, &self.opcodes, self.memory);
                 line["error"] = json!(error);
                 self.line(line);
             }
@@ -330,8 +329,12 @@ fn fails_before_logging(error: &str, op: u8, state_gas_oog: bool) -> bool {
 
 /// The memory the JSON logger sees when an opcode fails while it runs: the opcode has grown the
 /// memory it addresses.
-fn fault_memory<'a>(log: &StructLog, op: u8, out_of_gas: bool, memory: &'a [u8]) -> Cow<'a, [u8]> {
+fn fault_memory<'a>(log: &StructLog, op: u8, error: &str, memory: &'a [u8]) -> Cow<'a, [u8]> {
+    let out_of_gas = error.contains("OutOfGas");
     let Some(stack) = &log.stack else { return Cow::Borrowed(memory) };
+    if error.contains("NotActivated") {
+        return Cow::Borrowed(memory);
+    }
     let word = |back: usize| stack.len().checked_sub(back).map(|at| stack[at]);
     // Memory range [offset, offset + size) of the opcodes that fail after growing the memory.
     let range = match op {
@@ -359,12 +362,15 @@ fn fault_memory<'a>(log: &StructLog, op: u8, out_of_gas: bool, memory: &'a [u8])
 
 /// The state the JSON logger sees when an opcode fails while it runs: the opcode has popped its
 /// inputs, and no return data is reported.
-fn fault_log(log: &StructLog, op: u8, out_of_gas: bool) -> StructLog {
+fn fault_log(log: &StructLog, op: u8, error: &str) -> StructLog {
+    let out_of_gas = error.contains("OutOfGas");
     let mut fault = log.clone();
     fault.return_data = None;
     let Some(stack) = &mut fault.stack else { return fault };
-    // Opcodes that check for a static call first fail before they pop anything.
+    // An opcode the fork does not have is invalid before it pops anything, and so are the opcodes
+    // that check for a static call first.
     let pops = match op {
+        _ if error.contains("NotActivated") => 0,
         op::CREATE | op::CREATE2 if out_of_gas => OpCode::new_or_unknown(op).inputs().into(),
         op::SSTORE | op::TSTORE | op::CREATE | op::CREATE2 | op::SELFDESTRUCT => 0,
         op::LOG0..=op::LOG4 => 0,
