@@ -85,7 +85,9 @@ impl Bal {
     /// This is the fold [`Evm`](crate::Evm) applies on transaction commit when its BAL builder is
     /// enabled: loaded-but-unchanged accounts and storage slots are recorded as reads, changed
     /// ones as writes at `bal_index`. Apply pending states in transaction order, since writes
-    /// must be appended with ascending indices.
+    /// must be appended with ascending indices. Commit each transaction once, at its own index: a
+    /// wiped slot is recorded as a read, which does not retract a write an earlier commit made at
+    /// the same index.
     ///
     /// A selfdestructed account needs no special-casing: transaction finalization already resolved
     /// its present info to the EIP-8246 balance-only remnant or to a removed account, and its
