@@ -336,6 +336,11 @@ impl StateChangeSink for BalContext {
     }
 
     #[inline]
+    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
+        self.writer().map_or(Ok(()), |mut writer| writer.storage_wipe(address))
+    }
+
+    #[inline]
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         self.writer().map_or(Ok(()), |mut writer| writer.storage(change))
     }

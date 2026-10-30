@@ -240,6 +240,14 @@ impl<T: BalChange> BalChanges<T> {
         self.changes.push(T::new(index, value));
     }
 
+    /// Removes the change recorded at `index`, if it is the last one.
+    #[inline]
+    pub fn retract(&mut self, index: BlockAccessIndex) {
+        if self.changes.last().is_some_and(|last| last.block_access_index() == index) {
+            self.changes.pop();
+        }
+    }
+
     /// Insert a value into the builder.
     ///
     /// If [`BlockAccessIndex`] is same as last it will override the value.
