@@ -213,6 +213,7 @@ mod tests {
             _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
+            assert_eq!(message.code_address, message.destination);
             self.create_depths.push(message.depth);
             self.create_destinations.push(message.destination);
             None

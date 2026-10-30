@@ -1488,7 +1488,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 HostError::Execution(error) => Err(error),
             };
         }
-        message.code_address = message.destination;
         // Empty initcode deploys an empty contract without executing the bytecode's padding STOP.
         let (stop, gas, output) = if message.code.is_empty() {
             (
