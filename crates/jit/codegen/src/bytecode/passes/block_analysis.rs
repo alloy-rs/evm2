@@ -61,7 +61,7 @@ use crate::{
 use alloy_primitives::{U256, map::FxHasher};
 use bitvec::vec::BitVec;
 use either::Either;
-use evm2::{constants::STACK_LIMIT, interpreter::op};
+use evm2::{bytecode::JumpTable, constants::STACK_LIMIT, interpreter::op};
 use oxc_index::IndexVec;
 use smallvec::SmallVec;
 use std::{
@@ -172,22 +172,22 @@ impl AbsValue {
 struct ConstSetInterner {
     interner: Interner<ConstSetIdx, Box<[U256Imm]>>,
     /// `JUMPDEST` map: sets only keep valid jump targets.
-    jumpdests: BitVec,
+    jumpdests: JumpTable,
     /// Number of constants merged by [`Self::join`], for the fixpoint budget.
     merged: u64,
 }
 
 impl ConstSetInterner {
-    fn new(jumpdests: BitVec) -> Self {
+    fn new(jumpdests: JumpTable) -> Self {
         Self { interner: Interner::new(), jumpdests, merged: 0 }
     }
 
     /// Returns `true` if `value` may be part of a set.
     fn is_set_member(&self, value: AbsValue) -> bool {
         match value {
-            AbsValue::Const(imm) => imm
-                .get_inline()
-                .is_some_and(|pc| self.jumpdests.get(pc as usize).is_some_and(|bit| *bit)),
+            AbsValue::Const(imm) => {
+                imm.get_inline().is_some_and(|pc| self.jumpdests.is_valid(pc as usize))
+            }
             AbsValue::ConstSet(_) => true,
             AbsValue::Range(..) | AbsValue::Top => false,
         }
@@ -882,7 +882,7 @@ impl Bytecode<'_> {
     pub(crate) fn block_analysis_local(&mut self) {
         self.init_snapshots();
 
-        let empty_sets = ConstSetInterner::new(BitVec::new());
+        let empty_sets = ConstSetInterner::new(JumpTable::default());
         let mut resolved = Vec::new();
         let mut stack = Vec::new();
         let trace_logs = enabled!(tracing::Level::TRACE);
@@ -1382,7 +1382,9 @@ impl Bytecode<'_> {
         let end = (last + 1).min(self.jumpdests.len());
         let start = first.min(end);
         (last - first < MAX_RANGE_JUMP_WIDTH).then(|| {
-            self.jumpdests[start..end].iter_ones().map(move |i| self.pc_to_inst(start + i))
+            (start..end)
+                .filter(move |&pc| self.jumpdests.is_valid(pc))
+                .map(move |pc| self.pc_to_inst(pc))
         })
     }
 

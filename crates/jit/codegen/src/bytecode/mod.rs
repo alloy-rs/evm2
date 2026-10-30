@@ -2,10 +2,9 @@
 
 use crate::FxHashMap;
 use alloy_primitives::U256;
-use bitvec::vec::BitVec;
 use evm2::{
     OpcodeView, SpecId,
-    bytecode::analyze_legacy,
+    bytecode::{JumpTable, analyze_legacy},
     interpreter::{op, opcode::OpCode},
     version::GasParams,
 };
@@ -162,8 +161,9 @@ pub struct Bytecode<'a> {
     pub(crate) code: Cow<'a, [u8]>,
     /// The instructions.
     insts: IndexVec<Inst, InstData>,
-    /// `JUMPDEST` opcode map. `jumpdests[pc]` is `true` if `code[pc] == op::JUMPDEST`.
-    jumpdests: BitVec,
+    /// `JUMPDEST` opcode map: `jumpdests.is_valid(pc)` is `true` if `code[pc] == op::JUMPDEST`
+    /// and `pc` is not inside `PUSH` data.
+    jumpdests: JumpTable,
     /// The [`SpecId`].
     pub(crate) spec_id: SpecId,
     /// Gas parameters for dynamic gas folding. Defaults to the evm2 spec gas schedule.
@@ -239,10 +239,10 @@ impl<'a> Bytecode<'a> {
         let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
         // EIP-8024: JUMPDEST analysis is unchanged by DUPN/SWAPN/EXCHANGE: only PUSH
         // data is skipped, their immediates are not. Compute the valid-jump-target
-        // bitmap with the legacy scan over the raw bytes, independent of instruction
+        // bitmap with the legacy analysis over the raw bytes, independent of instruction
         // decoding below (which does consume DUPN/SWAPN/EXCHANGE immediates and can
         // therefore desynchronize from the analysis).
-        let jumpdests = legacy_jumpdests(&code);
+        let jumpdests = analyze_legacy(&code);
         let mut pc_to_inst = FxHashMap::with_capacity_and_hasher(code.len(), Default::default());
         let mut u256_interner = U256Interner::new();
         let owned_infos = opcodes.map(|opcodes| opcode_infos(opcodes, spec_id));
@@ -336,7 +336,7 @@ impl<'a> Bytecode<'a> {
                 min_imm_len(opcode) as usize
             };
             let imm_end = (pc + 1 + imm_len).min(code.len());
-            if let Some(target) = (pc + 1..imm_end).find(|&p| jumpdests[p]) {
+            if let Some(target) = (pc + 1..imm_end).find(|&p| jumpdests.is_valid(p)) {
                 // SAFETY: we just consumed the immediate bytes at `pc + 1..imm_end`.
                 unsafe { iter.rewind(imm_end - target) };
             }
@@ -652,10 +652,7 @@ impl<'a> Bytecode<'a> {
 
     /// Returns `true` if the given program counter is a valid jump destination.
     pub(crate) fn is_valid_jump(&self, pc: usize) -> bool {
-        // Reads the raw words: `BitVec::get` costs several times more in the jump analyses.
-        let bits = usize::BITS as usize;
-        pc < self.jumpdests.len()
-            && self.jumpdests.as_raw_slice()[pc / bits] >> (pc % bits) & 1 != 0
+        self.jumpdests.is_valid(pc)
     }
 
     /// Returns `true` if the bytecode has dynamic jumps.
@@ -1285,26 +1282,6 @@ bitflags::bitflags! {
         /// at runtime.
         const INVALID_IMMEDIATE = 1 << 13;
     }
-}
-
-/// Computes the legacy `JUMPDEST` analysis bitmap: a `0x5b` byte is a valid jump
-/// target unless it is part of the data of a `PUSH1..=PUSH32` instruction.
-///
-/// This is the analysis of every fork: EIP-8024 explicitly leaves it unchanged, so
-/// DUPN/SWAPN/EXCHANGE immediates are scanned as if they were opcodes.
-fn legacy_jumpdests(code: &[u8]) -> BitVec {
-    let table = analyze_legacy(code);
-    (0..code.len()).map(|pc| table.is_valid(pc)).collect()
-}
-
-fn bitvec_as_bytes<T: bitvec::store::BitStore, O: bitvec::order::BitOrder>(
-    bitvec: &BitVec<T, O>,
-) -> &[u8] {
-    slice_as_bytes(bitvec.as_raw_slice())
-}
-
-const fn slice_as_bytes<T>(a: &[T]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(a.as_ptr().cast(), std::mem::size_of_val(a)) }
 }
 
 #[cfg(test)]
