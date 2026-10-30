@@ -537,10 +537,7 @@ const fn undo_spend(remaining: &mut u64, cost: u64) {
 /// Returns `value` without letting the optimizer see through it, and without a stack slot.
 #[inline(always)]
 fn opaque(value: u64) -> u64 {
-    #[cfg(all(
-        not(miri),
-        any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
-    ))]
+    #[cfg(all(not(miri), any(target_arch = "aarch64", target_arch = "x86_64")))]
     {
         let mut value = value;
         // SAFETY: the empty assembly block leaves `value` unchanged.
@@ -549,10 +546,7 @@ fn opaque(value: u64) -> u64 {
         }
         value
     }
-    #[cfg(not(all(
-        not(miri),
-        any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
-    )))]
+    #[cfg(not(all(not(miri), any(target_arch = "aarch64", target_arch = "x86_64"))))]
     core::hint::black_box(value)
 }
 
