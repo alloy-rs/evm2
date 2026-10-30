@@ -10,8 +10,7 @@ pub struct Bench {
     pub jit: JitBench,
     /// Whether the `jit-mainnet` CodSpeed shard runs the benchmark instead of the `jit` shard.
     ///
-    /// The mainnet contracts take roughly half of the JIT benchmark time, so they run apart from
-    /// the rest to keep each shard short.
+    /// The mainnet contracts run apart from the rest to keep each shard short.
     pub mainnet: bool,
 }
 
@@ -30,9 +29,12 @@ pub enum JitBench {
     Full,
     /// Benchmark translation and execution, but not compilation.
     ///
-    /// Repeated LLVM compilations of a large contract are too slow for CI under valgrind.
+    /// Compiling a large contract takes up to 0.8 s per iteration, too slow for CI under valgrind.
     RunOnly,
-    /// Do not benchmark the JIT, because compiling costs far more than the benchmark measures.
+    /// Do not benchmark the JIT.
+    ///
+    /// Replay benchmarks have no JIT variant. For a transaction, use it when compiling costs far
+    /// more than the benchmark measures.
     Skip,
 }
 
