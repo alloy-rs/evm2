@@ -37,7 +37,11 @@ pub struct Version {
     pub chain_id: u64,
     /// Transaction gas limit cap.
     pub tx_gas_limit_cap: u64,
-    /// Hard memory limit in bytes. At most [`u32::MAX`], because frame output ranges are `u32`.
+    /// Hard memory limit in bytes.
+    ///
+    /// Frame output ranges are `u32`, so
+    /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) clamps a larger
+    /// limit to [`u32::MAX`], and memory stops growing there.
     pub memory_limit: u64,
     /// Maximum deployed contract bytecode size.
     pub max_code_size: usize,
@@ -108,7 +112,6 @@ impl Version {
     ///
     /// - [`initial_call_depth`](Self::initial_call_depth) is at most `u16::MAX - CALL_DEPTH_LIMIT -
     ///   1` (64510).
-    /// - [`memory_limit`](Self::memory_limit) is at most [`u32::MAX`].
     /// - [`GasId::MaxRefundQuotient`] is non-zero.
     #[inline]
     pub const fn assert_valid(&self) {
@@ -116,7 +119,6 @@ impl Version {
             self.initial_call_depth < u16::MAX - CALL_DEPTH_LIMIT,
             "initial call depth must leave room for 1024 descendants and the rejected attempt"
         );
-        assert!(self.memory_limit <= u32::MAX as u64, "memory limit must fit in u32");
         assert!(
             self.gas_params.get(GasId::MaxRefundQuotient) != 0,
             "max refund quotient must be non-zero"
@@ -430,11 +432,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "memory limit must fit in u32")]
-    fn execution_config_rejects_memory_limit_above_u32() {
+    fn execution_config_clamps_memory_limit_to_u32() {
         let mut version = Version::new(SpecId::CANCUN);
-        version.memory_limit = u32::MAX as u64 + 1;
-        crate::ExecutionConfig::<BaseEvmTypes>::for_spec_and_version(SpecId::CANCUN, version);
+        version.memory_limit = u64::MAX;
+        let config =
+            crate::ExecutionConfig::<BaseEvmTypes>::for_spec_and_version(SpecId::CANCUN, version);
+        assert_eq!(config.version().memory_limit, u32::MAX as u64);
     }
 
     #[test]

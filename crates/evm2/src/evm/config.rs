@@ -188,12 +188,17 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
 
     /// Replaces the runtime version data while keeping the same dispatch table.
     ///
+    /// Clamps [`Version::memory_limit`] to [`u32::MAX`].
+    ///
     /// # Panics
     ///
     /// Panics if `version` is invalid; see [`Version::assert_valid`].
     #[inline]
-    pub const fn with_version(mut self, version: Version) -> Self {
+    pub const fn with_version(mut self, mut version: Version) -> Self {
         version.assert_valid();
+        if version.memory_limit > u32::MAX as u64 {
+            version.memory_limit = u32::MAX as u64;
+        }
         self.version = version;
         self
     }
