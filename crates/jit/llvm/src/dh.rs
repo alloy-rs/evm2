@@ -36,14 +36,13 @@ impl DiagnosticHandlerGuard {
         }
     }
 
-    /// Returns `result`, or the first error LLVM reported since the last call if `result` is
-    /// `Ok`. Always clears the recorded error so it does not leak into the next operation.
+    /// Returns `result`, adding the first error LLVM reported since the last call to it. Always
+    /// clears the recorded error so it does not leak into the next operation.
     pub(crate) fn check<T>(&self, result: Result<T>) -> Result<T> {
-        let error = self.error.lock().unwrap().take();
-        let value = result?;
-        match error {
-            Some(msg) => Err(eyre::eyre!("LLVM error: {msg}")),
-            None => Ok(value),
+        let Some(msg) = self.error.lock().unwrap().take() else { return result };
+        match result {
+            Ok(_) => Err(eyre::eyre!("LLVM error: {msg}")),
+            Err(e) => Err(e.wrap_err(format!("LLVM error: {msg}"))),
         }
     }
 

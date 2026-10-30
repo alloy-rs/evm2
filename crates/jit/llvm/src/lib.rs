@@ -1859,7 +1859,7 @@ fn build_pass_pipeline(with_licm: bool) -> String {
 
 fn init() -> Result<()> {
     static INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    match INIT.get_or_init(|| init_().map_err(|e| e.to_string())) {
+    match INIT.get_or_init(|| init_().map_err(|e| format!("{e:#}"))) {
         Ok(()) => Ok(()),
         Err(e) => Err(eyre::eyre!("{e}")),
     }
@@ -2115,10 +2115,10 @@ mod tests {
     use llvm_sys::{LLVMInlineAsmDialect, core::*};
 
     /// An error diagnostic LLVM raises while emitting code must fail `write_object`, and must not
-    /// leak into the next backend.
+    /// leak into the next operation.
     #[test]
     fn diagnostic_error_fails_write_object() {
-        const ARGS: usize = 24;
+        const ARGS: usize = 64;
 
         let mut backend = EvmLlvmBackend::new(true).unwrap();
         unsafe {
@@ -2158,7 +2158,6 @@ mod tests {
             "LLVM error: inline assembly requires more registers than available"
         );
 
-        let mut backend = EvmLlvmBackend::new(true).unwrap();
-        backend.write_object(Vec::new()).unwrap();
+        backend.dh.check(Ok(())).unwrap();
     }
 }
