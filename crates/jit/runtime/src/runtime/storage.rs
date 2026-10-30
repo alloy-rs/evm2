@@ -5,7 +5,7 @@ use alloy_primitives::{B256, keccak256};
 use dashmap::DashMap;
 use evm2::{SpecId, version::GasId};
 use std::{
-    fs,
+    array, fs,
     hash::{Hash, Hasher},
     io::Write,
     path::PathBuf,
@@ -21,12 +21,13 @@ pub struct RuntimeCacheKey {
 }
 
 impl Hash for RuntimeCacheKey {
-    /// Feeds the hasher one word. The code hash is a keccak digest, so any 8 bytes of it are
-    /// uniformly distributed, and the map's hasher still mixes the word.
+    /// Feeds the hasher one word: the XOR of the four code hash words and the spec id.
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let prefix = u64::from_le_bytes(*self.code_hash.first_chunk().unwrap());
-        state.write_u64(prefix ^ self.spec_id as u64);
+        let [a, b, c, d] = array::from_fn(|i| {
+            u64::from_le_bytes(self.code_hash[i * 8..i * 8 + 8].try_into().unwrap())
+        });
+        state.write_u64(a ^ b ^ c ^ d ^ self.spec_id as u64);
     }
 }
 
