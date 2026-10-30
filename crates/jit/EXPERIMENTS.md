@@ -32,6 +32,11 @@ ones here with the numbers that rejected them.
   benchmarks, JIT size +4.0% total, compile instructions +10.7% total (geomean
   +6.1%) and runtime instructions +3.8% total (geomean +0.5%; `onchain_lm_v2`
   +4.3%, `burntpix` +4.2%, `snailtracer` +2.8%).
+- Branch weights on the `MRESIZE` check (`then` block cold) instead of the
+  `assume(true) #cold` call, which LLVM deletes before block placement: moving
+  the resize call out of line made `opt.s` change in 28/31 benchmarks, JIT size
+  +1.8% total (geomean +1.3%), spills +3.9%, compile instructions +0.8% and
+  runtime instructions +0.8% (cycles +1.4%).
 
 ## Optimization passes
 

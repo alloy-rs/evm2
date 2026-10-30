@@ -1274,13 +1274,6 @@ impl Builder for EvmLlvmBuilder<'_> {
         // Nothing to do.
     }
 
-    fn set_current_block_cold(&mut self) {
-        let true_ = self.bool_const(true);
-        let callsite = self.assume_inner(true_);
-        let cold = self.cx.create_enum_attribute(Attribute::get_named_enum_kind_id("cold"), 0);
-        callsite.add_call_site_attribute(AttributeLoc::Function, cold);
-    }
-
     fn current_block(&mut self) -> Option<Self::BasicBlock> {
         self.bcx.get_insert_block()
     }
