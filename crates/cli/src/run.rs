@@ -100,8 +100,9 @@ pub(crate) struct RunArgs {
     /// Disable frame pointers in the compiled function.
     #[arg(long)]
     no_frame_pointers: bool,
-    #[arg(long, default_value = "1000000000")]
-    gas_limit: u64,
+    /// Transaction gas limit. Defaults to the fixture's, or the Osaka cap for bytecode.
+    #[arg(long)]
+    gas_limit: Option<u64>,
 }
 
 impl RunArgs {
@@ -464,7 +465,7 @@ struct Bench {
     source: BenchSource,
     spec_id: SpecId,
     calldata: Option<Vec<u8>>,
-    gas_limit: u64,
+    gas_limit: Option<u64>,
     assert_success: bool,
 }
 
@@ -484,7 +485,7 @@ impl Bench {
             source: BenchSource::Fixture(bench.fixture_path),
             spec_id: spec,
             calldata: None,
-            gas_limit: u64::MAX,
+            gas_limit: None,
             assert_success: true,
         })
     }
@@ -514,7 +515,7 @@ fn fixture_from_bytecode(
     bytecode: Vec<u8>,
     spec_id: SpecId,
     calldata: Option<Vec<u8>>,
-    gas_limit: u64,
+    gas_limit: Option<u64>,
 ) -> Bench {
     Bench {
         name: name.into(),
@@ -725,7 +726,8 @@ fn parse_bytecode_bench(bench: &Bench, bytecode: &[u8]) -> eyre::Result<Prepared
     let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
     let code_hash = bytecode.hash_slow();
     db.insert_account_info(&BENCH_TARGET, AccountInfo::default().with_code(bytecode.clone()));
-    let gas_limit = bench.gas_limit();
+    let gas_limit =
+        bench.gas_limit.unwrap_or_else(|| Version::base(SpecId::OSAKA).tx_gas_limit_cap);
     let tx = TxLegacy {
         chain_id: None,
         nonce: 0,
@@ -807,7 +809,10 @@ fn build_fixture_tx(
         .gas_limit
         .get(indexes.gas)
         .ok_or_else(|| eyre::eyre!("fixture gas index {} does not exist", indexes.gas))?;
-    let gas_limit = u64_value(gas_limit)?.min(bench.gas_limit());
+    let gas_limit = match bench.gas_limit {
+        Some(gas_limit) => gas_limit,
+        None => u64_value(gas_limit)?,
+    };
     let value = *raw
         .value
         .get(indexes.value)
@@ -824,12 +829,6 @@ fn build_fixture_tx(
         input: data,
     };
     Ok(Recovered::new_unchecked(TxEnvelope::Legacy(tx), caller))
-}
-
-impl Bench {
-    fn gas_limit(&self) -> u64 {
-        self.gas_limit.min(Version::base(self.spec_id).tx_gas_limit_cap)
-    }
 }
 
 fn u128_value(value: U256) -> eyre::Result<u128> {

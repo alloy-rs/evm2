@@ -2025,7 +2025,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::NoSync => ("nosync", AttrValue::Enum(0)),
         OurAttr::NoUnwind => ("nounwind", AttrValue::Enum(0)),
         OurAttr::NonLazyBind => ("nonlazybind", AttrValue::Enum(0)),
-        OurAttr::UWTable => ("uwtable", AttrValue::Enum(2)),
+        OurAttr::UWTable => return cpp::create_async_uwtable_attr(bcx.cx),
         OurAttr::AllFramePointers => ("frame-pointer", AttrValue::String("all")),
         OurAttr::NativeTargetCpu => (
             "target-cpu",
@@ -2042,7 +2042,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::Speculatable => ("speculatable", AttrValue::Enum(0)),
 
         OurAttr::NoAlias => ("noalias", AttrValue::Enum(0)),
-        OurAttr::NoCapture => ("captures", AttrValue::Enum(0)), // captures(none) - no capture
+        OurAttr::NoCapture => return cpp::create_no_captures_attr(bcx.cx),
         OurAttr::NoUndef => ("noundef", AttrValue::Enum(0)),
         OurAttr::Align(n) => ("align", AttrValue::Enum(n)),
         OurAttr::NonNull => ("nonnull", AttrValue::Enum(0)),
@@ -2052,8 +2052,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::ReadOnly => ("readonly", AttrValue::Enum(0)),
         OurAttr::WriteOnly => ("writeonly", AttrValue::Enum(0)),
         OurAttr::Writable => ("writable", AttrValue::Enum(0)),
-        // memory(argmem: readwrite) = ModRef(3) << ArgMem(0) = 3.
-        OurAttr::ArgMemOnly => ("memory", AttrValue::Enum(3)),
+        OurAttr::ArgMemOnly => return cpp::create_arg_mem_only_attr(bcx.cx),
         // `u64::MAX` marks all reachable memory as dead; `0` would mark zero bytes.
         OurAttr::DeadOnReturn => ("dead_on_return", AttrValue::Enum(u64::MAX)),
         OurAttr::DeadOnUnwind => ("dead_on_unwind", AttrValue::Enum(0)),
