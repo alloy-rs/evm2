@@ -651,6 +651,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.state.account_info_untracked(address)
     }
 
+    /// Returns a storage slot's value visible through the accepted state overlay.
+    #[inline]
+    pub fn read_storage_slot(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        self.state.storage_slot_untracked(address, key)
+    }
+
     /// Applies borrowed changes to the accepted state overlay.
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
