@@ -65,6 +65,14 @@ extern_table! {
         }
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, OP) {
             cold_path();
+            let e = match super::stack_error_before_gas(OP, stack.len()) {
+                Some(stack_error) => {
+                    // A failed charge leaves a wrapped counter; halts spend all gas anyway.
+                    remaining_gas.set(0);
+                    stack_error
+                }
+                None => e,
+            };
             state.set_result(Err(e));
             if M::INSPECT {
                 state.gas_mut().set_remaining(remaining_gas.get());

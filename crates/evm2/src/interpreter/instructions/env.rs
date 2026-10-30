@@ -2,7 +2,7 @@ use crate::{
     EvmTypesHost,
     evm::AccountLoad,
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
-    utils::{WordExt, address_to_word, b256_to_word, read_word_padded},
+    utils::{WordExt, address_to_word, b256_to_word, memory_range_offset, read_word_padded},
     version::GasParams,
 };
 use evm2_macros::instruction;
@@ -150,17 +150,26 @@ pub fn returndatasize(cx: _) -> Result<out> {
 #[instruction(dynamic_gas)]
 pub fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = len.to_usize()?;
+    let memory_offset = memory_range_offset(memory_offset, len)?;
     let data_offset = data_offset.to_usize_saturated();
-    if data_offset.saturating_add(len) > cx.state.return_data().len() {
-        return Err(InstrStop::OutOfOffset);
-    }
+    let out_of_bounds = data_offset.saturating_add(len) > cx.state.return_data().len();
 
     // SAFETY: Charging and copying data make no host calls.
     let gas_params = unsafe { cx.state.gas_params_detached() };
     cx.gas.spend(gas_params.copy_cost(len))?;
-    let data = &cx.state.0.return_data;
-    let data_offset = Word::from(data_offset);
-    copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, &data_offset, len, data)
+    if len != 0 {
+        cx.state.0.memory.resize_evm(cx.gas, gas_params, memory_offset, len)?;
+    }
+    // The bounds are checked after the memory is sized and charged, as the reference
+    // implementation of Ethereum execution orders them.
+    if out_of_bounds {
+        return Err(InstrStop::OutOfOffset);
+    }
+    if len != 0 {
+        let data = &cx.state.0.return_data;
+        cx.state.0.memory.set_data(memory_offset, data_offset, len, data);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -436,6 +445,28 @@ mod tests {
 
         let interp = run(RunConfig::new([op::RETURNDATASIZE]).spec(SpecId::FRONTIER));
         assert_matches!(interp.err, InstrStop::NotActivated);
+    }
+
+    #[test]
+    fn returndatacopy_checks_memory_before_bounds() {
+        // The end of the memory range overflows, which the reference implementation of Ethereum
+        // execution reports before it checks the return data bounds.
+        let code =
+            stack_code([Word::from(u64::MAX), Word::from(0), Word::from(2)], op::RETURNDATACOPY);
+        let interp = run(RunConfig::new(code).return_data(Bytes::from_static(&[0xaa])));
+        assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
+        let code =
+            stack_code([Word::from(0), Word::from(0), Word::from(u64::MAX)], op::RETURNDATACOPY);
+        let interp = run(RunConfig::new(code).return_data(Bytes::from_static(&[0xaa])));
+        assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
+        // Within the memory limits, the gas comes before the bounds.
+        let code =
+            stack_code([Word::from(0), Word::from(0), Word::from(1_u64 << 40)], op::RETURNDATACOPY);
+        let interp = run(RunConfig::new(code).return_data(Bytes::from_static(&[0xaa])));
+        assert_matches!(interp.err, InstrStop::OutOfGas);
+        let code = stack_code([Word::from(0), Word::from(2), Word::from(1)], op::RETURNDATACOPY);
+        let interp = run(RunConfig::new(code).return_data(Bytes::from_static(&[0xaa])));
+        assert_matches!(interp.err, InstrStop::OutOfOffset);
     }
 
     #[test]

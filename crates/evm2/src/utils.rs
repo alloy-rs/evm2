@@ -94,6 +94,26 @@ impl WordExt for Word {
     }
 }
 
+/// Converts the offset of a memory range to `usize`, rejecting a range whose end cannot be sized.
+///
+/// The reference implementation of Ethereum execution sizes the memory of an opcode before it
+/// charges any gas, and fails with an invalid-operand OOG stop when the end of a non-empty range
+/// overflows `u64` or rounds up past it. An empty range has no offset.
+#[inline]
+pub(crate) fn memory_range_offset(offset: &Word, len: usize) -> Result<usize> {
+    if len == 0 {
+        return Ok(0);
+    }
+    let offset = offset.to_usize()?;
+    match offset.checked_add(len) {
+        Some(end) if end <= usize::MAX - 31 => Ok(offset),
+        _ => {
+            cold_path();
+            Err(InstrStop::InvalidOperandOOG)
+        }
+    }
+}
+
 mod sealed {
     #[allow(unnameable_types)]
     pub trait Sealed {}

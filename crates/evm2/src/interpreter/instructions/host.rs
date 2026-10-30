@@ -4,10 +4,11 @@ use crate::{
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Result, StackMut, Word, private::GasInstructionCx,
     },
-    utils::WordExt,
+    utils::{WordExt, memory_range_offset},
     version::GasId,
 };
 use alloy_primitives::{Address, B256};
+use core::hint::cold_path;
 use evm2_macros::instruction;
 
 #[inline]
@@ -135,18 +136,20 @@ fn log_common<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     n: usize,
 ) -> Result {
-    require_non_staticcall(cx.state)?;
+    // The stack bounds, then the memory size and gas, then write protection, as the reference
+    // implementation of Ethereum execution orders them.
+    if stack.len() < n + 2 {
+        cold_path();
+        return Err(InstrStop::StackUnderflow);
+    }
     let [offset, len] = stack.popn()?;
     let len = len.to_usize()?;
+    let offset = memory_range_offset(&offset, len)?;
     cx.gas.spend(cx.state.gas_params().log_cost(n as u8, len))?;
-
-    let offset = if len == 0 {
-        0
-    } else {
-        let offset = offset.to_usize()?;
+    if len != 0 {
         cx.state.resize_memory(cx.gas, offset, len)?;
-        offset
-    };
+    }
+    require_non_staticcall(cx.state)?;
 
     let mut topics = [B256::ZERO; 4];
     for (topic, word) in topics.iter_mut().zip(stack.popn_dyn(n)?) {
@@ -226,6 +229,25 @@ mod tests {
         assert_matches!(interp.err, InstrStop::StateChangeDuringStaticCall);
         assert!(interp.stack().is_empty());
         assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))), None);
+    }
+
+    #[test]
+    fn log_staticcall_check_order() {
+        // The stack bounds come first, then the memory size and gas, then write protection.
+        for (stack, op, expected) in [
+            (&[1][..], op::LOG1, InstrStop::StackUnderflow),
+            (&[][..], op::LOG0, InstrStop::StackUnderflow),
+            (&[u64::MAX, u64::MAX][..], op::LOG0, InstrStop::InvalidOperandOOG),
+            (&[0, 0][..], op::LOG0, InstrStop::StateChangeDuringStaticCall),
+        ] {
+            let mut code = Vec::new();
+            for word in stack {
+                push(&mut code, *word);
+            }
+            code.extend([op, op::STOP]);
+            let interp = run(RunConfig::new(code).staticcall());
+            assert_eq!(interp.err, expected, "{op:#x} with {stack:?}");
+        }
     }
 
     #[test]

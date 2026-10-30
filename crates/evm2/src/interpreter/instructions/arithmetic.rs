@@ -73,6 +73,20 @@ mod tests {
     use core::assert_matches;
 
     #[test]
+    fn stack_bounds_come_before_static_gas() {
+        // An opcode that cannot pay its static gas still reports a bad stack first.
+        for (code, expected) in [
+            (vec![op::ADD], InstrStop::StackUnderflow),
+            (vec![op::PUSH1, 1, op::ADD], InstrStop::StackUnderflow),
+            (vec![op::PUSH0, op::PUSH0, op::ADD], InstrStop::OutOfGas),
+        ] {
+            let interp =
+                run(RunConfig::new(code.clone()).gas_limit(if code.len() == 1 { 2 } else { 4 }));
+            assert_eq!(interp.err, expected, "{code:?}");
+        }
+    }
+
+    #[test]
     fn add_opcode() {
         assert_stack!(ADD(1, 2), 3);
         assert_stack!(ADD(neg(1), 1), 0);

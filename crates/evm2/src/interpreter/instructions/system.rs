@@ -7,11 +7,11 @@ use crate::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, MessageResult,
         Result, StackMut, Word, derive_create_destination,
     },
-    utils::WordExt,
+    utils::{WordExt, memory_range_offset},
     version::GasId,
 };
 use alloy_primitives::{Address, B256, Bytes};
-use core::{cmp::min, ops::Range};
+use core::{cmp::min, hint::cold_path, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
@@ -362,12 +362,18 @@ pub fn create_with<T: EvmTypesHost>(
         &MessageResult<T>,
     ) -> Result,
 ) -> Result {
-    require_non_staticcall(state)?;
-
+    // The stack bounds, then the memory size, then write protection, as the reference
+    // implementation of Ethereum execution orders them.
+    if is_create2 && stack.len() < 4 {
+        cold_path();
+        return Err(InstrStop::StackUnderflow);
+    }
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
     let len = len.to_usize()?;
+    memory_range_offset(&offset, len)?;
+    require_non_staticcall(state)?;
     if state.feature(EvmFeatures::EIP3860) {
         if len > state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
@@ -536,6 +542,25 @@ mod tests {
     };
     use alloc::vec::Vec;
     use core::assert_matches;
+
+    #[test]
+    fn create_staticcall_check_order() {
+        // The stack bounds and the memory size come before write protection.
+        for (stack, op, expected) in [
+            (&[][..], op::CREATE, InstrStop::StackUnderflow),
+            (&[0, 0, 0][..], op::CREATE2, InstrStop::StackUnderflow),
+            (&[u64::MAX, 0, 0][..], op::CREATE, InstrStop::InvalidOperandOOG),
+            (&[0, 0, 0][..], op::CREATE, InstrStop::StateChangeDuringStaticCall),
+        ] {
+            let mut code = Vec::new();
+            for word in stack {
+                push(&mut code, *word);
+            }
+            code.extend([op, op::STOP]);
+            let interp = run(RunConfig::new(code).staticcall());
+            assert_eq!(interp.err, expected, "{op:#x} with {stack:?}");
+        }
+    }
 
     #[test]
     fn call_opcode() {
