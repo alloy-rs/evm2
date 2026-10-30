@@ -1128,18 +1128,46 @@ fn with_message_suffix(err: JsError, suffix: &str, ctx: &mut Context) -> JsError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::{string::ToString, vec, vec::Vec};
+    use alloc::{string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxEip1559, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
     use boa_engine::error::{EngineError, RuntimeLimitError};
+    use core::sync::atomic::{AtomicBool, Ordering};
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         ethereum::{TxEnvelope, ethereum_tx_registry, intrinsic_and_floor_gas},
-        evm::{AccountInfo, CacheDB, EmptyDB},
+        evm::{AccountInfo, CacheDB, DbResult, DynDatabase, EmptyDB},
         interpreter::{Host, op},
     };
     use serde_json::json;
+
+    /// A database whose storage reads fail while `fail_storage` is set.
+    struct FlakyStorageDb {
+        db: CacheDB<EmptyDB>,
+        fail_storage: Arc<AtomicBool>,
+    }
+
+    impl DynDatabase for FlakyStorageDb {
+        fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+            self.db.get_account(address)
+        }
+
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+            self.db.get_code_by_hash(code_hash)
+        }
+
+        fn get_storage(&mut self, address: &Address, key: &U256) -> DbResult<U256> {
+            if self.fail_storage.load(Ordering::Relaxed) {
+                return Err(evm2::DatabaseError::new(core::fmt::Error, true));
+            }
+            self.db.get_storage(address, key)
+        }
+
+        fn get_block_hash(&mut self, number: &U256) -> DbResult<B256> {
+            self.db.get_block_hash(number)
+        }
+    }
 
     #[test]
     fn test_loop_iteration_limit() {
@@ -1644,6 +1672,61 @@ mod tests {
             evm.state_mut().account(&first).unwrap().mark_created_keeping_storage();
         });
         assert_eq!(res, json!([5, 3, 0, 9]));
+    }
+
+    #[test]
+    fn test_db_get_state_result_reads_database_for_slot_whose_creation_reload_failed() {
+        // A contract runs a CREATE whose init code reads slot 0 and reverts. The slot cached zero
+        // under the creation and its rollback reload hits a failing database, which leaves the
+        // slot at that zero. `getState` still reports the database value.
+        let (caller, factory) = (Address::ZERO, Address::repeat_byte(1));
+        let child = factory.create(0);
+        let tracer = format!(
+            "{{ fault: function() {{}}, result: function(ctx, db) {{ return Number(BigInt(toHex(db.getState(toAddress('{}'), toWord('0x00'))))); }} }}",
+            hex::encode(child)
+        );
+        let fail_storage = Arc::new(AtomicBool::new(true));
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            &caller,
+            AccountInfo { balance: U256::from(1e18), ..Default::default() },
+        );
+        // PUSH6 <init: SLOAD(0), REVERT>, PUSH0, MSTORE, CREATE of its 6 bytes, then a CALL that
+        // sends the created address 1 wei, which keeps its account in the transaction's changes.
+        let code =
+            format!("655f54505f5ffd5f526006601a5ff0505f5f5f5f600173{}5af100", hex::encode(child));
+        db.insert_account_info(
+            &factory,
+            AccountInfo {
+                balance: U256::from(10),
+                code: Some(Bytecode::new_legacy(hex::decode(code).unwrap().into())),
+                ..Default::default()
+            },
+        );
+        db.insert_account_info(&child, AccountInfo::default());
+        db.insert_account_storage(&child, &U256::ZERO, &U256::from(6));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            evm2::env::BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            FlakyStorageDb { db, fail_storage: fail_storage.clone() },
+            Precompiles::base(SpecId::CANCUN),
+        );
+        evm.set_inspector(JsInspector::new(tracer, serde_json::Value::Null).unwrap());
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 1_000_000,
+                to: TxKind::Call(factory),
+                ..Default::default()
+            }),
+            caller,
+        );
+        let res = evm.transact(&tx).expect("pass without error").detach();
+        fail_storage.store(false, Ordering::Relaxed);
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        let block = *evm.block_env();
+        let res = inspector.json_result(&res, &tx, &block, evm.database_mut()).unwrap();
+        assert_eq!(res, json!(6));
     }
 
     #[test]

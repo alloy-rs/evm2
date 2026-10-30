@@ -93,6 +93,13 @@ pub struct StorageSlot {
 }
 
 impl StorageSlot {
+    /// Whether the slot holds a zero cached under a creation that was rolled back, because
+    /// rereading it from the database failed. Its real value is in the database.
+    #[inline]
+    pub const fn awaits_reload(&self) -> bool {
+        self.created_zero
+    }
+
     /// Whether this slot must be emitted as a write, reinserting nonzero values after a wipe.
     #[inline]
     pub(super) fn is_changed(&self, wiped: bool) -> bool {
