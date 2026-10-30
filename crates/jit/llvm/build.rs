@@ -26,10 +26,12 @@ fn main() {
     let mut build = cc::Build::new();
     build.cpp(true);
     for flag in cxxflags.split_whitespace() {
-        // Mark LLVM's include dirs as system dirs to silence warnings from its headers only.
+        // Mark LLVM's include dirs as system dirs to silence warnings from its headers only. A
+        // distro LLVM reports `-I/usr/include`, which as `-isystem` would precede the C++ standard
+        // library's own directories and break `#include_next`.
         match flag.strip_prefix("-I") {
-            Some(dir) => build.flag("-isystem").flag(dir),
-            None => build.flag(flag),
+            Some(dir) if dir != "/usr/include" => build.flag("-isystem").flag(dir),
+            _ => build.flag(flag),
         };
     }
     build.file("cpp/lib.cpp").compile("evm2_jit_llvm_cpp");
