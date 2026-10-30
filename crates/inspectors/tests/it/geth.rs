@@ -10,7 +10,6 @@ use crate::utils::{
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
-use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
     GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
@@ -696,9 +695,9 @@ fn test_geth_mux_tracer() {
     assert!(res.result.is_success());
 
     let (ctx, inspector) = evm.ctx_inspector();
-    let frame = inspector
-        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
-        .unwrap();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
 
     assert_eq!(frame.0.len(), 5);
     assert!(frame.0.contains_key(&GethDebugTracerType::BuiltInTracer(
@@ -2307,9 +2306,9 @@ fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
         .unwrap();
 
     let (ctx, inspector) = evm.ctx_inspector();
-    let frame = inspector
-        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
-        .unwrap();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
     let GethTrace::JS(preimages) = &frame.0[&key] else { panic!("expected a JSON object") };
     assert_eq!(preimages.as_object().unwrap().len(), 1);
 }
@@ -2361,6 +2360,51 @@ fn keccak256_preimage_tracer_stops_recording_at_the_byte_limit() {
             Err(_) => assert!(exceeded),
         }
     }
+}
+
+#[test]
+fn mux_runs_nested_mux_and_erc7562_tracers() {
+    let (contract, db) = contract_with_code(&hex!("5f5f00"));
+    let nested = serde_json::json!({"callTracer": {}, "noopTracer": {}});
+    let nested_key = GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::MuxTracer);
+    let config = MuxConfig(HashMap::from_iter([
+        (GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FourByteTracer), None),
+        (GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::Erc7562Tracer), None),
+        (nested_key.clone(), Some(GethDebugTracerConfig(nested))),
+    ]));
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(MuxInspector::try_from_config(config).unwrap());
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
+
+    assert_eq!(frame.0.len(), 3);
+    assert!(matches!(
+        frame.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::Erc7562Tracer)],
+        GethTrace::Erc7562Tracer(_)
+    ));
+    let GethTrace::MuxTracer(nested) = &frame.0[&nested_key] else {
+        panic!("expected a nested mux frame");
+    };
+    assert_eq!(nested.0.len(), 2);
+    assert!(matches!(
+        nested.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer)],
+        GethTrace::CallTracer(_)
+    ));
+    assert!(matches!(
+        nested.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::NoopTracer)],
+        GethTrace::NoopTracer(_)
+    ));
 }
 
 /// The expected snapshots come from go-ethereum master a0cba163: the struct logger adds the slot
@@ -2606,5 +2650,108 @@ fn test_geth_prestate_diff_reports_cleared_code() {
     assert_eq!(
         serde_json::to_value(&diff.post[&authority]).unwrap(),
         serde_json::json!({ "code": "0x", "nonce": 1 })
+    );
+}
+
+/// Runs a London transaction that reads slots 1 (holds `0x2a`) and 2 (zero) of a contract and
+/// selfdestructs it, and returns the contract and the prestate frame.
+fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreStateFrame) {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let contract = address!("1111111111111111111111111111111111111111");
+
+    // SLOAD 1, SLOAD 2, SELFDESTRUCT to the beneficiary.
+    let code = Bytes::from(hex!("6001545060025450733333333333333333333333333333333333333333ff"));
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &contract,
+        AccountInfo {
+            balance: U256::from(7),
+            nonce: 1,
+            code_hash: alloy_primitives::keccak256(&code),
+            code: Some(Bytecode::new_raw(code)),
+            ..Default::default()
+        },
+    );
+    db.insert_account_storage(&contract, &U256::from(1), &U256::from(0x2a));
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
+        .build_mainnet();
+
+    let mut insp =
+        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut db = evm.ctx.db.clone();
+    let res = evm
+        .with_inspector(&mut insp)
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = insp
+        .with_transaction_gas_used(res.result.tx_gas_used())
+        .geth_builder()
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
+        .unwrap();
+    (contract, frame)
+}
+
+/// Geth keeps the pre state of a selfdestructed account whole, with every slot the transaction
+/// read, including unchanged and zero ones.
+#[test]
+fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
+    let beneficiary = address!("3333333333333333333333333333333333333333");
+    let (contract, frame) =
+        trace_london_selfdestruct(PreStateConfig { diff_mode: Some(true), ..Default::default() });
+    let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
+
+    // Output of geth's `evm t8n --state.fork London` with the prestate tracer in diff mode.
+    assert!(!diff.post.contains_key(&contract));
+    assert_eq!(diff.post[&beneficiary].balance, Some(U256::from(7)));
+    assert_eq!(
+        serde_json::to_value(&diff.pre[&contract]).unwrap(),
+        serde_json::json!({
+            "balance": "0x7",
+            "code": "0x6001545060025450733333333333333333333333333333333333333333ff",
+            "nonce": 1,
+            "storage": {
+                "0x0000000000000000000000000000000000000000000000000000000000000001":
+                    "0x000000000000000000000000000000000000000000000000000000000000002a",
+                "0x0000000000000000000000000000000000000000000000000000000000000002":
+                    "0x0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        })
+    );
+}
+
+/// geth reads a slot before the transaction runs, so the pre state of a contract that selfdestructs
+/// reports the value the slot held, not the zero its storage wipe leaves behind.
+#[test]
+fn test_geth_prestate_selfdestruct_reports_slots_before_the_wipe() {
+    let (contract, frame) = trace_london_selfdestruct(PreStateConfig::default());
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+
+    // Output of geth's `evm t8n --state.fork London` with the prestate tracer.
+    assert_eq!(
+        serde_json::to_value(&prestate.0[&contract]).unwrap(),
+        serde_json::json!({
+            "balance": "0x7",
+            "code": "0x6001545060025450733333333333333333333333333333333333333333ff",
+            "nonce": 1,
+            "storage": {
+                "0x0000000000000000000000000000000000000000000000000000000000000001":
+                    "0x000000000000000000000000000000000000000000000000000000000000002a",
+                "0x0000000000000000000000000000000000000000000000000000000000000002":
+                    "0x0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        })
     );
 }

@@ -21,7 +21,7 @@ use alloy_primitives::Bytes;
 use crossbeam_channel as chan;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 #[cfg(feature = "llvm")]
-use std::{cell::RefCell, fs::File, io::Read, time::Instant};
+use std::{cell::RefCell, time::Instant};
 use std::{
     sync::{
         Arc,
@@ -33,7 +33,7 @@ use std::{
 
 #[cfg(feature = "llvm")]
 use crate::{
-    EvmCompiler, EvmLlvmBackend, Linker,
+    EvmCompiler, EvmLlvmBackend,
     llvm::{JitDylibGuard, orc::ResourceTracker},
     runtime::config::JitMode,
 };
@@ -120,7 +120,7 @@ pub(crate) struct WorkerResult {
 pub(crate) enum WorkerSuccess {
     /// JIT compilation produced an in-memory function pointer.
     Jit(JitSuccess),
-    /// AOT compilation produced shared-library bytes.
+    /// AOT compilation produced relocatable object bytes to persist and link in process.
     Aot(AotSuccess),
     /// JIT compilation produced relocatable object bytes to link in the parent.
     JitObject(JitObjectSuccess),
@@ -147,10 +147,10 @@ pub(crate) struct JitObjectSuccess {
 }
 
 pub(crate) struct AotSuccess {
-    /// The symbol name in the shared library.
+    /// The symbol name in the object file.
     pub(crate) symbol_name: String,
-    /// The raw shared-library bytes (.so / .dylib).
-    pub(crate) dylib_bytes: Vec<u8>,
+    /// The raw relocatable object bytes.
+    pub(crate) object_bytes: Vec<u8>,
     /// Length of the original bytecode.
     pub(crate) bytecode_len: usize,
 }
@@ -688,20 +688,28 @@ fn compile_jit_artifact(
     }
 }
 
-/// Compiles a single bytecode to a shared library and returns the raw bytes.
+/// Compiles a single bytecode to a relocatable object and returns the raw bytes.
+#[cfg(feature = "llvm")]
+fn compile_object(
+    job: &CompileJob,
+    compiler: &mut EvmCompiler<EvmLlvmBackend>,
+) -> Result<Vec<u8>, String> {
+    compiler
+        .translate(&job.symbol_name, &job.bytecode[..], job.key.spec_id)
+        .map_err(|e| format!("object translate failed: {e}"))?;
+
+    let mut object_bytes = Vec::new();
+    compiler.write_object(&mut object_bytes).map_err(|e| format!("object write failed: {e}"))?;
+    Ok(object_bytes)
+}
+
+/// Compiles a single bytecode to a relocatable object that the parent links as JIT code.
 #[cfg(feature = "llvm")]
 pub(super) fn compile_jit_object_artifact(
     job: &CompileJob,
     compiler: &mut EvmCompiler<EvmLlvmBackend>,
 ) -> Result<WorkerSuccess, String> {
-    compiler
-        .translate(&job.symbol_name, &job.bytecode[..], job.key.spec_id)
-        .map_err(|e| format!("JIT object translate failed: {e}"))?;
-
-    let mut object_bytes = Vec::new();
-    compiler
-        .write_object(&mut object_bytes)
-        .map_err(|e| format!("JIT object write failed: {e}"))?;
+    let object_bytes = compile_object(job, compiler)?;
     let mut builtin_symbols: Vec<String> = compiler
         .backend()
         .pending_symbol_names()
@@ -709,14 +717,7 @@ pub(super) fn compile_jit_object_artifact(
         .map(|name| name.to_string_lossy().into_owned())
         .collect();
     if builtin_symbols.is_empty() {
-        let suffix = compiler.builtin_symbol_suffix();
-        builtin_symbols = evm2_jit_builtins::Builtin::ALL
-            .iter()
-            .map(|builtin| match suffix {
-                Some(suffix) => format!("{}_{suffix:x}", builtin.name()),
-                None => builtin.name().to_string(),
-            })
-            .collect();
+        builtin_symbols = builtin_symbol_names(compiler.builtin_symbol_suffix());
     }
 
     debug!(
@@ -732,43 +733,33 @@ pub(super) fn compile_jit_object_artifact(
     }))
 }
 
+/// Returns the names of all builtin symbols that an object compiled with `suffix` may reference.
+pub(super) fn builtin_symbol_names(suffix: Option<usize>) -> Vec<String> {
+    evm2_jit_builtins::Builtin::ALL
+        .iter()
+        .map(|builtin| match suffix {
+            Some(suffix) => format!("{}_{suffix:x}", builtin.name()),
+            None => builtin.name().to_string(),
+        })
+        .collect()
+}
+
 #[cfg(feature = "llvm")]
 fn compile_aot_artifact(
     job: &CompileJob,
     compiler: &mut EvmCompiler<EvmLlvmBackend>,
 ) -> Result<WorkerSuccess, String> {
-    compiler
-        .translate(&job.symbol_name, &job.bytecode[..], job.key.spec_id)
-        .map_err(|e| format!("AOT translate failed: {e}"))?;
-
-    let tmp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {e}"))?;
-
-    let obj_path = tmp_dir.path().join("a.o");
-    let so_path = tmp_dir.path().join("a.so");
-
-    compiler
-        .write_object_to_file(&obj_path)
-        .map_err(|e| format!("AOT write object failed: {e}"))?;
-
-    let linker = Linker::new();
-    linker
-        .link(&so_path, [obj_path.to_str().unwrap()])
-        .map_err(|e| format!("AOT link failed: {e}"))?;
-
-    let mut dylib_bytes = Vec::new();
-    File::open(&so_path)
-        .and_then(|mut f| f.read_to_end(&mut dylib_bytes))
-        .map_err(|e| format!("failed to read linked .so: {e}"))?;
+    let object_bytes = compile_object(job, compiler)?;
 
     debug!(
         bytecode_len = job.bytecode.len(),
-        dylib_len = dylib_bytes.len(),
+        object_len = object_bytes.len(),
         "AOT compilation succeeded",
     );
 
     Ok(WorkerSuccess::Aot(AotSuccess {
         symbol_name: job.symbol_name.clone(),
-        dylib_bytes,
+        object_bytes,
         bytecode_len: job.bytecode.len(),
     }))
 }
