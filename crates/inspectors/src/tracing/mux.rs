@@ -11,7 +11,8 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, OpcodeSet, TxResultWithState,
+    DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, OpcodeSet,
+    TxResultWithState,
     env::BlockEnv,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
@@ -285,17 +286,13 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
 
     #[inline]
     fn config(&self) -> InspectorConfig {
-        let mut config = InspectorConfig::new().with_steps(OpcodeSet::EMPTY);
-        if let Some(inspector) = &self.four_byte {
-            config = config.union(Inspector::<T>::config(inspector));
-        }
-        if let Some(inspector) = &self.keccak256_preimage {
-            config = config.union(Inspector::<T>::config(inspector));
-        }
-        if let Some(inspector) = &self.tracing {
-            config = config.union(Inspector::<T>::config(inspector));
-        }
-        config
+        let children = self.children.iter().map(|(_, child)| Inspector::<T>::config(child));
+        let four_byte = self.four_byte.iter().map(Inspector::<T>::config);
+        let tracing = self.tracing.iter().map(Inspector::<T>::config);
+        children
+            .chain(four_byte)
+            .chain(tracing)
+            .fold(InspectorConfig::new().with_steps(OpcodeSet::EMPTY), InspectorConfig::union)
     }
 
     #[inline]
