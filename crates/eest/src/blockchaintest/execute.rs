@@ -918,22 +918,19 @@ fn validate_block_header(
     let blob_params = schedule.blob_params(header.timestamp, spec);
     let parent_excess = parent.excess_blob_gas.unwrap_or_default();
     let parent_used = parent.blob_gas_used.unwrap_or_default();
-    let parent_base_fee = parent.base_fee_per_gas.unwrap_or_default();
-    // Reject parent values that `BlobParams` cannot take as `u64`, or that its excess blob gas
-    // formula cannot add or scale without overflow.
+    // Reject parent values that the excess blob gas formula cannot add or scale without overflow.
     if parent_used > U256::from(blob_params.max_blob_gas_per_block())
         || parent_excess.saturating_add(parent_used) > U256::from(u64::MAX)
-        || parent_base_fee > U256::from(u64::MAX)
     {
         return Err(format!(
-            "parent header fields out of range: excess blob gas {parent_excess}, blob gas used \
-             {parent_used}, base fee {parent_base_fee}"
+            "parent blob gas fields out of range: excess {parent_excess}, used {parent_used}"
         ));
     }
-    let expected_excess_blob_gas = blob_params.next_block_excess_blob_gas_osaka(
+    let expected_excess_blob_gas = next_excess_blob_gas(
+        &blob_params,
         parent_excess.to(),
         parent_used.to(),
-        parent_base_fee.to(),
+        parent.base_fee_per_gas.unwrap_or_default(),
     );
     if header.excess_blob_gas != Some(U256::from(expected_excess_blob_gas)) {
         return Err(format!(
@@ -942,6 +939,33 @@ fn validate_block_header(
         ));
     }
     Ok(())
+}
+
+/// Returns the excess blob gas of the block after a parent with these values (execution-specs
+/// `calculate_excess_blob_gas`, with the EIP-7918 reserve price from Osaka). Unlike
+/// [`BlobParams::next_block_excess_blob_gas_osaka`], the reserve price comparison keeps the
+/// parent base fee at full width.
+fn next_excess_blob_gas(
+    params: &BlobParams,
+    parent_excess: u64,
+    parent_used: u64,
+    parent_base_fee: U256,
+) -> u64 {
+    let excess = parent_excess + parent_used;
+    let target = params.target_blob_gas_per_block();
+    if excess < target {
+        return 0;
+    }
+    let reserve_price = U256::from(params.blob_base_cost) * parent_base_fee;
+    let blob_price =
+        U256::from(DATA_GAS_PER_BLOB) * U256::from(params.calc_blob_fee(parent_excess));
+    if reserve_price > blob_price {
+        parent_excess
+            + parent_used * (params.max_blob_count - params.target_blob_count)
+                / params.max_blob_count
+    } else {
+        excess - target
+    }
 }
 
 /// Resolves an invalid block: it is discarded when the fixture expects an exception, and a test
