@@ -784,24 +784,17 @@ pub fn finalize_gas<'a, T: EvmTypes>(
     } = settlement;
 
     let max_refund_quotient = host.version().gas_params.get(GasId::MaxRefundQuotient);
-    // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
-    // `TxResult::tx_gas_used` reproduces the finalized gas used. State gas is execution state gas
-    // plus the upfront `initial_state_gas`, less the EIP-7702 per-authorization `state_refund`.
-    let total_gas_spent =
-        tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
     let refunded = result.final_refund(tx_gas_limit, max_refund_quotient);
     // EIP-7623: when the calldata floor exceeds spent-minus-refund, `TxResult::tx_gas_used`
     // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor: block-level
     // execution gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
     // execution-specs, without the floor clamp.
     //
-    // The settled tracker's state gas is self-consistent: a failed frame's state charges were
-    // rolled back before it was merged, while unconditional pre-execution charges (the EIP-7702
-    // authorizations, whose delegations survive an execution failure) remain. The upfront
-    // `initial_state_gas` is likewise added unconditionally.
-    let state_gas_spent =
-        (result.gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0) as u64)
-            .saturating_sub(state_refund);
+    // The per-authorization `state_refund` is EIP-7702 state gas returned on top of the settled
+    // tracker's.
+    let (total_gas_spent, state_gas_spent) =
+        gas_spent_breakdown(tx_gas_limit, &result.gas, initial_state_gas);
+    let state_gas_spent = state_gas_spent.saturating_sub(state_refund);
     Ok(TxResultExt {
         status: result.stop.is_success(),
         total_gas_spent,
@@ -814,6 +807,27 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         ext: T::TxResultExt::default(),
         ..TxResultExt::default()
     })
+}
+
+/// Returns `(total_gas_spent, state_gas_spent)` for a settled transaction-level gas tracker.
+///
+/// `tx_gas_limit` is the execution gas limit plus the state-gas reservoir the transaction started
+/// with. `total_gas_spent` is defined so that `TxResult::tx_gas_used` reproduces the finalized gas
+/// used. `state_gas_spent` is the tracker's state gas plus the upfront `initial_state_gas`.
+///
+/// The settled tracker's state gas is self-consistent: a failed frame's state charges were rolled
+/// back before it was merged, while unconditional pre-execution charges (the EIP-7702
+/// authorizations, whose delegations survive an execution failure) remain. The upfront
+/// `initial_state_gas` is likewise added unconditionally.
+pub(crate) fn gas_spent_breakdown(
+    tx_gas_limit: u64,
+    gas: &GasTracker,
+    initial_state_gas: u64,
+) -> (u64, u64) {
+    let total_gas_spent =
+        tx_gas_limit.saturating_sub(gas.remaining()).saturating_sub(gas.reservoir());
+    let state_gas_spent = gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0);
+    (total_gas_spent, state_gas_spent as u64)
 }
 
 /// Returns the account and storage-key counts in an access list.

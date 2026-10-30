@@ -453,6 +453,15 @@ tests! {
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+        // The invalid immediate halts before the following instructions are charged or
+        // stack-checked, so an empty stack does not underflow at the section head.
+        dupn_invalid_imm_before_underflow(@raw {
+            bytecode: &[op::DUPN, 0x5B, op::ADD],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::InvalidImmediateEncoding,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
         // Invalid immediate: 82 is in the invalid range [82, 127] for decode_pair.
         exchange_invalid_imm(@raw {
             bytecode: &[op::PUSH0, op::PUSH0, op::PUSH0, op::EXCHANGE, 82],
