@@ -8,7 +8,14 @@ use crate::{
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::{analyze_legacy, pad_legacy};
-use core::{cmp::Ordering, fmt, hash};
+use core::{
+    cmp::Ordering,
+    fmt, hash,
+    sync::atomic::{
+        AtomicBool, AtomicUsize,
+        Ordering::{Acquire, Relaxed, Release},
+    },
+};
 use thiserror::Error;
 
 mod analysis;
@@ -64,7 +71,58 @@ struct BytecodeInner {
     /// Lazily initialized jump table for legacy bytecode.
     jump_table: OnceLock<JumpTable>,
     /// Cached hash of the original bytecode.
-    hash: OnceLock<B256>,
+    hash: HashCell,
+}
+
+/// Number of machine words in a [`B256`].
+const HASH_WORDS: usize = 32 / size_of::<usize>();
+
+/// A cached hash stored as machine words, so that writing it takes no lock and no once-cell
+/// initialization.
+///
+/// Concurrent writers must store the same value.
+struct HashCell {
+    set: AtomicBool,
+    words: [AtomicUsize; HASH_WORDS],
+}
+
+impl HashCell {
+    const fn new() -> Self {
+        const ZERO: AtomicUsize = AtomicUsize::new(0);
+        Self { set: AtomicBool::new(false), words: [ZERO; HASH_WORDS] }
+    }
+
+    fn with(hash: B256) -> Self {
+        let cell = Self::new();
+        cell.set(hash);
+        cell
+    }
+
+    #[inline]
+    fn get(&self) -> Option<B256> {
+        if !self.set.load(Acquire) {
+            return None;
+        }
+        let mut bytes = [0u8; 32];
+        for (chunk, word) in bytes.chunks_exact_mut(size_of::<usize>()).zip(&self.words) {
+            chunk.copy_from_slice(&word.load(Relaxed).to_ne_bytes());
+        }
+        Some(B256::new(bytes))
+    }
+
+    #[inline]
+    fn set(&self, hash: B256) {
+        for (chunk, word) in hash.chunks_exact(size_of::<usize>()).zip(&self.words) {
+            word.store(usize::from_ne_bytes(chunk.try_into().unwrap()), Relaxed);
+        }
+        self.set.store(true, Release);
+    }
+}
+
+impl fmt::Debug for HashCell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.get().fmt(f)
+    }
 }
 
 /// The kind of bytecode.
@@ -144,11 +202,7 @@ impl Bytecode {
             bytecode: Bytes::from_static(&[op::STOP]),
             original_len: 0,
             jump_table: OnceLock::new(),
-            hash: {
-                let hash = OnceLock::new();
-                let _ = hash.set(KECCAK256_EMPTY);
-                hash
-            },
+            hash: HashCell::with(KECCAK256_EMPTY),
         })
     }
 
@@ -177,7 +231,7 @@ impl Bytecode {
             original_len,
             bytecode,
             jump_table: OnceLock::new(),
-            hash: OnceLock::new(),
+            hash: HashCell::new(),
         })))
     }
 
@@ -201,7 +255,7 @@ impl Bytecode {
             original_len: raw.len(),
             bytecode: raw,
             jump_table: OnceLock::new(),
-            hash: OnceLock::new(),
+            hash: HashCell::new(),
         })))
     }
 
@@ -236,7 +290,7 @@ impl Bytecode {
             original_len: bytes.len(),
             bytecode: bytes,
             jump_table: OnceLock::new(),
-            hash: OnceLock::new(),
+            hash: HashCell::new(),
         }))))
     }
 
@@ -280,7 +334,7 @@ impl Bytecode {
                 let _ = cached.set(jump_table);
                 cached
             },
-            hash: OnceLock::new(),
+            hash: HashCell::new(),
         })))
     }
 
@@ -332,7 +386,13 @@ impl Bytecode {
     /// Calculates or returns cached hash of the bytecode.
     #[inline]
     pub fn hash_slow(&self) -> B256 {
-        *self.inner().hash.get_or_init(|| keccak256(self.original_byte_slice()))
+        let cell = &self.inner().hash;
+        if let Some(hash) = cell.get() {
+            return hash;
+        }
+        let hash = keccak256(self.original_byte_slice());
+        cell.set(hash);
+        hash
     }
 
     /// Caches `hash` as the hash of the original bytecode unless one is already cached.
@@ -341,10 +401,15 @@ impl Bytecode {
     /// bytecode or the zero hash.
     #[inline]
     pub fn seed_hash(&self, hash: B256) {
-        if self.is_empty() || hash.is_zero() {
+        if self.is_empty() {
             return;
         }
-        if self.inner().hash.set(hash).is_err() {
+        let cell = &self.inner().hash;
+        if cell.get().is_none() {
+            if !hash.is_zero() {
+                cell.set(hash);
+            }
+        } else {
             debug_assert_eq!(self.hash_slow(), hash, "seeded hash differs from cached hash");
         }
     }
