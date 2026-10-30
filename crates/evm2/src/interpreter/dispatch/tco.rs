@@ -129,7 +129,7 @@ extern_table! {
 }
 
 #[inline(always)]
-const fn pre_step<T: EvmTypesHost, C: EvmConfig<T>>(
+fn pre_step<T: EvmTypesHost, C: EvmConfig<T>>(
     remaining_gas: &mut RemainingGas,
     opcode: u8,
 ) -> Result {

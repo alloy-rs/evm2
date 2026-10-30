@@ -2410,27 +2410,27 @@ mod tests {
 
     #[test]
     fn precompile_cannot_return_more_gas_than_its_limit() {
-        fn overcharge_and_return(
+        fn over_refund_and_return(
             _: &mut Evm<'_, BaseEvmTypes>,
             _: &Message,
             gas: &mut GasTracker,
         ) -> crate::precompiles::PrecompileResult {
-            let _ = gas.spend(gas.limit() + 1);
+            gas.erase_cost(1);
             Ok(PrecompileOutput::new(Bytes::new()))
         }
 
-        fn overcharge_and_revert(
+        fn over_refund_and_revert(
             _: &mut Evm<'_, BaseEvmTypes>,
             _: &Message,
             gas: &mut GasTracker,
         ) -> crate::precompiles::PrecompileResult {
-            let _ = gas.spend(gas.limit() + 1);
+            gas.erase_cost(1);
             Err(PrecompileError::Revert(Bytes::new()))
         }
 
         let precompiles = precompiles_with([
-            test_precompile(TEST_PRECOMPILE, overcharge_and_return),
-            test_precompile(INNER_TEST_PRECOMPILE, overcharge_and_revert),
+            test_precompile(TEST_PRECOMPILE, over_refund_and_return),
+            test_precompile(INNER_TEST_PRECOMPILE, over_refund_and_revert),
         ]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,

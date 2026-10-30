@@ -314,7 +314,7 @@ impl GasTracker {
         self.remaining = self.gas_limit.saturating_sub(spent);
     }
 
-    /// Spends execution gas.
+    /// Spends execution gas, leaving the counter unchanged on failure.
     #[doc(alias = "record_cost")]
     #[doc(alias = "record_regular_cost")]
     #[doc(alias = "record_cost_unsafe")]
@@ -325,6 +325,7 @@ impl GasTracker {
         self.remaining = remaining.wrapping_sub(cost);
         if remaining < cost {
             cold_path();
+            undo_spend(&mut self.remaining, cost);
             Err(InstrStop::OutOfGas)
         } else {
             Ok(())
@@ -332,8 +333,6 @@ impl GasTracker {
     }
 
     /// Spends execution gas, leaving the tracker unchanged on failure.
-    ///
-    /// Unlike [`Self::spend`], a failed spend does not wrap `remaining`.
     #[inline]
     pub const fn try_spend(&mut self, cost: u64) -> Result {
         if self.remaining < cost {
@@ -364,8 +363,6 @@ impl GasTracker {
     }
 
     /// Spends state gas, leaving the tracker unchanged on failure.
-    ///
-    /// Unlike [`Self::spend_state`], a failed spend does not wrap `remaining`.
     #[inline]
     pub fn try_spend_state(&mut self, cost: u64) -> Result {
         if self.remaining < cost.saturating_sub(self.reservoir) {
@@ -513,18 +510,50 @@ impl RemainingGas {
         self.0 = remaining;
     }
 
-    /// Spends execution gas.
+    /// Spends execution gas, leaving the counter unchanged on failure.
     #[inline(always)]
-    pub(crate) const fn spend(&mut self, cost: u64) -> Result {
-        let remaining = self.0;
-        self.0 = remaining.wrapping_sub(cost);
-        if remaining < cost {
+    pub(crate) fn spend(&mut self, cost: u64) -> Result {
+        let (remaining, borrow) = self.0.overflowing_sub(cost);
+        if borrow {
             cold_path();
-            Err(InstrStop::OutOfGas)
-        } else {
-            Ok(())
+            // Reading the difference back keeps the subtraction ahead of the branch, so the success
+            // path stays a `sub` and a `jb` instead of a compare, a branch and a `sub`.
+            self.0 = opaque(remaining).wrapping_add(cost);
+            return Err(InstrStop::OutOfGas);
         }
+        self.0 = remaining;
+        Ok(())
     }
+}
+
+/// Restores `remaining` after a failed [`GasTracker::spend`]. Out of line so the success path keeps
+/// its in-place subtraction.
+#[cold]
+#[inline(never)]
+const fn undo_spend(remaining: &mut u64, cost: u64) {
+    *remaining = remaining.wrapping_add(cost);
+}
+
+/// Returns `value` without letting the optimizer see through it, and without a stack slot.
+#[inline(always)]
+fn opaque(value: u64) -> u64 {
+    #[cfg(all(
+        not(miri),
+        any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
+    ))]
+    {
+        let mut value = value;
+        // SAFETY: the empty assembly block leaves `value` unchanged.
+        unsafe {
+            core::arch::asm!("/* {0} */", inout(reg) value, options(nomem, nostack, preserves_flags));
+        }
+        value
+    }
+    #[cfg(not(all(
+        not(miri),
+        any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
+    )))]
+    core::hint::black_box(value)
 }
 
 /// Interpreter gas state.
@@ -998,6 +1027,21 @@ mod tests {
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (0, 0, 500));
 
         assert_matches!(gas.spend_state(1), Err(InstrStop::OutOfGas));
+    }
+
+    #[test]
+    fn spend_fails_without_changing_tracker() {
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(100, 7);
+        assert!(gas.spend(60).is_ok());
+
+        let before = gas;
+        assert_matches!(gas.spend(41), Err(InstrStop::OutOfGas));
+        assert_eq!(gas, before);
+        assert_matches!(gas.spend_state(48), Err(InstrStop::OutOfGas));
+        assert_eq!(gas, before);
+
+        assert!(gas.spend(40).is_ok());
+        assert_eq!(gas.remaining(), 0);
     }
 
     #[test]
