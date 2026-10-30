@@ -214,10 +214,17 @@ impl JsonlWriter<'_> {
                     None
                 }
                 Some(error) => Some(error.clone()),
+                // A halt of the top frame leaves no step error; its frame error says what failed.
                 None if position == last
                     && !matches!(op, op::STOP | op::RETURN | op::SELFDESTRUCT) =>
                 {
-                    frame_error.clone()
+                    match &frame_error {
+                        Some(error) if fails_before_logging(error, op, state_gas_oog) => {
+                            line["error"] = json!(error);
+                            None
+                        }
+                        _ => frame_error.clone(),
+                    }
                 }
                 None => None,
             };
@@ -319,13 +326,17 @@ fn create_gas(log: &StructLog, op: u8, memory_len: usize) -> u128 {
 /// Amsterdam on, a `CREATE` that pays its gas but not its state gas fails while it runs
 /// (`state_gas_oog`).
 fn fails_before_logging(error: &str, op: u8, state_gas_oog: bool) -> bool {
-    let out_of_gas = error.contains("OOG") || error.contains("OutOfGas");
-    if out_of_gas {
+    // The error is evm2's step error (`StackUnderflow`) or geth's text of a frame error (`stack
+    // underflow`).
+    let error = error.to_ascii_lowercase();
+    if error.contains("oog") || error.contains("outofgas") || error.contains("out of gas") {
         return !state_gas_oog;
     }
-    error.contains("Stack")
-        || error.contains("InitCodeSizeLimit")
-        || error.contains("Static") && !matches!(op, op::TSTORE | op::LOG0..=op::LOG4)
+    error.contains("stack")
+        || error.contains("initcodesizelimit")
+        || error.contains("max initcode")
+        || (error.contains("static") || error.contains("write protection"))
+            && !matches!(op, op::TSTORE | op::LOG0..=op::LOG4)
 }
 
 /// The memory the JSON logger sees when an opcode fails while it runs: the opcode has grown the
