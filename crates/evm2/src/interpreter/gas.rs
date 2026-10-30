@@ -321,15 +321,13 @@ impl GasTracker {
     #[doc(alias = "spend_unsafe")]
     #[inline]
     pub const fn spend(&mut self, cost: u64) -> Result {
-        let remaining = self.remaining;
-        self.remaining = remaining.wrapping_sub(cost);
-        if remaining < cost {
+        let (remaining, borrow) = self.remaining.overflowing_sub(cost);
+        if borrow {
             cold_path();
-            undo_spend(&mut self.remaining, cost);
-            Err(InstrStop::OutOfGas)
-        } else {
-            Ok(())
+            return Err(InstrStop::OutOfGas);
         }
+        self.remaining = remaining;
+        Ok(())
     }
 
     /// Spends execution gas, leaving the tracker unchanged on failure.
@@ -524,14 +522,6 @@ impl RemainingGas {
         self.0 = remaining;
         Ok(())
     }
-}
-
-/// Restores `remaining` after a failed [`GasTracker::spend`]. Out of line so the success path keeps
-/// its in-place subtraction.
-#[cold]
-#[inline(never)]
-const fn undo_spend(remaining: &mut u64, cost: u64) {
-    *remaining = remaining.wrapping_add(cost);
 }
 
 /// Returns `value` without letting the optimizer see through it, and without a stack slot.
