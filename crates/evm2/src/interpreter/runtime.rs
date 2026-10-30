@@ -243,7 +243,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// reservoir was short or is refilled from it. State gas is not part of the execution cost;
     /// [`Gas::state_gas_spent`] reports it. Call and create steps finish charging right before
     /// they hand gas to the child, so their cost includes the forwarded gas for calls and
-    /// excludes it for creates. Any other step finishes charging when it ends, which makes its
+    /// excludes it for creates. The SSTORE reentrancy sentry finishes charging before any charge,
+    /// so its stop costs nothing. Any other step finishes charging when it ends, which makes its
     /// cost the execution gas it consumed.
     ///
     /// Only meaningful in [`Inspector::step_end`](crate::inspector::Inspector::step_end).
@@ -718,7 +719,8 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.stack_len = stack_len;
         if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
             cold_path();
-            // Failed charges may leave a wrapped counter until frame settlement.
+            // An out-of-gas stop consumes the remainder, including stops that charge nothing,
+            // such as a skipped cold load.
             self.0.gas.set_remaining(0);
         }
         unsafe {
