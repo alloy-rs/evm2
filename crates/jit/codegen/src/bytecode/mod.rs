@@ -651,7 +651,7 @@ impl<'a> Bytecode<'a> {
     }
 
     /// Returns `true` if the given program counter is a valid jump destination.
-    pub(crate) fn is_valid_jump(&self, pc: usize) -> bool {
+    pub(crate) const fn is_valid_jump(&self, pc: usize) -> bool {
         self.jumpdests.is_valid(pc)
     }
 
