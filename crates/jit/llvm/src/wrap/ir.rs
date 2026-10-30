@@ -28,7 +28,7 @@ pub struct Context {
 
 impl Context {
     /// Creates a new context.
-    pub fn create() -> Self {
+    pub(crate) fn create() -> Self {
         Self { raw: unsafe { LLVMContextCreate() } }
     }
 
@@ -38,7 +38,7 @@ impl Context {
     ///
     /// `raw` must be a valid context. Wrap the result in [`ManuallyDrop`] to borrow a context that
     /// something else owns.
-    pub const unsafe fn new(raw: LLVMContextRef) -> Self {
+    pub(crate) const unsafe fn new(raw: LLVMContextRef) -> Self {
         Self { raw }
     }
 
@@ -48,68 +48,68 @@ impl Context {
     }
 
     /// Creates an instruction builder.
-    pub fn create_builder(&self) -> Builder {
+    pub(crate) fn create_builder(&self) -> Builder {
         Builder { raw: unsafe { LLVMCreateBuilderInContext(self.raw) } }
     }
 
     /// Creates an empty module.
-    pub fn create_module(&self, name: &str) -> Module {
+    pub(crate) fn create_module(&self, name: &str) -> Module {
         let name = to_c_str(name);
         Module { raw: unsafe { LLVMModuleCreateWithNameInContext(name.as_ptr(), self.raw) } }
     }
 
     /// The `void` type.
-    pub fn void_type(&self) -> Type {
+    pub(crate) fn void_type(&self) -> Type {
         Type(unsafe { LLVMVoidTypeInContext(self.raw) })
     }
 
     /// The `i1` type.
-    pub fn bool_type(&self) -> Type {
+    pub(crate) fn bool_type(&self) -> Type {
         self.int_type(1)
     }
 
     /// The `i8` type.
-    pub fn i8_type(&self) -> Type {
+    pub(crate) fn i8_type(&self) -> Type {
         self.int_type(8)
     }
 
     /// The `i16` type.
-    pub fn i16_type(&self) -> Type {
+    pub(crate) fn i16_type(&self) -> Type {
         self.int_type(16)
     }
 
     /// The `i32` type.
-    pub fn i32_type(&self) -> Type {
+    pub(crate) fn i32_type(&self) -> Type {
         self.int_type(32)
     }
 
     /// The `i64` type.
-    pub fn i64_type(&self) -> Type {
+    pub(crate) fn i64_type(&self) -> Type {
         self.int_type(64)
     }
 
     /// The `i128` type.
-    pub fn i128_type(&self) -> Type {
+    pub(crate) fn i128_type(&self) -> Type {
         self.int_type(128)
     }
 
     /// The integer type with the given bit width.
-    pub fn int_type(&self, bits: u32) -> Type {
+    pub(crate) fn int_type(&self, bits: u32) -> Type {
         Type(unsafe { LLVMIntTypeInContext(self.raw, bits) })
     }
 
     /// The integer type as wide as a pointer of the given target.
-    pub fn ptr_sized_int_type(&self, target_data: &TargetData) -> Type {
+    pub(crate) fn ptr_sized_int_type(&self, target_data: &TargetData) -> Type {
         Type(unsafe { LLVMIntPtrTypeInContext(self.raw, target_data.as_mut_ptr()) })
     }
 
     /// The opaque pointer type in the default address space.
-    pub fn ptr_type(&self) -> Type {
+    pub(crate) fn ptr_type(&self) -> Type {
         Type(unsafe { LLVMPointerTypeInContext(self.raw, 0) })
     }
 
     /// An anonymous struct type.
-    pub fn struct_type(&self, fields: &[Type], packed: bool) -> Type {
+    pub(crate) fn struct_type(&self, fields: &[Type], packed: bool) -> Type {
         Type(unsafe {
             LLVMStructTypeInContext(
                 self.raw,
@@ -121,13 +121,13 @@ impl Context {
     }
 
     /// Appends a basic block to `function`.
-    pub fn append_basic_block(&self, function: Function, name: &str) -> Block {
+    pub(crate) fn append_basic_block(&self, function: Function, name: &str) -> Block {
         let name = to_c_str(name);
         Block(unsafe { LLVMAppendBasicBlockInContext(self.raw, function.0, name.as_ptr()) })
     }
 
     /// Inserts a basic block right after `block`.
-    pub fn insert_basic_block_after(&self, block: Block, name: &str) -> Block {
+    pub(crate) fn insert_basic_block_after(&self, block: Block, name: &str) -> Block {
         unsafe {
             let next = LLVMGetNextBasicBlock(block.0);
             if next.is_null() {
@@ -139,7 +139,7 @@ impl Context {
     }
 
     /// Creates a metadata string.
-    pub fn metadata_string(&self, string: &str) -> Metadata {
+    pub(crate) fn metadata_string(&self, string: &str) -> Metadata {
         let string = to_c_str(string);
         Metadata::new(unsafe {
             LLVMMDStringInContext2(self.raw, string.as_ptr(), string.to_bytes().len())
@@ -147,7 +147,7 @@ impl Context {
     }
 
     /// Creates a metadata node holding `values`.
-    pub fn metadata_node(&self, values: &[Metadata]) -> MetadataNode {
+    pub(crate) fn metadata_node(&self, values: &[Metadata]) -> MetadataNode {
         unsafe {
             let node =
                 LLVMMDNodeInContext2(self.raw, values.as_ptr().cast_mut().cast(), values.len());
@@ -156,17 +156,17 @@ impl Context {
     }
 
     /// Returns the ID of the metadata kind `name`, such as `prof`.
-    pub fn get_kind_id(&self, name: &str) -> u32 {
+    pub(crate) fn get_kind_id(&self, name: &str) -> u32 {
         unsafe { LLVMGetMDKindIDInContext(self.raw, name.as_ptr().cast(), name.len() as u32) }
     }
 
     /// Creates an enum attribute. Look the kind up with [`Attribute::get_named_enum_kind_id`].
-    pub fn create_enum_attribute(&self, kind_id: u32, value: u64) -> Attribute {
+    pub(crate) fn create_enum_attribute(&self, kind_id: u32, value: u64) -> Attribute {
         Attribute(unsafe { LLVMCreateEnumAttribute(self.raw, kind_id, value) })
     }
 
     /// Creates a string attribute.
-    pub fn create_string_attribute(&self, key: &str, value: &str) -> Attribute {
+    pub(crate) fn create_string_attribute(&self, key: &str, value: &str) -> Attribute {
         Attribute(unsafe {
             LLVMCreateStringAttribute(
                 self.raw,
@@ -179,7 +179,7 @@ impl Context {
     }
 
     /// Creates a type attribute, such as `sret`.
-    pub fn create_type_attribute(&self, kind_id: u32, ty: Type) -> Attribute {
+    pub(crate) fn create_type_attribute(&self, kind_id: u32, ty: Type) -> Attribute {
         Attribute(unsafe { LLVMCreateTypeAttribute(self.raw, kind_id, ty.0) })
     }
 }
@@ -203,42 +203,47 @@ impl Module {
     ///
     /// `raw` must be a valid module that nothing else disposes. Wrap the result in
     /// [`ManuallyDrop`] to borrow a module that something else owns.
-    pub const unsafe fn new(raw: LLVMModuleRef) -> Self {
+    pub(crate) const unsafe fn new(raw: LLVMModuleRef) -> Self {
         Self { raw }
     }
 
     /// Returns the raw module.
-    pub const fn as_mut_ptr(&self) -> LLVMModuleRef {
+    pub(crate) const fn as_mut_ptr(&self) -> LLVMModuleRef {
         self.raw
     }
 
     /// Releases ownership of the raw module.
-    pub fn into_raw(self) -> LLVMModuleRef {
+    pub(crate) fn into_raw(self) -> LLVMModuleRef {
         ManuallyDrop::new(self).raw
     }
 
     /// Sets the module identifier.
-    pub fn set_name(&self, name: &str) {
+    pub(crate) fn set_name(&self, name: &str) {
         unsafe { LLVMSetModuleIdentifier(self.raw, name.as_ptr().cast(), name.len()) }
     }
 
     /// Sets the source file name.
-    pub fn set_source_file_name(&self, name: &str) {
+    pub(crate) fn set_source_file_name(&self, name: &str) {
         unsafe { LLVMSetSourceFileName(self.raw, name.as_ptr().cast(), name.len()) }
     }
 
     /// Sets the data layout string.
-    pub fn set_data_layout(&self, data_layout: &CStr) {
+    pub(crate) fn set_data_layout(&self, data_layout: &CStr) {
         unsafe { LLVMSetDataLayout(self.raw, data_layout.as_ptr()) }
     }
 
     /// Sets the target triple.
-    pub fn set_triple(&self, triple: &CStr) {
+    pub(crate) fn set_triple(&self, triple: &CStr) {
         unsafe { LLVMSetTarget(self.raw, triple.as_ptr()) }
     }
 
     /// Adds a module flag holding an integer constant.
-    pub fn add_basic_value_flag(&self, key: &str, behavior: LLVMModuleFlagBehavior, flag: Value) {
+    pub(crate) fn add_basic_value_flag(
+        &self,
+        key: &str,
+        behavior: LLVMModuleFlagBehavior,
+        flag: Value,
+    ) {
         unsafe {
             LLVMAddModuleFlag(
                 self.raw,
@@ -251,7 +256,12 @@ impl Module {
     }
 
     /// Adds a function declaration.
-    pub fn add_function(&self, name: &str, ty: Type, linkage: Option<LLVMLinkage>) -> Function {
+    pub(crate) fn add_function(
+        &self,
+        name: &str,
+        ty: Type,
+        linkage: Option<LLVMLinkage>,
+    ) -> Function {
         let name = to_c_str(name);
         let function = Function(unsafe { LLVMAddFunction(self.raw, name.as_ptr(), ty.0) });
         if let Some(linkage) = linkage {
@@ -261,25 +271,25 @@ impl Module {
     }
 
     /// Returns the function named `name`, if any.
-    pub fn get_function(&self, name: &str) -> Option<Function> {
+    pub(crate) fn get_function(&self, name: &str) -> Option<Function> {
         let name = to_c_str(name);
         Function::new(unsafe { LLVMGetNamedFunction(self.raw, name.as_ptr()) })
     }
 
     /// Iterates over the functions of the module.
-    pub fn get_functions(&self) -> impl Iterator<Item = Function> {
+    pub(crate) fn get_functions(&self) -> impl Iterator<Item = Function> {
         let first = Function::new(unsafe { LLVMGetFirstFunction(self.raw) });
         std::iter::successors(first, |f| Function::new(unsafe { LLVMGetNextFunction(f.0) }))
     }
 
     /// Adds a global variable in the default address space.
-    pub fn add_global(&self, ty: Type, name: &str) -> Global {
+    pub(crate) fn add_global(&self, ty: Type, name: &str) -> Global {
         let name = to_c_str(name);
         Global(unsafe { LLVMAddGlobal(self.raw, ty.0, name.as_ptr()) })
     }
 
     /// Checks the module for errors.
-    pub fn verify(&self) -> Result<(), LLVMString> {
+    pub(crate) fn verify(&self) -> Result<(), LLVMString> {
         let mut message = ptr::null_mut();
         let failed = unsafe {
             LLVMVerifyModule(
@@ -296,12 +306,13 @@ impl Module {
     }
 
     /// Returns the textual IR.
-    pub fn print_to_string(&self) -> LLVMString {
+    #[cfg(test)]
+    pub(crate) fn print_to_string(&self) -> LLVMString {
         unsafe { LLVMString::from_raw(LLVMPrintModuleToString(self.raw)) }
     }
 
     /// Writes the textual IR to `path`.
-    pub fn print_to_file(&self, path: &Path) -> Result<(), LLVMString> {
+    pub(crate) fn print_to_file(&self, path: &Path) -> Result<(), LLVMString> {
         let path = to_c_str(path.to_str().expect("Did not find a valid Unicode path string"));
         let mut message = ptr::null_mut();
         let failed = unsafe { LLVMPrintModuleToFile(self.raw, path.as_ptr(), &mut message) };
@@ -318,7 +329,7 @@ impl Module {
     }
 
     /// Runs the new-pass-manager pipeline `passes`.
-    pub fn run_passes(
+    pub(crate) fn run_passes(
         &self,
         passes: &str,
         machine: &TargetMachine,
@@ -342,13 +353,13 @@ impl Drop for Module {
 
 /// Options for [`Module::run_passes`].
 #[derive(Debug)]
-pub struct PassBuilderOptions {
+pub(crate) struct PassBuilderOptions {
     raw: LLVMPassBuilderOptionsRef,
 }
 
 impl PassBuilderOptions {
     /// Creates the default options.
-    pub fn create() -> Self {
+    pub(crate) fn create() -> Self {
         Self { raw: unsafe { LLVMCreatePassBuilderOptions() } }
     }
 }
@@ -366,7 +377,7 @@ pub struct Type(LLVMTypeRef);
 
 impl Type {
     /// Creates a function type that returns `self`.
-    pub fn fn_type(self, params: &[Self], var_args: bool) -> Self {
+    pub(crate) fn fn_type(self, params: &[Self], var_args: bool) -> Self {
         Self(unsafe {
             LLVMFunctionType(
                 self.0,
@@ -378,12 +389,12 @@ impl Type {
     }
 
     /// Creates an array type of `size` elements of `self`.
-    pub fn array_type(self, size: u32) -> Self {
+    pub(crate) fn array_type(self, size: u32) -> Self {
         Self(unsafe { LLVMArrayType2(self.0, size as u64) })
     }
 
     /// The bit width of an integer type.
-    pub fn bit_width(self) -> u32 {
+    pub(crate) fn bit_width(self) -> u32 {
         unsafe { LLVMGetIntTypeWidth(self.0) }
     }
 
@@ -391,7 +402,7 @@ impl Type {
     ///
     /// `value` is truncated to the bit width of the type, and sign-extended from it if
     /// `sign_extend` is set.
-    pub fn const_int(self, mut value: u64, sign_extend: bool) -> Value {
+    pub(crate) fn const_int(self, mut value: u64, sign_extend: bool) -> Value {
         // LLVM 23 no longer truncates implicitly.
         let bit_width = self.bit_width();
         if bit_width < u64::BITS {
@@ -401,26 +412,26 @@ impl Type {
     }
 
     /// Creates an integer constant of this type from a hexadecimal string.
-    pub fn const_int_from_hex(self, hex: &str) -> Value {
+    pub(crate) fn const_int_from_hex(self, hex: &str) -> Value {
         Value(unsafe {
             LLVMConstIntOfStringAndSize(self.0, hex.as_ptr().cast(), hex.len() as u32, 16)
         })
     }
 
     /// Creates an array constant with element type `self`.
-    pub fn const_array(self, values: &[Value]) -> Value {
+    pub(crate) fn const_array(self, values: &[Value]) -> Value {
         Value(unsafe {
             LLVMConstArray2(self.0, values.as_ptr().cast_mut().cast(), values.len() as u64)
         })
     }
 
     /// Creates the null constant of this type.
-    pub fn const_null(self) -> Value {
+    pub(crate) fn const_null(self) -> Value {
         Value(unsafe { LLVMConstNull(self.0) })
     }
 
     /// Returns the textual IR of the type.
-    pub fn print_to_string(self) -> LLVMString {
+    pub(crate) fn print_to_string(self) -> LLVMString {
         unsafe { LLVMString::from_raw(LLVMPrintTypeToString(self.0)) }
     }
 }
@@ -438,23 +449,23 @@ pub struct Value(LLVMValueRef);
 
 impl Value {
     /// Returns the type of the value.
-    pub fn get_type(self) -> Type {
+    pub(crate) fn get_type(self) -> Type {
         Type(unsafe { LLVMTypeOf(self.0) })
     }
 
     /// Sets the name of the value.
-    pub fn set_name(self, name: &str) {
+    pub(crate) fn set_name(self, name: &str) {
         unsafe { LLVMSetValueName2(self.0, name.as_ptr().cast(), name.len()) }
     }
 
     /// Sets the alignment of a load.
-    pub fn set_alignment(self, align: u32) {
+    pub(crate) fn set_alignment(self, align: u32) {
         assert!(align.is_power_of_two(), "alignment must be a power of two");
         unsafe { LLVMSetAlignment(self.0, align) }
     }
 
     /// Wraps the value as metadata.
-    pub fn as_metadata(self) -> Metadata {
+    pub(crate) fn as_metadata(self) -> Metadata {
         Metadata::new(unsafe { LLVMValueAsMetadata(self.0) })
     }
 }
@@ -472,39 +483,39 @@ pub struct Inst(LLVMValueRef);
 
 impl Inst {
     /// Returns the result of the instruction, or `None` if its type is `void`.
-    pub fn value(self) -> Option<Value> {
+    pub(crate) fn value(self) -> Option<Value> {
         let void = unsafe { LLVMGetTypeKind(LLVMTypeOf(self.0)) } == LLVMTypeKind::LLVMVoidTypeKind;
         (!void).then_some(Value(self.0))
     }
 
     /// Sets the alignment of a load or store.
-    pub fn set_alignment(self, align: u32) {
+    pub(crate) fn set_alignment(self, align: u32) {
         assert!(align.is_power_of_two(), "alignment must be a power of two");
         unsafe { LLVMSetAlignment(self.0, align) }
     }
 
     /// Attaches the metadata node `node` of kind `kind_id`.
-    pub fn set_metadata(self, node: MetadataNode, kind_id: u32) {
+    pub(crate) fn set_metadata(self, node: MetadataNode, kind_id: u32) {
         unsafe { LLVMSetMetadata(self.0, kind_id, node.0) }
     }
 
     /// Removes the instruction from its block and deletes it.
-    pub fn erase_from_basic_block(self) {
+    pub(crate) fn erase_from_basic_block(self) {
         unsafe { LLVMInstructionEraseFromParent(self.0) }
     }
 
     /// Sets the tail call kind of a call.
-    pub fn set_tail_call_kind(self, kind: LLVMTailCallKind) {
+    pub(crate) fn set_tail_call_kind(self, kind: LLVMTailCallKind) {
         unsafe { LLVMSetTailCallKind(self.0, kind) }
     }
 
     /// Sets the calling convention of a call.
-    pub fn set_call_conv(self, call_conv: u32) {
+    pub(crate) fn set_call_conv(self, call_conv: u32) {
         unsafe { LLVMSetInstructionCallConv(self.0, call_conv) }
     }
 
     /// Adds an attribute to a call.
-    pub fn add_call_site_attribute(self, loc: AttributeLoc, attribute: Attribute) {
+    pub(crate) fn add_call_site_attribute(self, loc: AttributeLoc, attribute: Attribute) {
         unsafe { LLVMAddCallSiteAttribute(self.0, loc.index(), attribute.0) }
     }
 }
@@ -526,7 +537,7 @@ impl Function {
     }
 
     /// Returns the name of the function.
-    pub fn get_name(self) -> String {
+    pub(crate) fn get_name(self) -> String {
         let mut len = 0;
         unsafe {
             let name = LLVMGetValueName2(self.0, &mut len);
@@ -535,57 +546,57 @@ impl Function {
     }
 
     /// Returns the function type.
-    pub fn get_type(self) -> Type {
+    pub(crate) fn get_type(self) -> Type {
         Type(unsafe { LLVMGlobalGetValueType(self.0) })
     }
 
     /// Returns the number of parameters.
-    pub fn count_params(self) -> u32 {
+    pub(crate) fn count_params(self) -> u32 {
         unsafe { LLVMCountParams(self.0) }
     }
 
     /// Returns the `nth` parameter, if it exists.
-    pub fn get_nth_param(self, nth: u32) -> Option<Value> {
+    pub(crate) fn get_nth_param(self, nth: u32) -> Option<Value> {
         (nth < self.count_params()).then(|| Value(unsafe { LLVMGetParam(self.0, nth) }))
     }
 
     /// Returns the number of basic blocks.
-    pub fn count_basic_blocks(self) -> u32 {
+    pub(crate) fn count_basic_blocks(self) -> u32 {
         unsafe { LLVMCountBasicBlocks(self.0) }
     }
 
     /// Returns the entry block, if the function has a body.
-    pub fn get_first_basic_block(self) -> Option<Block> {
+    pub(crate) fn get_first_basic_block(self) -> Option<Block> {
         Block::new(unsafe { LLVMGetFirstBasicBlock(self.0) })
     }
 
     /// Sets the linkage.
-    pub fn set_linkage(self, linkage: LLVMLinkage) {
+    pub(crate) fn set_linkage(self, linkage: LLVMLinkage) {
         unsafe { LLVMSetLinkage(self.0, linkage) }
     }
 
     /// Returns the calling convention.
-    pub fn get_call_conv(self) -> u32 {
+    pub(crate) fn get_call_conv(self) -> u32 {
         unsafe { LLVMGetFunctionCallConv(self.0) }
     }
 
     /// Sets the calling convention.
-    pub fn set_call_conv(self, call_conv: u32) {
+    pub(crate) fn set_call_conv(self, call_conv: u32) {
         unsafe { LLVMSetFunctionCallConv(self.0, call_conv) }
     }
 
     /// Adds an attribute.
-    pub fn add_attribute(self, loc: AttributeLoc, attribute: Attribute) {
+    pub(crate) fn add_attribute(self, loc: AttributeLoc, attribute: Attribute) {
         unsafe { LLVMAddAttributeAtIndex(self.0, loc.index(), attribute.0) }
     }
 
     /// Attaches the debug info subprogram.
-    pub fn set_subprogram(self, subprogram: Metadata) {
+    pub(crate) fn set_subprogram(self, subprogram: Metadata) {
         unsafe { LLVMSetSubprogram(self.0, subprogram.raw()) }
     }
 
     /// Returns the raw value.
-    pub const fn as_value_ref(self) -> LLVMValueRef {
+    pub(crate) const fn as_value_ref(self) -> LLVMValueRef {
         self.0
     }
 
@@ -594,7 +605,7 @@ impl Function {
     /// # Safety
     ///
     /// Nothing may use the function afterwards.
-    pub unsafe fn delete(self) {
+    pub(crate) unsafe fn delete(self) {
         unsafe { LLVMDeleteFunction(self.0) }
     }
 }
@@ -608,31 +619,31 @@ impl fmt::Debug for Function {
 /// A global variable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(transparent)]
-pub struct Global(LLVMValueRef);
+pub(crate) struct Global(LLVMValueRef);
 
 impl Global {
     /// Returns the address of the global, a pointer value.
-    pub const fn as_pointer_value(self) -> Value {
+    pub(crate) const fn as_pointer_value(self) -> Value {
         Value(self.0)
     }
 
     /// Sets the initial value.
-    pub fn set_initializer(self, value: Value) {
+    pub(crate) fn set_initializer(self, value: Value) {
         unsafe { LLVMSetInitializer(self.0, value.0) }
     }
 
     /// Marks the global as constant.
-    pub fn set_constant(self, constant: bool) {
+    pub(crate) fn set_constant(self, constant: bool) {
         unsafe { LLVMSetGlobalConstant(self.0, constant as LLVMBool) }
     }
 
     /// Sets the linkage.
-    pub fn set_linkage(self, linkage: LLVMLinkage) {
+    pub(crate) fn set_linkage(self, linkage: LLVMLinkage) {
         unsafe { LLVMSetLinkage(self.0, linkage) }
     }
 
     /// Sets whether the address is significant.
-    pub fn set_unnamed_address(self, address: LLVMUnnamedAddr) {
+    pub(crate) fn set_unnamed_address(self, address: LLVMUnnamedAddr) {
         unsafe { LLVMSetUnnamedAddress(self.0, address) }
     }
 }
@@ -648,7 +659,7 @@ impl Block {
     }
 
     /// Returns the last instruction, if the block is not empty.
-    pub fn get_last_instruction(self) -> Option<Inst> {
+    pub(crate) fn get_last_instruction(self) -> Option<Inst> {
         let inst = unsafe { LLVMGetLastInstruction(self.0) };
         (!inst.is_null()).then_some(Inst(inst))
     }
@@ -658,7 +669,7 @@ impl Block {
     /// # Safety
     ///
     /// The block must belong to a function that is not deleted.
-    pub unsafe fn get_address(self) -> Option<Value> {
+    pub(crate) unsafe fn get_address(self) -> Option<Value> {
         unsafe {
             let parent = LLVMGetBasicBlockParent(self.0);
             // Taking the address of the entry block is illegal.
@@ -680,28 +691,28 @@ impl fmt::Debug for Block {
 /// A metadata node, usable as the operand of an instruction's metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(transparent)]
-pub struct MetadataNode(LLVMValueRef);
+pub(crate) struct MetadataNode(LLVMValueRef);
 
 /// An LLVM attribute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(transparent)]
-pub struct Attribute(LLVMAttributeRef);
+pub(crate) struct Attribute(LLVMAttributeRef);
 
 impl Attribute {
     /// Wraps a raw attribute.
-    pub const fn new(raw: LLVMAttributeRef) -> Self {
+    pub(crate) const fn new(raw: LLVMAttributeRef) -> Self {
         Self(raw)
     }
 
     /// Returns the kind ID of the enum attribute `name`, or 0 if there is none.
-    pub fn get_named_enum_kind_id(name: &str) -> u32 {
+    pub(crate) fn get_named_enum_kind_id(name: &str) -> u32 {
         unsafe { LLVMGetEnumAttributeKindForName(name.as_ptr().cast(), name.len()) }
     }
 }
 
 /// The place an attribute applies to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AttributeLoc {
+pub(crate) enum AttributeLoc {
     /// The return value.
     Return,
     /// The parameter at the given index.
@@ -725,14 +736,14 @@ impl AttributeLoc {
 
 /// An instruction builder.
 #[derive(Debug)]
-pub struct Builder {
+pub(crate) struct Builder {
     raw: LLVMBuilderRef,
 }
 
 macro_rules! binary_ops {
     ($($(#[$meta:meta])* $name:ident => $llvm:ident),* $(,)?) => {$(
         $(#[$meta])*
-        pub fn $name(&self, lhs: Value, rhs: Value, name: &str) -> Value {
+        pub(crate) fn $name(&self, lhs: Value, rhs: Value, name: &str) -> Value {
             let name = to_c_str(name);
             Value(unsafe { $llvm(self.raw, lhs.0, rhs.0, name.as_ptr()) })
         }
@@ -742,7 +753,7 @@ macro_rules! binary_ops {
 macro_rules! cast_ops {
     ($($(#[$meta:meta])* $name:ident => $llvm:ident),* $(,)?) => {$(
         $(#[$meta])*
-        pub fn $name(&self, value: Value, ty: Type, name: &str) -> Value {
+        pub(crate) fn $name(&self, value: Value, ty: Type, name: &str) -> Value {
             let name = to_c_str(name);
             Value(unsafe { $llvm(self.raw, value.0, ty.0, name.as_ptr()) })
         }
@@ -751,32 +762,32 @@ macro_rules! cast_ops {
 
 impl Builder {
     /// Positions the builder at the end of `block`.
-    pub fn position_at_end(&self, block: Block) {
+    pub(crate) fn position_at_end(&self, block: Block) {
         unsafe { LLVMPositionBuilderAtEnd(self.raw, block.0) }
     }
 
     /// Returns the block the builder inserts into.
-    pub fn get_insert_block(&self) -> Option<Block> {
+    pub(crate) fn get_insert_block(&self) -> Option<Block> {
         Block::new(unsafe { LLVMGetInsertBlock(self.raw) })
     }
 
     /// Sets the debug location attached to new instructions.
-    pub fn set_current_debug_location(&self, location: DILocation) {
+    pub(crate) fn set_current_debug_location(&self, location: DILocation) {
         unsafe { LLVMSetCurrentDebugLocation2(self.raw, location.raw()) }
     }
 
     /// Returns the debug location attached to new instructions, if any.
-    pub fn get_current_debug_location(&self) -> Option<DILocation> {
+    pub(crate) fn get_current_debug_location(&self) -> Option<DILocation> {
         DILocation::new(unsafe { LLVMGetCurrentDebugLocation2(self.raw) })
     }
 
     /// Stops attaching a debug location to new instructions.
-    pub fn unset_current_debug_location(&self) {
+    pub(crate) fn unset_current_debug_location(&self) {
         unsafe { LLVMSetCurrentDebugLocation2(self.raw, ptr::null_mut()) }
     }
 
     /// Builds a call to `function`.
-    pub fn build_call(&self, function: Function, args: &[Value], name: &str) -> Inst {
+    pub(crate) fn build_call(&self, function: Function, args: &[Value], name: &str) -> Inst {
         let fn_ty = function.get_type();
         // LLVM rejects names on calls that return `void`.
         let void = unsafe { LLVMGetTypeKind(LLVMGetReturnType(fn_ty.0)) }
@@ -795,19 +806,19 @@ impl Builder {
     }
 
     /// Builds a stack allocation of `ty`.
-    pub fn build_alloca(&self, ty: Type, name: &str) -> Value {
+    pub(crate) fn build_alloca(&self, ty: Type, name: &str) -> Value {
         let name = to_c_str(name);
         Value(unsafe { LLVMBuildAlloca(self.raw, ty.0, name.as_ptr()) })
     }
 
     /// Builds a load of `ty` from `ptr`.
-    pub fn build_load(&self, ty: Type, ptr: Value, name: &str) -> Value {
+    pub(crate) fn build_load(&self, ty: Type, ptr: Value, name: &str) -> Value {
         let name = to_c_str(name);
         Value(unsafe { LLVMBuildLoad2(self.raw, ty.0, ptr.0, name.as_ptr()) })
     }
 
     /// Builds a store of `value` to `ptr`.
-    pub fn build_store(&self, ptr: Value, value: Value) -> Inst {
+    pub(crate) fn build_store(&self, ptr: Value, value: Value) -> Inst {
         Inst(unsafe { LLVMBuildStore(self.raw, value.0, ptr.0) })
     }
 
@@ -816,7 +827,7 @@ impl Builder {
     /// # Safety
     ///
     /// The address must be in bounds, otherwise the result is poison.
-    pub unsafe fn build_in_bounds_gep(
+    pub(crate) unsafe fn build_in_bounds_gep(
         &self,
         ty: Type,
         ptr: Value,
@@ -837,20 +848,20 @@ impl Builder {
     }
 
     /// Builds a global string constant and returns a pointer to it.
-    pub fn build_global_string_ptr(&self, value: &str, name: &str) -> Value {
+    pub(crate) fn build_global_string_ptr(&self, value: &str, name: &str) -> Value {
         let value = to_c_str(value);
         let name = to_c_str(name);
         Value(unsafe { LLVMBuildGlobalString(self.raw, value.as_ptr(), name.as_ptr()) })
     }
 
     /// Builds an extraction of the field `index` of an aggregate.
-    pub fn build_extract_value(&self, aggregate: Value, index: u32, name: &str) -> Value {
+    pub(crate) fn build_extract_value(&self, aggregate: Value, index: u32, name: &str) -> Value {
         let name = to_c_str(name);
         Value(unsafe { LLVMBuildExtractValue(self.raw, aggregate.0, index, name.as_ptr()) })
     }
 
     /// Builds a `phi` of `ty` with the given incoming values.
-    pub fn build_phi(&self, ty: Type, incoming: &[(Value, Block)], name: &str) -> Value {
+    pub(crate) fn build_phi(&self, ty: Type, incoming: &[(Value, Block)], name: &str) -> Value {
         let name = to_c_str(name);
         let (mut values, mut blocks): (Vec<_>, Vec<_>) =
             incoming.iter().map(|&(value, block)| (value.0, block.0)).unzip();
@@ -862,13 +873,19 @@ impl Builder {
     }
 
     /// Builds a `select`.
-    pub fn build_select(&self, cond: Value, then: Value, otherwise: Value, name: &str) -> Value {
+    pub(crate) fn build_select(
+        &self,
+        cond: Value,
+        then: Value,
+        otherwise: Value,
+        name: &str,
+    ) -> Value {
         let name = to_c_str(name);
         Value(unsafe { LLVMBuildSelect(self.raw, cond.0, then.0, otherwise.0, name.as_ptr()) })
     }
 
     /// Builds an integer comparison.
-    pub fn build_int_compare(
+    pub(crate) fn build_int_compare(
         &self,
         predicate: LLVMIntPredicate,
         lhs: Value,
@@ -880,25 +897,25 @@ impl Builder {
     }
 
     /// Builds a comparison of a pointer with null.
-    pub fn build_is_null(&self, ptr: Value, name: &str) -> Value {
+    pub(crate) fn build_is_null(&self, ptr: Value, name: &str) -> Value {
         let name = to_c_str(name);
         Value(unsafe { LLVMBuildIsNull(self.raw, ptr.0, name.as_ptr()) })
     }
 
     /// Builds a comparison of a pointer with non-null.
-    pub fn build_is_not_null(&self, ptr: Value, name: &str) -> Value {
+    pub(crate) fn build_is_not_null(&self, ptr: Value, name: &str) -> Value {
         let name = to_c_str(name);
         Value(unsafe { LLVMBuildIsNotNull(self.raw, ptr.0, name.as_ptr()) })
     }
 
     /// Builds a bitwise not.
-    pub fn build_not(&self, value: Value, name: &str) -> Value {
+    pub(crate) fn build_not(&self, value: Value, name: &str) -> Value {
         let name = to_c_str(name);
         Value(unsafe { LLVMBuildNot(self.raw, value.0, name.as_ptr()) })
     }
 
     /// Builds a right shift, arithmetic if `sign_extend` is set.
-    pub fn build_right_shift(
+    pub(crate) fn build_right_shift(
         &self,
         lhs: Value,
         rhs: Value,
@@ -949,7 +966,7 @@ impl Builder {
     }
 
     /// Builds a `ret` with no value.
-    pub fn build_return(&self, value: Option<Value>) -> Inst {
+    pub(crate) fn build_return(&self, value: Option<Value>) -> Inst {
         Inst(unsafe {
             match value {
                 Some(value) => LLVMBuildRet(self.raw, value.0),
@@ -959,24 +976,34 @@ impl Builder {
     }
 
     /// Builds a `ret` of an aggregate made of `values`.
-    pub fn build_aggregate_return(&self, values: &[Value]) -> Inst {
+    pub(crate) fn build_aggregate_return(&self, values: &[Value]) -> Inst {
         Inst(unsafe {
             LLVMBuildAggregateRet(self.raw, values.as_ptr().cast_mut().cast(), values.len() as u32)
         })
     }
 
     /// Builds an unconditional branch.
-    pub fn build_unconditional_branch(&self, dest: Block) -> Inst {
+    pub(crate) fn build_unconditional_branch(&self, dest: Block) -> Inst {
         Inst(unsafe { LLVMBuildBr(self.raw, dest.0) })
     }
 
     /// Builds a conditional branch.
-    pub fn build_conditional_branch(&self, cond: Value, then: Block, otherwise: Block) -> Inst {
+    pub(crate) fn build_conditional_branch(
+        &self,
+        cond: Value,
+        then: Block,
+        otherwise: Block,
+    ) -> Inst {
         Inst(unsafe { LLVMBuildCondBr(self.raw, cond.0, then.0, otherwise.0) })
     }
 
     /// Builds a `switch` on `value` with the given cases.
-    pub fn build_switch(&self, value: Value, default: Block, cases: &[(Value, Block)]) -> Inst {
+    pub(crate) fn build_switch(
+        &self,
+        value: Value,
+        default: Block,
+        cases: &[(Value, Block)],
+    ) -> Inst {
         unsafe {
             let switch = LLVMBuildSwitch(self.raw, value.0, default.0, cases.len() as u32);
             for &(value, block) in cases {
@@ -987,7 +1014,7 @@ impl Builder {
     }
 
     /// Builds an indirect branch to `address`, which is one of `destinations`.
-    pub fn build_indirect_branch(&self, address: Value, destinations: &[Block]) -> Inst {
+    pub(crate) fn build_indirect_branch(&self, address: Value, destinations: &[Block]) -> Inst {
         unsafe {
             let branch = LLVMBuildIndirectBr(self.raw, address.0, destinations.len() as u32);
             for dest in destinations {
@@ -998,7 +1025,7 @@ impl Builder {
     }
 
     /// Builds an `unreachable`.
-    pub fn build_unreachable(&self) -> Inst {
+    pub(crate) fn build_unreachable(&self) -> Inst {
         Inst(unsafe { LLVMBuildUnreachable(self.raw) })
     }
 }

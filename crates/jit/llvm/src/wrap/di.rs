@@ -8,14 +8,14 @@ use llvm_sys::{
 use std::ptr;
 
 /// Returns the debug info metadata version LLVM emits, for the `Debug Info Version` module flag.
-pub fn debug_metadata_version() -> u32 {
+pub(crate) fn debug_metadata_version() -> u32 {
     unsafe { LLVMDebugMetadataVersion() }
 }
 
 /// An LLVM metadata node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(transparent)]
-pub struct Metadata(LLVMMetadataRef);
+pub(crate) struct Metadata(LLVMMetadataRef);
 
 impl Metadata {
     pub(crate) const fn new(raw: LLVMMetadataRef) -> Self {
@@ -29,7 +29,7 @@ impl Metadata {
 
 /// A debug location, attached to the instructions a [`Builder`](super::Builder) creates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DILocation(LLVMMetadataRef);
+pub(crate) struct DILocation(LLVMMetadataRef);
 
 impl DILocation {
     pub(crate) fn new(raw: LLVMMetadataRef) -> Option<Self> {
@@ -43,20 +43,20 @@ impl DILocation {
 
 /// A compile unit and the file it describes.
 #[derive(Clone, Copy, Debug)]
-pub struct DICompileUnit {
+pub(crate) struct DICompileUnit {
     unit: LLVMMetadataRef,
     file: LLVMMetadataRef,
 }
 
 /// An owned debug info builder.
 #[derive(Debug)]
-pub struct DebugInfoBuilder {
+pub(crate) struct DebugInfoBuilder {
     raw: LLVMDIBuilderRef,
 }
 
 impl DebugInfoBuilder {
     /// Creates a builder for `module` and a C compile unit for the file `filename` in `directory`.
-    pub fn new(
+    pub(crate) fn new(
         module: &Module,
         filename: &str,
         directory: &str,
@@ -99,7 +99,7 @@ impl DebugInfoBuilder {
     }
 
     /// Describes a public, local function without parameters and line information.
-    pub fn create_subprogram(
+    pub(crate) fn create_subprogram(
         &self,
         unit: DICompileUnit,
         name: &str,
@@ -135,7 +135,7 @@ impl DebugInfoBuilder {
     }
 
     /// Creates a debug location in `scope`.
-    pub fn create_debug_location(
+    pub(crate) fn create_debug_location(
         &self,
         cx: &Context,
         line: u32,
@@ -148,7 +148,7 @@ impl DebugInfoBuilder {
     }
 
     /// Resolves forward references. Call before emitting the module.
-    pub fn finalize(&self) {
+    pub(crate) fn finalize(&self) {
         unsafe { LLVMDIBuilderFinalize(self.raw) }
     }
 }

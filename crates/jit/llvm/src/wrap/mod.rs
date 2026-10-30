@@ -14,7 +14,7 @@ mod ir;
 mod string;
 mod target;
 
-pub use di::*;
+pub(crate) use di::*;
 pub use ir::*;
 pub use string::*;
 pub use target::*;

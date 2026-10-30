@@ -31,16 +31,15 @@ use std::{
     },
 };
 use wrap::{
-    Attribute, AttributeLoc, Block, DICompileUnit, DebugInfoBuilder, Function, Inst, LLVMString,
-    Metadata, Module, PassBuilderOptions, Target, TargetMachine, Type, Value,
+    Attribute, AttributeLoc, DICompileUnit, DebugInfoBuilder, Metadata, PassBuilderOptions, Target,
 };
 
 mod cpp;
 
 mod dh;
 pub mod orc;
-pub mod wrap;
-pub use wrap::Context;
+mod wrap;
+pub use wrap::{Block, Context, Function, Inst, LLVMString, Module, TargetMachine, Type, Value};
 
 /// Branch weight for non-cold branches.
 const DEFAULT_WEIGHT: u32 = 20000;
