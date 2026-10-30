@@ -155,7 +155,7 @@ fn collect_trials(args: &Arguments, suites: &[TestSuite]) -> Result<Vec<Trial>, 
 ///
 /// Skipped when the roots are not the full default set: an explicit root, additional tests,
 /// `SUBDIR`, or an execution-specs-only run leave patterns without fixtures. Patterns in a
-/// main-only list are checked only when a `main` root exists.
+/// main-only list are checked only when the owning suite has a `main` root.
 fn check_ignored_tests(suites: &[TestSuite]) -> Result<(), String> {
     let roots = || suites.iter().flat_map(|suite| &suite.roots);
     let subdir = env::var_os(STATE_TEST_SUBDIR_ENV).is_some_and(|subdir| !subdir.is_empty());
@@ -175,11 +175,12 @@ fn check_ignored_tests(suites: &[TestSuite]) -> Result<(), String> {
         }
     }
 
-    let has_main = roots().any(TestRoot::is_main);
     let mut dead = suites
         .iter()
-        .flat_map(|suite| &suite.ignored)
-        .filter(|list| has_main || !list.main_only)
+        .flat_map(|suite| {
+            let has_main = suite.roots.iter().any(TestRoot::is_main);
+            suite.ignored.iter().filter(move |list| has_main || !list.main_only)
+        })
         .flat_map(|list| list.patterns)
         .filter(|pattern| !names.iter().any(|name| name.contains(*pattern)))
         .collect::<Vec<_>>();

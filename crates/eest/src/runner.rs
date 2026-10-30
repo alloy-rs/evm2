@@ -98,7 +98,7 @@ fn run_compiled_files(paths: Vec<PathBuf>, mode: CompiledMode) -> Result<(), Fai
 #[rustfmt::skip]
 const IGNORED_TESTS: &[&str] = &[
     // Each fork runs 2^32 - 1 Blake2f rounds: about 275s of CPU in the interpreter.
-    "stTimeConsuming/CALLBlake2f_MaxRounds.json",
+    "CALLBlake2f_MaxRounds.json",
 
     // The state-test runner takes the sender from the fixture and does not recover or
     // validate legacy-tx signatures, so v/r/s and chain-id rejection tests cannot pass.
