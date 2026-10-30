@@ -8,10 +8,7 @@
 //! cache when it removes or replaces that program, and every key when it clears them all.
 
 use crate::runtime::{BackendShared, CompiledProgram, LookupRequest, RuntimeCacheKey};
-use alloy_primitives::{
-    Bytes,
-    map::{HashMap, HashSet},
-};
+use alloy_primitives::{Bytes, map::HashMap};
 use std::{
     cell::RefCell,
     fmt, mem,
@@ -108,19 +105,25 @@ pub(crate) struct LocalCache {
     /// Backend the cached programs belong to.
     backend: Weak<BackendShared>,
     /// Programs this thread found resident.
-    programs: HashMap<RuntimeCacheKey, Arc<CompiledProgram>>,
-    /// Keys reported to the backend since the last flush.
-    reported: HashSet<RuntimeCacheKey>,
+    programs: HashMap<RuntimeCacheKey, CachedProgram>,
     /// Hits not yet added to the backend's stats.
     pending_hits: u64,
-    /// Hits since `reported` was last cleared.
+    /// Hits since the cached programs were last marked unreported.
     hits_since_clear: u64,
-    /// The backend's report epoch when `reported` was last cleared.
+    /// The backend's report epoch when the cached programs were last marked unreported.
     report_epoch: u64,
     /// Number of live [`LocalProgram`]s borrowed from this cache.
     borrows: usize,
     /// Programs dropped from the cache while a [`LocalProgram`] may still run them.
     retired: Vec<Arc<CompiledProgram>>,
+}
+
+/// A program in a thread's cache.
+#[derive(Debug)]
+struct CachedProgram {
+    program: Arc<CompiledProgram>,
+    /// Whether the backend heard of a hit on this program since the last mark.
+    reported: bool,
 }
 
 impl LocalCache {
@@ -129,7 +132,6 @@ impl LocalCache {
         Self {
             backend,
             programs: HashMap::default(),
-            reported: HashSet::default(),
             pending_hits: 0,
             hits_since_clear: 0,
             report_epoch: 0,
@@ -142,8 +144,7 @@ impl LocalCache {
     ///
     /// While programs are borrowed, they are kept alive until the last borrow is released.
     fn invalidate(&mut self) -> Vec<Arc<CompiledProgram>> {
-        self.reported.clear();
-        let programs = self.programs.drain().map(|(_, program)| program);
+        let programs = self.programs.drain().map(|(_, cached)| cached.program);
         if self.borrows > 0 {
             self.retired.extend(programs);
             Vec::new()
@@ -156,8 +157,7 @@ impl LocalCache {
     ///
     /// While programs are borrowed, the program is kept alive until the last borrow is released.
     fn invalidate_key(&mut self, key: &RuntimeCacheKey) -> Option<Arc<CompiledProgram>> {
-        self.reported.remove(key);
-        let program = self.programs.remove(key)?;
+        let program = self.programs.remove(key)?.program;
         if self.borrows > 0 {
             self.retired.push(program);
             None
@@ -166,27 +166,39 @@ impl LocalCache {
         }
     }
 
-    /// Counts a hit and reports `key` to the backend if it was not reported since `reported` was
-    /// last cleared, which happens every [`HIT_FLUSH_INTERVAL`] hits and after each eviction
+    /// Counts a hit on the cached program for `key` and returns it, or returns `None` if the
+    /// program is not cached.
+    ///
+    /// Reports the key to the backend if it was not reported since the cached programs were last
+    /// marked unreported, which happens every [`HIT_FLUSH_INTERVAL`] hits and after each eviction
     /// sweep.
-    fn record_hit(&mut self, shared: &BackendShared, key: &RuntimeCacheKey) {
-        self.pending_hits += 1;
-        self.hits_since_clear += 1;
+    fn hit(
+        &mut self,
+        shared: &BackendShared,
+        key: &RuntimeCacheKey,
+    ) -> Option<NonNull<CompiledProgram>> {
         let epoch = shared.report_epoch.load(Ordering::Relaxed);
         if self.hits_since_clear >= HIT_FLUSH_INTERVAL || epoch != self.report_epoch {
-            self.reported.clear();
+            for cached in self.programs.values_mut() {
+                cached.reported = false;
+            }
             self.hits_since_clear = 0;
             self.report_epoch = epoch;
         }
-        if self.reported.insert(*key) {
+        let cached = self.programs.get_mut(key)?;
+        let program = program_ptr(&cached.program);
+        self.pending_hits += 1;
+        self.hits_since_clear += 1;
+        if !mem::replace(&mut cached.reported, true) {
             // An empty bytecode marks a hit, which refreshes the key's last-hit time.
             if shared.events.push(LookupRequest { key: *key, code: Bytes::new() }).is_err() {
                 shared.stats.events_dropped.fetch_add(1, Ordering::Relaxed);
                 // Report the key again on its next hit.
-                self.reported.remove(key);
+                cached.reported = false;
             }
             self.flush_hits(shared);
         }
+        Some(program)
     }
 
     /// Adds the pending hits to the backend's stats.
@@ -217,18 +229,16 @@ pub(super) fn get(shared: &Arc<BackendShared>, key: &RuntimeCacheKey) -> Option<
             _ => &slot.insert(Slot { backend: Arc::as_ptr(shared), cache: register(shared) }).cache,
         };
         let mut guard = lock(cache);
-        let program = match guard.programs.get(key) {
-            Some(program) => program_ptr(program),
+        let program = match guard.hit(shared, key) {
+            Some(program) => program,
             None => {
                 // Read the map under the cache lock, so that a removal either precedes this read
                 // or invalidates the cache after the insert below.
                 let program = Arc::clone(&*shared.resident.try_get(key).try_unwrap()?);
-                let ptr = program_ptr(&program);
-                guard.programs.insert(*key, program);
-                ptr
+                guard.programs.insert(*key, CachedProgram { program, reported: false });
+                guard.hit(shared, key)?
             }
         };
-        guard.record_hit(shared, key);
         guard.borrows += 1;
         drop(guard);
         Some(LocalProgram { program, cache: Some(Arc::clone(cache)), _owned: None })
@@ -288,12 +298,19 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "llvm")]
 mod tests {
     use super::*;
-    use crate::runtime::{ResidentMap, backend::EventQueue, stats::RuntimeStats};
+    use crate::runtime::{
+        JitBackend, LookupDecision, ResidentMap, RuntimeConfig, backend::EventQueue,
+        stats::RuntimeStats,
+    };
     use alloy_primitives::B256;
     use evm2::SpecId;
     use std::sync::atomic::{AtomicU64, AtomicUsize};
+
+    /// PUSH1 0x42 PUSH0 MSTORE PUSH1 0x20 PUSH0 RETURN.
+    const BYTECODE_RET42: &[u8] = &[0x60, 0x42, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3];
 
     fn key(n: u64) -> RuntimeCacheKey {
         RuntimeCacheKey {
@@ -302,15 +319,36 @@ mod tests {
         }
     }
 
-    fn backend_shared() -> Arc<BackendShared> {
-        Arc::new(BackendShared {
+    /// A backend state that no backend thread drains, and a cache of `keys` that all map to one
+    /// compiled program.
+    fn cache_of(keys: impl IntoIterator<Item = u64>) -> (Arc<BackendShared>, LocalCache) {
+        let backend = JitBackend::new(RuntimeConfig {
+            enabled: true,
+            blocking: true,
+            ..RuntimeConfig::default()
+        })
+        .unwrap();
+        let LookupDecision::Compiled(program) = backend.lookup(crate::runtime::LookupRequest {
+            key: key(u64::MAX),
+            code: BYTECODE_RET42.into(),
+        }) else {
+            panic!("blocking lookup did not compile");
+        };
+        let shared = Arc::new(BackendShared {
             resident: ResidentMap::default(),
             events: EventQueue::new(16 * HIT_FLUSH_INTERVAL as usize),
             local_caches: Default::default(),
             pause_depth: AtomicUsize::new(0),
             report_epoch: AtomicU64::new(0),
             stats: Arc::new(RuntimeStats::default()),
-        })
+        });
+        let mut cache = LocalCache::new(Arc::downgrade(&shared));
+        for n in keys {
+            cache
+                .programs
+                .insert(key(n), CachedProgram { program: Arc::clone(&program), reported: false });
+        }
+        (shared, cache)
     }
 
     fn reports_of(shared: &BackendShared, key: &RuntimeCacheKey) -> usize {
@@ -323,15 +361,14 @@ mod tests {
 
     #[test]
     fn hot_key_is_reported_again_while_new_keys_arrive() {
-        let shared = backend_shared();
-        let mut cache = LocalCache::new(Arc::downgrade(&shared));
+        let (shared, mut cache) = cache_of(0..=2 * HIT_FLUSH_INTERVAL);
 
         // Each first report of a new key adds the pending hits to the stats, which must not stop
         // the hot key's reports from restarting after `HIT_FLUSH_INTERVAL` hits.
         let hot = key(0);
         for n in 1..=2 * HIT_FLUSH_INTERVAL {
-            cache.record_hit(&shared, &hot);
-            cache.record_hit(&shared, &key(n));
+            cache.hit(&shared, &hot).unwrap();
+            cache.hit(&shared, &key(n)).unwrap();
         }
 
         let hot_reports = reports_of(&shared, &hot);
@@ -340,15 +377,14 @@ mod tests {
 
     #[test]
     fn key_is_reported_again_after_an_eviction_sweep() {
-        let shared = backend_shared();
-        let mut cache = LocalCache::new(Arc::downgrade(&shared));
+        let (shared, mut cache) = cache_of([0]);
 
         // A thread that hits far less than `HIT_FLUSH_INTERVAL` times between sweeps must still
         // refresh the key's last-hit time after each sweep.
         let hot = key(0);
         for _ in 0..3 {
-            cache.record_hit(&shared, &hot);
-            cache.record_hit(&shared, &hot);
+            cache.hit(&shared, &hot).unwrap();
+            cache.hit(&shared, &hot).unwrap();
             shared.report_epoch.fetch_add(1, Ordering::Relaxed);
         }
 
