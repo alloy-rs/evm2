@@ -12,7 +12,7 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::IndexMap};
 use evm2::{
     SpecId,
     env::{BlockEnv, BlockEnvExt},
@@ -25,7 +25,7 @@ use revm::{
 };
 use secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fmt, sync::OnceLock};
+use std::{fmt, sync::OnceLock};
 
 pub(crate) const CALLER: Address = Address::new([0x10; 20]);
 pub(crate) const TARGET: Address = Address::new([0x20; 20]);
@@ -447,7 +447,7 @@ fn add_eip7702_accounts<'a>(
             balance: U256::from(1_000),
             nonce: 0,
             code: tiny_callee_code(rng, SpecId::PRAGUE),
-            storage: BTreeMap::new(),
+            storage: IndexMap::default(),
         },
     );
 
@@ -489,8 +489,8 @@ fn upsert_account(accounts: &mut Vec<CaseAccount>, account: CaseAccount) {
     accounts.push(account);
 }
 
-const fn eip7702_authority_account(address: Address, nonce: u64, code: Bytes) -> CaseAccount {
-    CaseAccount { address, balance: U256::ZERO, nonce, code, storage: BTreeMap::new() }
+fn eip7702_authority_account(address: Address, nonce: u64, code: Bytes) -> CaseAccount {
+    CaseAccount { address, balance: U256::ZERO, nonce, code, storage: IndexMap::default() }
 }
 
 fn eip7702_designation(address: Address) -> Bytes {
@@ -737,7 +737,7 @@ pub(crate) struct CaseAccount {
     pub(crate) balance: U256,
     pub(crate) nonce: u64,
     pub(crate) code: Bytes,
-    pub(crate) storage: BTreeMap<U256, U256>,
+    pub(crate) storage: IndexMap<U256, U256>,
 }
 
 mod spec_serde {
@@ -820,14 +820,15 @@ mod tests {
     }
 
     #[test]
-    fn storage_serialization_is_canonical() {
-        let mut case = CaseGenerator::default().generate(&mut Gen::new(1)).clone();
-        case.accounts[0].storage = (0..32).map(|key| (U256::from(key), U256::ONE)).collect();
-        let json = serde_json::to_vec(&case).unwrap();
-        case.accounts[0].storage = (0..32).rev().map(|key| (U256::from(key), U256::ONE)).collect();
-        assert_eq!(serde_json::to_vec(&case).unwrap(), json);
-        let decoded = serde_json::from_slice::<EvmCase>(&json).unwrap();
-        assert_eq!(decoded, case);
-        assert_eq!(serde_json::to_vec(&decoded).unwrap(), json);
+    fn serialized_case_is_reproducible_and_round_trips() {
+        for seed in 0..64 {
+            let case = CaseGenerator::default().generate(&mut Gen::new(seed)).clone();
+            let json = serde_json::to_vec(&case).unwrap();
+            let fresh = CaseGenerator::default().generate(&mut Gen::new(seed)).clone();
+            assert_eq!(serde_json::to_vec(&fresh).unwrap(), json, "seed {seed}");
+            let decoded = serde_json::from_slice::<EvmCase>(&json).unwrap();
+            assert_eq!(decoded, case, "seed {seed}");
+            assert_eq!(serde_json::to_vec(&decoded).unwrap(), json, "seed {seed}");
+        }
     }
 }

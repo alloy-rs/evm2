@@ -31,9 +31,9 @@ fn minimize_accounts(backends: &mut [&mut dyn EvmBackend; 2], case: &mut EvmCase
 
 fn minimize_storage(backends: &mut [&mut dyn EvmBackend; 2], case: &mut EvmCase) {
     for account_index in 0..case.accounts.len() {
-        while let Some((&key, _)) = case.accounts[account_index].storage.first_key_value() {
+        while let Some(key) = case.accounts[account_index].storage.keys().min().copied() {
             let mut candidate = case.clone();
-            candidate.accounts[account_index].storage.remove(&key);
+            candidate.accounts[account_index].storage.shift_remove(&key);
             if differs(backends, &candidate) {
                 *case = candidate;
             } else {
