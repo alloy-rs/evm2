@@ -1301,6 +1301,17 @@ mod tests {
         basefee: U256,
         tx: TxEnvelope,
     ) -> Result<serde_json::Value, JsInspectorError> {
+        try_run_tx_on(SpecId::CANCUN, insp, contract, success, basefee, tx)
+    }
+
+    fn try_run_tx_on(
+        spec: SpecId,
+        insp: JsInspector,
+        contract: Option<Bytes>,
+        success: bool,
+        basefee: U256,
+        tx: TxEnvelope,
+    ) -> Result<serde_json::Value, JsInspectorError> {
         let addr = Address::repeat_byte(0x01);
         let mut db = CacheDB::new(EmptyDB::default());
 
@@ -1322,11 +1333,11 @@ mod tests {
         );
 
         let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
+            spec,
             evm2::env::BlockEnvExt { basefee, ..Default::default() },
-            ethereum_tx_registry(SpecId::CANCUN),
+            ethereum_tx_registry(spec),
             db,
-            Precompiles::base(SpecId::CANCUN),
+            Precompiles::base(spec),
         );
         evm.set_inspector(insp);
 
@@ -1789,6 +1800,43 @@ mod tests {
         // PUSH1 1, PUSH1 2, ADD, STOP
         let res = run_trace(code, Some(bytes!("0x600160020100")), true);
         assert_eq!(res, json!([2, "2", "1", 1, "3"]));
+    }
+
+    #[test]
+    fn test_step_sees_pre_execution_stack_for_swapn_exchange_dupn() {
+        let code = r#"{
+            res: [],
+            step: function(log) {
+                var depths = {SWAPN: [0, 17], EXCHANGE: [0, 9, 15], DUPN: [0, 16]}[log.op.toString()];
+                if (depths) {
+                    this.res.push([log.op.toString(), log.stack.length()].concat(
+                        depths.map(function(depth) { return log.stack.peek(depth); })));
+                }
+            },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
+        // PUSH1 1..=20, SWAPN 17, EXCHANGE 9 15, DUPN 17, STOP
+        let mut contract = (1..=20).flat_map(|i| [op::PUSH1, i]).collect::<Vec<_>>();
+        contract.extend([op::SWAPN, 0x80, op::EXCHANGE, 0x01, op::DUPN, 0x80, op::STOP]);
+        let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+        let res = try_run_tx_on(
+            SpecId::AMSTERDAM,
+            insp,
+            Some(contract.into()),
+            true,
+            U256::ZERO,
+            legacy_tx(1024),
+        )
+        .unwrap();
+        assert_eq!(
+            res,
+            json!([
+                ["SWAPN", 20, "20", "3"],
+                ["EXCHANGE", 20, "3", "11", "5"],
+                ["DUPN", 20, "3", "4"],
+            ])
+        );
     }
 
     #[test]
