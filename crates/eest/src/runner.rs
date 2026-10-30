@@ -97,8 +97,11 @@ fn run_compiled_files(paths: Vec<PathBuf>, mode: CompiledMode) -> Result<(), Fai
 
 #[rustfmt::skip]
 const IGNORED_TESTS: &[&str] = &[
-    // Each fork runs 2^32 - 1 Blake2f rounds: about 275s of CPU in the interpreter.
+    // Slow fixtures, by CPU time in the interpreter: Blake2f runs 2^32 - 1 rounds per fork (275s),
+    // loopMul takes 37s and static_Call50000_sha256 takes 14s.
     "CALLBlake2f_MaxRounds.json",
+    "loopMul.json",
+    "stTimeConsuming/static_Call50000_sha256.json",
 
     // The state-test runner takes the sender from the fixture and does not recover or
     // validate legacy-tx signatures, so v/r/s and chain-id rejection tests cannot pass.
