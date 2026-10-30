@@ -27,11 +27,10 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
             alloc::boxed::Box::new(StorageChange {
                 key: U256::ZERO,
                 value: U256::from(pc),
-                had_value: None,
+                had_value: Some(U256::ZERO),
                 reason: StorageChangeReason::SSTORE,
             })
         }),
-        storage_slot: (op == op::SSTORE).then(|| Box::new((U256::ZERO, U256::from(pc)))),
         status: (op == op::REVERT).then_some(InstrStop::Revert),
         immediate_bytes: None,
         decoded: None,
@@ -209,7 +208,12 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
         .collect();
     nodes[0].trace.steps.last_mut().unwrap().status = Some(InstrStop::OutOfGas);
     // The SLOAD reads the value its delegatecall child wrote.
-    nodes[2].trace.steps[2].storage_slot = Some(Box::new((U256::ZERO, U256::from(30))));
+    nodes[2].trace.steps[2].storage_change = Some(Box::new(StorageChange {
+        key: U256::ZERO,
+        value: U256::from(30),
+        had_value: None,
+        reason: StorageChangeReason::SLOAD,
+    }));
     let builder = GethTraceBuilder::new(nodes);
     let expected = [
         (0, 1),
@@ -307,10 +311,15 @@ fn storage_snapshots_accumulate_and_skip_failed_steps() {
     let mut failed = test_step(4, op::SSTORE);
     failed.status = Some(InstrStop::OutOfGas);
     let mut sload = test_step(1, op::SLOAD);
-    sload.storage_slot = Some(Box::new((U256::ZERO, U256::from(1))));
+    sload.storage_change = Some(Box::new(StorageChange {
+        key: U256::ZERO,
+        value: U256::from(1),
+        had_value: None,
+        reason: StorageChangeReason::SLOAD,
+    }));
     // A step that is not an SLOAD or SSTORE has no slot.
     let mut add = test_step(2, op::ADD);
-    add.storage_slot = None;
+    add.storage_change = None;
     let builder = GethTraceBuilder::new(vec![CallTraceNode {
         trace: CallTrace {
             steps: vec![test_step(0, op::PUSH0), sload, add, failed],

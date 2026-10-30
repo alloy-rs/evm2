@@ -505,7 +505,9 @@ impl<W: Write> TraceWriter<W> {
         // of their last write.
         let mut change_id = 0;
         for step in &node.trace.steps {
-            if let Some(change) = &step.storage_change {
+            if !step.is_error()
+                && let Some(change) = &step.storage_change
+            {
                 // Only handle storage changes, signalled by `had_value` being `Some`.
                 if change.had_value.is_some() {
                     let (_first, last, last_change_id) =
