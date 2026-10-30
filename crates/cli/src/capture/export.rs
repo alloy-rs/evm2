@@ -2,26 +2,30 @@ use super::{
     error::CaptureError,
     model::{CapturedBlock, CapturedCase, CapturedInput, State as CapturedState},
 };
+use crate::ethereum::mainnet_spec_for_header;
 use alloy_consensus::{
     EthereumTxEnvelope, Header, TxEip4844,
     transaction::{Transaction as _, to_eip155_value},
 };
-use alloy_eips::{eip2930::AccessList, eip7702::SignedAuthorization};
+use alloy_eips::{eip2930::AccessList, eip7702::SignedAuthorization, eip7840::BlobParams};
+use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use evm2::SpecId;
 use evm2_eest::{
     AccessListItem, TestAuthorization,
     blockchaintest::{
-        Account, Block, BlockHash as EestBlockHash, BlockHeader, BlockchainTest,
-        BlockchainTestCase, ForkSpec, SealEngine, State as EestState, Transaction, Withdrawal,
+        Account, BlobFork, BlobScheduleEntry, Block, BlockHash as EestBlockHash, BlockHeader,
+        BlockchainTest, BlockchainTestCase, ChainConfig, ForkSpec, SealEngine, State as EestState,
+        Transaction, Withdrawal,
     },
 };
 use serde_json::json;
 use std::collections::BTreeMap;
 
 pub(super) fn suite(capture: &CapturedCase) -> Result<BlockchainTest, CaptureError> {
-    let network = network(capture)?;
     let inputs = captured_blocks(capture)?;
+    let blob_fork = blob_fork(inputs)?;
+    let network = network(capture, blob_fork)?;
     let decoded_blocks =
         inputs.iter().map(export_block).collect::<Result<Vec<_>, CaptureError>>()?;
     let first = decoded_blocks.first().expect("blocks is not empty");
@@ -45,6 +49,10 @@ pub(super) fn suite(capture: &CapturedCase) -> Result<BlockchainTest, CaptureErr
             lastblockhash,
             network,
             seal_engine: SealEngine::NoProof,
+            config: Some(ChainConfig {
+                chainid: U256::from(1),
+                blob_schedule: mainnet_blob_schedule(blob_fork),
+            }),
         },
     );
     Ok(BlockchainTest(cases))
@@ -73,7 +81,55 @@ fn captured_blocks(capture: &CapturedCase) -> Result<&[CapturedBlock], CaptureEr
     Ok(blocks)
 }
 
-fn network(capture: &CapturedCase) -> Result<ForkSpec, CaptureError> {
+/// Returns the mainnet fork that sets the blob parameters of every block, or `None` before Cancun.
+fn blob_fork(blocks: &[CapturedBlock]) -> Result<Option<BlobFork>, CaptureError> {
+    let mut forks = blocks.iter().map(|input| mainnet_blob_fork(&input.block.header));
+    let first = forks.next().expect("blocks is not empty")?;
+    for fork in forks {
+        if fork? != first {
+            return Err(CaptureError::MultipleSpecs);
+        }
+    }
+    Ok(first)
+}
+
+fn mainnet_blob_fork(header: &Header) -> Result<Option<BlobFork>, CaptureError> {
+    let spec = mainnet_spec_for_header(header);
+    if !spec.enables(SpecId::CANCUN) {
+        return Ok(None);
+    }
+    let hardfork = EthereumHardfork::from_chain_and_timestamp(
+        alloy_chains::Chain::mainnet(),
+        header.timestamp,
+    );
+    match hardfork {
+        Some(EthereumHardfork::Cancun) => Ok(Some(BlobFork::Cancun)),
+        Some(EthereumHardfork::Prague) => Ok(Some(BlobFork::Prague)),
+        Some(EthereumHardfork::Osaka) => Ok(Some(BlobFork::Osaka)),
+        Some(EthereumHardfork::Bpo1) => Ok(Some(BlobFork::Bpo1)),
+        Some(EthereumHardfork::Bpo2) => Ok(Some(BlobFork::Bpo2)),
+        Some(EthereumHardfork::Amsterdam) => Ok(Some(BlobFork::Amsterdam)),
+        _ => Err(CaptureError::UnsupportedSpec(spec as u32)),
+    }
+}
+
+/// Returns the mainnet blob parameters of every fork up to `last`, or none before Cancun.
+fn mainnet_blob_schedule(last: Option<BlobFork>) -> BTreeMap<BlobFork, BlobScheduleEntry> {
+    [
+        (BlobFork::Cancun, BlobParams::cancun()),
+        (BlobFork::Prague, BlobParams::prague()),
+        (BlobFork::Osaka, BlobParams::osaka()),
+        (BlobFork::Bpo1, BlobParams::bpo1()),
+        (BlobFork::Bpo2, BlobParams::bpo2()),
+        (BlobFork::Amsterdam, BlobParams::bpo2()),
+    ]
+    .into_iter()
+    .filter(|(fork, _)| Some(*fork) <= last)
+    .map(|(fork, params)| (fork, params.into()))
+    .collect()
+}
+
+fn network(capture: &CapturedCase, blob_fork: Option<BlobFork>) -> Result<ForkSpec, CaptureError> {
     let first = capture.versions.versions.first().ok_or(CaptureError::EmptyCapturedVersions)?;
     if capture.versions.versions.iter().any(|version| version.spec_id != first.spec_id) {
         return Err(CaptureError::MultipleSpecs);
@@ -94,7 +150,11 @@ fn network(capture: &CapturedCase) -> Result<ForkSpec, CaptureError> {
         SpecId::SHANGHAI => Ok(ForkSpec::Shanghai),
         SpecId::CANCUN => Ok(ForkSpec::Cancun),
         SpecId::PRAGUE => Ok(ForkSpec::Prague),
-        SpecId::OSAKA => Ok(ForkSpec::Osaka),
+        SpecId::OSAKA => match blob_fork {
+            Some(BlobFork::Bpo1) => Ok(ForkSpec::BPO1),
+            Some(BlobFork::Bpo2) => Ok(ForkSpec::BPO2),
+            _ => Ok(ForkSpec::Osaka),
+        },
         SpecId::AMSTERDAM => Ok(ForkSpec::Amsterdam),
         _ => Err(CaptureError::UnsupportedSpec(first.spec_id)),
     }
@@ -277,4 +337,31 @@ fn export_authorization_list(authorizations: &[SignedAuthorization]) -> Vec<Test
             }),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blob_fork_follows_mainnet_activation() {
+        let fork =
+            |timestamp| mainnet_blob_fork(&Header { timestamp, ..Default::default() }).unwrap();
+        assert_eq!(fork(1_710_338_134), None);
+        assert_eq!(fork(1_710_338_135), Some(BlobFork::Cancun));
+        assert_eq!(fork(1_765_290_070), Some(BlobFork::Osaka));
+        assert_eq!(fork(1_765_290_071), Some(BlobFork::Bpo1));
+        assert_eq!(fork(1_767_747_671), Some(BlobFork::Bpo2));
+    }
+
+    #[test]
+    fn blob_schedule_lists_every_fork_up_to_the_last() {
+        assert!(mainnet_blob_schedule(None).is_empty());
+        let schedule = mainnet_blob_schedule(Some(BlobFork::Bpo1));
+        assert_eq!(
+            schedule.keys().copied().collect::<Vec<_>>(),
+            [BlobFork::Cancun, BlobFork::Prague, BlobFork::Osaka, BlobFork::Bpo1]
+        );
+        assert_eq!(schedule[&BlobFork::Bpo1].params().update_fraction, 8_346_193);
+    }
 }

@@ -1,3 +1,4 @@
+use super::types::{BlobFork, ForkSpec};
 use crate::{execution::ExecutionResourceError, tx::TxBuildError};
 use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
@@ -46,6 +47,12 @@ pub(crate) enum TestErrorKind {
     /// Numeric value overflowed the target type.
     #[error("value overflows {0}")]
     Overflow(&'static str),
+    /// The runner does not support the test's fork.
+    #[error("unsupported fork: {0:?}")]
+    UnsupportedFork(ForkSpec),
+    /// The test's chain configuration has no blob parameters for the active fork.
+    #[error("blob schedule has no entry for {0:?}")]
+    MissingBlobSchedule(BlobFork),
     /// Sender is required in blockchain tests.
     #[error("transaction sender is required")]
     MissingSender,
