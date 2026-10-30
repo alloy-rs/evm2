@@ -52,6 +52,9 @@ impl<T: EvmTypesHost> InterpreterRunner<T> for JitInterpreterRunner {
 ///
 /// Returns `None` when no compiled program is available, leaving the caller to
 /// run the same frame through the evm2 interpreter.
+///
+/// Checks on every call that the backend supports the host's gas schedule and opcode table.
+/// [`InterpreterRunner::supports`] does that check once per runner or config change instead.
 #[inline]
 pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
     backend: &JitBackend,
