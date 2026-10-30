@@ -2380,9 +2380,11 @@ fn precompile_call_contract(code: &[u8]) -> (Address, CacheDB<EmptyDB>) {
 
 #[test]
 fn flat_call_tracer_excludes_call_and_staticcall_to_precompiles() {
-    // CALL 0x04 with value 1, STATICCALL 0x04, CALLCODE 0x04 with value 1, DELEGATECALL 0x02.
+    // CALL 0x04 with value 1, STATICCALL 0x04, CALLCODE 0x04 with value 1, DELEGATECALL 0x02 and
+    // CALLCODE 0x06 without value.
     let (contract, db) = precompile_call_contract(&hex!(
-        "5f5f5f5f600160045af1505f5f5f5f60045afa505f5f5f5f600160045af2505f5f5f5f60025af45000"
+        "5f5f5f5f600160045af1505f5f5f5f60045afa505f5f5f5f600160045af2505f5f5f5f60025af450"
+        "5f5f5f5f5f60065af25000"
     ));
     let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
         TracingInspector::new(TracingInspectorConfig::default_parity()),
@@ -2395,7 +2397,10 @@ fn flat_call_tracer_excludes_call_and_staticcall_to_precompiles() {
     .unwrap();
 
     for (include_precompiles, expected) in [
-        (None, vec![CallType::Call, CallType::CallCode, CallType::DelegateCall]),
+        (
+            None,
+            vec![CallType::Call, CallType::CallCode, CallType::DelegateCall, CallType::CallCode],
+        ),
         (
             Some(true),
             vec![
@@ -2404,6 +2409,7 @@ fn flat_call_tracer_excludes_call_and_staticcall_to_precompiles() {
                 CallType::StaticCall,
                 CallType::CallCode,
                 CallType::DelegateCall,
+                CallType::CallCode,
             ],
         ),
     ] {
