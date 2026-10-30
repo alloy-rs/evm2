@@ -1106,7 +1106,8 @@ fn build_tx(
     let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
     let tx_type = raw.tx_type();
     let (signer, chain_id) = if validate {
-        let (signature, legacy_chain_id) = signature_from_vrs(raw.r, raw.s, raw.v, tx_type == 0)?;
+        let (signature, legacy_chain_id) =
+            signature_from_vrs(raw.r, raw.s, raw.v, tx_type == 0, spec)?;
         // A legacy transaction signs its chain ID through `v`, so `v` decides it.
         let chain_id = if tx_type == 0 { legacy_chain_id.map(U256::from) } else { raw.chain_id };
         (TxSigner::Signature { signature, spec }, chain_id)

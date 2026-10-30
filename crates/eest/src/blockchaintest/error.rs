@@ -144,6 +144,7 @@ impl From<TxBuildError> for TestErrorKind {
             TxBuildError::SerdeDeserialize(error) => Self::SerdeDeserialize(error),
             error @ (TxBuildError::Decode(_)
             | TxBuildError::InvalidV(_)
+            | TxBuildError::ProtectedLegacy
             | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error.to_string()),
         }
     }

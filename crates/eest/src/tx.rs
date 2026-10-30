@@ -83,6 +83,9 @@ pub(crate) enum TxBuildError {
     /// Signature `v` value is not valid for the transaction type.
     #[error("invalid signature v value: {0}")]
     InvalidV(U256),
+    /// An EIP-155 legacy transaction appears before Spurious Dragon.
+    #[error("EIP-155 transaction before Spurious Dragon")]
+    ProtectedLegacy,
     /// Sender could not be recovered from the signature.
     #[error("could not recover sender: {0}")]
     Recover(#[from] RecoveryError),
@@ -204,25 +207,39 @@ pub(crate) fn decode_recovered_tx(
     spec: SpecId,
 ) -> Result<RecoveredTxEnvelope, TxBuildError> {
     let tx = EthereumTxEnvelope::<TxEip4844>::decode_2718_exact(bytes)?;
+    if let EthereumTxEnvelope::Legacy(signed) = &tx
+        && signed.tx().chain_id.is_some()
+        && !spec.enables(SpecId::SPURIOUS_DRAGON)
+    {
+        return Err(TxBuildError::ProtectedLegacy);
+    }
     let caller = recover_sender(tx.signature(), tx.signature_hash(), spec)?;
     Ok(Recovered::new_unchecked(tx.into(), caller))
 }
 
 /// Splits a fixture `v` value into the signature parity and, for legacy transactions, the EIP-155
-/// chain ID it encodes.
+/// chain ID it encodes. A legacy `v` is 27 or 28, or from Spurious Dragon on `35 + 2 * chain_id`
+/// plus the parity.
 pub(crate) fn signature_from_vrs(
     r: U256,
     s: U256,
     v: U256,
     legacy: bool,
+    spec: SpecId,
 ) -> Result<(Signature, Option<u64>), TxBuildError> {
     let invalid = || TxBuildError::InvalidV(v);
-    let v_u64 = u64::try_from(v).map_err(|_| invalid())?;
-    let (y_parity, chain_id) = match (legacy, v_u64) {
-        (false, 0 | 1) => (v_u64 == 1, None),
-        (true, 27 | 28) => (v_u64 == 28, None),
-        (true, 35..) => ((v_u64 - 35) % 2 == 1, Some((v_u64 - 35) / 2)),
-        _ => return Err(invalid()),
+    let (y_parity, chain_id) = if !legacy && v <= U256::ONE {
+        (v == U256::ONE, None)
+    } else if legacy && (v == U256::from(27) || v == U256::from(28)) {
+        (v == U256::from(28), None)
+    } else if legacy && v >= U256::from(35) {
+        if !spec.enables(SpecId::SPURIOUS_DRAGON) {
+            return Err(TxBuildError::ProtectedLegacy);
+        }
+        let encoded = v - U256::from(35);
+        (encoded.bit(0), Some(u64::try_from(encoded >> 1).map_err(|_| invalid())?))
+    } else {
+        return Err(invalid());
     };
     Ok((Signature::new(r, s, y_parity), chain_id))
 }
@@ -284,7 +301,9 @@ fn recovered_envelope(tx: TypedTransaction, caller: Address) -> RecoveredTxEnvel
 
 #[cfg(test)]
 mod tests {
-    use super::TestAuthorization;
+    use super::*;
+    use alloy_consensus::{TxLegacy, crypto::secp256k1};
+    use alloy_eips::eip2718::Encodable2718;
     use serde_json::json;
 
     #[test]
@@ -300,5 +319,52 @@ mod tests {
         let authorization = TestAuthorization { value: value.clone() };
 
         assert_eq!(serde_json::to_value(authorization).unwrap(), value);
+    }
+
+    #[test]
+    fn signature_from_vrs_accepts_the_v_each_fork_allows() {
+        let (r, s) = (U256::ONE, U256::ONE);
+        let v = |v: u64| U256::from(v);
+        let parse = |v: U256, legacy, spec| signature_from_vrs(r, s, v, legacy, spec);
+
+        assert_eq!(parse(v(27), true, SpecId::FRONTIER).unwrap().1, None);
+        assert!(!parse(v(27), true, SpecId::FRONTIER).unwrap().0.v());
+        assert!(parse(v(28), true, SpecId::FRONTIER).unwrap().0.v());
+        assert!(matches!(
+            parse(v(37), true, SpecId::TANGERINE),
+            Err(TxBuildError::ProtectedLegacy)
+        ));
+        let (signature, chain_id) = parse(v(38), true, SpecId::SPURIOUS_DRAGON).unwrap();
+        assert!(signature.v());
+        assert_eq!(chain_id, Some(1));
+        assert!(matches!(parse(v(29), true, SpecId::CANCUN), Err(TxBuildError::InvalidV(_))));
+        assert!(matches!(parse(v(27), false, SpecId::CANCUN), Err(TxBuildError::InvalidV(_))));
+        assert!(parse(v(1), false, SpecId::CANCUN).unwrap().0.v());
+    }
+
+    #[test]
+    fn signature_from_vrs_keeps_v_at_full_width() {
+        let encoded = |chain_id: u128| U256::from(chain_id) * U256::from(2) + U256::from(35);
+        let parse = |v| signature_from_vrs(U256::ONE, U256::ONE, v, true, SpecId::CANCUN);
+
+        // The encoded `v` of the largest chain ID needs 65 bits.
+        let chain_id = u128::from(u64::MAX);
+        assert_eq!(parse(encoded(chain_id)).unwrap().1, Some(u64::MAX));
+        assert!(matches!(parse(encoded(chain_id + 1)), Err(TxBuildError::InvalidV(_))));
+    }
+
+    #[test]
+    fn decode_recovered_tx_rejects_eip155_before_spurious_dragon() {
+        let secret = B256::with_last_byte(1);
+        let tx = TxLegacy { chain_id: Some(1), gas_limit: 21_000, ..Default::default() };
+        let signature = secp256k1::sign_message(secret, tx.signature_hash()).unwrap();
+        let bytes = tx.into_signed(signature).encoded_2718();
+
+        assert!(matches!(
+            decode_recovered_tx(&bytes, SpecId::TANGERINE),
+            Err(TxBuildError::ProtectedLegacy)
+        ));
+        let recovered = decode_recovered_tx(&bytes, SpecId::SPURIOUS_DRAGON).unwrap();
+        assert_eq!(recovered.signer(), recover_address(secret.as_slice()).unwrap());
     }
 }
