@@ -1076,7 +1076,7 @@ fn failed_frames_use_parity_labels() {
             &hex!("61c0015f5ff000")[..],
             &[][..],
             SpecId::PRAGUE,
-            ["Out of gas", "out of gas: max initcode size exceeded: code size 49153 limit 49152"],
+            ["Out of gas", "max initcode size exceeded"],
         ),
         (
             &hex!("600060006000600060003060645a03f100")[..],

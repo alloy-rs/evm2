@@ -8,7 +8,7 @@ use crate::{
             CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
             TraceMemberOrder,
         },
-        utils::{GethHalt, StepContext, fmt_geth_create_end, fmt_geth_halt, gas_used},
+        utils::{CODE_DEPOSIT_OUT_OF_GAS, fails_before_body, fmt_geth_halt, gas_used},
     },
 };
 use alloc::{boxed::Box, string::String, vec::Vec};
@@ -119,15 +119,6 @@ pub struct TracingInspector {
     ///
     /// This is filled during execution.
     features: EvmFeatures,
-    /// The opcode that is about to run, kept for the error geth reports if it halts.
-    step_context: StepContext,
-    /// The error geth reports for the opcode that halted the current frame.
-    ///
-    /// Taken when the frame ends.
-    halt_error: Option<String>,
-    /// The length of the output the last `RETURN` produced, which a failed contract creation
-    /// reports as its code size.
-    return_len: usize,
     /// Pool of reusable _empty_ step vectors to reduce allocations.
     ///
     /// All `Vec<CallTraceStep>` are always empty but may have capacity.
@@ -171,9 +162,6 @@ impl TracingInspector {
             last_journal_len,
             spec_id,
             features,
-            step_context,
-            halt_error,
-            return_len,
             // kept
             config,
             budget,
@@ -199,9 +187,6 @@ impl TracingInspector {
         spec_id.take();
         *features = EvmFeatures::empty();
         *last_journal_len = 0;
-        *step_context = StepContext::default();
-        *halt_error = None;
-        *return_len = 0;
         budget.recorded = 0;
         budget.exceeded = false;
     }
@@ -458,7 +443,6 @@ impl TracingInspector {
         trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
 
         trace.status = Some(result.stop);
-        trace.geth_error = self.halt_error.take();
         trace.success = result.stop.is_success();
         trace.output = result.output.clone();
         if !trace.success {
@@ -615,7 +599,7 @@ impl TracingInspector {
     fn fill_step_on_step_end<T: EvmTypes>(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
-        halt: Option<&GethHalt>,
+        error: Option<String>,
     ) {
         let Some((trace_idx, step_idx)) = self.step_stack.pop() else {
             return;
@@ -707,7 +691,7 @@ impl TracingInspector {
 
         // set the status
         step.status = interp.result().err();
-        step.error = halt.filter(|halt| halt.before_body).map(|halt| halt.msg.clone());
+        step.error = error;
 
         if step.status.is_some_and(|status| status.is_halt()) {
             return;
@@ -789,7 +773,6 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        self.step_context = step_context(interp);
         if self.config.record_steps {
             self.start_step(interp);
         }
@@ -798,19 +781,16 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        let halt = match interp.result() {
-            Err(InstrStop::Return) => {
-                self.return_len = interp.output().len();
-                None
-            }
-            Err(stop) if stop.is_halt() => fmt_geth_halt(stop, self.step_context, interp.version()),
-            _ => None,
-        };
+        let halt = interp.result().err().filter(|stop| stop.is_halt());
+        let error = halt.and_then(|stop| fmt_geth_halt(stop, interp));
+        // geth's struct logger only sees the errors raised before the opcode runs.
+        let step_error =
+            halt.filter(|stop| fails_before_body(*stop, interp)).and_then(|_| error.clone());
         if self.config.record_steps {
-            self.fill_step_on_step_end(interp, halt.as_ref());
+            self.fill_step_on_step_end(interp, step_error);
         }
-        if let Some(halt) = halt {
-            self.halt_error = Some(halt.msg);
+        if let Some(error) = error {
+            self.last_trace().trace.geth_error = Some(error);
         }
         self.budget.halt(interp, true);
     }
@@ -925,15 +905,16 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     fn create_end(
         &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
         let trace_idx = self.last_trace_idx();
         self.fill_trace_on_call_end(result);
+        // An initcode that runs out of gas halts in a step, which reports its own error.
         let trace = &mut self.traces.arena[trace_idx].trace;
-        if trace.geth_error.is_none() {
-            trace.geth_error = fmt_geth_create_end(result.stop, self.return_len, interp.version());
+        if result.stop == InstrStop::OutOfGas && trace.geth_error.is_none() {
+            trace.geth_error = Some(CODE_DEPOSIT_OUT_OF_GAS.into());
         }
     }
 
@@ -1010,27 +991,6 @@ fn storage_slot(stack: &[U256], op: u8) -> Option<Box<(U256, U256)>> {
         }
         _ => None,
     }
-}
-
-/// Returns what geth's error text needs to know about the opcode that is about to run.
-fn step_context<T: EvmTypes>(interp: &Interpreter<'_, '_, T>) -> StepContext {
-    let op = OpCode::new_or_unknown(interp.opcode());
-    let stack = interp.stack();
-    let stack = stack.as_slice();
-    let initcode_size = match op.get() {
-        op::CREATE | op::CREATE2 => stack
-            .len()
-            .checked_sub(3)
-            .map_or(0, |index| usize::try_from(stack[index]).unwrap_or(usize::MAX)),
-        _ => 0,
-    };
-    let immediate = match op.get() {
-        op::DUPN | op::SWAPN | op::EXCHANGE => {
-            interp.original_bytecode_slice().get(interp.pc() + 1).copied().unwrap_or_default()
-        }
-        _ => 0,
-    };
-    StepContext { op, stack_len: stack.len(), immediate, initcode_size }
 }
 
 /// Returns the memory range whose contents after execution the opcode reports, derived from its

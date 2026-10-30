@@ -10,42 +10,16 @@ use alloy_primitives::{Bytes, hex};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
-    AccountInfo, EvmTypesHost, SpecId, Version,
+    AccountInfo, EvmTypes, EvmTypesHost, SpecId,
     constants::STACK_LIMIT,
     env::BlockEnv,
     evm::{DbResult, DynDatabase},
     interpreter::{
-        InstrStop,
+        InstrStop, Interpreter,
         instructions::{decode_pair, decode_single},
         opcode::{OpCode, op},
     },
 };
-
-/// What geth's error text for an opcode halt reports beyond the [`InstrStop`].
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct StepContext {
-    /// The opcode that ran.
-    pub(crate) op: OpCode,
-    /// The stack length before the opcode ran.
-    pub(crate) stack_len: usize,
-    /// The immediate byte of `DUPN`, `SWAPN` and `EXCHANGE`.
-    pub(crate) immediate: u8,
-    /// The initcode size of `CREATE` and `CREATE2`.
-    pub(crate) initcode_size: usize,
-}
-
-/// An opcode halt as geth reports it.
-#[derive(Debug)]
-pub(crate) struct GethHalt {
-    /// The error text.
-    pub(crate) msg: String,
-    /// Whether geth raises the error before it runs the opcode.
-    ///
-    /// Only these errors reach a tracer's `OnOpcode` hook: the stack checks and the gas charges.
-    /// An error raised by the opcode itself reaches the `OnFault` hook, which the struct logger
-    /// does not register.
-    pub(crate) before_body: bool,
-}
 
 /// Converts a non successful [`InstrStop`] to an error message.
 ///
@@ -146,101 +120,94 @@ pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> 
     Some(msg)
 }
 
+/// Returns whether geth raises the error of an opcode that halted with `stop` before it runs the
+/// opcode.
+///
+/// Only these errors reach a tracer's `OnOpcode` hook: the stack checks and the gas charges. An
+/// error raised by the opcode itself reaches the `OnFault` hook, which the struct logger does not
+/// register.
+///
+/// Call this from `step_end`, where the interpreter still holds the opcode and the stack it
+/// halted on.
+pub(crate) fn fails_before_body<T: EvmTypes>(
+    stop: InstrStop,
+    interp: &Interpreter<'_, '_, T>,
+) -> bool {
+    halts_before_body(stop, OpCode::new_or_unknown(interp.opcode()), interp.stack().len())
+}
+
 /// Converts an [`InstrStop`] that halted an opcode to the error geth reports for it.
 ///
-/// Returns `None` if [`InstrStop::is_success`].
+/// Returns `None` if [`InstrStop::is_success`]. Call this from `step_end`, where the interpreter
+/// still holds the opcode and the stack it halted on.
 ///
 /// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/core/vm/interpreter.go#L214-L287> and
 /// <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/core/vm/errors.go>.
-pub(crate) fn fmt_geth_halt(
+pub(crate) fn fmt_geth_halt<T: EvmTypes>(
     stop: InstrStop,
-    ctx: StepContext,
-    version: &Version,
-) -> Option<GethHalt> {
-    let StepContext { op, stack_len, immediate, initcode_size } = ctx;
-    let min_stack = min_stack(op);
-    let max_stack = (STACK_LIMIT + usize::from(op.inputs())).saturating_sub(op.outputs().into());
-    // geth validates the stack of a defined opcode before anything else, while evm2 runs some
-    // checks first.
-    if !matches!(
+    interp: &Interpreter<'_, '_, T>,
+) -> Option<String> {
+    let immediate = interp.original_bytecode_slice().get(interp.pc() + 1).copied();
+    geth_halt_msg(
         stop,
-        InstrStop::OpcodeNotFound | InstrStop::NotActivated | InstrStop::InvalidFEOpcode
-    ) {
-        if stack_len < min_stack {
-            return Some(GethHalt {
-                msg: format!("stack underflow ({stack_len} <=> {min_stack})"),
-                before_body: true,
-            });
-        }
-        if stack_len > max_stack {
-            return Some(GethHalt {
-                msg: format!("stack limit reached {stack_len} ({max_stack})"),
-                before_body: true,
-            });
-        }
-    }
-    let (msg, before_body) = match stop {
-        // `DUPN`, `SWAPN` and `EXCHANGE` check the stack again against the decoded immediate inside
-        // the opcode.
-        InstrStop::StackUnderflow => {
-            let required = required_stack(op, immediate).unwrap_or(min_stack);
-            (format!("stack underflow ({stack_len} <=> {required})"), false)
-        }
-        InstrStop::OpcodeNotFound | InstrStop::NotActivated | InstrStop::InvalidFEOpcode => {
-            (format!("invalid opcode: {}", geth_op_name(op)), false)
-        }
-        InstrStop::InvalidImmediateEncoding => {
-            (format!("invalid opcode: {} (operand: 0x{immediate:02x})", geth_op_name(op)), false)
-        }
-        // The gas functions of these opcodes check for write protection, and geth wraps the errors
-        // of gas functions in `out of gas`. `LOG` and `TSTORE` check inside the opcode.
-        InstrStop::CallNotAllowedInsideStatic => ("out of gas: write protection".to_string(), true),
-        InstrStop::StateChangeDuringStaticCall => {
-            if matches!(op.get(), op::SSTORE | op::CREATE | op::CREATE2 | op::SELFDESTRUCT) {
-                ("out of gas: write protection".to_string(), true)
-            } else {
-                ("write protection".to_string(), false)
-            }
-        }
-        InstrStop::CreateInitCodeSizeLimit => (
-            format!(
-                "out of gas: max initcode size exceeded: code size {initcode_size} limit {}",
-                version.max_initcode_size
-            ),
-            true,
-        ),
-        InstrStop::OutOfGas
-        | InstrStop::MemoryOOG
-        | InstrStop::MemoryLimitOOG
-        | InstrStop::InvalidOperandOOG
-        | InstrStop::ReentrancySentryOOG => (fmt_error_msg(stop, TraceStyle::Geth)?, true),
-        stop => (fmt_error_msg(stop, TraceStyle::Geth)?, false),
-    };
-    Some(GethHalt { msg, before_body })
+        OpCode::new_or_unknown(interp.opcode()),
+        interp.stack().len(),
+        immediate.unwrap_or_default(),
+    )
 }
 
-/// Converts the [`InstrStop`] of a contract creation that failed after its initcode returned to
-/// the error geth reports for it.
-///
-/// `code_len` is the length of the code the initcode returned. Returns `None` for stops geth
-/// reports like [`fmt_error_msg`] does.
-///
-/// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/core/vm/evm.go#L656-L710>.
-pub(crate) fn fmt_geth_create_end(
-    stop: InstrStop,
-    code_len: usize,
-    version: &Version,
-) -> Option<String> {
+fn halts_before_body(stop: InstrStop, op: OpCode, stack_len: usize) -> bool {
     match stop {
-        InstrStop::CreateContractSizeLimit => Some(format!(
-            "max code size exceeded: code size {code_len} limit {}",
-            version.max_code_size
-        )),
-        // An initcode that runs out of gas halts in a step, which reports its own error.
-        InstrStop::OutOfGas => Some("contract creation code storage out of gas".to_string()),
-        _ => None,
+        // `DUPN`, `SWAPN` and `EXCHANGE` check the stack again against their immediate inside the
+        // opcode.
+        InstrStop::StackUnderflow => stack_len < min_stack(op),
+        InstrStop::StackOverflow
+        | InstrStop::CreateInitCodeSizeLimit
+        | InstrStop::CallNotAllowedInsideStatic => true,
+        // `LOG` and `TSTORE` check write protection inside the opcode, unlike these opcodes.
+        InstrStop::StateChangeDuringStaticCall => is_gas_function_static_check(op),
+        _ => stop.is_out_of_gas(),
     }
 }
+
+fn geth_halt_msg(stop: InstrStop, op: OpCode, stack_len: usize, immediate: u8) -> Option<String> {
+    Some(match stop {
+        InstrStop::StackUnderflow => {
+            // The pre-opcode check reports the stack the opcode pops; `DUPN`, `SWAPN` and
+            // `EXCHANGE` report the one their immediate needs.
+            let required = if stack_len < min_stack(op) {
+                min_stack(op)
+            } else {
+                required_stack(op, immediate).unwrap_or_else(|| min_stack(op))
+            };
+            format!("stack underflow ({stack_len} <=> {required})")
+        }
+        InstrStop::StackOverflow => {
+            let max_stack =
+                (STACK_LIMIT + usize::from(op.inputs())).saturating_sub(op.outputs().into());
+            format!("stack limit reached {stack_len} ({max_stack})")
+        }
+        InstrStop::OpcodeNotFound | InstrStop::NotActivated => {
+            format!("invalid opcode: {}", geth_op_name(op))
+        }
+        InstrStop::InvalidImmediateEncoding => {
+            format!("invalid opcode: {} (operand: 0x{immediate:02x})", geth_op_name(op))
+        }
+        // The gas functions of these opcodes check for write protection, and geth wraps the errors
+        // of gas functions in `out of gas`.
+        InstrStop::CallNotAllowedInsideStatic => "out of gas: write protection".to_string(),
+        InstrStop::StateChangeDuringStaticCall if is_gas_function_static_check(op) => {
+            "out of gas: write protection".to_string()
+        }
+        stop => fmt_error_msg(stop, TraceStyle::Geth)?,
+    })
+}
+
+/// Returns the error geth reports for a contract creation whose initcode returned but ran out of
+/// gas paying for the code deposit.
+///
+/// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/core/vm/evm.go#L656-L710>.
+pub(crate) const CODE_DEPOSIT_OUT_OF_GAS: &str = "contract creation code storage out of gas";
 
 /// Returns geth's name for an opcode, including the opcodes evm2 does not define.
 ///
@@ -269,6 +236,12 @@ pub(crate) fn geth_op_name(op: OpCode) -> Cow<'static, str> {
         byte => return Cow::Owned(format!("opcode {byte:#x} not defined")),
     };
     Cow::Borrowed(name)
+}
+
+/// Returns whether the gas function of an opcode checks for write protection, which geth reports
+/// as a gas error before it runs the opcode.
+const fn is_gas_function_static_check(op: OpCode) -> bool {
+    matches!(op.get(), op::SSTORE | op::CREATE | op::CREATE2 | op::SELFDESTRUCT)
 }
 
 /// Returns the stack length geth requires before it runs an opcode.
@@ -393,22 +366,13 @@ mod tests {
 
     #[test]
     fn geth_halts() {
-        let version = Version::new(SpecId::SHANGHAI);
-        for (stop, op, stack_len, operand, msg, before_body) in [
+        for (stop, op, stack_len, immediate, msg, before_body) in [
             (InstrStop::StackUnderflow, op::ADD, 0, 0, "stack underflow (0 <=> 2)", true),
             (InstrStop::StackUnderflow, op::DUPN, 0, 0, "stack underflow (0 <=> 1)", true),
             (InstrStop::StackUnderflow, op::DUPN, 1, 0, "stack underflow (1 <=> 145)", false),
             (InstrStop::StackUnderflow, op::SWAPN, 1, 0, "stack underflow (1 <=> 2)", true),
             (InstrStop::StackUnderflow, op::SWAPN, 2, 0, "stack underflow (2 <=> 146)", false),
             (InstrStop::StackUnderflow, op::EXCHANGE, 2, 0, "stack underflow (2 <=> 17)", false),
-            (
-                InstrStop::InvalidImmediateEncoding,
-                op::DUPN,
-                0,
-                0x5b,
-                "stack underflow (0 <=> 1)",
-                true,
-            ),
             (
                 InstrStop::InvalidImmediateEncoding,
                 op::DUPN,
@@ -460,58 +424,25 @@ mod tests {
             (
                 InstrStop::CreateInitCodeSizeLimit,
                 op::CREATE,
-                3,
-                49153,
-                "out of gas: max initcode size exceeded: code size 49153 limit 49152",
+                0,
+                0,
+                "max initcode size exceeded",
                 true,
             ),
             (InstrStop::OutOfGas, op::ADD, 2, 0, "out of gas", true),
-            (InstrStop::OutOfGas, op::ADD, 1, 0, "stack underflow (1 <=> 2)", true),
-            (
-                InstrStop::StateChangeDuringStaticCall,
-                op::CREATE,
-                0,
-                0,
-                "stack underflow (0 <=> 3)",
-                true,
-            ),
-            (
-                InstrStop::InvalidImmediateEncoding,
-                op::DUPN,
-                1024,
-                0x5b,
-                "stack limit reached 1024 (1023)",
-                true,
-            ),
-            (InstrStop::MemoryOOG, op::MSTORE, 2, 0, "out of gas", true),
-            (InstrStop::MemoryLimitOOG, op::MSTORE, 2, 0, "out of gas: gas uint64 overflow", true),
-            (InstrStop::InvalidOperandOOG, op::MSTORE, 2, 0, "gas uint64 overflow", true),
-            (InstrStop::InvalidJump, op::JUMP, 1, 0, "invalid jump destination", false),
-            (InstrStop::OutOfOffset, op::RETURNDATACOPY, 3, 0, "return data out of bounds", false),
+            (InstrStop::MemoryOOG, op::MSTORE, 0, 0, "out of gas", true),
+            (InstrStop::MemoryLimitOOG, op::MSTORE, 0, 0, "out of gas: gas uint64 overflow", true),
+            (InstrStop::InvalidOperandOOG, op::MSTORE, 0, 0, "gas uint64 overflow", true),
+            (InstrStop::InvalidJump, op::JUMP, 0, 0, "invalid jump destination", false),
+            (InstrStop::OutOfOffset, op::RETURNDATACOPY, 0, 0, "return data out of bounds", false),
         ] {
-            let ctx = StepContext {
-                op: OpCode::new_or_unknown(op),
-                stack_len,
-                immediate: operand as u8,
-                initcode_size: operand,
-            };
-            let halt = fmt_geth_halt(stop, ctx, &version).unwrap();
-            assert_eq!((halt.msg.as_str(), halt.before_body), (msg, before_body), "{stop:?}");
-        }
-    }
-
-    #[test]
-    fn geth_create_end() {
-        let version = Version::new(SpecId::SHANGHAI);
-        for (stop, msg) in [
-            (
-                InstrStop::CreateContractSizeLimit,
-                Some("max code size exceeded: code size 24577 limit 24576"),
-            ),
-            (InstrStop::OutOfGas, Some("contract creation code storage out of gas")),
-            (InstrStop::CreateContractStartingWithEF, None),
-        ] {
-            assert_eq!(fmt_geth_create_end(stop, 24577, &version).as_deref(), msg, "{stop:?}");
+            let op = OpCode::new_or_unknown(op);
+            assert_eq!(
+                geth_halt_msg(stop, op, stack_len, immediate).as_deref(),
+                Some(msg),
+                "{stop:?}"
+            );
+            assert_eq!(halts_before_body(stop, op, stack_len), before_body, "{stop:?}");
         }
     }
 

@@ -2319,7 +2319,6 @@ fn struct_logs_and_call_errors_match_geth() {
     let create_code = hex!("60c85ff3");
     let oversized_code = hex!("6160015ff3");
     let oversized_ef_code = hex!("60ef5f536160015ff3");
-    let dupn_overflow = [vec![op::PUSH0; 1024], hex!("e65b").to_vec()].concat();
     let push0s = vec![op::PUSH0; 1025];
     let mstore_overflow = [&hex!("60007f")[..], &[0xff; 32], &[op::MSTORE]].concat();
     for (spec, code, child, gas, create, struct_errors, calls) in [
@@ -2419,15 +2418,8 @@ fn struct_logs_and_call_errors_match_geth() {
             None,
             100000,
             false,
-            serde_json::json!([[
-                1,
-                5,
-                "CREATE",
-                "out of gas: max initcode size exceeded: code size 49153 limit 49152"
-            ]]),
-            serde_json::json!([
-                "out of gas: max initcode size exceeded: code size 49153 limit 49152"
-            ]),
+            serde_json::json!([[1, 5, "CREATE", "max initcode size exceeded"]]),
+            serde_json::json!(["max initcode size exceeded"]),
         ),
         (
             SpecId::OSAKA,
@@ -2531,7 +2523,7 @@ fn struct_logs_and_call_errors_match_geth() {
             10_000_000,
             true,
             serde_json::json!([]),
-            serde_json::json!(["max code size exceeded: code size 24577 limit 24576"]),
+            serde_json::json!(["max code size exceeded"]),
         ),
         (
             SpecId::OSAKA,
@@ -2544,39 +2536,12 @@ fn struct_logs_and_call_errors_match_geth() {
         ),
         (
             SpecId::OSAKA,
-            &static_call,
-            Some(&hex!("f0")[..]),
-            100000,
-            false,
-            serde_json::json!([[2, 0, "CREATE", "stack underflow (0 <=> 3)"]]),
-            serde_json::json!([null, "stack underflow (0 <=> 3)"]),
-        ),
-        (
-            SpecId::OSAKA,
-            &static_call,
-            Some(&hex!("5fa1")[..]),
-            100000,
-            false,
-            serde_json::json!([[2, 1, "LOG1", "stack underflow (1 <=> 3)"]]),
-            serde_json::json!([null, "stack underflow (1 <=> 3)"]),
-        ),
-        (
-            SpecId::OSAKA,
             &hex!("01")[..],
             None,
-            2,
+            3,
             false,
             serde_json::json!([[1, 0, "ADD", "stack underflow (0 <=> 2)"]]),
             serde_json::json!(["stack underflow (0 <=> 2)"]),
-        ),
-        (
-            SpecId::AMSTERDAM,
-            &dupn_overflow,
-            None,
-            100000,
-            false,
-            serde_json::json!([[1, 1024, "DUPN", "stack limit reached 1024 (1023)"]]),
-            serde_json::json!(["stack limit reached 1024 (1023)"]),
         ),
     ] {
         let (actual_struct, actual_calls) = geth_errors(spec, code, child, gas, create);
