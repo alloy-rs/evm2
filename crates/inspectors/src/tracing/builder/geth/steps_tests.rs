@@ -1,6 +1,6 @@
 use super::*;
 use crate::tracing::types::{
-    CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason,
+    CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason, TraceMemberOrder,
 };
 use alloc::string::String;
 use evm2::{
@@ -207,6 +207,16 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
             }
         })
         .collect();
+    // Each call opcode enters the next child, as the inspector records them.
+    for node in &mut nodes {
+        let mut children = 0..node.children.len();
+        for (step_idx, step) in node.trace.steps.iter().enumerate() {
+            node.ordering.push(TraceMemberOrder::Step(step_idx));
+            if let Some(child) = step.is_call_like_op().then(|| children.next()).flatten() {
+                node.ordering.push(TraceMemberOrder::Call(child));
+            }
+        }
+    }
     nodes[0].trace.steps.last_mut().unwrap().status = Some(InstrStop::OutOfGas);
     // The SLOAD reads the value its delegatecall child wrote.
     nodes[2].trace.steps[2].storage_slot = Some(Box::new((U256::ZERO, U256::from(30))));
