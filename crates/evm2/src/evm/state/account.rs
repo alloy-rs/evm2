@@ -184,8 +184,6 @@ bitflags! {
         /// [`AccountHandle::mark_created_keeping_storage`]. Meaningful only while
         /// [`Self::CREATED`] is set.
         const KEEPS_STORAGE = 1 << 5;
-        /// The present overlay account's code has been modified.
-        const CODE_CHANGED = 1 << 6;
     }
 }
 
@@ -197,9 +195,9 @@ bitflags! {
 /// [`State`](super::State) emit the transaction's account transition without re-reading the backing
 /// database. `present` is `None` for an account that was loaded as non-existent or deleted.
 ///
-/// [`AccountFlags::CREATED`] and [`AccountFlags::CODE_CHANGED`] track creation and
-/// code-modification state of the present overlay account, driving transaction-finalization and
-/// change-emission rules. They are meaningful only while `present` is `Some`.
+/// [`AccountFlags::CREATED`] tracks creation in the current transaction and drives
+/// transaction-finalization rules. It survives selfdestruct finalization, so it can stay set while
+/// `present` is `None`.
 ///
 /// Detached from the EVM as part of a [`PendingState`](super::PendingState), the entry describes
 /// the account's transaction transition: `original` against `present`, with
@@ -210,8 +208,7 @@ pub(crate) struct Account {
     pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
     pub(crate) present: Option<AccountInfo>,
-    /// Lifecycle flags: warm, touched, finalized-touched, destroyed, created, keeps-storage, and
-    /// code changed.
+    /// Lifecycle flags: warm, touched, finalized-touched, destroyed, created, and keeps-storage.
     pub(crate) flags: AccountFlags,
     /// Persistent transaction storage owned by this account.
     pub(crate) storage: StorageOverlay,
@@ -232,7 +229,7 @@ impl Account {
         self.storage.merge_isolated(child.storage);
     }
 
-    /// Marks the account as created during the transaction, which also flags its code as changed.
+    /// Marks the account as created during the transaction.
     ///
     /// The first creation mark decides whether the account keeps its storage baseline.
     #[inline]
@@ -241,7 +238,7 @@ impl Account {
         if !flags.contains(AccountFlags::CREATED) {
             flags = flags.difference(AccountFlags::KEEPS_STORAGE);
         }
-        self.flags = flags.union(AccountFlags::CREATED.union(AccountFlags::CODE_CHANGED));
+        self.flags = flags.union(AccountFlags::CREATED);
     }
 
     /// Returns whether the account was created during the transaction.
@@ -283,11 +280,8 @@ impl Account {
         let account = self.present.as_ref()?;
         let code = account.code.as_ref()?;
         let code_hash = account.code_hash;
-        ((self.flags.contains(AccountFlags::CODE_CHANGED)
-            || self.original.as_ref().map(|original| original.code_hash) != Some(code_hash))
-            && !code.is_empty()
-            && !code_hash.is_zero()
-            && !account.is_empty_code_hash())
+        (self.original.as_ref().map(|original| original.code_hash) != Some(code_hash)
+            && !code.is_empty())
         .then_some((code_hash, code))
     }
 
@@ -314,7 +308,7 @@ impl Account {
 /// cannot drift apart, mirroring revm's `AccountHandle`.
 ///
 /// The first mutation made through the handle captures a snapshot of the overlay entry (present
-/// value plus the warm/touched/destroyed/created/code-changed flags); on drop the handle flushes
+/// value plus the warm/touched/destroyed/created flags); on drop the handle flushes
 /// that snapshot as a single [`JournalEntry::AccountChange`], which
 /// [`State::rollback`](super::State::rollback) replays to restore the whole entry at once. A handle
 /// used only for reads records nothing, so it emits no journal entry.
@@ -623,7 +617,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         let account = self.present_mut();
         account.code_hash = code_hash;
         account.code = Some(code);
-        self.tracked.flags.insert(AccountFlags::CODE_CHANGED);
     }
 
     /// Sets the account code, computing its hash, touching the account and recording a revert
@@ -825,6 +818,31 @@ mod tests {
     }
 
     #[test]
+    fn changed_code_requires_new_non_empty_code_hash() {
+        use alloy_primitives::Bytes;
+
+        let code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
+        let with_code = AccountInfo::default().with_code(code.clone());
+        let other = AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0])));
+
+        let created = Account::new(None, Some(with_code.clone()));
+        assert_eq!(created.changed_code(), Some((with_code.code_hash, &code)));
+
+        let replaced = Account::new(Some(other), Some(with_code.clone()));
+        assert_eq!(replaced.changed_code(), Some((with_code.code_hash, &code)));
+
+        assert_eq!(
+            Account::new(Some(with_code.clone()), Some(with_code.clone())).changed_code(),
+            None
+        );
+        assert_eq!(
+            Account::new(Some(with_code), Some(AccountInfo::default())).changed_code(),
+            None
+        );
+        assert_eq!(Account::new(None, Some(AccountInfo::default())).changed_code(), None);
+    }
+
+    #[test]
     fn loaded_code_is_seeded_with_account_code_hash() {
         use alloy_primitives::Bytes;
 
@@ -975,7 +993,6 @@ mod tests {
             assert!(!account.is_warm());
             assert!(!account.is_created());
             assert!(!account.is_destructed());
-            assert!(!account.tracked.flags.contains(AccountFlags::CODE_CHANGED));
         }
     }
 
