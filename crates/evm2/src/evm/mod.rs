@@ -1190,8 +1190,9 @@ struct SendEvmRef<'a, 'evm, T: EvmTypesHost> {
 }
 
 #[cfg(feature = "async")]
-// SAFETY: `SendEvmRef` is only constructed by async entrypoints after `Evm::evm_is_send` has
-// verified the concrete erased field types as `Send`.
+// SAFETY: `SendEvmRef` is only constructed by async entrypoints for an `Evm<'static, T>` whose
+// erased field types `Evm::evm_is_send` verified as `Send`. The `'static` bound keeps a verified
+// type from being replaced by a shorter-lived instance of itself, which `TypeId` cannot tell apart.
 unsafe impl<T> Send for SendEvmRef<'_, '_, T>
 where
     T: EvmTypesHost,
@@ -1322,6 +1323,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     + 'fut
     where
         T::Tx: Sync,
+        'a: 'static,
     {
         self.assert_erased_send();
         let stack = self.async_stack();
@@ -5065,27 +5067,6 @@ mod tests {
 
         assert!(result.is_err());
         assert!(evm.logs().is_empty());
-    }
-
-    #[cfg(feature = "async")]
-    #[test]
-    #[should_panic(expected = "async EVM execution cannot run with a borrowed inspector")]
-    fn transact_with_inspector_rejects_nested_async_send() {
-        let mut evm = scoped_inspector_evm();
-        evm.registry.register(
-            TEST_TX_TYPE,
-            TxEnvelope::as_legacy,
-            handler(
-                |_| Ok(()),
-                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
-                    drop(req.host.transact_async_send(&test_tx(1)));
-                    Ok(TxResultExt::default())
-                },
-            ),
-        );
-        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
-
-        let _ = evm.transact_with_inspector(&test_tx(0), &mut CallCounter::default());
     }
 
     #[test]
