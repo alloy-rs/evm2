@@ -119,8 +119,6 @@ impl StateChangeSink for BlockStateAccumulator {
         let original = change.original.map(AccountInfo::clone_no_code);
         let current = change.current.map(AccountInfo::clone_no_code);
         let deletes_account = current.is_none();
-        let existed_before_block =
-            self.accounts.get(&change.address).map_or(original.is_some(), |d| d.original.is_some());
         let mut created = false;
 
         match self.accounts.entry(change.address) {
@@ -140,9 +138,9 @@ impl StateChangeSink for BlockStateAccumulator {
         }
 
         if deletes_account {
-            // Deleting an account that existed before the block destroys its pre-block storage.
-            // The marker stays so a later revival in the block still wipes it.
-            if existed_before_block {
+            // A delta left after a deletion means the account existed before the block, so its
+            // pre-block storage is destroyed. The marker stays so a later revival still wipes it.
+            if self.accounts.contains_key(&change.address) {
                 self.storage_wipes.insert(change.address);
             } else {
                 self.storage_wipes.remove(&change.address);
