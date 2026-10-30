@@ -2,8 +2,9 @@ use super::{InspectMode, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
-        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, gas::RemainingGas,
-        private::InstructionImplFn,
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result,
+        gas::RemainingGas,
+        private::{InstructionFlags, InstructionImplFn},
     },
 };
 use core::hint::cold_path;
@@ -54,7 +55,8 @@ extern_table! {
     ) {
         let instruction = C::OPCODE_CONFIG.instruction(OP);
         let instr: InstructionImplFn<T> = instruction.instr;
-        let dynamic_gas = instruction.dynamic_gas;
+        let dynamic_gas = instruction.flags.contains(InstructionFlags::DYNAMIC_GAS);
+        let message = instruction.flags.contains(InstructionFlags::MESSAGE);
         if M::INSPECT {
             // Handlers that skip the hooks keep the gas in a register.
             state.gas_mut().set_remaining(remaining_gas.get());
@@ -98,6 +100,9 @@ extern_table! {
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         super::inc_pc(&mut pc, OP);
+        // A message instruction leaves the dispatch if its child message changed the inspector's
+        // config.
+        let leave = message && state.reload_after_message(pc);
         if M::INSPECT {
             M::step_end(state, pc, stack.len());
             remaining_gas.set(state.gas_mut().remaining());
@@ -105,6 +110,9 @@ extern_table! {
                 cold_path();
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
             }
+        } else if leave {
+            cold_path();
+            tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
         let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };

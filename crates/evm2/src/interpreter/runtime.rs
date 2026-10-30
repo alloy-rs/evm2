@@ -16,7 +16,6 @@ use core::{fmt, hint::cold_path, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
 /// Instruction table for a sparse set of stepped opcodes.
-#[cfg(tco)]
 struct SparseTable<T: EvmTypesHost> {
     /// The stepped opcodes.
     steps: OpcodeSet,
@@ -55,8 +54,7 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     /// Where the frame continues after leaving the dispatch for a reload.
     reload_pc: *const u8,
     /// The last sparse inspected run's step set, the config table it was built from, and the
-    /// table, for the tail-call backend.
-    #[cfg(tco)]
+    /// table.
     #[derive_where(skip)]
     inspect_table: Option<Box<SparseTable<T>>>,
     pub(in crate::interpreter) stack_len: usize,
@@ -123,7 +121,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             reload_table: false,
             reload_pending: false,
             reload_pc: core::ptr::null(),
-            #[cfg(tco)]
             inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
@@ -608,39 +605,32 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         if self.steps == OpcodeSet::EMPTY {
             return config.instructions;
         }
-        #[cfg(tco)]
-        {
-            if self.steps == OpcodeSet::ALL {
-                return config.inspect_instructions;
-            }
-            // A sparse set runs the plain handlers, with the inspect table's at the
-            // opcodes in the set. The table lives in this interpreter and is rebuilt when the set
-            // or the config differs from the previous run's, so the pooled interpreters of a deep
-            // call stack mostly reuse theirs.
-            let source = core::ptr::from_ref(config.inspect_instructions);
-            let table = self.inspect_table.get_or_insert_with(|| {
-                Box::new(SparseTable {
-                    steps: OpcodeSet::EMPTY,
-                    source: core::ptr::null(),
-                    instructions: *config.instructions,
-                })
-            });
-            if table.steps != self.steps || table.source != source {
-                table.steps = self.steps;
-                table.source = source;
-                table.instructions = *config.instructions;
-                for op in 0..=u8::MAX {
-                    if self.steps.contains(op) {
-                        table.instructions[op as usize] = config.inspect_instructions[op as usize];
-                    }
+        if self.steps == OpcodeSet::ALL {
+            return config.inspect_instructions;
+        }
+        // A sparse set runs the plain handlers, with the inspect table's at the opcodes in the
+        // set. The table lives in this interpreter and is rebuilt when the set or the config
+        // differs from the previous run's, so the pooled interpreters of a deep call stack mostly
+        // reuse theirs.
+        let source = core::ptr::from_ref(config.inspect_instructions);
+        let table = self.inspect_table.get_or_insert_with(|| {
+            Box::new(SparseTable {
+                steps: OpcodeSet::EMPTY,
+                source: core::ptr::null(),
+                instructions: *config.instructions,
+            })
+        });
+        if table.steps != self.steps || table.source != source {
+            table.steps = self.steps;
+            table.source = source;
+            table.instructions = *config.instructions;
+            for op in 0..=u8::MAX {
+                if self.steps.contains(op) {
+                    table.instructions[op as usize] = config.inspect_instructions[op as usize];
                 }
             }
-            &raw const table.instructions
         }
-        #[cfg(not(tco))]
-        {
-            config.inspect_instructions
-        }
+        &raw const table.instructions
     }
 
     /// Takes an owned error recorded by an instruction or inspector hook.
@@ -718,24 +708,22 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.result = Err(InstrStop::Stop);
     }
 
-    /// Returns the stop a message hook set on this frame, if any. If the inspector's config
-    /// changed while the child message ran, instead leaves the dispatch after the instruction at
-    /// `pc`, so the frame continues on the table for the new config.
+    /// Checks, after a message instruction that left the pc at `pc`, whether the inspector's
+    /// config changed while its child message ran. Returns whether the dispatch must leave to
+    /// continue the frame at `pc` on the table for the new config, or to stop it if a hook did.
     #[inline(always)]
-    pub(crate) const fn after_message(&mut self, mut pc: Pc) -> Result {
+    pub(crate) const fn reload_after_message(&mut self, pc: Pc) -> bool {
         if self.0.reload_pending {
             cold_path();
             self.0.reload_pending = false;
             // A stop that a hook set wins over the reload.
             if self.0.result.is_ok() {
-                // Resume where the dispatch would: after the opcode and its immediates.
-                // SAFETY: `pc` is at a message instruction, which a next instruction follows.
-                unsafe { pc.advance_unchecked(dispatch::instruction_len(pc.op())) };
                 self.0.reload_pc = pc.as_ptr();
                 self.request_reload();
             }
+            return true;
         }
-        self.0.result
+        false
     }
 
     #[inline]
