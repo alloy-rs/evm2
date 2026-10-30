@@ -558,7 +558,9 @@ impl TracingInspector {
 
         if self.config.record_step_deltas {
             let write_range = memory_write_range(op.get(), interp.stack().as_slice());
-            let store = storage_write(op.get(), interp.stack().as_slice());
+            let store = (!self.budget.halts())
+                .then(|| storage_write(op.get(), interp.stack().as_slice()))
+                .flatten();
             if write_range.is_some()
                 || store.is_some()
                 || node.trace.steps[step_idx].is_call_like_op()

@@ -240,6 +240,23 @@ fn byte_budget_halt_before_sload_records_no_storage_access() {
 }
 
 #[test]
+fn byte_budget_halt_before_sstore_reports_no_store_delta() {
+    // The memory snapshot of the SSTORE step exceeds the budget, which halts before it runs.
+    let (inspector, completed) = inspect_with_limits(
+        &hex!("6001600060015f525500"),
+        Bytes::new(),
+        TracingInspectorConfig::none().steps().memory_snapshots().set_step_deltas(true),
+        TraceLimits::default()
+            .set_max_recorded_bytes(Some(32))
+            .set_behavior(TraceLimitBehavior::Halt),
+    );
+    assert!(!completed);
+    let trace = &inspector.traces().nodes()[0].trace;
+    assert_eq!(trace.steps.last().unwrap().op.get(), op::SSTORE);
+    assert!(trace.step_deltas.iter().all(|delta| delta.store.is_none()));
+}
+
+#[test]
 fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
     let caller = Address::repeat_byte(0xaa);
     let child = Address::with_last_byte(0x43);
