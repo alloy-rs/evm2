@@ -386,6 +386,10 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
         delegate!(self => inspector.step_end(interp))
     }
 
+    fn step_between(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        delegate!(self => inspector.step_between(interp))
+    }
+
     fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
         delegate!(self => inspector.log(log, host))
     }

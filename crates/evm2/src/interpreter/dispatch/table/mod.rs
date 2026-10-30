@@ -147,9 +147,9 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
     // An inspector that steps nothing runs the plain loop.
     if state.is_inspecting() && state.steps() != OpcodeSet::EMPTY {
         if state.steps() == OpcodeSet::ALL {
-            return run_inner::<T, DynInspector<true>>(state, pc, stack, instructions);
+            return run_all_stepped(state, pc, stack, instructions);
         }
-        return run_inner::<T, DynInspector<false>>(state, pc, stack, instructions);
+        return run_inner::<T, DynInspector>(state, pc, stack, instructions);
     }
     run_inner::<T, NoInspector>(state, pc, stack, instructions)
 }
@@ -168,19 +168,8 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
         let op = cursor.pc().op();
         // A sparse set's table holds inspect handlers at the stepped opcodes and plain handlers
         // elsewhere, so each path calls the handlers it matches.
-        if M::INSPECT && (M::ALL_STEPS || steps.contains(op)) {
-            let stepped = if M::ALL_STEPS {
-                run_stepped::<T, M>(state, cursor, stack, instructions[op as usize], loop_state)
-            } else {
-                run_stepped_out_of_line::<T, M>(
-                    state,
-                    cursor,
-                    stack,
-                    instructions[op as usize],
-                    loop_state,
-                )
-            };
-            match stepped {
+        if M::INSPECT && steps.contains(op) {
+            match run_stepped::<T, M>(state, cursor, stack, instructions[op as usize], loop_state) {
                 Ok(next) => (cursor, loop_state) = next,
                 Err(stop) => return stop,
             }
@@ -203,11 +192,55 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
     }
 }
 
-/// Runs one instruction between its step hooks, or returns the stop that ended the frame.
+/// Runs the frame of an inspector that steps every opcode, with one hook call between each pair
+/// of instructions.
 ///
 /// The hooks run here, outside the stack borrow, because a hook may access the stack through the
 /// interpreter and no handler may hold the borrow meanwhile.
-#[inline(always)]
+fn run_all_stepped<T: EvmTypesHost>(
+    state: &mut InterpreterState<'_, '_, T>,
+    pc: Pc,
+    mut stack: RawStack<'_>,
+    instructions: &RawInstrTable<T>,
+) -> InstrStop {
+    let mut loop_state = imp::loop_state(state.gas_mut());
+    let mut cursor = imp::Cursor::new(pc, stack.len());
+    state.inspect_step(cursor.pc(), cursor.stack_len());
+    loop_state = imp::loop_state(state.gas_mut());
+    if state.result().is_err() {
+        return finish_run(state, cursor, loop_state);
+    }
+    loop {
+        cursor = {
+            // SAFETY: This is the only stack borrow outside inspector callbacks.
+            let stack_view = unsafe { stack.borrow() };
+            imp::dispatch_loop_call(
+                instructions[cursor.pc().op() as usize],
+                cursor,
+                stack_view.stack,
+                state,
+                &mut loop_state,
+            )
+        };
+        imp::sync_loop_state(state, loop_state);
+        if state.result().is_ok() {
+            state.inspect_step_between(cursor.pc(), cursor.stack_len());
+        } else {
+            state.inspect_step_end(cursor.pc(), cursor.stack_len());
+        }
+        loop_state = imp::loop_state(state.gas_mut());
+        if state.result().is_err() {
+            return finish_run(state, cursor, loop_state);
+        }
+    }
+}
+
+/// Runs one instruction between its step hooks, or returns the stop that ended the frame.
+///
+/// The hooks run here for the same reason as in [`run_all_stepped`]. It is not inlined, so that
+/// the registers the loop holds for the unstepped instructions of a sparse set are not shared with
+/// the hook calls.
+#[inline(never)]
 fn run_stepped<T: EvmTypesHost, M: InspectMode<T>>(
     state: &mut InterpreterState<'_, '_, T>,
     mut cursor: imp::Cursor,
@@ -235,19 +268,6 @@ fn run_stepped<T: EvmTypesHost, M: InspectMode<T>>(
         return Err(finish_run(state, cursor, loop_state));
     }
     Ok((cursor, loop_state))
-}
-
-/// [`run_stepped`] behind a call, so that the registers the loop holds for the unstepped
-/// instructions of a sparse set are not shared with the hook calls.
-#[inline(never)]
-fn run_stepped_out_of_line<T: EvmTypesHost, M: InspectMode<T>>(
-    state: &mut InterpreterState<'_, '_, T>,
-    cursor: imp::Cursor,
-    stack: RawStack<'_>,
-    instr: imp::RawInstrFn<T>,
-    loop_state: imp::LoopState,
-) -> core::result::Result<(imp::Cursor, imp::LoopState), InstrStop> {
-    run_stepped::<T, M>(state, cursor, stack, instr, loop_state)
 }
 
 #[inline(always)]

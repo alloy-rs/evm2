@@ -45,6 +45,10 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
+    /// Whether the inspector steps every opcode on the table this frame runs on, which calls
+    /// [`Inspector::step_between`] between instructions instead of the two hooks.
+    #[cfg(tco)]
+    merged_steps: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
     #[derive_where(skip)]
@@ -110,6 +114,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             host: None,
             inspector: None,
             steps: OpcodeSet::EMPTY,
+            #[cfg(tco)]
+            merged_steps: false,
             inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
@@ -271,6 +277,13 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             None => self.gas.remaining_excluding_state_spill(),
         };
         self.step_gas_before.saturating_sub(after)
+    }
+
+    /// Starts counting the cost of the next step from the gas remaining now.
+    #[inline]
+    pub(crate) const fn reset_step_cost(&mut self) {
+        self.step_gas_before = self.gas.remaining_excluding_state_spill();
+        self.step_gas_after_charge = None;
     }
 
     /// Returns the current linear memory.
@@ -574,6 +587,10 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         // SAFETY: `run_inner` installed the inspector, which is valid for this run.
         let inspector = unsafe { self.inspector.unwrap_unchecked().as_ref() };
         self.steps = inspector.inspector_config().steps();
+        #[cfg(tco)]
+        {
+            self.merged_steps = self.steps == OpcodeSet::ALL;
+        }
         if self.steps == OpcodeSet::EMPTY {
             return config.instructions;
         }
@@ -671,6 +688,14 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[cfg(not(tco))]
     pub(crate) const fn steps(&self) -> OpcodeSet {
         self.0.steps
+    }
+
+    /// Returns whether the handlers call [`Inspector::step_between`] between instructions, so
+    /// that the dispatch steps the first instruction of a run.
+    #[inline]
+    #[cfg(tco)]
+    pub(crate) const fn merged_steps(&self) -> bool {
+        self.0.merged_steps
     }
 
     /// Stops the instruction at `pc` with [`InstrStop::Reload`] if the inspector's config no
@@ -820,8 +845,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        self.0.step_gas_before = self.0.gas.remaining_excluding_state_spill();
-        self.0.step_gas_after_charge = None;
+        self.0.reset_step_cost();
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
@@ -856,6 +880,17 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             if self.0.result.is_ok() {
                 self.0.result = Err(InstrStop::Reload);
             }
+        }
+    }
+
+    /// Ends a successful instruction and steps the one at `pc` in one hook call.
+    #[inline]
+    pub(crate) fn inspect_step_between(&mut self, pc: Pc, stack_len: usize) {
+        self.0.pc = pc.as_ptr();
+        self.0.stack_len = stack_len;
+        unsafe {
+            let mut inspector = self.0.inspector.unwrap_unchecked();
+            inspector.as_mut().step_between(&mut self.0);
         }
     }
 

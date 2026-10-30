@@ -135,6 +135,22 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
         let _ = interp;
     }
 
+    /// Called by the interpreter between two consecutive stepped instructions, in place of
+    /// [`Self::step_end`] for the first one and [`Self::step`] for the second, so that the pair
+    /// costs one dynamic call.
+    ///
+    /// The default calls [`Self::step_end`], then [`Self::step`] unless the frame has stopped. Only
+    /// a wrapper that forwards the step hooks to other inspectors should override it, to forward
+    /// this call too.
+    #[inline]
+    fn step_between(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        self.step_end(interp);
+        if interp.result().is_ok() {
+            interp.reset_step_cost();
+            self.step(interp);
+        }
+    }
+
     /// Called when a log is emitted.
     #[inline]
     fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {

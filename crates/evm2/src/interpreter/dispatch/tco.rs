@@ -32,8 +32,16 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
     interpreter: &mut Interpreter<'_, '_, T>,
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
-    let remaining_gas = RemainingGas::new(interpreter.gas.remaining());
     let (state, pc, stack) = run_state(interpreter);
+    // The handlers of an inspector that steps every opcode step the next instruction themselves.
+    if state.merged_steps() {
+        state.inspect_step(pc, stack.len());
+        if state.result().is_err() {
+            cold_path();
+            return state.result().unwrap_err();
+        }
+    }
+    let remaining_gas = RemainingGas::new(state.gas_mut().remaining());
     let op = pc.op();
     let instr = instructions[op as usize];
     instr(pc, stack, remaining_gas, state, (instructions as *const RawInstrTable<T>).cast());
@@ -56,7 +64,8 @@ extern_table! {
         let instruction = C::OPCODE_CONFIG.instruction(OP);
         let instr: InstructionImplFn<T> = instruction.instr;
         let dynamic_gas = instruction.flags.contains(InstructionFlags::DYNAMIC_GAS);
-        if M::INSPECT {
+        let merged = M::INSPECT && state.merged_steps();
+        if M::INSPECT && !merged {
             // Handlers that skip the hooks keep the gas in a register.
             state.gas_mut().set_remaining(remaining_gas.get());
             M::step(state, pc, stack.len());
@@ -100,7 +109,11 @@ extern_table! {
         }
         super::inc_pc(&mut pc, OP);
         if M::INSPECT {
-            M::step_end(state, pc, stack.len());
+            if merged {
+                M::step_between(state, pc, stack.len());
+            } else {
+                M::step_end(state, pc, stack.len());
+            }
             remaining_gas.set(state.gas_mut().remaining());
             if state.result().is_err() {
                 cold_path();
