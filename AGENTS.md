@@ -44,9 +44,9 @@ Cancun/Constantinople state tests. The release defaults to
 base overridable via `EEST_BASE_URL`); override `EEST_VERSION` and `EEST_TAR`
 to select a different release (for example a devnet), or clear either to disable
 it. The release covers frontier..amsterdam, so the EEST `main` develop suite is
-opt-in via `EVM2_STATETEST_MAIN=1` (stable with `EVM2_EEST_STABLE=1`, honored by both runners). Add
-`EVM2_STATETEST_EEST_ONLY=1` to skip legacy fixtures. Use `EVM2_STATETEST_ROOT`
-or `EVM2_BLOCKCHAINTEST_ROOT` for a single explicit root.
+opt-in via `EVM2_STATETEST_MAIN=1` (stable with `EVM2_EEST_STABLE=1`, honored
+by both runners). Add `EVM2_STATETEST_EEST_ONLY=1` to skip legacy fixtures. Use
+`EVM2_STATETEST_ROOT` or `EVM2_BLOCKCHAINTEST_ROOT` for a single explicit root.
 
 Compiled EEST runs use a default subset when the full corpus is too expensive:
 AOT defaults to the `ci-aot` subset, and JIT defaults to the `ci-smoke` subset.
