@@ -142,7 +142,7 @@ impl State<'_> {
             bal_context: self.database.bal_context.clone(),
             _non_exhaustive: (),
         };
-        database.commit(&self.accounts);
+        database.commit(&self.accounts, &self.inner.selfdestructs);
         State {
             accounts: AddressMap::default(),
             storage_pool: storage_pool::StoragePool::default(),
@@ -1088,7 +1088,7 @@ impl<'a> State<'a> {
     pub fn commit_transaction(&mut self) {
         // The transaction overlay is folded into the accepted-overlay database directly, without
         // detaching it.
-        self.inner.database.commit(&self.accounts);
+        self.inner.database.commit(&self.accounts, &self.inner.selfdestructs);
         for account in self.accounts.values_mut() {
             self.storage_pool.clear_overlay(&mut account.storage);
         }

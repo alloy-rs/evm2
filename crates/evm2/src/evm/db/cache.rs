@@ -8,14 +8,14 @@ use crate::{
         bal::BalContext,
         state::{
             Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSink,
-            StateChangeSource, StorageChange,
+            StateChangeSource, StorageChange, TxStateChanges,
         },
     },
     interpreter::Word,
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
-    map::{AddressMap, B256Map, U256Map, hash_map::Entry},
+    map::{AddressMap, AddressSet, B256Map, U256Map, hash_map::Entry},
 };
 use core::convert::Infallible;
 
@@ -149,17 +149,17 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// storage slots, code, and account info are then applied to the cache; the wrapped backing
     /// database is not written.
     pub fn commit_pending(&mut self, pending: &PendingState) {
-        self.commit(&pending.accounts);
+        self.commit(&pending.accounts, &pending.selfdestructs);
     }
 
     /// Accepts a committed transaction's pending accounts and storage overlays into this cache.
     ///
     /// Same as [`Self::commit_pending`], operating on the transaction layers directly so the
     /// overlay need not be detached.
-    pub(crate) fn commit(&mut self, accounts: &AddressMap<Account>) {
+    pub(crate) fn commit(&mut self, accounts: &AddressMap<Account>, selfdestructs: &AddressSet) {
         // When BAL construction is enabled, fold the transaction's pending post-state into the
         // builder before applying the changes to the cache.
-        self.bal_context.commit(accounts);
+        self.bal_context.commit(TxStateChanges::new(accounts, selfdestructs));
 
         for (&address, entry) in accounts {
             let overlay = &entry.storage;
