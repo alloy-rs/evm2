@@ -90,7 +90,7 @@ impl<'a> AccountChanges<'a> {
                     current: value.current,
                 })?;
             } else {
-                sink.storage_read(address, key, value.current)?;
+                sink.storage_read(address, key, value.original)?;
             }
         }
         if self.is_info_changed() {
@@ -167,6 +167,9 @@ pub trait StateChangeSink {
     }
 
     /// Observes a storage slot the transaction loaded but left unchanged.
+    ///
+    /// `value` is the slot's value before the transaction. It is not the value after it for a slot
+    /// that the transaction wrote and a storage wipe then reset.
     ///
     /// Only transaction-level sources report reads; sinks that persist changes can ignore them.
     #[inline]
