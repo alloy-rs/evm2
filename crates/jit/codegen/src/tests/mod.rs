@@ -54,6 +54,8 @@ mod fibonacci;
 
 mod entry_stack;
 
+mod large_section_gas;
+
 mod runner;
 pub use runner::*;
 
