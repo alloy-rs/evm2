@@ -681,7 +681,6 @@ impl<B: Backend> EvmCompiler<B> {
     #[doc(hidden)] // Not public API.
     pub fn parse<'a>(&mut self, bytecode: &'a [u8], spec_id: SpecId) -> Result<Bytecode<'a>> {
         let _t = self.remarks.time(|r| &r.parse);
-
         let mut bytecode =
             Bytecode::new(bytecode, spec_id, self.gas_params, self.opcode_view.as_ref());
         bytecode.compiler_gas_limit = self.compiler_gas_limit;

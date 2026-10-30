@@ -199,7 +199,7 @@ impl RunArgs {
                 compiler.set_frame_pointers(false);
             }
 
-            let parsed = compiler.parse(bytecode.as_slice().into(), compile_spec_id)?;
+            let parsed = compiler.parse(bytecode.as_slice(), compile_spec_id)?;
             if self.display || self.parse_only {
                 println!("{name}()\n{parsed:#}");
             }
