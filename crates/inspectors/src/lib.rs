@@ -41,6 +41,8 @@ pub mod otterscan;
 /// An inspector for recording traces
 pub mod tracing;
 
+mod step_cost;
+
 /// An inspector for recording internal transfers.
 pub mod transfer;
 

@@ -2,6 +2,7 @@
 
 use crate::{
     opcode::immediate_size,
+    step_cost::step_cost,
     tracing::{
         arena::PushTraceKind,
         types::{
@@ -696,19 +697,18 @@ impl TracingInspector {
         }
 
         // A call or create step is charged once its message starts, which includes the gas
-        // forwarded by a call and excludes it for a create. An out-of-gas step consumes the whole
-        // remainder it started with, except the reentrancy sentry, which halts before any charge.
-        // Any other step is charged when it ends. State gas that spills into the remaining gas is
-        // not part of the cost.
+        // forwarded by a call and excludes it for a create. Any other step is charged when it
+        // ends. State gas that spills into the remaining gas is not part of the cost.
         let result = interp.result();
-        step.gas_cost = if result == Err(InstrStop::ReentrancySentryOOG) {
-            0
-        } else if let Some(after) = gas_after_charge {
-            gas_before.saturating_sub(after)
-        } else if result.is_err_and(InstrStop::is_out_of_gas) {
-            step.gas_remaining
-        } else {
-            gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill())
+        step.gas_cost = match gas_after_charge {
+            Some(after) if result != Err(InstrStop::ReentrancySentryOOG) => {
+                gas_before.saturating_sub(after)
+            }
+            _ => step_cost(
+                result,
+                step.gas_remaining,
+                gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill()),
+            ),
         };
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
