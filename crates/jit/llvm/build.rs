@@ -1,46 +1,36 @@
 #![allow(missing_docs)]
 
+use std::process::Command;
+
 fn main() {
     println!("cargo:rerun-if-changed=cpp/lib.cpp");
 
-    let cxxflags = ["llvm-config", "llvm-config-23"]
-        .into_iter()
-        .find_map(detect_cxxflags)
-        .expect("no llvm-config found");
+    // `llvm-sys` (`links = "llvm-23"`) exports the `llvm-config` it links against, so `lib.cpp`
+    // compiles against the same headers.
+    let llvm_config = std::env::var("DEP_LLVM_23_CONFIG_PATH")
+        .expect("DEP_LLVM_23_CONFIG_PATH is not set; `llvm-sys` did not report its llvm-config");
 
-    cc::Build::new()
-        .cpp(true)
-        .flags(cxxflags.split_whitespace())
-        .flag("-w")
-        .file("cpp/lib.cpp")
-        .compile("evm2_jit_llvm_cpp");
-}
-
-/// Returns the `--cxxflags` reported by `llvm_config`, or `None` if it cannot be used.
-///
-/// [`Command::output`] only reports whether the process could be spawned, so a `llvm-config` that
-/// exists but exits with a non-zero status still yields `Ok`. Checking the status keeps such a
-/// broken binary from shadowing a working one later in the candidate list.
-fn detect_cxxflags(llvm_config: &str) -> Option<String> {
-    let output = std::process::Command::new(llvm_config)
+    let output = Command::new(&llvm_config)
         .arg("--cxxflags")
         .output()
-        .inspect_err(|error| eprintln!("failed to run {llvm_config}: {error}"))
-        .ok()?;
+        .unwrap_or_else(|error| panic!("failed to run {llvm_config}: {error}"));
+    assert!(
+        output.status.success(),
+        "{llvm_config} --cxxflags failed with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim(),
+    );
+    let cxxflags = String::from_utf8(output.stdout)
+        .unwrap_or_else(|error| panic!("{llvm_config} --cxxflags is not valid UTF-8: {error}"));
 
-    let status = output.status;
-    if !status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        if stderr.is_empty() {
-            eprintln!("{llvm_config} --cxxflags failed with {status}");
-        } else {
-            eprintln!("{llvm_config} --cxxflags failed with {status}: {stderr}");
-        }
-        return None;
+    let mut build = cc::Build::new();
+    build.cpp(true);
+    for flag in cxxflags.split_whitespace() {
+        // Mark LLVM's include dirs as system dirs to silence warnings from its headers only.
+        match flag.strip_prefix("-I") {
+            Some(dir) => build.flag("-isystem").flag(dir),
+            None => build.flag(flag),
+        };
     }
-
-    String::from_utf8(output.stdout)
-        .inspect_err(|error| eprintln!("{llvm_config} --cxxflags is not valid UTF-8: {error}"))
-        .ok()
+    build.file("cpp/lib.cpp").compile("evm2_jit_llvm_cpp");
 }
