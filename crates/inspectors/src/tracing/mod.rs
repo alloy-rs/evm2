@@ -439,6 +439,12 @@ impl TracingInspector {
         if !trace.success {
             self.log_count = log_count;
         }
+
+        // The result is the frame's outcome as the parent sees it; another inspector may have
+        // overridden it, so it wins over the address recorded when the create started.
+        if let Some(address) = result.created_address {
+            trace.address = address;
+        }
     }
 
     /// Starts tracking a step
