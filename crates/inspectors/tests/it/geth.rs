@@ -499,6 +499,105 @@ fn test_geth_erc7562_counts_like_geth() {
 }
 
 #[test]
+fn test_geth_erc7562_accessed_slots_and_ignored_opcodes() {
+    let contract = address!("1000000000000000000000000000000000000001");
+    let code = Bytes::from(vec![
+        // SLOAD of slot 1 reads 0x2a, and the SSTORE after it is counted.
+        op::PUSH1,
+        1,
+        op::SLOAD,
+        op::POP,
+        op::PUSH1,
+        7,
+        op::PUSH1,
+        1,
+        op::SSTORE,
+        // The slot was read and written, so a second SLOAD adds no read. Slot 2 is read once.
+        op::PUSH1,
+        1,
+        op::SLOAD,
+        op::POP,
+        op::PUSH1,
+        2,
+        op::SLOAD,
+        op::POP,
+        // Slot 3 is written before it is read, so it has no read at all.
+        op::PUSH1,
+        7,
+        op::PUSH1,
+        3,
+        op::SSTORE,
+        op::PUSH1,
+        3,
+        op::SLOAD,
+        op::POP,
+        op::PUSH1,
+        4,
+        op::TLOAD,
+        op::POP,
+        op::PUSH1,
+        5,
+        op::PUSH1,
+        4,
+        op::TSTORE,
+        op::STOP,
+    ]);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
+    );
+    db.insert_account_storage(&contract, &U256::from(1), &U256::from(0x2a));
+    db.insert_account_storage(&contract, &U256::from(2), &U256::from(0x2b));
+
+    // Only `SLOAD` and `STOP` are ignored, which is not the default list.
+    let ignored_opcodes = vec![op::SLOAD, op::STOP];
+    let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config {
+        ignored_opcodes,
+        ..Default::default()
+    });
+    let mut inspector = DebugInspector::new(opts).unwrap();
+    let mut evm = Context::mainnet().with_db(db).build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+
+    let slot = |slot: u8| B256::with_last_byte(slot);
+    let slots = &frame.accessed_slots;
+    assert_eq!(
+        slots.reads,
+        HashMap::from_iter([
+            (slot(1), vec![B256::with_last_byte(0x2a)]),
+            (slot(2), vec![B256::with_last_byte(0x2b)]),
+        ])
+    );
+    assert_eq!(slots.writes, HashMap::from_iter([(slot(1), 1), (slot(3), 1)]));
+    assert_eq!(slots.transient_reads, HashMap::from_iter([(slot(4), 1)]));
+    assert_eq!(slots.transient_writes, HashMap::from_iter([(slot(4), 1)]));
+    // The opcodes of the config are not counted, and every other opcode is, including `PUSH1`.
+    assert_eq!(
+        frame.used_opcodes,
+        HashMap::from_iter([
+            (op::PUSH1, 11),
+            (op::POP, 5),
+            (op::SSTORE, 2),
+            (op::TLOAD, 1),
+            (op::TSTORE, 1),
+        ])
+    );
+}
+
+#[test]
 fn test_geth_erc7562_contract_size_reads_accepted_state() {
     let (root, target) = (
         address!("1000000000000000000000000000000000000001"),
