@@ -133,7 +133,6 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
-        state.set_pc(pc.as_ptr());
         return (Pc::new(core::ptr::null()), gas);
     }
     (pc, gas)
@@ -259,7 +258,7 @@ fn finish_run<T: EvmTypesHost>(
 ) -> InstrStop {
     cold_path();
     let (pc, stack_len) = (cursor.pc(), cursor.stack_len());
-    // The NULL `pc` is only a loop-exit sentinel; the stopping handler published its own.
+    // The NULL `pc` is only a loop-exit sentinel; never publish it.
     let pc = if pc.as_ptr().is_null() { state.0.pc } else { pc.as_ptr() };
     state.set_pc_stack_len(pc, stack_len);
     imp::finish_loop(state.gas_mut(), loop_state);

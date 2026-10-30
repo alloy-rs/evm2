@@ -673,24 +673,26 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.steps
     }
 
-    /// Stops the instruction with [`InstrStop::Reload`] if the inspector's config no longer
-    /// matches the table this frame runs on. A message instruction calls it after its child
-    /// message and returns the result.
+    /// Stops the instruction at `pc` with [`InstrStop::Reload`] if the inspector's config no
+    /// longer matches the table this frame runs on. A message instruction calls it after its
+    /// child message and returns the result.
+    #[inline(always)]
+    pub(crate) fn note_inspector_config_change(&mut self, pc: Pc) {
+        if self.0.inspector.is_some() {
+            self.reload_if_config_changed(pc);
+        }
+    }
+
     #[inline(never)]
-    pub(crate) fn note_inspector_config_change(&mut self) {
+    fn reload_if_config_changed(&mut self, pc: Pc) {
         if self.0.result.is_ok()
             && let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
             && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
         {
+            self.0.pc = pc.as_ptr();
             self.0.result = Err(InstrStop::Reload);
         }
-    }
-
-    #[inline]
-    #[cfg(not(tco))]
-    pub(crate) const fn set_pc(&mut self, pc: *const u8) {
-        self.0.pc = pc;
     }
 
     #[inline]
@@ -833,8 +835,10 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         let reload = self.0.result == Err(InstrStop::Reload);
         if reload {
             cold_path();
-            // The hook sees the instruction as done.
+            // The hook sees the instruction as done, with the pc after it.
             self.0.result = Ok(());
+            // SAFETY: A next instruction follows the instruction at `pc`.
+            self.0.pc = unsafe { pc.as_ptr().add(dispatch::instruction_len(pc.op())) };
         } else if self.0.result.is_err() {
             cold_path();
             if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
@@ -847,8 +851,11 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             inspector.as_mut().step_end(&mut self.0);
         }
         // A stop the hook set wins over the reload.
-        if reload && self.0.result.is_ok() {
-            self.0.result = Err(InstrStop::Reload);
+        if reload {
+            self.0.pc = pc.as_ptr();
+            if self.0.result.is_ok() {
+                self.0.result = Err(InstrStop::Reload);
+            }
         }
     }
 
