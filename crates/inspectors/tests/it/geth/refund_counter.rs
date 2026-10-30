@@ -51,14 +51,14 @@ fn step_refund_counter_spans_frames() {
             .map(|step| (step.op.get(), step.gas_refund_counter))
             .collect::<Vec<_>>()
     };
-    // A step reads the counter after the gas function of its opcode, so the `SSTORE` includes its
-    // own refund, and a call step excludes the refunds of its child.
+    // A step reads the counter when it starts, so the `SSTORE` excludes its own refund, and a
+    // call step excludes the refunds of its child.
     assert_eq!(
         steps(0),
         [
             (op::PUSH1, 0),
             (op::PUSH1, 0),
-            (op::SSTORE, 4800),
+            (op::SSTORE, 0),
             (op::PUSH0, 4800),
             (op::PUSH0, 4800),
             (op::PUSH0, 4800),
@@ -71,7 +71,7 @@ fn step_refund_counter_spans_frames() {
     );
     assert_eq!(
         steps(1),
-        [(op::PUSH1, 4800), (op::PUSH1, 4800), (op::SSTORE, 2800), (op::STOP, 2800)]
+        [(op::PUSH1, 4800), (op::PUSH1, 4800), (op::SSTORE, 4800), (op::STOP, 2800)]
     );
 }
 
@@ -123,5 +123,5 @@ fn step_refund_counter_drops_reverted_child() {
             .collect::<Vec<_>>()
     };
     assert_eq!(refunds(0), [0, 0, 0, 0, 0, 0, 0, 0]);
-    assert_eq!(refunds(1), [0, 0, 4800, 4800, 4800, 4800]);
+    assert_eq!(refunds(1), [0, 0, 0, 4800, 4800, 4800]);
 }

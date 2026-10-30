@@ -592,32 +592,6 @@ impl TracingInspector {
         }
     }
 
-    /// Updates the refund counter of the current step for opcodes that change it while charging
-    /// gas.
-    ///
-    /// Geth reads the counter after the gas function ran, so the step of an `SSTORE` or
-    /// `SELFDESTRUCT` already includes its own refund. evm2 charges inside the instruction, after
-    /// the step hook, so the counter is read again once the instruction finished. Call-like steps
-    /// keep the counter from before the call, which excludes the refunds of the child frame.
-    ///
-    /// Invoked on [Inspector::step_end], before [`Self::fill_step_on_step_end`].
-    #[cold]
-    fn refresh_refund_after_gas_charge<T: EvmTypes>(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
-    ) {
-        let Some(&(trace_idx, step_idx)) = self.step_stack.last() else {
-            return;
-        };
-        let Some(step) = self.traces.arena[trace_idx].trace.steps.get_mut(step_idx) else {
-            return;
-        };
-        if matches!(step.op.get(), op::SSTORE | op::SELFDESTRUCT) {
-            let frame_refunded = interp.gas().refunded();
-            step.gas_refund_counter = interp.host().tx_refunded(frame_refunded).max(0) as u64;
-        }
-    }
-
     /// Fills the current trace with the output of a step.
     ///
     /// Invoked on [Inspector::step_end].
@@ -803,7 +777,6 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.config.record_steps {
-            self.refresh_refund_after_gas_charge(interp);
             self.fill_step_on_step_end(interp);
         }
         self.budget.halt(interp, true);
