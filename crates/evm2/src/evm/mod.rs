@@ -633,10 +633,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.spec_id = spec_id;
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
+        // Refresh before the old registry and precompiles drop, so an unwinding destructor
+        // cannot leave a stale verdict.
+        self.refresh_runner_support();
         self.registry = registry;
         self.precompiles = precompiles;
         self.evm_send = false;
-        self.refresh_runner_support();
     }
 
     /// Returns the accepted-state overlay database.
