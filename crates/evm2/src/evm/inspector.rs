@@ -27,7 +27,9 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called after each instruction executes.
     ///
     /// If the instruction ran out of gas, the interpreter's remaining gas is unspecified: record
-    /// it in [`Self::step`] instead of reading it here.
+    /// it in [`Self::step`] instead of reading it here. An inspector that replaces the
+    /// out-of-gas stop with one that is not a halt must also set the remaining gas, as the frame
+    /// keeps whatever is left.
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
