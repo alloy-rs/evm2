@@ -7,6 +7,7 @@ pub(crate) struct Program {
     code: Vec<u8>,
     stack_height: usize,
     features: FuzzFeatures,
+    spec: SpecId,
 }
 
 impl Program {
@@ -20,6 +21,7 @@ impl Program {
         self.code.clear();
         self.stack_height = 0;
         self.features = FuzzFeatures::default();
+        self.spec = spec;
         let statements = rng.range_inclusive(1, 48);
         for _ in 0..statements {
             match rng.range(100) {
@@ -58,16 +60,12 @@ impl Program {
     ///
     /// Opcodes the fork does not define are emitted once in 20 to cover their invalid-opcode
     /// behavior.
-    fn allow_opcodes(&mut self, rng: &mut Gen, spec: SpecId, opcodes: &[u8]) -> bool {
+    fn allow_opcodes(&self, rng: &mut Gen, spec: SpecId, opcodes: &[u8]) -> bool {
         let config = OpcodeConfig::<BaseEvmTypes>::base_for_spec(spec);
         if opcodes.iter().all(|&opcode| config.is_defined(opcode)) {
             return true;
         }
-        if rng.one_in(20) {
-            self.mark(FuzzFeatures::FORK_INVALID_OPCODE);
-            return true;
-        }
-        false
+        rng.one_in(20)
     }
 
     fn mark(&mut self, feature: FuzzFeatures) {
@@ -711,6 +709,11 @@ impl Program {
             op::SELFDESTRUCT => self.mark(FuzzFeatures::SELFDESTRUCT),
             _ => {}
         }
+        if opcode != op::INVALID
+            && !OpcodeConfig::<BaseEvmTypes>::base_for_spec(self.spec).is_defined(opcode)
+        {
+            self.mark(FuzzFeatures::FORK_INVALID_OPCODE);
+        }
     }
 }
 
@@ -752,5 +755,22 @@ mod tests {
             assert_eq!(program.stack_height, 1);
             assert_eq!(program.features, FuzzFeatures::PUSH);
         }
+    }
+
+    #[test]
+    fn pre_spurious_dragon_programs_use_frontier_opcodes() {
+        let addresses = [Address::with_last_byte(1)];
+        let mut rng = Gen::new(1);
+        let mut program = Program::default();
+        let wanted = FuzzFeatures::CALL | FuzzFeatures::CREATE | FuzzFeatures::INVALID;
+        let mut seen = FuzzFeatures::default();
+        for _ in 0..256 {
+            let (_, features) =
+                program.generate(&mut rng, SpecId::FRONTIER, &addresses, &addresses);
+            if !features.contains(FuzzFeatures::FORK_INVALID_OPCODE) {
+                seen |= features;
+            }
+        }
+        assert!(seen.contains(wanted), "{seen:?}");
     }
 }
