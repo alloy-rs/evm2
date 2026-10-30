@@ -8,7 +8,7 @@ use evm2::{
     evm::InMemoryDB,
     interpreter::{InstrStop, Interpreter},
 };
-use evm2_cli::evm_bench::BenchCase;
+use evm2_cli::evm_bench::{BenchCase, JitBench};
 use evm2_jit_context::EvmCompilerFn;
 use evm2_jit_llvm::EvmLlvmBackend;
 use evm2_jit_runtime::{EvmCompiler, OptimizationLevel};
@@ -16,25 +16,6 @@ use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 type BenchEvm = Evm<'static, BaseEvmTypes>;
 type LlvmCompiler = EvmCompiler<EvmLlvmBackend>;
-
-const SKIP_COMPILE_JIT: &[&str] = &[
-    "snailtracer",
-    "seaport",
-    "fiat_token",
-    "uniswap_v2_pair",
-    "univ2_router",
-    "airdrop",
-    "usdc_proxy",
-    "universal_router",
-    "aggregation_router_v6",
-    "uniswap_v3_pool",
-    "uniswap_v4_pool_manager",
-    "curve_3pool",
-    "curve_tricrypto2",
-    "balancer_vault",
-    "succinct_staking",
-];
-const SKIP_ALL: &[&str] = &["seaport", "snailtracer"];
 
 #[derive(Debug)]
 pub(crate) struct Compiler {
@@ -55,6 +36,7 @@ impl Compiler {
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedBench {
     name: Cow<'static, str>,
+    jit: JitBench,
     spec: SpecId,
     block: BlockEnv,
     db: InMemoryDB,
@@ -69,7 +51,7 @@ impl PreparedBench {
         suites: &Suites,
         compiler: &mut Compiler,
     ) -> Option<Self> {
-        if SKIP_ALL.contains(&bench.name.as_ref()) {
+        if bench.jit == JitBench::Skip {
             return None;
         }
 
@@ -98,6 +80,7 @@ impl PreparedBench {
 
         Some(Self {
             name: bench.name.clone(),
+            jit: bench.jit,
             spec,
             block: case.block(),
             db: case.state(),
@@ -135,7 +118,7 @@ impl PreparedBench {
                 )
             });
 
-            if !SKIP_COMPILE_JIT.contains(&self.name.as_ref()) {
+            if self.jit == JitBench::Full {
                 group.bench_function(format!("{}/jit/compile", self.name), |b| {
                     b.iter_batched_ref(
                         || {
