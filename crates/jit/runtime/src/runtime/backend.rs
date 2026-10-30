@@ -42,12 +42,21 @@ use evm2_jit_context::RawEvmCompilerFn;
 /// The resident map type: code_hash+spec_id → compiled program.
 pub(crate) type ResidentMap = DashMap<RuntimeCacheKey, Arc<CompiledProgram>, DefaultHashBuilder>;
 
+/// A lookup observed by a caller thread.
+#[derive(Debug)]
+pub(crate) enum LookupEvent {
+    /// A thread served `key` from its cache, which refreshes the key's last-hit time.
+    Hit(RuntimeCacheKey),
+    /// No compiled program was available: the backend tracks the bytecode's hotness.
+    Miss(LookupRequest),
+}
+
 /// Bounded MPMC lock-free queue of lookup-observed events.
 ///
 /// Producers (lookup misses and per-thread hit reports) push without blocking; on overflow the
 /// event is silently dropped (`stats.events_dropped` is bumped). The backend
 /// drains via `pop` on every loop iteration. Hotness signal is best-effort.
-pub(crate) type EventQueue = ArrayQueue<LookupRequest>;
+pub(crate) type EventQueue = ArrayQueue<LookupEvent>;
 
 /// Per-entry metadata tracked alongside the resident map for eviction decisions.
 struct ResidentMeta {
@@ -315,17 +324,19 @@ impl BackendState {
         }
     }
 
-    fn handle_lookup_observed(&mut self, event: LookupRequest) {
-        let hit = event.code.is_empty();
-        if hit {
+    fn handle_lookup_observed(&mut self, event: LookupEvent) {
+        match event {
             // Callers count hits themselves and report each key once per batch of hits.
-            if let Some(meta) = self.resident_meta.get_mut(&event.key) {
-                meta.last_hit_at = Instant::now();
+            LookupEvent::Hit(key) => {
+                if let Some(meta) = self.resident_meta.get_mut(&key) {
+                    meta.last_hit_at = Instant::now();
+                }
             }
-        } else {
-            self.inner.stats.lookup_misses.fetch_add(1, Ordering::Relaxed);
-            let kind = if self.aot { CompilationKind::Aot } else { CompilationKind::Jit };
-            self.try_admit(kind, event.key, event.code, SyncNotifier::none(), AdmitMode::Observed);
+            LookupEvent::Miss(req) => {
+                self.inner.stats.lookup_misses.fetch_add(1, Ordering::Relaxed);
+                let kind = if self.aot { CompilationKind::Aot } else { CompilationKind::Jit };
+                self.try_admit(kind, req.key, req.code, SyncNotifier::none(), AdmitMode::Observed);
+            }
         }
     }
 
@@ -1088,7 +1099,7 @@ mod notifier_tests {
         code.push(op::STOP);
         let bytecode = Bytes::from(code);
         let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
-        state.handle_lookup_observed(LookupRequest { key, code: bytecode });
+        state.handle_lookup_observed(LookupEvent::Miss(LookupRequest { key, code: bytecode }));
         key
     }
 
@@ -1113,7 +1124,10 @@ mod notifier_tests {
         );
         state.pending_jobs = 1;
         for _ in 0..10_000 {
-            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+            state.handle_lookup_observed(LookupEvent::Miss(LookupRequest {
+                key,
+                code: bytecode.clone(),
+            }));
         }
         assert_eq!(state.entries[&key].pending_notifiers.len(), 0);
         assert_eq!(state.entries[&key].pending_notifiers.capacity(), 0);
@@ -1128,7 +1142,10 @@ mod notifier_tests {
             });
         }
         for _ in 0..10_000 {
-            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+            state.handle_lookup_observed(LookupEvent::Miss(LookupRequest {
+                key,
+                code: bytecode.clone(),
+            }));
         }
         assert_eq!(state.entries[&key].pending_notifiers.len(), 2);
         assert_eq!(first_rx.try_recv(), Err(chan::TryRecvError::Empty));
@@ -1378,7 +1395,10 @@ mod notifier_tests {
 
         let bytecode = state.entries[&key].bytecode.clone();
         for _ in 0..10 {
-            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+            state.handle_lookup_observed(LookupEvent::Miss(LookupRequest {
+                key,
+                code: bytecode.clone(),
+            }));
         }
         let (sender, receiver) = chan::bounded(1);
         state.handle_compile_jit(CompileJitRequest {

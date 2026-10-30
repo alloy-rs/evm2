@@ -7,8 +7,8 @@
 //! reports hits to the backend in deduplicated batches. The backend invalidates a key in every
 //! cache when it removes or replaces that program, and every key when it clears them all.
 
-use crate::runtime::{BackendShared, CompiledProgram, LookupRequest, RuntimeCacheKey};
-use alloy_primitives::{Bytes, map::HashMap};
+use crate::runtime::{BackendShared, CompiledProgram, LookupEvent, RuntimeCacheKey};
+use alloy_primitives::map::HashMap;
 use std::{
     cell::RefCell,
     fmt, mem,
@@ -190,8 +190,7 @@ impl LocalCache {
         self.pending_hits += 1;
         self.hits_since_clear += 1;
         if !mem::replace(&mut cached.reported, true) {
-            // An empty bytecode marks a hit, which refreshes the key's last-hit time.
-            if shared.events.push(LookupRequest { key: *key, code: Bytes::new() }).is_err() {
+            if shared.events.push(LookupEvent::Hit(*key)).is_err() {
                 shared.stats.events_dropped.fetch_add(1, Ordering::Relaxed);
                 // Report the key again on its next hit.
                 cached.reported = false;
@@ -354,7 +353,7 @@ mod tests {
     fn reports_of(shared: &BackendShared, key: &RuntimeCacheKey) -> usize {
         let mut reports = 0;
         while let Some(event) = shared.events.pop() {
-            reports += usize::from(event.key == *key);
+            reports += usize::from(matches!(event, LookupEvent::Hit(hit) if hit == *key));
         }
         reports
     }

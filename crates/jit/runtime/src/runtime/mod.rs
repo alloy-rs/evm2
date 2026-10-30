@@ -9,7 +9,8 @@
 use crate::eyre::{self, WrapErr};
 use alloy_primitives::{B256, Bytes};
 use backend::{
-    Command, CompileJitRequest, EventQueue, JitObjectLinker, PrepareAotRequest, ResidentMap,
+    Command, CompileJitRequest, EventQueue, JitObjectLinker, LookupEvent, PrepareAotRequest,
+    ResidentMap,
 };
 use crossbeam_channel as chan;
 use crossbeam_queue::ArrayQueue;
@@ -336,7 +337,9 @@ impl JitBackend {
             return Ok(program);
         }
 
-        if let Err(_v) = shared.events.push(LookupRequest { key, code: code_bytes() }) {
+        if let Err(_v) =
+            shared.events.push(LookupEvent::Miss(LookupRequest { key, code: code_bytes() }))
+        {
             cold_path();
             shared.stats.events_dropped.fetch_add(1, Ordering::Relaxed);
         }
