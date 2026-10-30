@@ -236,13 +236,18 @@ impl JitBackend {
         Ok(this)
     }
 
+    /// Checks that generated code uses the field layout of the interpreter type `T`.
+    #[inline]
+    pub(crate) fn supports_host_type<T: evm2::EvmTypesHost>(&self) -> bool {
+        self.inner.host.type_id == std::any::TypeId::of::<T>()
+    }
+
     /// Checks that generated code matches the interpreter type, gas schedule, and opcode table.
     pub(crate) fn supports_host<T: evm2::EvmTypesHost>(
         &self,
         config: &evm2::ExecutionConfig<T>,
     ) -> bool {
-        let host = &self.inner.host;
-        host.type_id == std::any::TypeId::of::<T>()
+        self.supports_host_type::<T>()
             && config.version().gas_params
                 == *self
                     .inner
