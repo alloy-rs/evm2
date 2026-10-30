@@ -672,7 +672,13 @@ impl TracingInspector {
             slot.1 = host.state().get_storage(&address, &slot.0).unwrap_or_default();
         }
 
-        step.gas_cost = interp.step_cost();
+        // An out-of-gas step consumes the whole remainder, except the reentrancy sentry, which
+        // halts before any charge.
+        step.gas_cost = if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
+            0
+        } else {
+            interp.step_cost()
+        };
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
             step.state_gas_cost = Some(state_gas_delta);

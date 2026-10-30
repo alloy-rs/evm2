@@ -67,7 +67,6 @@ pub fn sstore_with<T: EvmTypesHost>(
     // EIP-2200: SSTORE may not execute with only the value-transfer stipend left. This
     // check happens before any gas is charged or host storage is touched.
     if is_eip2200 && gas.remaining() <= state.gas_params().get(GasId::CallStipend) {
-        state.finish_step_charge(gas);
         return Err(InstrStop::ReentrancySentryOOG);
     }
 
