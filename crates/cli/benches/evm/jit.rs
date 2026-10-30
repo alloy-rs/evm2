@@ -9,7 +9,7 @@ use evm2::{
     interpreter::{InstrStop, Interpreter},
 };
 use evm2_cli::evm_bench::BenchCase;
-use evm2_jit_context::{EvmCompilerFn, MAX_FRAME_GAS};
+use evm2_jit_context::EvmCompilerFn;
 use evm2_jit_llvm::EvmLlvmBackend;
 use evm2_jit_runtime::{EvmCompiler, OptimizationLevel};
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
@@ -209,8 +209,8 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
-        // Compiled code cannot hold more than `MAX_FRAME_GAS`.
-        if interpreter.gas().remaining() > MAX_FRAME_GAS {
+        // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
+        if interpreter.gas().remaining() > i64::MAX as u64 {
             return None;
         }
         let func = *self.functions.get(&interpreter.original_bytecode_hash())?;

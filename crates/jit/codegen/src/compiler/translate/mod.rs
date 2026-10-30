@@ -1150,7 +1150,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.build_gas_check();
                 let mut remaining = self.load_gas_remaining();
                 // The section head already charged the static gas of the instructions after this.
-                let owed = self.bytecode.gas_owed(self.current_inst.unwrap());
+                let owed = data.gas_owed();
                 if self.config.gas_metering && owed != 0 {
                     remaining = self.bcx.iadd_imm(remaining, owed as i64);
                 }
@@ -1791,7 +1791,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             // Other paths can arrive with gas left unchecked, so force a check.
             self.unchecked_gas = GAS_CHECK_THRESHOLD;
         }
-        let cost = self.bytecode.inst(head).gas_section.gas_cost;
+        let cost = self.bytecode.inst(head).gas_section.gas_cost as u64;
         if cost != 0 {
             let remaining = self.load_gas_remaining();
             let remaining = self.bcx.isub_imm(remaining, cost as i64);

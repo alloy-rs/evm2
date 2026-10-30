@@ -1,7 +1,6 @@
 use crate::bytecode::{Bytecode, Inst, InstFlags};
 use core::{fmt, ops::Range};
 use evm2::interpreter::op;
-use evm2_jit_context::MAX_FRAME_GAS;
 use smallvec::SmallVec;
 
 /// A gas section tracks the total base gas cost of a sequence of instructions.
@@ -9,10 +8,8 @@ use smallvec::SmallVec;
 /// Gas sections end at branching instructions and at host effects that depend on `gasleft`.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct GasSection {
-    /// The total static gas cost of all instructions in the section.
-    ///
-    /// Capped at [`GasSection::MAX_GAS_COST`].
-    pub(crate) gas_cost: u64,
+    /// The total base gas cost of all instructions in the section.
+    pub(crate) gas_cost: u32,
 }
 
 impl fmt::Debug for GasSection {
@@ -26,12 +23,12 @@ impl fmt::Debug for GasSection {
 }
 
 impl GasSection {
-    /// The largest gas cost a section can charge.
+    /// The cost recorded for a section that costs at least this much.
     ///
-    /// A frame holds at most [`MAX_FRAME_GAS`], so a section costing more always runs it out of
-    /// gas. Capping one above that bound keeps the charge exceeding any frame's gas, and keeps
-    /// subtracting it from a slightly negative remaining gas from wrapping.
-    pub(crate) const MAX_GAS_COST: u64 = MAX_FRAME_GAS + 1;
+    /// A section's cost is stored in 32 bits, so a larger one saturates here. Section gas is
+    /// charged ahead of the instructions, so a saturated cost would charge too little, and
+    /// [`Bytecode::analyze`] rejects the bytecode instead.
+    pub(crate) const SATURATED: u32 = u32::MAX;
 
     /// Returns `true` if the section is empty.
     #[inline]
@@ -100,13 +97,13 @@ impl GasSectionAnalysis {
     /// Accumulates a base gas cost.
     #[inline]
     pub(crate) const fn process(&mut self, base_gas: u16) {
-        self.gas_cost = self.gas_cost.saturating_add(base_gas as u64);
+        self.gas_cost += base_gas as u64;
     }
 
     /// Accumulates extra gas (e.g. pre-computed dynamic gas for folded instructions).
     #[inline]
     pub(crate) const fn process_extra(&mut self, gas: u64) {
-        self.gas_cost = self.gas_cost.saturating_add(gas);
+        self.gas_cost += gas;
     }
 
     /// Records a `GAS` instruction after accumulating its base gas.
@@ -139,7 +136,8 @@ impl GasSectionAnalysis {
             }
         }
         for &(inst, gas_cost) in &self.gas_insts {
-            bytecode.set_gas_owed(inst, (self.gas_cost - gas_cost).min(GasSection::MAX_GAS_COST));
+            let owed = (self.gas_cost - gas_cost).try_into().unwrap_or(u32::MAX);
+            bytecode.inst_mut(inst).set_gas_owed(owed);
         }
     }
 
@@ -150,7 +148,7 @@ impl GasSectionAnalysis {
 
     /// Returns the current gas section.
     pub(crate) fn section(&self) -> GasSection {
-        GasSection { gas_cost: self.gas_cost.min(GasSection::MAX_GAS_COST) }
+        GasSection { gas_cost: self.gas_cost.try_into().unwrap_or(u32::MAX) }
     }
 }
 
@@ -339,10 +337,9 @@ mod tests {
         passes::block_analysis::tests::{analyze_asm, analyze_asm_spec, analyze_code_spec},
     };
     use evm2::{SpecId, interpreter::op};
-    use evm2_jit_context::MAX_FRAME_GAS;
 
     /// Returns the gas section cost for the first non-dead instruction (the section head).
-    fn section_gas(src: &str) -> u64 {
+    fn section_gas(src: &str) -> u32 {
         let bytecode = analyze_asm(src);
         bytecode.inst(Inst::from_usize(0)).gas_section.gas_cost
     }
@@ -405,30 +402,16 @@ mod tests {
             SpecId::CANCUN,
         );
         let head = bytecode.inst(Inst::from_usize(0));
+        let gas = bytecode.inst(Inst::from_usize(7));
         let call = bytecode.inst(Inst::from_usize(8));
         let after_call = bytecode.inst(Inst::from_usize(9));
         // `GAS` does not end the section: 4 * PUSH1 + CALLVALUE + PUSH1 + CALLDATALOAD + GAS +
         // CALL.
         assert_eq!(head.gas_section.gas_cost, 4 * 3 + 2 + 3 + 3 + 2 + 100);
-        assert_eq!(bytecode.gas_owed(Inst::from_usize(7)), 100);
+        assert_eq!(gas.gas_owed(), 100);
         assert!(call.gas_section.is_empty());
         assert_eq!(after_call.gas_section.gas_cost, 3);
         assert!(after_call.is_stack_section_head());
-    }
-
-    #[test]
-    fn section_gas_exceeds_any_frame_when_capped() {
-        // A section costing more than a frame can hold charges more than any frame has, so it
-        // runs out of gas even for a frame holding exactly `MAX_FRAME_GAS`.
-        let mut analysis = super::GasSectionAnalysis::default();
-        analysis.process_extra(MAX_FRAME_GAS + 1);
-        assert!(analysis.section().gas_cost > MAX_FRAME_GAS);
-        analysis.process_extra(u64::MAX);
-        assert_eq!(analysis.section().gas_cost, super::GasSection::MAX_GAS_COST);
-        // A section that fits is charged exactly.
-        let mut analysis = super::GasSectionAnalysis::default();
-        analysis.process_extra(MAX_FRAME_GAS);
-        assert_eq!(analysis.section().gas_cost, MAX_FRAME_GAS);
     }
 
     #[test]
@@ -444,7 +427,7 @@ mod tests {
         let owed = bytecode
             .iter_insts()
             .filter(|(_, data)| data.opcode == op::GAS)
-            .map(|(inst, _)| bytecode.gas_owed(inst))
+            .map(|(_, data)| data.gas_owed())
             .collect::<Vec<_>>();
         assert_eq!(owed, [3 + 3 + 110 + 2 + 2 + 100, 2 + 100]);
     }

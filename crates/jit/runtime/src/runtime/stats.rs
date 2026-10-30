@@ -72,7 +72,7 @@ pub struct RuntimeStatsSnapshot {
     /// A failed compilation is also counted once in `compilations_failed`; this counter counts
     /// every frame, including later frames of the same failed code.
     ///
-    /// Also counts frames whose gas exceeds `MAX_FRAME_GAS`, and hosts that the runtime rejects
+    /// Also counts frames whose gas exceeds `i64::MAX`, and hosts that the runtime rejects
     /// because their type, gas schedule, or opcode table differs from the compiled code's. A
     /// rejected host is counted once per support check of the runner, not once per frame, because
     /// the `Evm` then stops asking the runtime to run frames. `run_interpreter` counts it on every

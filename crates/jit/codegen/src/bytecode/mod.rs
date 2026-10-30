@@ -187,9 +187,6 @@ pub struct Bytecode<'a> {
     /// Multi-target jump table: maps a JUMP/JUMPI instruction to its set of known targets.
     /// Only populated for jumps resolved to multiple targets by block analysis.
     multi_jump_targets: FxHashMap<Inst, SmallVec<[Inst; 4]>>,
-    /// Maps each `GAS` instruction to the static gas of the rest of its gas section, which the
-    /// section head already charged.
-    gas_owed: FxHashMap<Inst, u64>,
 
     /// Instruction index to 1-based line number in the formatted dump, built during formatting.
     inst_lines: RefCell<IndexVec<Inst, u32>>,
@@ -362,7 +359,6 @@ impl<'a> Bytecode<'a> {
             memory_sections: IndexVec::new(),
             u256_interner: RefCell::new(u256_interner),
             multi_jump_targets: FxHashMap::default(),
-            gas_owed: FxHashMap::default(),
             pc_to_inst,
             inst_to_pc,
             inst_lines: RefCell::new(IndexVec::new()),
@@ -467,7 +463,7 @@ impl<'a> Bytecode<'a> {
             self.dead_store_elim();
         }
 
-        self.construct_sections();
+        self.construct_sections()?;
         self.construct_memory_sections();
 
         debug!(
@@ -599,8 +595,7 @@ impl<'a> Bytecode<'a> {
     /// Constructs the sections in the bytecode.
     #[instrument(name = "sections", level = "debug", skip_all)]
     #[inline(never)]
-    fn construct_sections(&mut self) {
-        self.gas_owed.clear();
+    fn construct_sections(&mut self) -> Result<()> {
         let mut analysis = SectionsAnalysis::default();
         for inst in self.insts.indices() {
             if !self.inst(inst).is_dead_code() {
@@ -608,6 +603,20 @@ impl<'a> Bytecode<'a> {
             }
         }
         analysis.finish(self);
+
+        if let Some((inst, _)) = self
+            .insts
+            .iter_enumerated()
+            .find(|(_, data)| data.gas_section.gas_cost == GasSection::SATURATED)
+        {
+            bail!(
+                "the gas section at instruction {} costs at least {} gas, which compiled code \
+                 cannot charge ahead of its instructions",
+                inst.index(),
+                GasSection::SATURATED,
+            );
+        }
+        Ok(())
     }
 
     /// Constructs the memory sections in the bytecode.
@@ -705,20 +714,6 @@ impl<'a> Bytecode<'a> {
     /// Returns the multi-target jump table entry for the given instruction, if any.
     pub(crate) fn multi_jump_targets(&self, inst: Inst) -> Option<&[Inst]> {
         self.multi_jump_targets.get(&inst).map(|v| v.as_slice())
-    }
-
-    /// Returns the static gas that the section head charged for the instructions after the given
-    /// `GAS`.
-    #[inline]
-    pub(crate) fn gas_owed(&self, inst: Inst) -> u64 {
-        debug_assert_eq!(self.insts[inst].opcode, op::GAS);
-        self.gas_owed.get(&inst).copied().unwrap_or_default()
-    }
-
-    /// Sets the static gas charged ahead of the given `GAS` instruction.
-    pub(crate) fn set_gas_owed(&mut self, inst: Inst, gas: u64) {
-        debug_assert_eq!(self.insts[inst].opcode, op::GAS);
-        self.gas_owed.insert(inst, gas);
     }
 
     /// Returns the known constant value of a stack operand at the given instruction.
@@ -1027,6 +1022,7 @@ pub(crate) struct InstData {
     /// - `JUMPDEST`: program counter in low 31 bits, reachable flag in high bit
     ///   ([`InstData::JUMPDEST_REACHABLE`]).
     /// - `JUMP | JUMPI` with [`InstFlags::STATIC_JUMP`]: target instruction index.
+    /// - `GAS`: static gas of the rest of its gas section, which the section head already charged.
     /// - otherwise: unused.
     pub(crate) data: u32,
     /// The gas section this instruction belongs to.
@@ -1133,6 +1129,20 @@ impl InstData {
 
     /// High bit of `data` set when a `JUMPDEST` is a reachable static jump target.
     pub(crate) const JUMPDEST_REACHABLE: u32 = 1 << 31;
+
+    /// Returns the static gas that the section head charged for instructions after this `GAS`.
+    #[inline]
+    pub(crate) fn gas_owed(&self) -> u32 {
+        debug_assert_eq!(self.opcode, op::GAS);
+        self.data
+    }
+
+    /// Sets the static gas charged ahead of this `GAS` instruction.
+    #[inline]
+    pub(crate) fn set_gas_owed(&mut self, gas: u32) {
+        debug_assert_eq!(self.opcode, op::GAS);
+        self.data = gas;
+    }
 
     /// Returns the program counter of a `JUMPDEST`.
     #[inline]

@@ -5,7 +5,6 @@ use evm2::{
     EvmTypesHost, ExecutionConfig, InterpreterRunner,
     interpreter::{Host, InstrStop, Interpreter},
 };
-use evm2_jit_context::MAX_FRAME_GAS;
 
 /// External interpreter runner backed by [`JitBackend`].
 #[derive(Clone, Debug)]
@@ -81,11 +80,11 @@ fn run_supported<'frame, 'host, T: EvmTypesHost>(
     host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
     // Disabled runners must not hash code merely to discover that lookup is unavailable.
-    // Compiled code cannot hold more than `MAX_FRAME_GAS`.
+    // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
     if !backend.enabled() {
         return None;
     }
-    if interpreter.gas().remaining() > MAX_FRAME_GAS {
+    if interpreter.gas().remaining() > i64::MAX as u64 {
         backend.count_interpreter_fallback();
         return None;
     }
@@ -306,9 +305,9 @@ mod tests {
 
     #[test]
     #[cfg(feature = "llvm")]
-    fn gas_above_max_frame_gas_falls_back_to_interpreter() {
+    fn gas_above_i64_max_falls_back_to_interpreter() {
         let message = MessageExt {
-            gas_limit: MAX_FRAME_GAS + 1,
+            gas_limit: i64::MAX as u64 + 1,
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..Default::default()
         };
@@ -324,28 +323,6 @@ mod tests {
         let backend = blocking_backend();
         assert_eq!(run_interpreter(&backend, &mut interpreter, &mut host), None);
         assert_eq!(backend.stats().interpreter_fallbacks, 1);
-    }
-
-    #[test]
-    #[cfg(feature = "llvm")]
-    fn gas_at_max_frame_gas_runs_compiled() {
-        let message = MessageExt {
-            gas_limit: MAX_FRAME_GAS,
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
-            ..Default::default()
-        };
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
-        let mut host = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            EmptyDB::default(),
-            Precompiles::base(SpecId::CANCUN),
-        );
-
-        let backend = blocking_backend();
-        assert_eq!(run_interpreter(&backend, &mut interpreter, &mut host), Some(InstrStop::Stop));
-        assert_eq!(backend.stats().interpreter_fallbacks, 0);
     }
 
     #[test]
@@ -797,6 +774,47 @@ mod tests {
             assert_eq!(Word::from_be_slice(&interpreted.1), Word::from(expected));
             assert_eq!(run(true), interpreted);
         }
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn section_gas_too_large_to_compile_falls_back_to_interpreter() {
+        let spec = SpecId::CANCUN;
+        let mut version = *Version::base(spec);
+        version.gas_params.set(GasId::ExpByte, u32::MAX);
+        let backend = JitBackend::new(RuntimeConfig {
+            enabled: true,
+            blocking: true,
+            gas_params: Some(version.gas_params),
+            ..RuntimeConfig::default()
+        })
+        .unwrap();
+        let mut host = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnv::<BaseEvmTypes>::default(),
+            ethereum_tx_registry(spec),
+            InMemoryDB::default(),
+            Precompiles::base(spec),
+        );
+        // `0 ** (2^256 - 1)`: the exponent's 32 bytes cost more than `u32::MAX` gas in one section.
+        let mut code = vec![op::PUSH32];
+        code.extend([0xff; 32]);
+        code.extend([op::PUSH0, op::EXP, op::STOP]);
+        let expected_gas = 3 + 2 + 10 + 32 * u32::MAX as u64;
+        let message = MessageExt {
+            gas_limit: 2 * expected_gas,
+            code: Bytecode::new_legacy(Bytes::from(code)),
+            ..MessageExt::default()
+        };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
+
+        assert_eq!(run_interpreter(&backend, &mut interpreter, &mut host), None);
+        let stats = backend.stats();
+        assert_eq!((stats.compilations_failed, stats.interpreter_fallbacks), (1, 1));
+
+        assert_eq!(interpreter.run(&mut host).unwrap(), InstrStop::Stop);
+        assert_eq!(interpreter.gas().spent(), expected_gas);
     }
 
     #[test]
