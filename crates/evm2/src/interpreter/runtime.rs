@@ -6,11 +6,11 @@ use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
     evm::inspector::Inspector,
-    interpreter::dispatch,
+    interpreter::{dispatch, opcode::OpCode},
     trustme,
     version::{EvmFeatures, GasParams},
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, format, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes};
 use core::{fmt, hint::cold_path, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
@@ -474,8 +474,10 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         // SAFETY: `prepare_run` installed the host, which outlives the run.
         let config = unsafe { host.as_ref() }.execution_config();
         // SAFETY: `pc` is in bounds.
-        let mut pc = Pc::new(unsafe { bytecode.as_ptr().add(pc) });
-        let instr = config.opcode_config().instruction(pc.op()).instr;
+        let offset = pc;
+        let mut pc = Pc::new(unsafe { bytecode.as_ptr().add(offset) });
+        let opcode = pc.op();
+        let instr = config.opcode_config().instruction(opcode).instr;
         self.stack_len = stack_len;
         let this: *mut Self = self;
         // SAFETY: Instructions must not access the stack through `InterpreterState` while the
@@ -490,7 +492,14 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         instr(&mut pc, stack.reborrow(), state)?;
         // Compiled code continues at the next instruction.
         if pc.as_ptr() != start {
-            return Err(InstrStop::FatalExternalError);
+            return Err(self.fail(ExecutionError::Fatal(
+                format!(
+                    "host instruction {} (0x{opcode:02x}) at pc {offset} moved the program \
+                     counter, which compiled code cannot follow",
+                    OpCode::new_or_unknown(opcode).as_str(),
+                )
+                .into(),
+            )));
         }
         Ok(self.stack_len)
     }

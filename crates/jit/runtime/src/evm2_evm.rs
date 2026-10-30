@@ -860,12 +860,13 @@ mod custom_host_tests {
     use crate::runtime::{HostConfig, RuntimeConfig};
     use alloy_primitives::{Address, Bytes, U256};
     use evm2::{
-        BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, ExecutionConfig, OpcodeConfig, SpecId,
+        BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, ExecutionConfig, ExecutionError,
+        OpcodeConfig, SpecId,
         bytecode::Bytecode,
         config::BaseEvmConfigSelector,
         env::BlockEnvExt,
         evm::{EmptyDB, precompile::NoPrecompiles},
-        interpreter::{MessageExt, Word, instructions::sstore_with, op},
+        interpreter::{MessageExt, MessageResult, Word, instructions::sstore_with, op},
         registry::TxRegistry,
     };
     use evm2_macros::instruction;
@@ -1015,6 +1016,18 @@ mod custom_host_tests {
         Ok(())
     }
 
+    #[instruction(EvmTypes = TableTypes, no_stack_preamble)]
+    fn pushing_blockhash(_cx: _) -> Result {
+        // Keeps its operand, which the opcode's fixed inputs and outputs consume.
+        stack.push(Word::ZERO)
+    }
+
+    #[instruction(EvmTypes = TableTypes, no_stack_preamble)]
+    fn memory_clearing_selfbalance(cx: _) -> Result {
+        cx.state.memory().clear();
+        stack.push(Word::ZERO)
+    }
+
     #[instruction(EvmTypes = TableTypes)]
     fn added(cx: _) -> out {
         *out = Word::from(0xdead_u64);
@@ -1039,6 +1052,10 @@ mod custom_host_tests {
             config.set_instruction::<reading_balance>(op::BALANCE, balance_gas);
             let extcodesize_gas = config.static_gas(op::EXTCODESIZE);
             config.set_instruction::<position_extcodesize>(op::EXTCODESIZE, extcodesize_gas);
+            let blockhash_gas = config.static_gas(op::BLOCKHASH);
+            config.set_instruction::<pushing_blockhash>(op::BLOCKHASH, blockhash_gas);
+            let selfbalance_gas = config.static_gas(op::SELFBALANCE);
+            config.set_instruction::<memory_clearing_selfbalance>(op::SELFBALANCE, selfbalance_gas);
             config.set_instruction::<added>(ADDED_OPCODE, 2);
             config.set_instruction::<added>(op::DUPN, 2);
             config
@@ -1106,6 +1123,34 @@ mod custom_host_tests {
         let mut compiled = Interpreter::<TableTypes>::new(message);
         let compiled_stop = run_interpreter(&backend, &mut compiled, &mut new_host());
         (compiled_stop, compiled, stop, interpreted)
+    }
+
+    /// Runs `code` as a message through a host that uses the compiled runner.
+    fn run_compiled_message(
+        host_config: HostConfig,
+        code: &'static [u8],
+    ) -> Result<MessageResult<TableTypes>, ExecutionError> {
+        let backend = JitBackend::new(RuntimeConfig {
+            blocking: true,
+            single_error: false,
+            host: host_config,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut host = Evm::<TableTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            EmptyDB::default(),
+            NoPrecompiles::default(),
+        );
+        host.set_interpreter_runner(JitInterpreterRunner::new(backend));
+        let mut message = MessageExt {
+            gas_limit: 100_000,
+            code: Bytecode::new_legacy(Bytes::from_static(code)),
+            ..Default::default()
+        };
+        Host::execute_message(&mut host, &mut message)
     }
 
     fn table_host() -> HostConfig {
@@ -1215,12 +1260,32 @@ mod custom_host_tests {
     }
 
     #[test]
-    fn host_instruction_that_moves_the_program_counter_halts() {
-        // The interpreter skips the `POP` after the override, which compiled code cannot do.
-        let code = &[op::PUSH0, op::TLOAD, op::POP, op::STOP][..];
-        let (compiled_stop, _, stop, _) = run_both(table_host(), code);
-        assert_eq!(stop, InstrStop::Stop);
-        assert_eq!(compiled_stop, Some(InstrStop::FatalExternalError));
+    fn host_instruction_that_breaks_compiled_code_assumptions_fails() {
+        for (code, error) in [
+            (
+                // The interpreter skips the `POP` after the override, which compiled code cannot
+                // do.
+                &[op::PUSH0, op::TLOAD, op::POP, op::STOP][..],
+                "host instruction TLOAD (0x5c) at pc 1 moved the program counter, which compiled \
+                 code cannot follow",
+            ),
+            (
+                &[op::PUSH0, op::BLOCKHASH, op::STOP][..],
+                "host instruction BLOCKHASH (0x40) at pc 1 left 2 stack items, but compiled code \
+                 expects 1 from the opcode's fixed inputs and outputs",
+            ),
+            (
+                &[op::PUSH0, op::PUSH0, op::MSTORE, op::SELFBALANCE, op::STOP][..],
+                "host instruction SELFBALANCE (0x47) at pc 3 shrank memory from 32 to 0 bytes, \
+                 but compiled code expects memory never to shrink",
+            ),
+        ] {
+            let result = run_compiled_message(table_host(), code);
+            let Err(ExecutionError::Fatal(fatal)) = result else {
+                panic!("expected a fatal error, got {:?} for {code:?}", result.map(|r| r.stop));
+            };
+            assert_eq!(fatal.to_string(), error);
+        }
     }
 
     #[test]
