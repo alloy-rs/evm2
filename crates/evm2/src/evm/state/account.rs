@@ -650,9 +650,9 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.tracked.present.get_or_insert_with(empty_account)
     }
 
-    /// Marks the present overlay account as created in the current transaction, also flagging its
-    /// code as changed. The creation/code-change status is reverted together with the rest of the
-    /// overlay by the [`JournalEntry::AccountChange`] snapshot recorded for this handle.
+    /// Marks the present overlay account as created in the current transaction. The creation
+    /// status is reverted together with the rest of the overlay by the
+    /// [`JournalEntry::AccountChange`] snapshot recorded for this handle.
     ///
     /// Created accounts follow the EIP-6780 rules for `SELFDESTRUCT` and are emitted as created by
     /// [`PendingState`](super::PendingState).
