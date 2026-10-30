@@ -4,7 +4,6 @@ use crate::{
     Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, Result,
     bytecode::AnalysisConfig,
 };
-use alloy_primitives::Bytes;
 use evm2::{OpcodeView, SpecId, version::GasParams};
 use evm2_jit_backend::{
     Attribute, BackendConfig, FunctionAttributeLocation, Linkage, OptimizationLevel, eyre::ensure,
