@@ -462,6 +462,28 @@ tests! {
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+        // The stack bounds of the opcode come before its immediate is decoded.
+        swapn_invalid_imm_short_stack(@raw {
+            bytecode: &[op::PUSH0, op::SWAPN, 0x5B],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::StackUnderflow,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dupn_invalid_imm_empty_stack(@raw {
+            bytecode: &[op::DUPN, 0x5B],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::StackUnderflow,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        exchange_invalid_imm_short_stack(@raw {
+            bytecode: &[op::PUSH0, op::EXCHANGE, 82],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::StackUnderflow,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
         // Invalid immediate: 82 is in the invalid range [82, 127] for decode_pair.
         exchange_invalid_imm(@raw {
             bytecode: &[op::PUSH0, op::PUSH0, op::PUSH0, op::EXCHANGE, 82],
@@ -2775,6 +2797,61 @@ tests! {
             bytecode: &[op::PUSH1, 0x01, op::SELFDESTRUCT],
             is_static: true,
             expected_return: InstrStop::StateChangeDuringStaticCall,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // The stack bounds and the memory range come before write protection.
+        log_static_empty_stack(@raw {
+            bytecode: &[op::LOG1],
+            is_static: true,
+            expected_return: InstrStop::StackUnderflow,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        log_static_range_overflow(@raw {
+            bytecode: &[
+                op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                op::LOG0,
+            ],
+            is_static: true,
+            expected_return: InstrStop::InvalidOperandOOG,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        log_static_valid_range(@raw {
+            bytecode: &[op::PUSH0, op::PUSH0, op::LOG0],
+            is_static: true,
+            expected_return: InstrStop::StateChangeDuringStaticCall,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        create_static_empty_stack(@raw {
+            bytecode: &[op::CREATE],
+            is_static: true,
+            expected_return: InstrStop::StackUnderflow,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        create_static_range_overflow(@raw {
+            bytecode: &[
+                op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                op::PUSH0,
+                op::PUSH0,
+                op::CREATE,
+            ],
+            is_static: true,
+            expected_return: InstrStop::InvalidOperandOOG,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        returndatacopy_range_overflow(@raw {
+            bytecode: &[
+                op::PUSH1, 2,
+                op::PUSH0,
+                op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                op::RETURNDATACOPY,
+            ],
+            expected_return: InstrStop::InvalidOperandOOG,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        returndatacopy_out_of_bounds(@raw {
+            bytecode: &[op::PUSH1, 2, op::PUSH0, op::PUSH0, op::RETURNDATACOPY],
+            expected_return: InstrStop::OutOfOffset,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
     }

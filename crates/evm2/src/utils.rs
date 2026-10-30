@@ -100,7 +100,7 @@ impl WordExt for Word {
 /// charges the dynamic gas, and fails with an invalid-operand OOG stop when the end of a non-empty
 /// range overflows `u64` or rounds up past it. An empty range has no offset.
 #[inline]
-pub(crate) fn memory_range_offset(offset: &Word, len: usize) -> Result<usize> {
+pub fn memory_range_offset(offset: &Word, len: usize) -> Result<usize> {
     if len == 0 {
         return Ok(0);
     }

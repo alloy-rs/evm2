@@ -484,7 +484,11 @@ mod tests {
         );
         let dupn = bytecode.inst(Inst::from_usize(1));
         assert!(dupn.is_diverging(), "DUPN with invalid immediate must diverge");
-        assert_eq!(dupn.stack_io(), (0, 0), "DUPN with invalid immediate must have zero stack I/O");
+        assert_eq!(
+            dupn.stack_io(),
+            (1, 2),
+            "DUPN with invalid immediate must check the stack bounds of any DUPN"
+        );
 
         // The instructions after it are dead, so they add no stack inputs or gas to a section.
         let after = bytecode.inst(Inst::from_usize(3));

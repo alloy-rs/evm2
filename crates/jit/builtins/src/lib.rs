@@ -19,7 +19,7 @@ use evm2::{
     bytecode::Bytecode,
     constants::BLOCK_HASH_HISTORY,
     interpreter::{Host, MessageExt, MessageKind, Word, derive_create_destination, i256},
-    utils::read_word_padded,
+    utils::{memory_range_offset, read_word_padded},
     version::{EvmFeatures, GasId},
 };
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
@@ -290,18 +290,19 @@ pub unsafe fn __revmc_builtin_returndatacopy<T: EvmTypesHost>(
 ) -> BuiltinResult {
     let rev![memory_offset, offset, len] = sp;
     let len = word_to_usize(len.to_u256())?;
+    let memory_offset = memory_range_offset(&memory_offset.to_u256(), len)?;
     let data_offset = word_to_usize_saturated(offset.to_u256());
-
-    // Bounds check before charging gas.
-    let data_end = data_offset.saturating_add(len);
-    if data_end > ecx.return_data().len() {
-        return Err(InstrStop::OutOfOffset.into());
-    }
+    let out_of_bounds = data_offset.saturating_add(len) > ecx.return_data().len();
 
     ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
     if len != 0 {
-        let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
+    }
+    // The bounds are checked after the memory is sized and charged, as in the interpreter.
+    if out_of_bounds {
+        return Err(InstrStop::OutOfOffset.into());
+    }
+    if len != 0 {
         let return_data = ecx.return_data();
         let data =
             unsafe { core::slice::from_raw_parts(return_data.as_ptr().add(data_offset), len) };
@@ -549,19 +550,17 @@ pub unsafe fn __revmc_builtin_log<T: EvmTypesHost>(
     sp: *mut EvmWord,
     n: u8,
 ) -> BuiltinResult {
-    require_non_staticcall(ecx)?;
     assume!(n <= 4, "invalid log topic count: {n}");
     let sp = unsafe { sp.add(n as usize) };
     let rev![offset, len] = unsafe { read_words_rev(sp) };
     let len = word_to_usize(len.to_u256())?;
+    let offset = memory_range_offset(&offset.to_u256(), len)?;
     ecx.gas.spend(ecx.gas_params().log_cost(n, len))?;
-    let offset = if len != 0 {
-        let offset = word_to_usize(offset.to_u256())?;
+    if len != 0 {
         ensure_memory(ecx, offset, len)?;
-        offset
-    } else {
-        0
-    };
+    }
+    // Write protection comes after the memory size and gas, as in the interpreter.
+    require_non_staticcall(ecx)?;
 
     let mut topics = [B256::ZERO; 4];
     for (i, topic) in topics[..n as usize].iter_mut().enumerate() {
@@ -580,8 +579,6 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     sp: *mut EvmWord,
     create_kind: CreateKind,
 ) -> BuiltinResult {
-    require_non_staticcall(ecx)?;
-
     let len = match create_kind {
         CreateKind::Create => 3,
         CreateKind::Create2 => 4,
@@ -590,6 +587,9 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     pop!(sp; value, code_offset, len);
 
     let len = word_to_usize(len.to_u256())?;
+    memory_range_offset(&code_offset.to_u256(), len)?;
+    // Write protection comes after the memory size, as in the interpreter.
+    require_non_staticcall(ecx)?;
     let version = *ecx.version();
     let code = if len != 0 {
         if ecx.enables(EvmFeatures::EIP3860) {

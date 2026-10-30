@@ -274,9 +274,10 @@ impl<'a> Bytecode<'a> {
                 } else if let Some(stack_io) = compute_stack_io(opcode, immediate) {
                     (info.base_gas(), stack_io)
                 } else {
-                    // Pays its static gas, then halts before touching the stack.
+                    // Pays its static gas, checks the stack bounds the opcode needs whatever its
+                    // immediate, then halts before touching the stack.
                     flags |= InstFlags::INVALID_IMMEDIATE;
-                    (info.base_gas(), (0, 0))
+                    (info.base_gas(), if opcode == op::DUPN { (1, 2) } else { (2, 2) })
                 };
 
             let data = match opcode {
