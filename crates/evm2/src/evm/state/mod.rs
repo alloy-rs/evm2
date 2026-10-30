@@ -1811,6 +1811,43 @@ mod tests {
     }
 
     #[test]
+    fn wiped_slot_is_reported_as_a_read_of_its_original_value() {
+        #[derive(Default)]
+        struct Reads(Vec<(Word, Word)>);
+
+        impl StateChangeSink for Reads {
+            type Error = core::convert::Infallible;
+
+            fn storage_read(
+                &mut self,
+                _address: Address,
+                key: Word,
+                value: Word,
+            ) -> Result<(), Self::Error> {
+                self.0.push((key, value));
+                Ok(())
+            }
+        }
+
+        let address = Address::with_last_byte(42);
+        let (read_key, written_key) = (Word::ONE, Word::from(2));
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
+        db.insert_account_storage(&address, &read_key, &Word::from(5));
+        db.insert_account_storage(&address, &written_key, &Word::from(6));
+        let mut state = State::new(db);
+        state.account(&address).unwrap();
+        state.storage_slot(&address, read_key).unwrap();
+        state.storage_slot(&address, written_key).unwrap().set(Word::from(7));
+        state.storage(&address).unwrap().wipe();
+
+        let mut reads = Reads::default();
+        state.take_pending_state().visit(&mut reads).unwrap();
+        reads.0.sort();
+        assert_eq!(reads.0, [(read_key, Word::from(5)), (written_key, Word::from(6))]);
+    }
+
+    #[test]
     fn isolated_state_does_not_replay_finalized_eip8246_selfdestruct() {
         let address = Address::with_last_byte(42);
         let key = Word::ONE;

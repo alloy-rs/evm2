@@ -1,7 +1,5 @@
-use inkwell::{
-    context::{AsContextRef, Context},
-    llvm_sys::{LLVMDiagnosticHandler, LLVMDiagnosticSeverity::*, core::*, prelude::*},
-};
+use crate::wrap::{Context, LLVMString};
+use llvm_sys::{LLVMDiagnosticHandler, LLVMDiagnosticSeverity::*, core::*, prelude::*};
 use std::{ffi::c_void, fmt, ptr};
 
 /// LLVM diagnostic handler guard.
@@ -20,7 +18,7 @@ impl fmt::Debug for DiagnosticHandlerGuard {
 impl DiagnosticHandlerGuard {
     pub(crate) fn new(cx: &Context) -> Self {
         unsafe {
-            let c = cx.as_ctx_ref();
+            let c = cx.raw();
             let prev_dh = LLVMContextGetDiagnosticHandler(c);
             let prev_dhc = LLVMContextGetDiagnosticContext(c);
             LLVMContextSetDiagnosticHandler(c, Some(Self::diagnostic_handler), ptr::null_mut());
@@ -31,7 +29,7 @@ impl DiagnosticHandlerGuard {
     extern "C" fn diagnostic_handler(di: LLVMDiagnosticInfoRef, _context: *mut c_void) {
         unsafe {
             // `LLVMGetDiagInfoDescription` returns an LLVM `Message`.
-            let msg_cstr = crate::llvm_string(LLVMGetDiagInfoDescription(di));
+            let msg_cstr = LLVMString::from_raw(LLVMGetDiagInfoDescription(di));
             let msg = msg_cstr.to_string_lossy();
             match LLVMGetDiagInfoSeverity(di) {
                 LLVMDSError => error!(target: "llvm", "{msg}"),

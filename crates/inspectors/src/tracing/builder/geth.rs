@@ -493,8 +493,8 @@ impl<'a> GethTraceBuilder<'a> {
                 // Geth keeps the pre state of a selfdestructed account as it looked it up, with
                 // every slot the transaction touched, unchanged and zero ones included.
                 if changed_acc.selfdestructed {
-                    for key in changed_acc.storage.keys() {
-                        pre_state.storage.insert((*key).into(), db.get_storage(&addr, key)?.into());
+                    for (key, slot) in changed_acc.storage.iter() {
+                        pre_state.storage.insert((*key).into(), slot.original.into());
                     }
                 } else {
                     for (key, slot) in changed_acc.changed_storage() {
