@@ -502,13 +502,10 @@ pub fn charge_upfront<'a, T: EvmTypes>(
 
 /// Returns `(execution_gas_limit, reservoir)` for the first frame.
 ///
-/// `initial_state_gas` is the EIP-8037 state gas charged at the intrinsic phase (the pre-EIP-2780
-/// pessimistic EIP-7702 authorization state gas, or hook-added charges). It is deducted from the
-/// reservoir, spilling into the execution budget when the reservoir is insufficient. It is zero
-/// without EIP-8037; under EIP-2780 the state-dependent charges are metered at the runtime gas
-/// phase instead ([`prepare_initial_frame`]). The pre-EIP-2780 EIP-7702 state-gas refund is not an
-/// input here: per execution-specs it is credited directly back to the reservoir after the
-/// authorizations are applied, not applied to execution gas first.
+/// `initial_state_gas` is the EIP-8037 state gas charged at the intrinsic phase by hooks. It is
+/// deducted from the reservoir, spilling into the execution budget when the reservoir is
+/// insufficient. It is zero without EIP-8037; under EIP-2780 the EIP-7702 authorization state
+/// charges are metered at the runtime gas phase instead ([`prepare_initial_frame`]).
 pub fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
@@ -779,14 +776,13 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         gas_limit: tx_gas_limit,
         floor_gas,
         initial_state_gas,
-        state_refund,
         result,
     } = settlement;
 
     let max_refund_quotient = host.version().gas_params.get(GasId::MaxRefundQuotient);
     // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
     // `TxResult::tx_gas_used` reproduces the finalized gas used. State gas is execution state gas
-    // plus the upfront `initial_state_gas`, less the EIP-7702 per-authorization `state_refund`.
+    // plus the upfront `initial_state_gas`.
     let total_gas_spent =
         tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
     let refunded = result.final_refund(tx_gas_limit, max_refund_quotient);
@@ -800,8 +796,7 @@ pub fn finalize_gas<'a, T: EvmTypes>(
     // authorizations, whose delegations survive an execution failure) remain. The upfront
     // `initial_state_gas` is likewise added unconditionally.
     let state_gas_spent =
-        (result.gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0) as u64)
-            .saturating_sub(state_refund);
+        result.gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0) as u64;
     Ok(TxResultExt {
         status: result.stop.is_success(),
         total_gas_spent,
