@@ -25,9 +25,12 @@ impl fmt::Debug for GasSection {
 }
 
 impl GasSection {
-    /// The largest gas cost a section can charge: remaining gas is a signed 64-bit counter, so a
-    /// larger cost runs out of gas either way.
-    pub(crate) const MAX_GAS_COST: u64 = i64::MAX as u64;
+    /// The largest gas cost a section can charge.
+    ///
+    /// Remaining gas is a signed 64-bit counter that can be slightly negative before a deferred
+    /// check. Capping at half its range keeps subtracting a section from it from wrapping
+    /// positive, while the cap still exceeds any gas a frame can hold.
+    pub(crate) const MAX_GAS_COST: u64 = i64::MAX as u64 / 2;
 
     /// Returns `true` if the section is empty.
     #[inline]
@@ -409,6 +412,15 @@ mod tests {
         assert!(call.gas_section.is_empty());
         assert_eq!(after_call.gas_section.gas_cost, 3);
         assert!(after_call.is_stack_section_head());
+    }
+
+    #[test]
+    fn section_gas_caps_below_signed_range() {
+        let mut analysis = super::GasSectionAnalysis::default();
+        analysis.process_extra(u64::MAX);
+        analysis.process(1);
+        assert_eq!(analysis.section().gas_cost, super::GasSection::MAX_GAS_COST);
+        assert!(super::GasSection::MAX_GAS_COST > u32::MAX as u64);
     }
 
     #[test]
