@@ -73,13 +73,13 @@ pub(crate) fn compile_config_hash(config: &RuntimeConfig) -> B256 {
     keccak256(bytes)
 }
 
-/// A stored artifact consisting of a manifest and a path to the compiled dylib.
+/// A stored artifact consisting of a manifest and a path to the relocatable object.
 #[derive(Clone, Debug)]
 pub struct StoredArtifact {
     /// Metadata about the artifact.
     pub manifest: ArtifactManifest,
-    /// Path to the shared library on disk. The store owns and manages these files.
-    pub dylib_path: PathBuf,
+    /// Path to the relocatable object on disk. The store owns and manages these files.
+    pub object_path: PathBuf,
 }
 
 /// Metadata for a stored artifact.
@@ -87,7 +87,7 @@ pub struct StoredArtifact {
 pub struct ArtifactManifest {
     /// The full artifact key.
     pub artifact_key: ArtifactKey,
-    /// The symbol name to look up in the loaded library.
+    /// The symbol name of the compiled function in the object.
     pub symbol_name: String,
     /// Length of the original bytecode.
     pub bytecode_len: usize,
@@ -95,7 +95,7 @@ pub struct ArtifactManifest {
     pub artifact_len: usize,
     /// Creation timestamp (unix seconds).
     pub created_at_unix_secs: u64,
-    /// Keccak-256 digest of the dylib bytes.
+    /// Keccak-256 digest of the object bytes.
     pub content_hash: [u8; 32],
 }
 
@@ -111,8 +111,8 @@ pub enum BackendSelection {
 
 /// Trait for loading and storing compiled artifacts.
 ///
-/// Implementations manage artifact files on the filesystem. The store owns the dylib files and
-/// returns paths to them. The backend loads shared libraries directly from these paths.
+/// Implementations manage artifact files on the filesystem. The store owns the object files and
+/// returns paths to them. The backend links the objects in process from these paths.
 pub trait ArtifactStore: Send + Sync + 'static {
     /// Loads all available artifacts from storage.
     fn load_all(&self) -> eyre::Result<Vec<(ArtifactKey, StoredArtifact)>>;
@@ -120,13 +120,13 @@ pub trait ArtifactStore: Send + Sync + 'static {
     /// Loads a single artifact by key.
     fn load(&self, key: &ArtifactKey) -> eyre::Result<Option<StoredArtifact>>;
 
-    /// Stores an artifact. The `dylib_bytes` are the raw shared-library bytes to persist.
+    /// Stores an artifact. The `object_bytes` are the raw relocatable object bytes to persist.
     /// The store writes them to disk and the returned path (via subsequent `load`) points there.
     fn store(
         &self,
         key: &ArtifactKey,
         manifest: &ArtifactManifest,
-        dylib_bytes: &[u8],
+        object_bytes: &[u8],
     ) -> eyre::Result<()>;
 
     /// Deletes an artifact by key.
@@ -136,7 +136,7 @@ pub trait ArtifactStore: Send + Sync + 'static {
     fn clear(&self) -> eyre::Result<()>;
 }
 
-/// In-memory artifact index backed by dylib files in a temporary directory.
+/// In-memory artifact index backed by object files in a temporary directory.
 #[derive(Debug)]
 pub struct RuntimeArtifactStore {
     dir: tempfile::TempDir,
@@ -161,7 +161,7 @@ impl RuntimeArtifactStore {
 
     fn artifact_path(&self, key: &ArtifactKey) -> PathBuf {
         self.dir.path().join(format!(
-            "{:x}_{:?}_{:?}_{:?}_v{}_{:x}.so",
+            "{:x}_{:?}_{:?}_{:?}_v{}_{:x}.o",
             key.runtime.code_hash,
             key.runtime.spec_id,
             key.backend,
@@ -185,28 +185,29 @@ impl ArtifactStore for RuntimeArtifactStore {
         &self,
         key: &ArtifactKey,
         manifest: &ArtifactManifest,
-        dylib_bytes: &[u8],
+        object_bytes: &[u8],
     ) -> eyre::Result<()> {
         let path = self.artifact_path(key);
-        // Write to a unique file and rename it over the target: a previous artifact for the key
-        // may be mapped, and rewriting it in place would corrupt the mapping.
+        // Write to a unique file and rename it over the target, so a reader never sees a partial
+        // artifact.
         let mut file = tempfile::NamedTempFile::new_in(self.dir.path())?;
-        file.write_all(dylib_bytes)?;
+        file.write_all(object_bytes)?;
         file.persist(&path).map_err(|err| err.error)?;
         self.artifacts
-            .insert(*key, StoredArtifact { manifest: manifest.clone(), dylib_path: path });
+            .insert(*key, StoredArtifact { manifest: manifest.clone(), object_path: path });
         Ok(())
     }
 
     fn delete(&self, key: &ArtifactKey) -> eyre::Result<()> {
         if let Some((_, artifact)) = self.artifacts.remove(key) {
-            let _ = fs::remove_file(artifact.dylib_path);
+            let _ = fs::remove_file(artifact.object_path);
         }
         Ok(())
     }
 
     fn clear(&self) -> eyre::Result<()> {
-        let paths = self.artifacts.iter().map(|entry| entry.dylib_path.clone()).collect::<Vec<_>>();
+        let paths =
+            self.artifacts.iter().map(|entry| entry.object_path.clone()).collect::<Vec<_>>();
         self.artifacts.clear();
         for path in paths {
             let _ = fs::remove_file(path);
@@ -262,13 +263,13 @@ mod tests {
         let key = artifact_key(B256::with_last_byte(1));
         let manifest = manifest(key, 4);
 
-        store.store(&key, &manifest, b"dylib").unwrap();
+        store.store(&key, &manifest, b"object").unwrap();
 
         assert_eq!(store.len(), 1);
         let loaded = store.load(&key).unwrap().unwrap();
         assert_eq!(loaded.manifest.symbol_name, "main");
         assert_eq!(loaded.manifest.artifact_len, 4);
-        assert_eq!(std::fs::read(&loaded.dylib_path).unwrap(), b"dylib");
+        assert_eq!(std::fs::read(&loaded.object_path).unwrap(), b"object");
 
         let all = store.load_all().unwrap();
         assert_eq!(all.len(), 1);
@@ -287,7 +288,7 @@ mod tests {
         assert_eq!(store.len(), 1);
         let loaded = store.load(&key).unwrap().unwrap();
         assert_eq!(loaded.manifest.artifact_len, 5);
-        assert_eq!(std::fs::read(&loaded.dylib_path).unwrap(), b"three");
+        assert_eq!(std::fs::read(&loaded.object_path).unwrap(), b"three");
     }
 
     #[test]
@@ -296,7 +297,7 @@ mod tests {
         let key = artifact_key(B256::with_last_byte(5));
 
         store.store(&key, &manifest(key, 3), b"one").unwrap();
-        let mut open = std::fs::File::open(store.load(&key).unwrap().unwrap().dylib_path).unwrap();
+        let mut open = std::fs::File::open(store.load(&key).unwrap().unwrap().object_path).unwrap();
         store.store(&key, &manifest(key, 5), b"three").unwrap();
 
         let mut contents = Vec::new();
@@ -312,8 +313,8 @@ mod tests {
 
         store.store(&first, &manifest(first, 1), b"a").unwrap();
         store.store(&second, &manifest(second, 1), b"b").unwrap();
-        let first_path = store.load(&first).unwrap().unwrap().dylib_path;
-        let second_path = store.load(&second).unwrap().unwrap().dylib_path;
+        let first_path = store.load(&first).unwrap().unwrap().object_path;
+        let second_path = store.load(&second).unwrap().unwrap().object_path;
 
         store.delete(&first).unwrap();
         assert!(store.load(&first).unwrap().is_none());
