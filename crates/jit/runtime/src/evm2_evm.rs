@@ -53,7 +53,8 @@ impl<T: EvmTypesHost> InterpreterRunner<T> for JitInterpreterRunner {
 /// Returns `None` when no compiled program is available, leaving the caller to
 /// run the same frame through the evm2 interpreter.
 ///
-/// Checks on every call that the backend supports the host's gas schedule and opcode table.
+/// Checks on every call that the backend supports the host's gas schedule and opcode table, and
+/// counts a rejected host as a fallback each time without logging it.
 /// [`InterpreterRunner::supports`] does that check once per runner or config change instead.
 #[inline]
 pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
@@ -61,7 +62,11 @@ pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
     interpreter: &mut Interpreter<'frame, 'host, T>,
     host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
-    if !backend.enabled() || !backend.supports_host::<T>(host.execution_config()) {
+    if !backend.enabled() {
+        return None;
+    }
+    if backend.host_mismatch::<T>(host.execution_config()).is_some() {
+        backend.count_interpreter_fallback();
         return None;
     }
     run_supported(backend, interpreter, host)

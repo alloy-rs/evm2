@@ -242,13 +242,17 @@ impl JitBackend {
         let Some(reason) = self.host_mismatch(config) else { return true };
         if self.enabled() {
             self.count_interpreter_fallback();
-            warn!(spec_id = ?config.base_spec_id(), reason, "host unsupported, running the interpreter");
+            warn!(
+                spec_id = ?config.base_spec_id(),
+                reason,
+                "host unsupported, running the interpreter",
+            );
         }
         false
     }
 
     /// Returns why generated code does not match `config`, or `None` if it does.
-    fn host_mismatch<T: evm2::EvmTypesHost>(
+    pub(crate) fn host_mismatch<T: evm2::EvmTypesHost>(
         &self,
         config: &evm2::ExecutionConfig<T>,
     ) -> Option<&'static str> {

@@ -74,8 +74,9 @@ pub struct RuntimeStatsSnapshot {
     ///
     /// Also counts frames whose gas exceeds `i64::MAX`, and hosts that the runtime rejects
     /// because their type, gas schedule, or opcode table differs from the compiled code's. A
-    /// rejected host is counted once per support check, not once per frame, because the caller
-    /// then stops asking the runtime to run frames.
+    /// rejected host is counted once per support check of the runner, not once per frame, because
+    /// the `Evm` then stops asking the runtime to run frames. `run_interpreter` counts it on every
+    /// call.
     pub interpreter_fallbacks: u64,
     /// Total control commands dropped because the command channel was full.
     ///
