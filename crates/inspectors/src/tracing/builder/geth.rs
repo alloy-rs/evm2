@@ -865,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn prestate_diff_keeps_prefunded_created_accounts() {
+    fn prestate_diff_keeps_prefunded_accounts() {
         let mut state = PendingState::default();
         let prefunded_addr = address!("1000000000000000000000000000000000000001");
         let empty_addr = address!("2000000000000000000000000000000000000002");
