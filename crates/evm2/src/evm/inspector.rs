@@ -608,6 +608,8 @@ mod tests {
         stop_after_child: bool,
         /// Stops every frame before it runs.
         stop_on_init: bool,
+        /// Answers every child message with a fatal stop.
+        fatal_child: bool,
     }
 
     impl ConfigInspector {
@@ -660,7 +662,11 @@ mod tests {
             self.calls += 1;
             // Like a cheatcode that changes what its caller's inspector wants to see.
             self.switched |= message.depth > 0;
-            None
+            (self.fatal_child && message.depth > 0).then(|| MessageResultExt {
+                stop: InstrStop::FatalExternalError,
+                gas: GasTracker::new(message.gas_limit),
+                ..Default::default()
+            })
         }
 
         fn call_end(
@@ -840,14 +846,32 @@ mod tests {
         };
     }
 
-    /// Runs a call to a child through [`CUSTOM_CALL`].
-    fn run_custom_call(
+    /// The base config with `CALL` installed at `PUSH30`, an opcode with immediate bytes.
+    struct PushSlotCallConfig;
+
+    impl EvmConfig<BaseEvmTypes> for PushSlotCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<instr::call<BaseEvmTypes>>(op::PUSH30, 100);
+            config
+        };
+    }
+
+    /// Runs a call to a child through `message_op`, which `C` installs as a call, followed by
+    /// `immediates`.
+    fn run_custom_call<C: EvmConfig<BaseEvmTypes>>(
         inspector: ConfigInspector,
+        message_op: u8,
+        immediates: &[u8],
     ) -> (MessageResult<BaseEvmTypes>, ConfigInspector) {
         let mut code = call_code(Address::from([0x66; 20]));
-        code.extend([CUSTOM_CALL, op::GAS, op::POP, op::STOP]);
+        code.push(message_op);
+        code.extend(immediates);
+        code.extend([op::GAS, op::POP, op::STOP]);
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-            ExecutionConfig::for_config::<CustomCallConfig>(),
+            ExecutionConfig::for_config::<C>(),
             SpecId::OSAKA,
             BlockEnvExt::default(),
             TxRegistry::new(),
@@ -863,15 +887,97 @@ mod tests {
 
     #[test]
     fn custom_call_opcode_rereads_the_steps() {
-        let (expected, full) = run_custom_call(ConfigInspector::new(OpcodeSet::ALL));
+        let (expected, full) = run_custom_call::<CustomCallConfig>(
+            ConfigInspector::new(OpcodeSet::ALL),
+            CUSTOM_CALL,
+            &[],
+        );
 
         // The child message of the custom opcode switches the steps to `GAS`, and no steps before.
-        let (result, inspector) = run_custom_call(
+        let (result, inspector) = run_custom_call::<CustomCallConfig>(
             ConfigInspector::new(OpcodeSet::EMPTY).switching_to(opcode_set([op::GAS])),
+            CUSTOM_CALL,
+            &[],
         );
         assert_eq!(result, expected);
         let gas = full.steps.iter().position(|record| record.0 == op::GAS).unwrap();
         assert_eq!(inspector.steps, [full.steps[gas].clone()]);
+    }
+
+    #[test]
+    fn custom_call_opcode_with_immediates_resumes_after_them() {
+        // The immediates are invalid opcodes that fail the frame if the reload resumes inside them.
+        let immediates = [op::INVALID; 30];
+        let (expected, _) = run_custom_call::<PushSlotCallConfig>(
+            ConfigInspector::new(OpcodeSet::ALL),
+            op::PUSH30,
+            &immediates,
+        );
+        assert_eq!(expected.stop, InstrStop::Stop);
+
+        let (result, inspector) = run_custom_call::<PushSlotCallConfig>(
+            ConfigInspector::new(OpcodeSet::EMPTY).switching_to(opcode_set([op::GAS])),
+            op::PUSH30,
+            &immediates,
+        );
+        assert_eq!(result, expected);
+        assert_eq!(inspector.steps.len(), 1);
+    }
+
+    #[test]
+    fn pending_reload_does_not_outlive_a_failed_frame() {
+        let child = Address::from([0x66; 20]);
+        // The child calls another account and returns 7, which the second run observes.
+        let mut child_code = call_code(Address::from([0x77; 20]));
+        child_code.extend([op::CALL, op::POP, op::PUSH1, 7]);
+        return_top_word(&mut child_code);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &child,
+            AccountInfo::default().with_code(legacy_bytecode(child_code)),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            db,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let run = |evm: &mut Evm<'_, BaseEvmTypes>| {
+            let mut code = Vec::new();
+            push_all(
+                &mut code,
+                [
+                    Word::ZERO,
+                    Word::ZERO,
+                    Word::ZERO,
+                    Word::ZERO,
+                    Word::ZERO,
+                    address_to_word(&child),
+                    Word::from(500_000),
+                ],
+            );
+            code.extend([op::CALL, op::POP, op::RETURNDATASIZE]);
+            return_top_word(&mut code);
+            let mut message = MessageExt {
+                gas_limit: 1_000_000,
+                code: legacy_bytecode(code),
+                ..Default::default()
+            };
+            Host::execute_message(evm, &mut message)
+        };
+
+        // The child changes the steps and fails fatally before its caller can act on the change.
+        evm.set_inspector(ConfigInspector {
+            fatal_child: true,
+            ..ConfigInspector::new(OpcodeSet::EMPTY).switching_to(OpcodeSet::ALL)
+        });
+        assert!(run(&mut evm).is_err());
+
+        // Without an inspector, the pooled interpreter of the failed frame runs the child's frame.
+        evm.clear_inspector_as::<ConfigInspector>().unwrap();
+        let result = run(&mut evm).unwrap();
+        assert_eq!(Word::from_be_slice(&result.output), Word::from(32));
     }
 
     #[test]

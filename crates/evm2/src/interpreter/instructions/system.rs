@@ -256,6 +256,8 @@ fn call_inner<T: EvmTypesHost>(
 ///
 /// An `Err` from either hook stops the instruction with that error. Gas the hooks charge is not
 /// part of the step cost reported to inspectors.
+///
+/// The instruction must not be installed at `JUMP` or `JUMPI`, which set the pc themselves.
 #[inline]
 pub fn call_with<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
@@ -352,6 +354,7 @@ fn create_inner<T: EvmTypesHost>(
 /// A fatal child result returns before `after` runs.
 ///
 /// Both hooks may charge or credit `gas` or fail the instruction, as in [`call_with`].
+/// The same restriction on `JUMP` and `JUMPI` applies.
 #[inline]
 pub fn create_with<T: EvmTypesHost>(
     mut stack: StackMut<'_>,

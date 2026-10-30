@@ -142,6 +142,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.memory.clear();
         self.result = Ok(());
         self.error = None;
+        self.reload_pending = false;
+        self.reload_table = false;
         self.output = 0..0;
         self.message = Some(message);
         self.is_static = is_static;
@@ -726,8 +728,9 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             self.0.reload_pending = false;
             // A stop that a hook set wins over the reload.
             if self.0.result.is_ok() {
+                // Resume where the dispatch would: after the opcode and its immediates.
                 // SAFETY: `pc` is at a message instruction, which a next instruction follows.
-                unsafe { pc.advance_unchecked(1) };
+                unsafe { pc.advance_unchecked(dispatch::instruction_len(pc.op())) };
                 self.0.reload_pc = pc.as_ptr();
                 self.request_reload();
             }
