@@ -453,7 +453,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     pub(crate) fn note_inspector_config_change(&mut self) {
         if let Some(inspector) = self.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
-            && unsafe { inspector.as_ref() }.inspector_config().steps != self.steps
+            && unsafe { inspector.as_ref() }.inspector_config().steps() != self.steps
         {
             self.reload_pending = true;
         }
@@ -604,7 +604,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let config = unsafe { self.execution_config_detached() };
         // SAFETY: `run_inner` installed the inspector, which is valid for this run.
         let inspector = unsafe { self.inspector.unwrap_unchecked().as_ref() };
-        self.steps = inspector.inspector_config().steps;
+        self.steps = inspector.inspector_config().steps();
         if self.steps == OpcodeSet::EMPTY {
             return config.instructions;
         }

@@ -55,31 +55,38 @@ impl FromIterator<u8> for OpcodeSet {
     }
 }
 
-/// Which parts of execution an [`Inspector`] observes.
+/// What an [`Inspector`] observes of execution.
 ///
 /// Returned by [`Inspector::inspector_config`]. The EVM reads it when a frame starts and after each
-/// message opcode returns into the frame, and runs the frame on an instruction table that only
-/// calls the step hooks the config asks for.
+/// child message returns into the frame, and runs the frame so that it only pays for what the
+/// config observes. The default observes everything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InspectorConfig {
-    /// Opcodes for which [`Inspector::step`] and [`Inspector::step_end`] are called.
-    pub steps: OpcodeSet,
-    #[doc(hidden)] // Not public API. Please use an existing constructor.
-    pub _non_exhaustive: (),
+    steps: OpcodeSet,
 }
 
 impl InspectorConfig {
-    /// Creates a config that calls the step hooks for every opcode.
+    /// Creates a config that observes everything.
     #[inline]
     pub const fn new() -> Self {
-        Self { steps: OpcodeSet::ALL, _non_exhaustive: () }
+        Self { steps: OpcodeSet::ALL }
     }
 
-    /// Sets the opcodes for which the step hooks are called.
+    /// Sets the opcodes for which [`Inspector::step`] and [`Inspector::step_end`] are called.
+    ///
+    /// The EVM may call the step hooks for more opcodes than set, for example when several
+    /// inspectors share a frame, so a hook must ignore the opcodes it does not handle. Call,
+    /// create, log and self-destruct hooks run regardless.
     #[inline]
     pub const fn with_steps(mut self, steps: OpcodeSet) -> Self {
         self.steps = steps;
         self
+    }
+
+    /// Returns the opcodes for which [`Inspector::step`] and [`Inspector::step_end`] are called.
+    #[inline]
+    pub const fn steps(&self) -> OpcodeSet {
+        self.steps
     }
 
     /// Returns a config that observes everything either `self` or `other` observes.
@@ -90,6 +97,7 @@ impl InspectorConfig {
 }
 
 impl Default for InspectorConfig {
+    /// Returns a config that observes everything.
     #[inline]
     fn default() -> Self {
         Self::new()
@@ -105,15 +113,11 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
         let _ = interp;
     }
 
-    /// Returns which opcodes get [`Self::step`] and [`Self::step_end`] calls.
+    /// Returns what this inspector observes, as an [`InspectorConfig`].
     ///
     /// Read when a frame starts and when a child message of the frame returns, so a child message
     /// may change the answer. A change that a hook makes itself, such as in [`Self::step`], takes
-    /// effect when the next child message of the frame returns. The default asks for every opcode.
-    /// Call, create, log and self-destruct hooks run regardless.
-    ///
-    /// The EVM may call the step hooks for more opcodes than asked for, for example when several
-    /// inspectors share a frame, so a hook must ignore the opcodes it does not handle.
+    /// effect when the next child message of the frame returns. The default observes everything.
     #[inline]
     fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::new()
