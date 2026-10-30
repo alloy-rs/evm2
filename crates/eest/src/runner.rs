@@ -111,7 +111,9 @@ const IGNORED_TESTS: &[&str] = &[
 ];
 
 /// Create-collision fixtures. Core collides on nonce and code only: it does not implement the
-/// EIP-7610 check that the target's storage is empty.
+/// EIP-7610 check that the target's storage is empty. Storage-only create collisions are
+/// undefined until EIP-8253: execution-specs dropped the storage check (#3417) and skips these
+/// targets (#3508).
 #[rustfmt::skip]
 pub(crate) const CREATE_COLLISION_IGNORED_TESTS: &[&str] = &[
     "InitCollision.json",
