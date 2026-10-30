@@ -211,11 +211,11 @@ mod tests {
         let mut version = Version::new(SpecId::CANCUN);
         version.initial_call_depth = 5;
         let max = version.max_call_depth();
-        let check = |balance, nonce, value, depth| {
+        let check = |balance: u64, nonce: u64, value: u64, depth: u16| {
             create_preaccess_failure(Word::from(balance), nonce, Word::from(value), depth, &version)
         };
 
-        assert_eq!(check(0u64, u64::MAX, 1u64, max + 1), Some(InstrStop::CallTooDeep));
+        assert_eq!(check(0, u64::MAX, 1, max + 1), Some(InstrStop::CallTooDeep));
         assert_eq!(check(0, u64::MAX, 1, max), Some(InstrStop::OutOfFunds));
         assert_eq!(check(1, u64::MAX, 1, max), Some(InstrStop::NonceOverflow));
         assert_eq!(check(1, u64::MAX, 1, version.initial_call_depth), None);
