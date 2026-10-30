@@ -47,8 +47,7 @@ fn p256_verify_inner(input: &[u8], gas: &mut GasTracker, gas_cost: u64) -> Preco
     Ok(PrecompileOutput::new(result))
 }
 
-/// Returns `Some(())` if the signature included in the input byte slice is
-/// valid, `None` otherwise.
+/// Returns `true` if the signature included in the input byte slice is valid.
 #[cfg(test)]
 pub(crate) fn verify_impl(input: &[u8]) -> bool {
     verify_impl_with_crypto(input, &crate::precompiles::DefaultCrypto::new())
