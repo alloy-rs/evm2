@@ -146,6 +146,8 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         (false, state_refund, execution_refund)
     };
 
+    req.host.set_pre_execution_refund(i64::try_from(execution_refund).unwrap_or(i64::MAX));
+
     // Applies the pre-Amsterdam authorization execution refund (zero under EIP-2780) and settles
     // the transaction with the hook-provided intrinsic state gas (charged upfront, before
     // `runtime_checkpoint`, so it persists on every exit). Every exit below funnels through here.

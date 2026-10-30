@@ -254,7 +254,7 @@ pub(crate) struct PreStep<'a> {
 pub(crate) struct StepInfo<'a> {
     /// Gas cost of step execution
     pub(crate) cost: u64,
-    /// Execution refund, excluding EIP-7702 authorization refunds.
+    /// Transaction-wide refund counter, including the pre-Amsterdam EIP-7702 authorization refund.
     pub(crate) refund: u64,
     /// Call depth
     pub(crate) depth: u64,

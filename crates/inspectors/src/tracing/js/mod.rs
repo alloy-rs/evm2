@@ -438,15 +438,11 @@ impl JsInspector {
         contract: Contract,
         kind: CallKind,
         gas_limit: u64,
-        frame_refund: i64,
     ) -> &CallStackItem {
         if self.call_stack.is_empty() {
             self.root_depth = depth;
         }
-        let enclosing_refund =
-            self.call_stack.last().map_or(0, |parent| parent.enclosing_refund + frame_refund);
-        let call =
-            CallStackItem { id: self.next_call_id, contract, kind, gas_limit, enclosing_refund };
+        let call = CallStackItem { id: self.next_call_id, contract, kind, gas_limit };
         self.next_call_id += 1;
         self.call_stack.push(call);
         self.active_call()
@@ -567,7 +563,7 @@ impl JsInspector {
         } else {
             interp.gas().refunded()
         };
-        let refund = call.enclosing_refund + frame_refund;
+        let refund = interp.host().tx_refunded(frame_refund);
         debug_assert!(refund >= 0, "transaction-wide refund counter went negative: {refund}");
         let info = StepInfo {
             cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
@@ -727,7 +723,6 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             Contract { caller, contract, value: message.value, input: message.input.clone() },
             message.kind.into(),
             message.gas_limit,
-            interp.gas().refunded(),
         );
 
         if self.can_call_enter() {
@@ -790,7 +785,6 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             },
             message.kind.into(),
             message.gas_limit,
-            interp.gas().refunded(),
         );
 
         if self.can_call_enter() {
@@ -1003,8 +997,6 @@ struct CallStackItem {
     contract: Contract,
     kind: CallKind,
     gas_limit: u64,
-    /// Child refunds merge into the parent only on success.
-    enclosing_refund: i64,
 }
 
 /// Error variants that can occur during JavaScript inspection.
