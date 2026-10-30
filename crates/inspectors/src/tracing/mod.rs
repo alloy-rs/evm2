@@ -548,10 +548,12 @@ impl TracingInspector {
         {
             let address = Address::from_word((*item).into());
             let state = interp.host().state_mut();
-            let size = state.account_info_untracked(&address).ok().flatten().and_then(|info| {
-                load_account_code(state.initial_mut(), &info).ok().flatten().map(|code| code.len())
-            });
-            Some(size.unwrap_or_default() as u64)
+            // A database error leaves the size unrecorded instead of reporting no code.
+            state.account_info_untracked(&address).ok().and_then(|info| {
+                let Some(info) = info else { return Some(0) };
+                let code = load_account_code(state.overlay_db_mut(), &info).ok()?;
+                Some(code.map_or(0, |code| code.len() as u64))
+            })
         } else {
             None
         };

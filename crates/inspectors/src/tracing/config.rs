@@ -99,7 +99,8 @@ pub struct TracingInspectorConfig {
     /// [`CallTraceStep::contract_size`](crate::tracing::types::CallTraceStep::contract_size), as
     /// geth's ERC-7562 tracer does.
     ///
-    /// Only set by [`Self::from_geth_erc7562_config`]; it requires [`Self::record_steps`].
+    /// Only set by [`Self::from_geth_erc7562_config`], not by [`Self::all`]; it requires
+    /// [`Self::record_steps`].
     pub record_contract_sizes: bool,
 }
 
@@ -120,7 +121,7 @@ impl TracingInspectorConfig {
             record_logs: true,
             record_immediate_bytes: true,
             record_step_deltas: true,
-            record_contract_sizes: true,
+            record_contract_sizes: false,
         }
     }
 
