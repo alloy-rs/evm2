@@ -514,7 +514,10 @@ impl<B: Backend> EvmCompiler<B> {
     /// this lets LLVM DCE the per-failure-site materialization and the failure-block phi.
     /// Successful exits (`STOP`/`RETURN`/`REVERT`) keep their original codes.
     ///
-    /// Useful for benchmarking the cost of failure-result materialization.
+    /// This is a deliberate trade-off: the compiled function reports `OutOfGas` where the
+    /// interpreter reports the real halt reason (for example, an invalid jump). Preserving the
+    /// reasons (`false`) makes the JIT 4.0% larger, compile 10.7% more instructions, and
+    /// execute 3.8% more instructions in total across the benchmarks (`onchain_lm_v2` +4.3%).
     ///
     /// Defaults to `true`.
     pub const fn set_single_error(&mut self, yes: bool) {
