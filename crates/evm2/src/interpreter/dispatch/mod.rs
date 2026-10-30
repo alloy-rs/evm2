@@ -269,6 +269,7 @@ trait InspectMode<T: EvmTypesHost> {
     const WATCH: bool = false;
 
     /// Whether the inspector steps every opcode, so the dispatch loop need not look at the set.
+    #[cfg(not(tco))]
     const ALL_STEPS: bool = false;
 
     fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
