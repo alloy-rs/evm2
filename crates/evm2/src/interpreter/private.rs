@@ -12,8 +12,8 @@ bitflags! {
     pub struct InstructionFlags: u64 {
         /// The instruction needs mutable gas state.
         const DYNAMIC_GAS = 1 << 0;
-        /// The instruction runs a child message, after which the dispatch checks whether the
-        /// inspector's config changed.
+        /// The instruction runs a child message, and may stop its frame to continue after it on
+        /// the table for a changed inspector config.
         const MESSAGE = 1 << 1;
     }
 }

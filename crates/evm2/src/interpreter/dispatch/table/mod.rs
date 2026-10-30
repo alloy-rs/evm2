@@ -114,18 +114,13 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     let instr = instruction.instr;
     let dynamic_gas = instruction.flags.contains(InstructionFlags::DYNAMIC_GAS);
     let message = instruction.flags.contains(InstructionFlags::MESSAGE);
-    let mut r;
+    let r;
     match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
             gas.sync_before_exec(state, dynamic_gas);
             r = instr(&mut pc, stack.reborrow(), state);
             if r.is_ok() {
                 inc_pc(&mut pc, op);
-                // A message instruction leaves the dispatch if its child message changed the
-                // inspector's config.
-                if message && state.reload_after_message(pc) {
-                    r = state.result();
-                }
             }
             gas.sync_after_exec(state, dynamic_gas);
         }
@@ -139,6 +134,11 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
+        if message {
+            // A message instruction may stop with `InstrStop::Reload`, and the frame resumes
+            // after it.
+            state.set_pc(pc.as_ptr());
+        }
         return (Pc::new(core::ptr::null()), gas);
     }
     (pc, gas)
@@ -264,8 +264,15 @@ fn finish_run<T: EvmTypesHost>(
 ) -> InstrStop {
     cold_path();
     let (pc, stack_len) = (cursor.pc(), cursor.stack_len());
-    // The NULL `pc` is only a loop-exit sentinel; never publish it.
-    let pc = if pc.as_ptr().is_null() { state.bytecode().as_ptr() } else { pc.as_ptr() };
+    // The NULL `pc` is only a loop-exit sentinel; never publish it. A message instruction that
+    // stops a frame has published its own.
+    let pc = if !pc.as_ptr().is_null() {
+        pc.as_ptr()
+    } else if state.result() == Err(InstrStop::Reload) {
+        state.0.pc
+    } else {
+        state.bytecode().as_ptr()
+    };
     state.set_pc_stack_len(pc, stack_len);
     imp::finish_loop(state.gas_mut(), loop_state);
     state.result().unwrap_err()

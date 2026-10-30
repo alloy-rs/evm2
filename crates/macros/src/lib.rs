@@ -40,10 +40,11 @@ use syn::{
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
 /// - `#[instruction(message)]`: Marks an instruction that runs a child message, such as a custom
-///   call or create built on `call_with` or `create_with`. After the instruction, the dispatch
-///   checks whether the child message changed the inspector's config, and if so continues the frame
-///   on the table for the new config. Instructions that run a child message without this attribute
-///   keep the table they started on.
+///   call or create built on `call_with` or `create_with`. When the child message changes the
+///   inspector's config, the host stops the frame, and the instruction must return that stop by
+///   returning `state.result()` after the message, as `call_with` and `create_with` do. The frame
+///   then continues after the instruction on the table for the new config. The flag makes the
+///   dispatch keep the instruction's position for that.
 /// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete EVM type
 ///   family instead of generating a generic implementation.
 /// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic EVM

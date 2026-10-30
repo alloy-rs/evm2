@@ -929,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_reload_does_not_outlive_a_failed_frame() {
+    fn reload_stop_does_not_outlive_a_failed_frame() {
         let child = Address::from([0x66; 20]);
         // The child calls another account and returns 7, which the second run observes.
         let mut child_code = call_code(Address::from([0x77; 20]));
