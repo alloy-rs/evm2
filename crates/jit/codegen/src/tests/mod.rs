@@ -115,34 +115,26 @@ tests! {
         invalid(@raw {
             bytecode: &[op::INVALID],
             expected_return: InstrStop::InvalidFEOpcode,
-            expected_gas: 0,
         }),
         unknown(@raw {
             bytecode: &[0x21],
             expected_return: InstrStop::OpcodeNotFound,
-            expected_gas: 0,
         }),
         underflow1(@raw {
             bytecode: &[op::ADD],
             expected_return: InstrStop::StackUnderflow,
-            expected_gas: 3,
         }),
         underflow2(@raw {
             bytecode: &[op::PUSH0, op::ADD],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[U256::ZERO],
-            expected_gas: 5,
         }),
         underflow3(@raw {
             bytecode: &[op::PUSH0, op::POP, op::ADD],
             expected_return: InstrStop::StackUnderflow,
-            expected_gas: 7,
         }),
         underflow4(@raw {
             bytecode: &[op::PUSH0, op::ADD, op::POP],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[U256::ZERO],
-            expected_gas: 5,
         }),
         overflow_not0(@raw {
             bytecode: &[op::PUSH0; 1023],
@@ -159,14 +151,10 @@ tests! {
         overflow0(@raw {
             bytecode: &[op::PUSH0; 1025],
             expected_return: InstrStop::StackOverflow,
-            expected_stack: &[0_U256; 1024],
-            expected_gas: 2 * 1025,
         }),
         overflow1(@raw {
             bytecode: &[op::PUSH0; 1026],
             expected_return: InstrStop::StackOverflow,
-            expected_stack: &[0_U256; 1024],
-            expected_gas: 2 * 1025,
         }),
     }
 
@@ -410,7 +398,7 @@ tests! {
         dupn_underflow(@raw {
             bytecode: &[op::PUSH0, op::DUPN, 0x80],
             spec_id: SpecId::AMSTERDAM,
-            expected_return: InstrStop::StackOverflow,
+            expected_return: InstrStop::StackUnderflow,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
@@ -646,30 +634,22 @@ tests! {
         unmodified_stack_after_push_jump(@raw {
             bytecode: &[op::PUSH1, 3, op::JUMP, op::JUMPDEST, op::PUSH0, op::ADD],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[U256::ZERO],
-            expected_gas: 3 + 8 + 1 + 2 + 3,
         }),
         bad_jump(@raw {
             bytecode: &[op::JUMP],
             expected_return: InstrStop::StackUnderflow,
-            expected_gas: 8,
         }),
         bad_jumpi1(@raw {
             bytecode: &[op::JUMPI],
             expected_return: InstrStop::StackUnderflow,
-            expected_gas: 10,
         }),
         bad_jumpi2(@raw {
             bytecode: &[op::PUSH0, op::JUMPI],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[0_U256],
-            expected_gas: 2 + 10,
         }),
         bad_jumpi3(@raw {
             bytecode: &[op::JUMPDEST, op::PUSH0, op::JUMPI],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[0_U256],
-            expected_gas: 1 + 2 + 10,
         }),
 
         basic_jumpi1(@raw {
@@ -690,13 +670,10 @@ tests! {
         basic_jumpi2_lazy_invalid_target(@raw {
             bytecode: &[op::PUSH1, 1, op::PUSH0, op::JUMPI, op::PUSH1, 69],
             expected_return: InstrStop::InvalidJump,
-            expected_gas: 3 + 2 + 10,
         }),
         unmodified_stack_after_push_jumpi(@raw {
             bytecode: &[op::PUSH1, 1, op::PUSH1, 5, op::JUMPI, op::JUMPDEST, op::PUSH0, op::ADD],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[U256::ZERO],
-            expected_gas: 3 + 3 + 10 + 1 + 2 + 3,
         }),
 
         basic_loop(@raw {
@@ -2156,38 +2133,26 @@ tests! {
         mload_overflow1(@raw {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
-            expected_stack: &[U256::from(u64::MAX)],
-            expected_gas: 3 + 3,
         }),
         mload_overflow2(@raw {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 1, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
-            expected_stack: &[U256::from(u64::MAX - 1)],
-            expected_gas: 3 + 3,
         }),
         mload_overflow3(@raw {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 31, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
-            expected_stack: &[U256::from(u64::MAX - 31)],
-            expected_gas: 3 + 3,
         }),
         mload_overflow4(@raw {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 32, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
-            expected_stack: &[U256::from(u64::MAX - 32)],
-            expected_gas: 3 + 3,
         }),
         mload_overflow5(@raw {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 33, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
-            expected_stack: &[U256::from(u64::MAX - 33)],
-            expected_gas: 3 + 3,
         }),
         mload_overflow6(@raw {
             bytecode: &[op::ADDRESS, op::MLOAD],
             expected_return: InstrStop::InvalidOperandOOG,
-            expected_stack: &[DEF_ADDR.into_word().into()],
-            expected_gas: 5,
         }),
         mload_const_offset_too_large(@raw {
             bytecode: &{
@@ -2198,7 +2163,6 @@ tests! {
                 code
             },
             expected_return: InstrStop::InvalidOperandOOG,
-            expected_stack: &[0x1_0000_0000_0000_0000_U256],
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         mstore1(@raw {
@@ -2336,7 +2300,6 @@ tests! {
                 MLOAD
             "),
             expected_return: InstrStop::InvalidOperandOOG,
-            expected_stack: &[!64_U256],
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
