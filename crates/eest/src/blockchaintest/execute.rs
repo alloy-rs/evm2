@@ -919,19 +919,21 @@ fn validate_block_header(
     let parent_excess = parent.excess_blob_gas.unwrap_or_default();
     let parent_used = parent.blob_gas_used.unwrap_or_default();
     // Reject parent values that the excess blob gas formula cannot add or scale without overflow.
+    // The EIP-7918 reserve price comparison is exact only while the reserve price stays below the
+    // saturated `u128` blob fee, which a base fee up to `u128::MAX` guarantees. Before Osaka the
+    // base fee does not enter the formula.
+    let parent_base_fee = parent.base_fee_per_gas.unwrap_or_default();
     if parent_used > U256::from(blob_params.max_blob_gas_per_block())
         || parent_excess.saturating_add(parent_used) > U256::from(u64::MAX)
+        || (blob_params.blob_base_cost != 0 && parent_base_fee > U256::from(u128::MAX))
     {
         return Err(format!(
-            "parent blob gas fields out of range: excess {parent_excess}, used {parent_used}"
+            "parent header fields out of range: excess blob gas {parent_excess}, blob gas used \
+             {parent_used}, base fee {parent_base_fee}"
         ));
     }
-    let expected_excess_blob_gas = next_excess_blob_gas(
-        &blob_params,
-        parent_excess.to(),
-        parent_used.to(),
-        parent.base_fee_per_gas.unwrap_or_default(),
-    );
+    let expected_excess_blob_gas =
+        next_excess_blob_gas(&blob_params, parent_excess.to(), parent_used.to(), parent_base_fee);
     if header.excess_blob_gas != Some(U256::from(expected_excess_blob_gas)) {
         return Err(format!(
             "excess blob gas mismatch: header {:?}, expected {expected_excess_blob_gas}",
@@ -943,8 +945,9 @@ fn validate_block_header(
 
 /// Returns the excess blob gas of the block after a parent with these values (execution-specs
 /// `calculate_excess_blob_gas`, with the EIP-7918 reserve price from Osaka). Unlike
-/// [`BlobParams::next_block_excess_blob_gas_osaka`], the reserve price comparison keeps the
-/// parent base fee at full width.
+/// [`BlobParams::next_block_excess_blob_gas_osaka`], the reserve price comparison takes a base
+/// fee wider than `u64`. The caller bounds the base fee so that the `U256` product cannot
+/// overflow and the saturated `u128` blob fee cannot change the comparison.
 fn next_excess_blob_gas(
     params: &BlobParams,
     parent_excess: u64,
