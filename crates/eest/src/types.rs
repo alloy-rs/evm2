@@ -229,7 +229,8 @@ pub struct Test {
     /// Optional full expected state.
     #[serde(default)]
     pub state: BTreeMap<Address, AccountInfo>,
-    /// Optional encoded transaction bytes.
+    /// Signed EIP-2718 transaction bytes. When present they replace the indexed `transaction`
+    /// fields and the sender is recovered from their signature.
     pub txbytes: Option<Bytes>,
 }
 
