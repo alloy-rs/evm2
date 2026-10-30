@@ -44,7 +44,7 @@ impl<'de> Deserialize<'de> for Bytecode {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
             match BytecodeSerde::deserialize(deserializer)? {
-                BytecodeSerde::New(bytes) => Ok(Bytecode::from_stored(bytes)),
+                BytecodeSerde::New(bytes) => Ok(Self::from_stored(bytes)),
                 BytecodeSerde::Old(bytecode_serde_old) => from_old(bytecode_serde_old),
             }
         } else {
