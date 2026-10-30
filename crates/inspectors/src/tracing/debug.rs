@@ -433,9 +433,9 @@ pub enum DebugInspectorError {
     /// The keccak256 preimage tracer reached its limit of recorded bytes
     #[error(transparent)]
     Keccak256Preimage(#[from] crate::tracing::Keccak256PreimageLimitExceeded),
-    /// The erc7562 tracer reached its limit of recorded preimage bytes
+    /// The erc7562 tracer reached its limit of recorded preimage bytes or failed to read the state
     #[error(transparent)]
-    Erc7562(#[from] crate::tracing::Erc7562LimitExceeded),
+    Erc7562(#[from] crate::tracing::Erc7562Error),
     /// Error from JS inspector
     #[cfg(feature = "js-tracer")]
     #[error(transparent)]

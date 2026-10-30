@@ -31,15 +31,23 @@ use alloy_rpc_types_trace::geth::{
     erc7562::{AccessedSlots, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
-    EvmTypes, Inspector, TxResultExt,
+    DatabaseError, EvmTypes, Inspector, TxResultExt,
+    evm::DbResult,
     interpreter::{InstrStop, Interpreter, Message, MessageResult, opcode::op},
 };
 use thiserror::Error;
 
-/// The result of an [`Erc7562Inspector`] would miss preimages: it reached its byte limit.
-#[derive(Clone, Copy, Debug, Error)]
-#[error("erc7562Tracer reached its limit of recorded preimage bytes")]
-pub struct LimitExceeded;
+/// The result of an [`Erc7562Inspector`] would be wrong.
+#[derive(Clone, Debug, Error)]
+pub enum Error {
+    /// The inspector reached its byte limit, so the result would miss preimages.
+    #[error("erc7562Tracer reached its limit of recorded preimage bytes")]
+    LimitExceeded,
+    /// The inspector could not read the state that an instruction addressed, so a code size or a
+    /// slot value would be wrong.
+    #[error("database error {0:?}")]
+    Database(DatabaseError),
+}
 
 /// Inspector that collects what geth's `erc7562Tracer` reports for a transaction.
 #[derive(Clone, Debug)]
@@ -56,6 +64,8 @@ pub struct Erc7562Inspector {
     keccak: BTreeSet<Bytes>,
     /// The bytes of the preimages.
     budget: TraceBudget,
+    /// The first error of a read of the state, which the result reports.
+    error: Option<DatabaseError>,
     /// The instruction that ran last, in any frame.
     last: Option<LastStep>,
 }
@@ -109,6 +119,7 @@ impl Erc7562Inspector {
             frames: Vec::new(),
             keccak: BTreeSet::new(),
             budget: TraceBudget { limits, ..Default::default() },
+            error: None,
             last: None,
         }
     }
@@ -132,6 +143,7 @@ impl Erc7562Inspector {
         self.keccak.clear();
         self.budget.recorded = 0;
         self.budget.exceeded = false;
+        self.error = None;
         self.last = None;
     }
 
@@ -143,14 +155,18 @@ impl Erc7562Inspector {
 
     /// Returns the result of the tracer for a transaction that ran with this inspector.
     ///
-    /// Fails if the byte limit was reached, because the result would miss preimages.
+    /// Fails if the byte limit was reached, because the result would miss preimages, or if a read
+    /// of the state failed, because a code size or a slot value would be wrong.
     pub fn frame<E>(
         &mut self,
         tx: &Recovered<impl Transaction>,
         result: &TxResultExt<E>,
-    ) -> Result<Erc7562Frame, LimitExceeded> {
+    ) -> Result<Erc7562Frame, Error> {
         if self.budget.exceeded() {
-            return Err(LimitExceeded);
+            return Err(Error::LimitExceeded);
+        }
+        if let Some(error) = &self.error {
+            return Err(Error::Database(error.clone()));
         }
         self.calls.recover_runtime_oog_root(tx, result);
         self.calls.set_transaction_gas_limit(tx.gas_limit());
@@ -226,14 +242,14 @@ impl Erc7562Inspector {
     }
 
     /// Returns the size of the code of the account, without loading the account.
-    fn code_size<T: EvmTypes>(interp: &mut Interpreter<'_, '_, T>, address: &Address) -> u64 {
+    fn code_size<T: EvmTypes>(
+        interp: &mut Interpreter<'_, '_, T>,
+        address: &Address,
+    ) -> DbResult<u64> {
         let state = interp.host().state_mut();
-        let code = state
-            .account_info_untracked(address)
-            .ok()
-            .flatten()
-            .and_then(|info| load_account_code(state.overlay_db_mut(), &info).ok().flatten());
-        code.map_or(0, |code| code.len() as u64)
+        let Some(info) = state.account_info_untracked(address)? else { return Ok(0) };
+        let code = load_account_code(state.overlay_db_mut(), &info)?;
+        Ok(code.map_or(0, |code| code.len() as u64))
     }
 }
 
@@ -263,6 +279,12 @@ const fn is_ext(op: u8) -> bool {
 
 const fn is_call(op: u8) -> bool {
     matches!(op, op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL)
+}
+
+/// Keeps the first error of a read of the state, and returns the zero that the read reports.
+fn record<V: Default>(first: &mut Option<DatabaseError>, error: DatabaseError) -> V {
+    first.get_or_insert(error);
+    V::default()
 }
 
 fn word_to_address(word: U256) -> Address {
@@ -309,7 +331,8 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
                 if let Some(word) = if is_ext(op) { top } else { second } {
                     let address = word_to_address(word);
                     if let Entry::Vacant(entry) = frame.contract_size.entry(address) {
-                        let contract_size = Self::code_size(interp, &address);
+                        let contract_size = Self::code_size(interp, &address)
+                            .unwrap_or_else(|error| record(&mut self.error, error));
                         entry.insert(ContractSize { contract_size, opcode: op });
                     }
                 }
@@ -321,9 +344,12 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
                     && !slots.writes.contains_key(&slot)
                 {
                     let address = interp.message().destination;
-                    let value =
-                        interp.host().state_mut().storage_slot_untracked(&address, &slot.into());
-                    slots.reads.entry(slot).or_default().push(value.unwrap_or_default().into());
+                    let value = interp
+                        .host()
+                        .state_mut()
+                        .storage_slot_untracked(&address, &slot.into())
+                        .unwrap_or_else(|error| record(&mut self.error, error));
+                    slots.reads.entry(slot).or_default().push(value.into());
                 }
             }
             op::SSTORE => {

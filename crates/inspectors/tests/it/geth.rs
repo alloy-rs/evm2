@@ -16,12 +16,15 @@ use alloy_rpc_types_trace::geth::{
     PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Precompiles, Version,
+    AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, ExecutionConfig, Precompiles, Version,
     ethereum::ethereum_tx_registry,
+    evm::{DbResult, DynDatabase},
+    interpreter::Word,
 };
 use evm2_inspectors::tracing::{
-    DebugInspector, Erc7562Inspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
-    MEMORY_PAD_LIMIT, MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig,
+    DebugInspector, Erc7562Error, Erc7562Inspector, KECCAK256_PREIMAGE_TRACER,
+    Keccak256PreimageInspector, MEMORY_PAD_LIMIT, MuxInspector, TraceLimits, TracingInspector,
+    TracingInspectorConfig,
 };
 use std::collections::BTreeMap;
 
@@ -646,6 +649,77 @@ fn test_geth_erc7562_bounds_retained_preimages() {
             inspector.frame(&envelope, &res.result).ok().map(|frame| frame.keccak.len()),
             preimages
         );
+    }
+}
+
+/// A database whose storage reads fail.
+struct NoStorageDb(CacheDB<EmptyDB>);
+
+impl DynDatabase for NoStorageDb {
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        DynDatabase::get_account(&mut self.0, address)
+    }
+
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+        DynDatabase::get_code_by_hash(&mut self.0, code_hash)
+    }
+
+    fn get_storage(&mut self, _address: &Address, _key: &Word) -> DbResult<Word> {
+        Err(DatabaseError::new(AnyError::from("no storage"), true))
+    }
+
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
+        DynDatabase::get_block_hash(&mut self.0, number)
+    }
+}
+
+#[test]
+fn test_geth_erc7562_reports_a_failed_state_read() {
+    let contract = address!("1000000000000000000000000000000000000001");
+    let spec = SpecId::CANCUN;
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(Bytes::from_static(&[op::PUSH1, 1, op::SLOAD, op::STOP]))),
+            ..Default::default()
+        },
+    );
+    let block = *Context::mainnet().block();
+    // The transaction runs out of gas at the `SLOAD`, before it reads the slot, and does not fail.
+    let tx = TxEnv {
+        gas_limit: 21_000 + 3 + 2_099,
+        gas_price: 0,
+        kind: TransactTo::Call(contract),
+        ..Default::default()
+    };
+    let envelope = tx.envelope();
+    for fails in [false, true] {
+        let mut inspector = Erc7562Inspector::new(Erc7562Config::default());
+        let mut evm = if fails {
+            Evm::<BaseEvmTypes>::new(
+                spec,
+                block,
+                ethereum_tx_registry(spec),
+                NoStorageDb(db.clone()),
+                Precompiles::base(spec),
+            )
+        } else {
+            Evm::<BaseEvmTypes>::new(
+                spec,
+                block,
+                ethereum_tx_registry(spec),
+                db.clone(),
+                Precompiles::base(spec),
+            )
+        };
+        evm.set_inspector(&mut inspector);
+        let res = evm.transact(&envelope).unwrap().detach();
+        drop(evm);
+
+        assert!(!res.result.is_success());
+        let frame = inspector.frame(&envelope, &res.result);
+        assert_eq!(matches!(frame, Err(Erc7562Error::Database(_))), fails, "{frame:?}");
     }
 }
 
