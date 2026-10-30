@@ -602,11 +602,7 @@ impl TracingInspector {
     /// call step costs the forwarded gas too, a create step does not, so `forwarded` is the gas to
     /// give back.
     fn finish_step_charge<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>, forwarded: u64) {
-        if let Some(pending) = self.step_stack.last_mut()
-            && let Some(step) =
-                self.traces.arena[pending.trace_idx].trace.steps.get(pending.step_idx)
-            && step.is_call_like_op()
-        {
+        if let Some(pending) = self.step_stack.last_mut() {
             pending.gas_after_charge =
                 Some(interp.gas().remaining_excluding_state_spill().saturating_add(forwarded));
         }
