@@ -214,8 +214,8 @@ impl StateInner<'_> {
 
     /// Reads a slot absent from the overlay.
     ///
-    /// A slot of a wiped account, or of an account whose creation discarded its old storage, reads
-    /// zero without a database read, though a strict BAL must still cover it.
+    /// A slot of a wiped or created account reads zero without a database read, though a strict BAL
+    /// must still cover it.
     #[inline]
     fn read_unloaded_slot(
         &mut self,
@@ -684,9 +684,9 @@ impl<'a> State<'a> {
     /// This is the storage-side mirror of [`Self::account_info_untracked`]: a non-loading peek that
     /// returns the overlay slot value when one has been loaded or written this transaction,
     /// otherwise it reads the backing database directly without caching the result in the overlay.
-    /// A slot of a wiped account, or of one whose creation discarded its old storage, that has not
-    /// been loaded or written reads as zero, though an attached strict BAL must still cover it. Use
-    /// [`Self::storage`] when the slot should be loaded and preserved.
+    /// A slot of a wiped or created account that has not been loaded or written reads as zero,
+    /// though an attached strict BAL must still cover it. Use [`Self::storage`] when the slot
+    /// should be loaded and preserved.
     #[inline(never)]
     pub fn storage_slot_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         let account = self.accounts.get(address);
@@ -941,22 +941,15 @@ impl<'a> State<'a> {
             // EIP-8246: a self-destructed account that still holds balance is preserved as a
             // balance-only account instead of being burned. One with no balance is removed. The
             // handle is scoped so its `AccountChange` flushes on drop before the storage wipe.
-            let survives = {
+            {
                 let mut account = self.account(address)?;
-                let survives = eip8246 && !account.balance().is_zero();
-                if survives {
+                if eip8246 && !account.balance().is_zero() {
                     account.reset_selfdestructed_for_finalization();
                 } else {
                     account.delete_for_finalization();
                 }
-                survives
-            };
-            // A created survivor that discarded its old storage keeps it unloaded, and later
-            // transactions read it as zero. One that did not discard has no such reads, so its
-            // storage is wiped.
-            let zero_loaded_only = survives && self.accounts[address].discards_storage();
-            let mut storage = self.storage(address)?;
-            if zero_loaded_only { storage.zero_loaded() } else { storage.wipe() }
+            }
+            self.storage(address)?.wipe();
         }
 
         // Finalization never touches accounts, so clearing touches in the same pass that selects
@@ -1161,47 +1154,32 @@ mod tests {
     }
 
     #[test]
-    fn created_account_reads_old_storage_as_zero() {
+    fn created_account_reads_unloaded_slots_as_zero() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
-        let (loaded, unloaded, fresh) = (Word::from(1), Word::from(2), Word::from(3));
+        let (key, written) = (Word::from(1), Word::from(2));
         let features = EvmFeatures::empty();
         let mut db = CacheDB::default();
         db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        db.insert_account_storage(&address, &loaded, &Word::from(5));
-        db.insert_account_storage(&address, &unloaded, &Word::from(6));
-        db.insert_account_storage(&address, &fresh, &Word::from(7));
         let mut state = State::new(db);
-        assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::from(5));
 
         let checkpoint = state.checkpoint();
         state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
-        // A slot loaded before the creation keeps its value.
-        assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::from(5));
-        assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::ZERO);
-        assert_eq!(state.storage_slot(&address, unloaded).unwrap().original(), Word::ZERO);
-        assert_eq!(state.storage_slot_untracked(&address, &unloaded).unwrap(), Word::ZERO);
-        assert_eq!(state.get_storage(&address, &unloaded), Some(Word::ZERO));
-        state.storage_slot(&address, unloaded).unwrap().write(Word::from(9));
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+        assert_eq!(state.storage_slot(&address, key).unwrap().original(), Word::ZERO);
+        assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), Word::ZERO);
+        state.storage_slot(&address, written).unwrap().write(Word::from(9));
 
         state.rollback(checkpoint, features);
-        // Rolling back the creation keeps the zero it loaded.
-        assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::from(5));
-        assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::ZERO);
-        let checkpoint = state.checkpoint();
-        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
-        assert_eq!(state.storage_slot(&address, fresh).unwrap().current(), Word::ZERO);
-        assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::ZERO);
-        state.rollback(checkpoint, features);
+        assert!(!state.accounts[&address].discards_storage());
+        assert_eq!(state.storage_slot(&address, written).unwrap().current(), Word::ZERO);
         assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]
     fn marked_created_account_reads_and_commits_its_baseline() {
-        let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
         let (written, unwritten) = (Word::from(1), Word::from(2));
-        let features = EvmFeatures::empty();
         let mut db = CacheDB::default();
         db.insert_account_info(&address, AccountInfo::default().with_nonce(1));
         db.insert_account_storage(&address, &written, &Word::from(5));
@@ -1222,17 +1200,6 @@ mod tests {
         state.commit_transaction();
         assert_eq!(state.storage_slot(&address, written).unwrap().current(), Word::from(9));
         assert_eq!(state.storage_slot(&address, unwritten).unwrap().current(), Word::from(6));
-
-        // Marking an account created in the overlay does not undo its discarded storage.
-        let other = Address::with_last_byte(3);
-        state
-            .overlay_db_mut()
-            .insert_account_info(&other, AccountInfo::default().with_balance(Word::from(1)));
-        state.overlay_db_mut().insert_account_storage(&other, &unwritten, &Word::from(6));
-        state.create_account(&caller, &other, &Word::ZERO, features).unwrap().unwrap();
-        state.account(&other).unwrap().mark_created();
-        assert_eq!(state.storage_slot_untracked(&other, &unwritten).unwrap(), Word::ZERO);
-        assert_eq!(state.storage_slot(&other, unwritten).unwrap().current(), Word::ZERO);
     }
 
     #[test]
@@ -1256,14 +1223,13 @@ mod tests {
     }
 
     #[test]
-    fn eip8246_created_survivor_keeps_old_storage() {
+    fn eip8246_created_survivor_wipes_storage() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
-        let (written, old) = (Word::from(1), Word::from(2));
+        let written = Word::from(1);
         let version = Version::base(crate::SpecId::AMSTERDAM);
         let mut db = CacheDB::default();
         db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        db.insert_account_storage(&address, &old, &Word::from(6));
         let mut state = State::new(db);
 
         state.create_account(&caller, &address, &Word::ZERO, version.features).unwrap().unwrap();
@@ -1272,12 +1238,10 @@ mod tests {
         state.finalize_transaction_(version);
 
         let storage = &state.accounts[&address].storage;
-        assert!(!storage.wiped);
+        assert!(storage.wiped);
         assert_eq!(storage.changed_slots().count(), 0);
         state.commit_transaction();
-        for key in [written, old] {
-            assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
-        }
+        assert_eq!(state.storage_slot(&address, written).unwrap().current(), Word::ZERO);
     }
 
     #[test]
@@ -1304,13 +1268,11 @@ mod tests {
     }
 
     #[test]
-    fn rollback_of_storage_discard_restores_storage_baseline() {
+    fn rollback_of_storage_discard_clears_the_flag() {
         let address = Address::with_last_byte(2);
-        let key = Word::from(1);
         let features = Version::base(crate::SpecId::CANCUN).features;
         let mut db = CacheDB::default();
         db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        db.insert_account_storage(&address, &key, &Word::from(6));
         let mut state = State::new(db);
 
         state.account(&address).unwrap().mark_created();
@@ -1321,56 +1283,6 @@ mod tests {
 
         assert!(state.accounts[&address].is_created());
         assert!(!state.accounts[&address].discards_storage());
-        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::from(6));
-    }
-
-    #[test]
-    fn rollback_of_creation_keeps_slots_read_as_zero() {
-        let caller = Address::with_last_byte(1);
-        let address = Address::with_last_byte(2);
-        let (read, written, empty) = (Word::from(1), Word::from(2), Word::from(3));
-        let version = Version::base(crate::SpecId::CANCUN);
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        db.insert_account_storage(&address, &read, &Word::from(6));
-        db.insert_account_storage(&address, &written, &Word::from(7));
-        let mut state = State::new(db);
-
-        let checkpoint = state.checkpoint();
-        state.create_account(&caller, &address, &Word::ZERO, version.features).unwrap().unwrap();
-        assert_eq!(state.storage_slot(&address, read).unwrap().current(), Word::ZERO);
-        state.storage_slot(&address, written).unwrap().write(Word::from(9));
-        assert_eq!(state.storage_slot(&address, empty).unwrap().current(), Word::ZERO);
-        state.rollback(checkpoint, version.features);
-
-        assert!(!state.accounts[&address].discards_storage());
-        for key in [read, written, empty] {
-            assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), Word::ZERO);
-            let slot = state.storage_slot(&address, key).unwrap();
-            assert_eq!((slot.original(), slot.current()), (Word::ZERO, Word::ZERO));
-        }
-        assert!(!state.take_pending_state().is_changed());
-    }
-
-    #[test]
-    fn rollback_keeps_slot_read_as_zero_under_the_creation() {
-        let caller = Address::with_last_byte(1);
-        let address = Address::with_last_byte(2);
-        let key = Word::from(1);
-        let features = Version::base(crate::SpecId::CANCUN).features;
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        db.insert_account_storage(&address, &key, &Word::from(6));
-        let mut state = State::new(db);
-
-        let outer = state.checkpoint();
-        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
-        let inner = state.checkpoint();
-        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
-        state.rollback(inner, features);
-        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
-        state.rollback(outer, features);
-        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
     }
 
     #[test]
@@ -1391,99 +1303,6 @@ mod tests {
 
         assert_eq!(state.storage_slot(&address, read).unwrap().current(), Word::from(6));
         assert_eq!(state.storage_slot(&address, zero).unwrap().current(), Word::ZERO);
-    }
-
-    #[test]
-    fn finalization_wipe_after_rolled_back_creation_reads_zero() {
-        let caller = Address::with_last_byte(1);
-        let address = Address::with_last_byte(2);
-        let key = Word::from(1);
-        let version = Version::base(crate::SpecId::LONDON);
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        db.insert_account_storage(&address, &key, &Word::from(6));
-        let mut state = State::new(db);
-
-        let checkpoint = state.checkpoint();
-        state.create_account(&caller, &address, &Word::ZERO, version.features).unwrap().unwrap();
-        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
-        state.rollback(checkpoint, version.features);
-
-        state.account(&address).unwrap().mark_destructed();
-        state.finalize_transaction_(version);
-
-        assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), Word::ZERO);
-        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
-    }
-
-    #[test]
-    fn rollback_of_creation_keeps_slots_loaded_under_it() {
-        let caller = Address::with_last_byte(1);
-        let address = Address::with_last_byte(2);
-        let (before, under) = (Word::from(1), Word::from(2));
-        let features = Version::base(crate::SpecId::CANCUN).features;
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        let mut state = State::new(db);
-        assert_eq!(state.storage_slot(&address, before).unwrap().current(), Word::ZERO);
-        // Only a reread can observe these values, and rollback does not reread.
-        for key in [before, under] {
-            state.overlay_db_mut().insert_account_storage(&address, &key, &Word::from(5));
-        }
-
-        let checkpoint = state.checkpoint();
-        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
-        assert_eq!(state.storage_slot(&address, under).unwrap().current(), Word::ZERO);
-        state.rollback(checkpoint, features);
-
-        assert_eq!(state.storage_slot(&address, before).unwrap().current(), Word::ZERO);
-        assert_eq!(state.storage_slot(&address, under).unwrap().current(), Word::ZERO);
-    }
-
-    #[test]
-    fn rollback_keeps_zero_of_slot_written_through_the_creating_handle() {
-        let address = Address::with_last_byte(2);
-        let key = Word::from(1);
-        let features = Version::base(crate::SpecId::CANCUN).features;
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        db.insert_account_storage(&address, &key, &Word::from(6));
-        let mut state = State::new(db);
-
-        let checkpoint = state.checkpoint();
-        let mut account = state.account(&address).unwrap();
-        account.mark_created_discarding_storage();
-        // The slot write is journaled before the handle flushes its creation entry on drop.
-        account.storage().into_slot(key).unwrap().write(Word::from(9));
-        drop(account);
-        state.rollback(checkpoint, features);
-
-        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
-    }
-
-    #[test]
-    fn later_transactions_read_old_storage_of_created_account_as_zero() {
-        let caller = Address::with_last_byte(1);
-        let address = Address::with_last_byte(2);
-        let (cached, unloaded, written) = (Word::from(1), Word::from(2), Word::from(3));
-        let version = Version::base(crate::SpecId::CANCUN);
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        db.insert_account_storage(&address, &cached, &Word::from(5));
-        db.insert_account_storage(&address, &unloaded, &Word::from(6));
-        let mut state = State::new(db);
-        assert_eq!(state.storage_slot(&address, cached).unwrap().current(), Word::from(5));
-        state.commit_transaction();
-
-        state.create_account(&caller, &address, &Word::ZERO, version.features).unwrap().unwrap();
-        state.storage_slot(&address, written).unwrap().write(Word::from(9));
-        state.finalize_transaction_(version);
-        state.commit_transaction();
-
-        for (key, value) in [(cached, Word::ZERO), (unloaded, Word::ZERO), (written, Word::from(9))]
-        {
-            assert_eq!(state.storage_slot(&address, key).unwrap().current(), value);
-        }
     }
 
     #[test]

@@ -171,7 +171,8 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "osaka/eip7594_peerdas/max_blob_per_tx/invalid_max_blobs_per_tx.json",
     "osaka/eip7594_peerdas/max_blob_per_tx/max_blobs_per_tx_fork_transition.json",
 
-    // Create-collision fixtures need storage-aware collision handling.
+    // Storage-only create collisions are undefined until EIP-8253: execution-specs dropped the
+    // storage check (#3417) and skips these targets (#3508). evm2 treats an account with zero nonce and no code as having empty storage.
     "eip7610_create_collision",
     "InitCollision.json",
     "InitCollisionParis.json",

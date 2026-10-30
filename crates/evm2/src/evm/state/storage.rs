@@ -107,8 +107,7 @@ pub struct StorageHandle<'a, 'db> {
     address: &'a Address,
     /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
     storage: &'a mut StorageOverlay,
-    /// Whether the account's creation discarded its old storage, so its unloaded slots read as
-    /// zero.
+    /// Whether the account was created with empty storage, so its unloaded slots read as zero.
     discards_storage: bool,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
@@ -264,15 +263,6 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     #[inline]
     pub fn wipe(&mut self) {
         self.storage.wiped = true;
-        self.zero_loaded();
-    }
-
-    /// Resets every loaded slot to zero, keeping the account's unloaded storage.
-    ///
-    /// Like [`Self::wipe`], this is only called during transaction finalization, so it is not
-    /// journaled.
-    #[inline]
-    pub(crate) fn zero_loaded(&mut self) {
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value.set_current(Word::ZERO);
         });
@@ -623,7 +613,6 @@ mod tests {
         );
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
-        database.insert_account_storage(&address, &uncovered, &Word::from(20));
         let mut state = State::new(database);
         state.set_bal(Arc::new(Bal::from_iter([(address, account)])));
         state.set_bal_index(BlockAccessIndex::new(2));

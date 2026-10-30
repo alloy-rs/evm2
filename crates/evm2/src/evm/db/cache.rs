@@ -163,13 +163,10 @@ impl<ExtDB> CacheDB<ExtDB> {
 
         for (&address, entry) in accounts {
             let overlay = &entry.storage;
-            // Like revm's in-block cache, later transactions read the unchanged slots of a created
-            // account as zero, without a storage wipe reaching the state stream.
-            let wiped = overlay.wiped || entry.discards_storage();
             let mut changed_slots = overlay.changed_slots().peekable();
-            if wiped || changed_slots.peek().is_some() {
+            if overlay.wiped || changed_slots.peek().is_some() {
                 let storage = self.cache.storage.entry(address).or_default();
-                if wiped {
+                if overlay.wiped {
                     storage.wipe();
                 }
                 storage.slots.extend(changed_slots.map(|(&key, slot)| (key, slot.current)));
@@ -269,9 +266,6 @@ impl<ExtDB> CacheDB<ExtDB> {
 /// Applies streamed changes to the cache and forwards every callback to [`BalContext`]'s own sink
 /// impl, so a visited source folds into the BAL builder exactly like [`CacheDB::commit_pending`]
 /// when construction is enabled.
-///
-/// Unlike [`CacheDB::commit_pending`], this keeps the old storage of a created account, as revm's
-/// bundle does: only a storage wipe or an account deletion drops cached slots.
 impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     type Error = Infallible;
 
