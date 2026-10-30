@@ -115,14 +115,9 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     }
     let features = state.version().features;
     let mut new_account_state_gas = 0;
-    // Check emptiness only when new-account gas can apply: after EIP-161 a zero-value call never
-    // pays it, so it skips the extra account lookup.
     if create_empty_account
         && (!features.contains(EvmFeatures::EIP161) || transfers_value)
-        && state
-            .host()
-            .target_is_empty_for_new_account_gas(&to, features)
-            .map_err(|error| state.fail(error))?
+        && account.is_empty_for_new_account_gas
     {
         cost += state.gas_params().get(GasId::NewAccountCost);
         // EIP-8037: value transfer to a new account also charges state gas from
@@ -433,11 +428,11 @@ pub fn create_with<T: EvmTypesHost>(
 
         // The destination is loaded here and made warm. Balance, nonce, and depth pre-access
         // failures return above before the destination is accessed.
-        let features = state.version().features;
         if state
             .host()
-            .target_is_empty_for_new_account_gas(&destination, features)
+            .load_account(&destination, false, false)
             .map_err(|error| state.fail(error))?
+            .is_empty_for_new_account_gas
         {
             gas.spend_state(state.gas_params().create_state_gas())?;
             charged_create_state_gas = true;
@@ -1025,6 +1020,7 @@ mod tests {
     fn create_too_deep_clears_return_data_and_skips_destination_read_eip8037() {
         // EIP-8037: a create failing the depth pre-check must not access the destination —
         // the read would leak the address into the EIP-7928 block access list.
+        let caller = Address::from([0x11; 20]);
         let mut host = TestHost { exists: false, ..Default::default() };
         let mut code = Vec::new();
         push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
@@ -1033,12 +1029,16 @@ mod tests {
         let interp = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::AMSTERDAM)
-            .message(MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .message(MessageExt {
+                depth: CALL_DEPTH_LIMIT,
+                destination: caller,
+                ..Default::default()
+            })
             .return_data(Bytes::from_static(b"stale"))
             .gas_limit(50_000));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [Word::ZERO, Word::ZERO]);
-        assert!(host.new_account_checks.is_empty());
+        assert_eq!(host.account_loads, [caller]);
     }
 
     #[test]
