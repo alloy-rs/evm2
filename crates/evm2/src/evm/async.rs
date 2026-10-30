@@ -792,6 +792,30 @@ mod tests {
     }
 
     #[test]
+    fn transaction_async_send_survives_state_mut_access() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            crate::ethereum::TxEnvelope::as_legacy,
+            handler(|_| Ok(()), |req, ()| handle_test_tx(req)),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
+        evm.state_mut();
+        evm.overlay_db_mut();
+        let tx = test_tx(41);
+
+        let result = poll_ready(assert_send(evm.transact_async_send(&tx))).unwrap();
+
+        assert_eq!(result.result().tx_gas_used(), 42);
+    }
+
+    #[test]
     fn transaction_async_accepts_non_send_erased_fields() {
         let marker = Rc::new(());
         let registry = TxRegistry::new().with_handler(

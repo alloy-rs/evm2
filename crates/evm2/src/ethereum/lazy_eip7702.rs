@@ -4,43 +4,49 @@ use alloy_consensus::{Transaction, TxEip7702, TxType};
 use alloy_eips::{
     Typed2718,
     eip2930::AccessList,
-    eip7702::{
-        Authorization, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
-        constants::SECP256K1N_HALF,
-    },
+    eip7702::{Authorization, SignedAuthorization, constants::SECP256K1N_HALF},
 };
 use alloy_primitives::{Address, B256, Bytes, ChainId, TxKind, U256};
 
-/// EIP-7702 authorization that may already have its authority recovered.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub enum LazyAuthorization {
+/// Borrowed EIP-7702 authorization of a [`LazyTxEip7702`], with its authority possibly recovered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum LazyAuthorization<'a> {
     /// Signed authorization whose authority is recovered on demand.
-    Signed(SignedAuthorization),
-    /// Authorization with a cached recovery result.
-    Recovered(RecoveredAuthorization),
+    Signed(&'a SignedAuthorization),
+    /// Signed authorization with a cached recovery result.
+    Recovered {
+        /// The signed authorization.
+        authorization: &'a SignedAuthorization,
+        /// The cached authority, or `None` if the signature is invalid.
+        authority: Option<Address>,
+    },
 }
 
-impl LazyAuthorization {
-    /// Returns the inner unsigned authorization.
-    pub fn inner(&self) -> &Authorization {
-        match self {
-            Self::Signed(authorization) => authorization.inner(),
-            Self::Recovered(authorization) => authorization,
+impl<'a> LazyAuthorization<'a> {
+    /// Returns the signed authorization.
+    const fn signed(&self) -> &'a SignedAuthorization {
+        match *self {
+            Self::Signed(authorization) | Self::Recovered { authorization, .. } => authorization,
         }
     }
 
+    /// Returns the inner unsigned authorization.
+    pub const fn inner(&self) -> &'a Authorization {
+        self.signed().inner()
+    }
+
     /// Returns the authorization chain ID.
-    pub fn chain_id(&self) -> &U256 {
+    pub const fn chain_id(&self) -> &'a U256 {
         self.inner().chain_id()
     }
 
     /// Returns the delegated address.
-    pub fn address(&self) -> &Address {
+    pub const fn address(&self) -> &'a Address {
         self.inner().address()
     }
 
     /// Returns the authorization nonce.
-    pub fn nonce(&self) -> u64 {
+    pub const fn nonce(&self) -> u64 {
         self.inner().nonce()
     }
 
@@ -49,45 +55,17 @@ impl LazyAuthorization {
     /// Signed authorizations perform recovery on demand. Recovered authorizations return their
     /// cached result without doing secp256k1 recovery.
     pub fn authority(&self) -> Option<Address> {
-        match self {
+        match *self {
             Self::Signed(authorization) => recover_authority(authorization),
-            Self::Recovered(authorization) => authorization.authority(),
+            Self::Recovered { authority, .. } => authority,
         }
-    }
-
-    /// Returns the signed authorization if this authorization has not been recovered yet.
-    pub const fn as_signed(&self) -> Option<&SignedAuthorization> {
-        match self {
-            Self::Signed(authorization) => Some(authorization),
-            Self::Recovered(_) => None,
-        }
-    }
-
-    /// Returns the recovered authorization if this authorization has a cached recovery result.
-    pub const fn as_recovered(&self) -> Option<&RecoveredAuthorization> {
-        match self {
-            Self::Recovered(authorization) => Some(authorization),
-            Self::Signed(_) => None,
-        }
-    }
-}
-
-impl From<SignedAuthorization> for LazyAuthorization {
-    fn from(value: SignedAuthorization) -> Self {
-        Self::Signed(value)
-    }
-}
-
-impl From<RecoveredAuthorization> for LazyAuthorization {
-    fn from(value: RecoveredAuthorization) -> Self {
-        Self::Recovered(value)
     }
 }
 
 /// EIP-7702 transaction used by the executable Ethereum transaction model.
 ///
-/// This preserves the consensus [`TxEip7702`] fields but stores authorization list entries as
-/// signed-or-recovered values so callers can supply cached EIP-7702 authority recovery results.
+/// This preserves the consensus [`TxEip7702`] fields and optionally caches the recovered authority
+/// of each authorization, so callers can supply EIP-7702 authority recovery results.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct LazyTxEip7702 {
     /// EIP-155 replay protection chain ID.
@@ -106,42 +84,51 @@ pub struct LazyTxEip7702 {
     pub value: U256,
     /// EIP-2930 access list.
     pub access_list: AccessList,
-    /// EIP-7702 authorizations, either signed or with cached recovery results.
-    pub authorization_list: Vec<LazyAuthorization>,
-    signed_authorization_list: Vec<SignedAuthorization>,
     /// Transaction input calldata.
     pub input: Bytes,
+    authorization_list: Vec<SignedAuthorization>,
+    /// Recovered authority of each entry of `authorization_list`, or `None` if not recovered yet.
+    /// An authority is `None` if its signature is invalid.
+    authorities: Option<Vec<Option<Address>>>,
 }
 
 impl LazyTxEip7702 {
     /// Converts a consensus transaction while keeping signed authorizations unresolved.
     pub fn from_signed_authorizations(tx: TxEip7702) -> Self {
-        let authorization_list = tx.authorization_list.iter().cloned().map(Into::into).collect();
-        Self::from_authorizations(tx, authorization_list)
+        Self::new(tx, None)
     }
 
     /// Converts a consensus transaction and eagerly recovers all authorization authorities.
     ///
-    /// Invalid authorization signatures are cached as invalid recovered authorizations so execution
-    /// skips them in the same way as a failed on-demand recovery.
+    /// Invalid authorization signatures are cached as invalid authorities so execution skips them
+    /// in the same way as a failed on-demand recovery.
     pub fn from_recovered_authorizations(tx: TxEip7702) -> Self {
-        let authorization_list = tx
-            .authorization_list
-            .iter()
-            .map(|authorization| {
-                let authority = recover_authority(authorization)
-                    .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid);
-                RecoveredAuthorization::new_unchecked(authorization.inner().clone(), authority)
-                    .into()
-            })
-            .collect();
-        Self::from_authorizations(tx, authorization_list)
+        let authorities = tx.authorization_list.iter().map(recover_authority).collect();
+        Self::new(tx, Some(authorities))
     }
 
-    /// Converts a consensus transaction using an externally supplied authorization list.
+    /// Converts a consensus transaction using externally supplied recovered authorities, one per
+    /// authorization of `tx`; `None` marks an invalid signature.
     ///
-    /// The caller is responsible for ensuring that `authorization_list` corresponds to `tx`.
-    pub fn from_authorizations(tx: TxEip7702, authorization_list: Vec<LazyAuthorization>) -> Self {
+    /// The caller is responsible for ensuring that each authority matches the signature of its
+    /// authorization.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `authorities` and the authorization list of `tx` differ in length.
+    pub fn from_cached_recovered_authorizations(
+        tx: TxEip7702,
+        authorities: Vec<Option<Address>>,
+    ) -> Self {
+        assert_eq!(
+            tx.authorization_list.len(),
+            authorities.len(),
+            "one recovered authority per authorization"
+        );
+        Self::new(tx, Some(authorities))
+    }
+
+    fn new(tx: TxEip7702, authorities: Option<Vec<Option<Address>>>) -> Self {
         let TxEip7702 {
             chain_id,
             nonce,
@@ -151,7 +138,7 @@ impl LazyTxEip7702 {
             to,
             value,
             access_list,
-            authorization_list: signed_authorization_list,
+            authorization_list,
             input,
         } = tx;
         Self {
@@ -163,20 +150,23 @@ impl LazyTxEip7702 {
             to,
             value,
             access_list,
-            authorization_list,
-            signed_authorization_list,
             input,
+            authorization_list,
+            authorities,
         }
     }
 
-    /// Converts a consensus transaction using externally supplied recovered authorizations.
-    ///
-    /// The caller is responsible for ensuring that `authorization_list` corresponds to `tx`.
-    pub fn from_cached_recovered_authorizations(
-        tx: TxEip7702,
-        authorization_list: Vec<RecoveredAuthorization>,
-    ) -> Self {
-        Self::from_authorizations(tx, authorization_list.into_iter().map(Into::into).collect())
+    /// Returns the authorizations, each with its cached authority if recovered.
+    pub fn authorizations(&self) -> impl ExactSizeIterator<Item = LazyAuthorization<'_>> {
+        let authorities = self.authorities.as_deref();
+        self.authorization_list.iter().enumerate().map(
+            move |(i, authorization)| match authorities {
+                Some(authorities) => {
+                    LazyAuthorization::Recovered { authorization, authority: authorities[i] }
+                }
+                None => LazyAuthorization::Signed(authorization),
+            },
+        )
     }
 
     /// Calculates a heuristic for the in-memory size of the transaction.
@@ -185,8 +175,8 @@ impl LazyTxEip7702 {
         size_of::<Self>()
             + self.access_list.size()
             + self.input.len()
-            + self.authorization_list.capacity() * size_of::<LazyAuthorization>()
-            + self.signed_authorization_list.capacity() * size_of::<SignedAuthorization>()
+            + self.authorization_list.capacity() * size_of::<SignedAuthorization>()
+            + self.authorities.as_ref().map_or(0, |a| a.capacity() * size_of::<Option<Address>>())
     }
 }
 
@@ -272,7 +262,7 @@ impl Transaction for LazyTxEip7702 {
     }
 
     fn authorization_list(&self) -> Option<&[SignedAuthorization]> {
-        Some(&self.signed_authorization_list)
+        Some(&self.authorization_list)
     }
 }
 
@@ -315,7 +305,7 @@ mod tests {
         let signed = |y, r, s| SignedAuthorization::new_unchecked(inner.clone(), y, r, s);
 
         let valid = signed(y, r, s);
-        assert_eq!(LazyAuthorization::from(valid.clone()).authority(), Some(expected));
+        assert_eq!(LazyAuthorization::Signed(&valid).authority(), Some(expected));
         // Without the low-s check, the high-s signature would recover `expected` too.
         let authorization_list = vec![
             valid,
@@ -328,14 +318,17 @@ mod tests {
         let tx = TxEip7702 { authorization_list, ..Default::default() };
         let signed = LazyTxEip7702::from_signed_authorizations(tx.clone());
         let recovered = LazyTxEip7702::from_recovered_authorizations(tx.clone());
-        for (i, authorization) in tx.authorization_list.iter().enumerate() {
+        let entries = signed.authorizations().zip(recovered.authorizations());
+        for (i, (authorization, (signed, recovered))) in
+            tx.authorization_list.iter().zip(entries).enumerate()
+        {
             let want = authorization.recover_authority().ok();
             assert_eq!(want.is_some(), i == 0, "case {i}");
-            assert_eq!(signed.authorization_list[i].authority(), want, "signed case {i}");
-            assert_eq!(recovered.authorization_list[i].authority(), want, "recovered case {i}");
+            assert_eq!(signed, LazyAuthorization::Signed(authorization), "signed entry {i}");
+            assert_eq!(signed.authority(), want, "signed case {i}");
             assert_eq!(
-                recovered.authorization_list[i],
-                LazyAuthorization::from(authorization.clone().into_recovered()),
+                recovered,
+                LazyAuthorization::Recovered { authorization, authority: want },
                 "recovered entry {i}"
             );
         }

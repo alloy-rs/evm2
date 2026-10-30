@@ -2,7 +2,6 @@
 
 use crate::{
     Evm, OpcodeConfig, OpcodeView, SpecId,
-    constants::CALL_DEPTH_LIMIT,
     ethereum::TxEnvelope,
     interpreter::{
         Host,
@@ -189,17 +188,17 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
 
     /// Replaces the runtime version data while keeping the same dispatch table.
     ///
+    /// Clamps [`Version::memory_limit`] to [`u32::MAX`].
+    ///
     /// # Panics
     ///
-    /// Panics if [`Version::initial_call_depth`] leaves no room for the full call budget and
-    /// the attempted-too-deep message, i.e. if it exceeds `u16::MAX - CALL_DEPTH_LIMIT - 1`
-    /// (64510).
+    /// Panics if `version` is invalid; see [`Version::assert_valid`].
     #[inline]
-    pub const fn with_version(mut self, version: Version) -> Self {
-        assert!(
-            version.initial_call_depth < u16::MAX - CALL_DEPTH_LIMIT,
-            "initial call depth must leave room for 1024 descendants and the rejected attempt"
-        );
+    pub const fn with_version(mut self, mut version: Version) -> Self {
+        version.assert_valid();
+        if version.memory_limit > u32::MAX as u64 {
+            version.memory_limit = u32::MAX as u64;
+        }
         self.version = version;
         self
     }
