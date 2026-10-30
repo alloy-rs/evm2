@@ -906,9 +906,6 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
 }
 
 /// Returns the storage access an SLOAD or SSTORE is about to make, read before the opcode runs.
-///
-/// For an SLOAD this is the key and the value the slot holds. For an SSTORE it is the key, the
-/// value it writes and the value the slot holds before the write.
 fn storage_change<T: EvmTypes>(
     interp: &mut Interpreter<'_, '_, T>,
     op: u8,
@@ -919,7 +916,7 @@ fn storage_change<T: EvmTypes>(
         _ => return None,
     };
     let address = interp.message().destination;
-    // The opcode fails on the same read, so a database error leaves the record empty.
+    // A database error leaves the record empty: an opcode that reads the slot fails on it too.
     let current = interp.host().state_mut().storage_slot_untracked(&address, &key).ok()?;
     Some(Box::new(match value {
         Some(value) => StorageChange { key, value, had_value: Some(current), reason },

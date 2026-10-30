@@ -610,14 +610,11 @@ impl<'a> GethTraceBuilder<'a> {
                         // it runs.
                         if !step.is_error()
                             && let Some(change) = &step.storage_change
+                            && let slot = B256::from(change.key)
+                            && !accessed_slots.reads.contains_key(&slot)
+                            && !accessed_slots.writes.contains_key(&slot)
                         {
-                            let slot: B256 = change.key.into();
-                            if !accessed_slots.reads.contains_key(&slot)
-                                && !accessed_slots.writes.contains_key(&slot)
-                            {
-                                let value: B256 = change.value.into();
-                                accessed_slots.reads.entry(slot).or_default().push(value);
-                            }
+                            accessed_slots.reads.entry(slot).or_default().push(change.value.into());
                         }
                     }
                     op::SSTORE => {

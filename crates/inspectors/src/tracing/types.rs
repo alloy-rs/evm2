@@ -663,9 +663,7 @@ pub struct CallTraceStep {
     pub gas_refund_counter: u64,
     /// Total gas used before step execution
     pub gas_used: u64,
-    /// The storage access of an SLOAD/SSTORE, read before the step executes.
-    ///
-    /// Only set if state diffs are recorded.
+    /// The storage access of an SLOAD/SSTORE. Only set if state diffs are recorded.
     pub storage_change: Option<Box<StorageChange>>,
     // Fields filled in `step_end`
     /// Gas cost of step execution
