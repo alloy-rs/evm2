@@ -154,7 +154,9 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
     run_inner::<T, NoInspector>(state, pc, stack, instructions)
 }
 
+/// Not inlined, so that the plain loop keeps its own frame apart from the inspected runs'.
 #[allow(clippy::let_unit_value)]
+#[inline(never)]
 fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
     state: &mut InterpreterState<'_, '_, T>,
     pc: Pc,
@@ -197,6 +199,7 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
 ///
 /// The hooks run here, outside the stack borrow, because a hook may access the stack through the
 /// interpreter and no handler may hold the borrow meanwhile.
+#[inline(never)]
 fn run_all_stepped<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     pc: Pc,
