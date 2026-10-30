@@ -87,17 +87,19 @@ impl ExecutionResources {
         }
     }
 
-    /// Fails if a compilation failed, since the runtime then silently runs the interpreter and
-    /// the test would pass without exercising compiled code.
+    /// Fails if a compilation failed or a frame fell back to the interpreter, since the test
+    /// would then pass without exercising compiled code.
     #[cfg(feature = "jit")]
     pub(crate) fn check_compilations(&self) -> Result<(), ExecutionResourceError> {
-        let failed = self.backend.as_ref().map_or(0, |backend| backend.stats().compilations_failed);
-        if failed == 0 {
+        let Some(backend) = &self.backend else { return Ok(()) };
+        let stats = backend.stats();
+        let (failed, fallbacks) = (stats.compilations_failed, stats.interpreter_fallbacks);
+        if failed == 0 && fallbacks == 0 {
             return Ok(());
         }
         Err(ExecutionResourceError(format!(
-            "{failed} compilation(s) failed in this run and fell back to the interpreter; \
-             rerun with RUST_LOG=warn for the cause"
+            "{failed} compilation(s) failed and {fallbacks} frame(s) fell back to the interpreter \
+             in this run; rerun with RUST_LOG=warn for the cause"
         )))
     }
 

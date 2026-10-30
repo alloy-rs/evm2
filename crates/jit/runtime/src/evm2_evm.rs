@@ -52,13 +52,21 @@ impl<T: EvmTypesHost> InterpreterRunner<T> for JitInterpreterRunner {
 ///
 /// Returns `None` when no compiled program is available, leaving the caller to
 /// run the same frame through the evm2 interpreter.
+///
+/// Checks on every call that the backend supports the host's gas schedule and opcode table, and
+/// counts a rejected host as a fallback each time without logging it.
+/// [`InterpreterRunner::supports`] does that check once per runner or config change instead.
 #[inline]
 pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
     backend: &JitBackend,
     interpreter: &mut Interpreter<'frame, 'host, T>,
     host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
-    if !backend.enabled() || !backend.supports_host::<T>(host.execution_config()) {
+    if !backend.enabled() {
+        return None;
+    }
+    if backend.host_mismatch::<T>(host.execution_config()).is_some() {
+        backend.count_interpreter_fallback();
         return None;
     }
     run_supported(backend, interpreter, host)
@@ -73,7 +81,11 @@ fn run_supported<'frame, 'host, T: EvmTypesHost>(
 ) -> Option<InstrStop> {
     // Disabled runners must not hash code merely to discover that lookup is unavailable.
     // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
-    if !backend.enabled() || interpreter.gas().remaining() > i64::MAX as u64 {
+    if !backend.enabled() {
+        return None;
+    }
+    if interpreter.gas().remaining() > i64::MAX as u64 {
+        backend.count_interpreter_fallback();
         return None;
     }
     let code_hash = interpreter.original_bytecode_hash();
@@ -308,7 +320,49 @@ mod tests {
             Precompiles::base(SpecId::CANCUN),
         );
 
-        assert_eq!(run_interpreter(&blocking_backend(), &mut interpreter, &mut host), None);
+        let backend = blocking_backend();
+        assert_eq!(run_interpreter(&backend, &mut interpreter, &mut host), None);
+        assert_eq!(backend.stats().interpreter_fallbacks, 1);
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn rejected_gas_schedule_counts_fallback() {
+        let spec = SpecId::CANCUN;
+        let mut version = *Version::base(spec);
+        version.gas_params.set(GasId::SstoreStatic, 800);
+        let host = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnv::<BaseEvmTypes>::default(),
+            ethereum_tx_registry(spec),
+            InMemoryDB::default(),
+            Precompiles::base(spec),
+        );
+        let supports = |backend: &JitBackend| {
+            InterpreterRunner::<BaseEvmTypes>::supports(
+                &JitInterpreterRunner::new(backend.clone()),
+                host.execution_config(),
+            )
+        };
+
+        let base = blocking_backend();
+        assert!(!supports(&base));
+        assert_eq!(base.stats().interpreter_fallbacks, 1);
+
+        let matching = JitBackend::new(RuntimeConfig {
+            enabled: true,
+            blocking: true,
+            gas_params: Some(version.gas_params),
+            ..RuntimeConfig::default()
+        })
+        .unwrap();
+        assert!(supports(&matching));
+        assert_eq!(matching.stats().interpreter_fallbacks, 0);
+
+        let disabled = JitBackend::disabled();
+        assert!(!supports(&disabled));
+        assert_eq!(disabled.stats().interpreter_fallbacks, 0);
     }
 
     #[test]
@@ -969,6 +1023,8 @@ mod custom_host_tests {
         );
         assert_eq!(fresh.run(&mut host).unwrap(), InstrStop::Return);
         assert_eq!(fresh.output(), expected_output);
+        assert_eq!(backend.stats().interpreter_fallbacks, 0);
+        assert_eq!(wrong.stats().interpreter_fallbacks, 2);
     }
 
     const SSTORE_SURCHARGE: u64 = 1_000;
