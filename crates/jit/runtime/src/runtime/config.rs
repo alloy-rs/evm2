@@ -162,7 +162,7 @@ pub struct CompilationEvent {
 pub enum CompilationKind {
     /// JIT compilation (in-memory function pointer).
     Jit,
-    /// AOT compilation (shared library artifact).
+    /// AOT compilation (relocatable object artifact).
     Aot,
 }
 

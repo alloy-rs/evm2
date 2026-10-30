@@ -665,9 +665,11 @@ impl<'a> State<'a> {
     pub fn storage_slot_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         if let Some(account) = self.accounts.get(address) {
             if let Some(slot) = account.storage.slots.get(key) {
-                return Ok(slot.value.current);
-            }
-            if account.storage.wiped || account.discards_storage() {
+                // A slot a failed rollback reload left at its cached zero reads the database.
+                if !slot.created_zero || account.discards_storage() {
+                    return Ok(slot.value.current);
+                }
+            } else if account.storage.wiped || account.discards_storage() {
                 self.database.check_bal_storage(address, key)?;
                 return Ok(Word::ZERO);
             }
@@ -1091,6 +1093,7 @@ impl<'a> State<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evm::bal::{AccountBal, Bal, BlockAccessIndex};
     use alloc::vec;
 
     #[test]
@@ -1337,9 +1340,11 @@ mod tests {
         assert_eq!(state.storage_slot(&address, read).unwrap().current(), Word::ZERO);
         state.storage_slot(&address, written).unwrap().write(Word::from(9));
         assert_eq!(state.storage_slot(&address, empty).unwrap().current(), Word::ZERO);
+        assert!(state.accounts[&address].storage.slots[&empty].created_zero);
         state.rollback(checkpoint, version.features);
 
         assert!(!state.accounts[&address].discards_storage());
+        assert!(state.accounts[&address].storage.slots.values().all(|slot| !slot.created_zero));
         for (key, value) in [(read, 6), (written, 7), (empty, 0)] {
             let value = Word::from(value);
             assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), value);
@@ -1388,6 +1393,96 @@ mod tests {
 
         assert_eq!(state.storage_slot(&address, read).unwrap().current(), Word::from(6));
         assert_eq!(state.storage_slot(&address, zero).unwrap().current(), Word::ZERO);
+    }
+
+    #[test]
+    fn rollback_of_creation_keeps_slot_whose_reload_fails() {
+        let caller = Address::with_last_byte(1);
+        let address = Address::with_last_byte(2);
+        let key = Word::from(1);
+        let features = Version::base(crate::SpecId::CANCUN).features;
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_storage(&address, &key, &Word::from(6));
+        let mut state = State::new(db);
+        let bal = Arc::new(Bal::from_iter([(address, AccountBal::default())]));
+
+        // The creation's own read checks the BAL, so detach it there. The BAL covers the account
+        // but omits the slot, so rereading the slot during the rollback fails.
+        let checkpoint = state.checkpoint();
+        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+        state.set_bal(bal);
+        state.set_bal_index(BlockAccessIndex::new(1));
+        state.rollback(checkpoint, features);
+
+        // The slot stays loaded, so its read reaches the BAL, and later loads report the failure
+        // instead of serving the zero.
+        assert!(state.accounts[&address].storage.slots[&key].created_zero);
+        // An unaffordable cold access is skipped before the pending reload reads the database.
+        assert!(matches!(
+            state.storage(&address).unwrap().into_slot_with_skip(key, true),
+            Err(LoadError::ColdLoadSkipped)
+        ));
+        assert!(state.storage_slot(&address, key).is_err());
+        assert!(state.storage_slot_untracked(&address, &key).is_err());
+        assert!(state.accounts[&address].storage.slots[&key].created_zero);
+
+        state.clear_bal();
+        assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), Word::from(6));
+        let slot = state.storage_slot(&address, key).unwrap();
+        assert_eq!((slot.original(), slot.current()), (Word::from(6), Word::from(6)));
+        assert!(!state.accounts[&address].storage.slots[&key].created_zero);
+    }
+
+    #[test]
+    fn finalization_wipe_clears_the_marker_of_a_slot_whose_reload_failed() {
+        let caller = Address::with_last_byte(1);
+        let address = Address::with_last_byte(2);
+        let key = Word::from(1);
+        let version = Version::base(crate::SpecId::LONDON);
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_storage(&address, &key, &Word::from(6));
+        let mut state = State::new(db);
+
+        let checkpoint = state.checkpoint();
+        state.create_account(&caller, &address, &Word::ZERO, version.features).unwrap().unwrap();
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+        state.set_bal(Arc::new(Bal::from_iter([(address, AccountBal::default())])));
+        state.set_bal_index(BlockAccessIndex::new(1));
+        state.rollback(checkpoint, version.features);
+        state.clear_bal();
+
+        state.account(&address).unwrap().mark_destructed();
+        state.finalize_transaction_(version);
+
+        assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), Word::ZERO);
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+    }
+
+    #[test]
+    fn rollback_of_creation_reloads_only_slots_loaded_under_it() {
+        let caller = Address::with_last_byte(1);
+        let address = Address::with_last_byte(2);
+        let (before, under) = (Word::from(1), Word::from(2));
+        let features = Version::base(crate::SpecId::CANCUN).features;
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        let mut state = State::new(db);
+        assert_eq!(state.storage_slot(&address, before).unwrap().current(), Word::ZERO);
+        // Only a reread can observe these values.
+        for key in [before, under] {
+            state.overlay_db_mut().insert_account_storage(&address, &key, &Word::from(5));
+        }
+
+        let checkpoint = state.checkpoint();
+        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
+        assert_eq!(state.storage_slot(&address, under).unwrap().current(), Word::ZERO);
+        state.rollback(checkpoint, features);
+
+        assert_eq!(state.storage_slot(&address, before).unwrap().current(), Word::ZERO);
+        assert_eq!(state.storage_slot(&address, under).unwrap().current(), Word::from(5));
     }
 
     #[test]
@@ -1706,6 +1801,43 @@ mod tests {
         parent.commit_transaction();
 
         assert_eq!(parent.storage_slot_untracked(&address, &key).unwrap(), Word::from(5));
+    }
+
+    #[test]
+    fn wiped_slot_is_reported_as_a_read_of_its_original_value() {
+        #[derive(Default)]
+        struct Reads(Vec<(Word, Word)>);
+
+        impl StateChangeSink for Reads {
+            type Error = core::convert::Infallible;
+
+            fn storage_read(
+                &mut self,
+                _address: Address,
+                key: Word,
+                value: Word,
+            ) -> Result<(), Self::Error> {
+                self.0.push((key, value));
+                Ok(())
+            }
+        }
+
+        let address = Address::with_last_byte(42);
+        let (read_key, written_key) = (Word::ONE, Word::from(2));
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
+        db.insert_account_storage(&address, &read_key, &Word::from(5));
+        db.insert_account_storage(&address, &written_key, &Word::from(6));
+        let mut state = State::new(db);
+        state.account(&address).unwrap();
+        state.storage_slot(&address, read_key).unwrap();
+        state.storage_slot(&address, written_key).unwrap().set(Word::from(7));
+        state.storage(&address).unwrap().wipe();
+
+        let mut reads = Reads::default();
+        state.take_pending_state().visit(&mut reads).unwrap();
+        reads.0.sort();
+        assert_eq!(reads.0, [(read_key, Word::from(5)), (written_key, Word::from(6))]);
     }
 
     #[test]

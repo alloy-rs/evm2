@@ -1,18 +1,14 @@
 //! Custom bindings to LLVM.
 
-use inkwell::{
-    attributes::Attribute,
-    context::Context,
-    llvm_sys::{
-        error::LLVMErrorRef,
-        orc2::{
-            LLVMOrcExecutionSessionRef, LLVMOrcExecutorAddress, LLVMOrcJITDylibRef,
-            lljit::{LLVMOrcLLJITBuilderRef, LLVMOrcLLJITRef},
-        },
-        prelude::{LLVMAttributeRef, LLVMContextRef, LLVMValueRef},
-        target_machine::{LLVMCodeGenOptLevel, LLVMTargetMachineRef},
+use crate::wrap::{Attribute, Context, Function};
+use llvm_sys::{
+    error::LLVMErrorRef,
+    orc2::{
+        LLVMOrcExecutionSessionRef, LLVMOrcExecutorAddress, LLVMOrcJITDylibRef,
+        lljit::{LLVMOrcLLJITBuilderRef, LLVMOrcLLJITRef},
     },
-    values::AsValueRef,
+    prelude::{LLVMAttributeRef, LLVMContextRef, LLVMValueRef},
+    target_machine::{LLVMCodeGenOptLevel, LLVMTargetMachineRef},
 };
 use std::{ffi::c_char, sync::atomic::AtomicUsize};
 
@@ -67,13 +63,10 @@ unsafe extern "C" {
     pub(crate) fn evm2_jit_llvm_expand_ir_insts_after_lsr();
 }
 
-pub(crate) fn set_dso_local(f: inkwell::values::FunctionValue<'_>) {
+pub(crate) fn set_dso_local(f: Function) {
     unsafe { evm2_jit_llvm_set_dso_local(f.as_value_ref(), true) };
 }
 
 pub(crate) fn create_initializes_attr(cx: &Context, lower: i64, upper: i64) -> Attribute {
-    unsafe {
-        let raw = evm2_jit_llvm_create_initializes_attr(cx.raw(), lower, upper);
-        Attribute::new(raw)
-    }
+    Attribute::new(unsafe { evm2_jit_llvm_create_initializes_attr(cx.raw(), lower, upper) })
 }

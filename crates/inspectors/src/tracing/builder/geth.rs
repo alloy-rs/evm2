@@ -8,11 +8,11 @@ use crate::tracing::{
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, format, vec, vec::Vec};
 use alloy_primitives::{
     Address, B256, Bytes, U256,
-    map::{Entry, HashMap},
+    map::{AddressSet, Entry, HashMap},
 };
 use alloy_rpc_types_trace::geth::{
-    AccountChangeKind, AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode,
-    GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog,
+    AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode, GethDefaultTracingOptions,
+    PreStateConfig, PreStateFrame, PreStateMode, StructLog,
     erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
@@ -20,6 +20,67 @@ use evm2::{
     evm::{DbResult, DynDatabase},
     interpreter::{InstrStop, op},
 };
+
+/// The smallest size in bytes of the JSON of a struct log,
+/// `{"pc":0,"op":"OR","gas":0,"gasCost":0,"depth":1}`.
+pub(crate) const MIN_STRUCT_LOG_JSON_LEN: u64 = 48;
+
+/// Returns the size in bytes of the JSON that geth's struct logger writes for the log.
+///
+/// geth counts these bytes against the `limit` option. The JSON is compact, orders the fields as
+/// `pc`, `op`, `gas`, `gasCost`, `depth`, `error`, `stack`, `returnData`, `memory`, `storage` and
+/// `refund`, and omits the optional ones that are unset, empty or zero. It also counts the
+/// `stateGasCost` and `stateGasReservoir` fields that evm2 adds after EIP-8037. It escapes `<`, `>`
+/// and `&` in strings as `\u00xx`.
+///
+/// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/eth/tracers/logger/logger.go#L145-L155>
+fn struct_log_json_len(log: &StructLog) -> usize {
+    const fn digits(value: u64) -> usize {
+        match value.checked_ilog10() {
+            Some(log) => log as usize + 1,
+            None => 1,
+        }
+    }
+    // The quoted `0x`-prefixed minimal hex of a word.
+    fn word(value: &U256) -> usize {
+        2 + 2 + value.bit_len().div_ceil(4).max(1)
+    }
+    // The quoted `0x`-prefixed hex of a 32-byte hash.
+    const HASH: usize = 2 + 2 + 64;
+
+    // `{"pc":`, `,"op":"`, `","gas":`, `,"gasCost":`, `,"depth":` and `}`.
+    let mut len = 6 + digits(log.pc) + 7 + log.op.len() + 1 + 7 + digits(log.gas);
+    len += 11 + digits(log.gas_cost) + 9 + digits(log.depth) + 1;
+    // The fields after EIP-8037 that evm2 adds to the struct log: `,"stateGasCost":` and
+    // `,"stateGasReservoir":`.
+    if let Some(cost) = log.state_gas_cost {
+        len += 16 + usize::from(cost < 0) + digits(cost.unsigned_abs());
+    }
+    if let Some(reservoir) = log.state_gas_reservoir {
+        len += 21 + digits(reservoir);
+    }
+    if let Some(error) = log.error.as_ref().filter(|error| !error.is_empty()) {
+        let escaped = error.bytes().filter(|byte| matches!(byte, b'<' | b'>' | b'&')).count();
+        len += 10 + error.len() + 5 * escaped + 1;
+    }
+    if let Some(stack) = &log.stack {
+        len += 10 + stack.iter().map(word).sum::<usize>() + stack.len().saturating_sub(1) + 1;
+    }
+    if let Some(return_data) = log.return_data.as_ref().filter(|data| !data.is_empty()) {
+        len += 15 + 2 + 2 * return_data.len() + 1;
+    }
+    if let Some(memory) = log.memory.as_ref().filter(|memory| !memory.is_empty()) {
+        len += 11 + memory.iter().map(|chunk| chunk.len() + 2).sum::<usize>();
+        len += memory.len().saturating_sub(1) + 1;
+    }
+    if let Some(storage) = log.storage.as_ref().filter(|storage| !storage.is_empty()) {
+        len += 12 + storage.len() * (HASH + 1 + HASH) + storage.len().saturating_sub(1) + 1;
+    }
+    if let Some(refund) = log.refund_counter.filter(|refund| *refund != 0) {
+        len += 10 + digits(refund);
+    }
+    len
+}
 
 /// A frame awaiting tree assembly, with visibility inherited by children in the forward pass.
 struct PendingCallFrame<T> {
@@ -92,9 +153,11 @@ impl<'a> GethTraceBuilder<'a> {
         // call depth rather than step count, and a trace without subcalls needs no allocation.
         let mut steps = main_trace_node.steps_with_children();
         let mut parents = Vec::new();
+        let mut json_len = 0u64;
 
         loop {
-            if opts.limit.is_some_and(|limit| struct_logs.len() as u64 >= limit) {
+            // geth stops logging once the JSON written so far is over the limit.
+            if opts.limit.is_some_and(|limit| json_len > limit) {
                 break;
             }
             let Some(CallTraceStepStackItem { trace_node, step, call_child_id }) = steps.next()
@@ -117,19 +180,15 @@ impl<'a> GethTraceBuilder<'a> {
             let mut log =
                 step.convert_to_geth_struct_log(opts, trace_node.trace.depth as u64 + 1, stack);
 
-            // Only touch the storage cache when updating it or emitting a storage snapshot.
+            // geth snapshots the storage of the contract, with the slots of all its earlier
+            // SLOADs and SSTOREs, unless the opcode fails before it runs.
             if opts.is_storage_enabled()
-                && (step.storage_change.is_some()
-                    || matches!(step.op.get(), op::SLOAD | op::SSTORE))
+                && !step.is_error()
+                && let Some((key, value)) = step.storage_slot.as_deref().copied()
             {
                 let contract_storage = storage.entry(trace_node.execution_address()).or_default();
-                if let Some(change) = &step.storage_change {
-                    contract_storage.insert(change.key.into(), change.value.into());
-                }
-
-                if matches!(step.op.get(), op::SLOAD | op::SSTORE) {
-                    log.storage = Some(contract_storage.clone());
-                }
+                contract_storage.insert(key.into(), value.into());
+                log.storage = Some(contract_storage.clone());
             }
 
             if opts.is_return_data_enabled() && !step.returndata.is_empty() {
@@ -137,6 +196,9 @@ impl<'a> GethTraceBuilder<'a> {
             }
 
             // Add step to geth trace
+            if opts.limit.is_some() {
+                json_len = json_len.saturating_add(struct_log_json_len(&log) as u64);
+            }
             struct_logs.push(log);
 
             // Visit the child immediately after its call opcode, then resume the parent.
@@ -198,7 +260,10 @@ impl<'a> GethTraceBuilder<'a> {
             GethDefaultTracingOptions { limit: opts.limit.filter(|limit| *limit != 0), ..opts };
         let capacity = opts.limit.map_or_else(
             || self.trace_step_count(),
-            |limit| self.trace_step_count().min(usize::try_from(limit).unwrap_or(usize::MAX)),
+            |limit| {
+                let steps = limit / MIN_STRUCT_LOG_JSON_LEN + 1;
+                self.trace_step_count().min(usize::try_from(steps).unwrap_or(usize::MAX))
+            },
         );
         let mut struct_logs = Vec::with_capacity(capacity);
         let mut storage = HashMap::default();
@@ -390,8 +455,7 @@ impl<'a> GethTraceBuilder<'a> {
         storage_enabled: bool,
     ) -> DbResult<PreStateFrame> {
         let mut state_diff = DiffMode::default();
-        let mut account_change_kinds =
-            HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
+        let mut empty_before = AddressSet::default();
         for (addr, changed_acc) in state.accounts.iter() {
             let addr = *addr;
             let db_acc = db.get_account(&addr)?.unwrap_or_default();
@@ -419,33 +483,40 @@ impl<'a> GethTraceBuilder<'a> {
             let mut pre_state =
                 AccountState::from_account_info(db_acc.nonce, db_acc.balance, pre_code);
 
+            // Geth reports `"code":"0x"` when the transaction clears the code the account had.
+            if pre_state.code.is_some() && post_state.code.is_none() {
+                post_state.code = Some(Bytes::new());
+            }
+
             // handle storage changes
             if storage_enabled {
-                for (key, slot) in changed_acc.changed_storage() {
-                    pre_state.storage.insert((*key).into(), slot.original.into());
-                    post_state.storage.insert((*key).into(), slot.current.into());
+                // Geth keeps the pre state of a selfdestructed account as it looked it up, with
+                // every slot the transaction touched, unchanged and zero ones included.
+                if changed_acc.selfdestructed {
+                    for (key, slot) in changed_acc.storage.iter() {
+                        pre_state.storage.insert((*key).into(), slot.original.into());
+                    }
+                } else {
+                    for (key, slot) in changed_acc.changed_storage() {
+                        if !slot.original.is_zero() {
+                            pre_state.storage.insert((*key).into(), slot.original.into());
+                        }
+                        if !slot.current.is_zero() {
+                            post_state.storage.insert((*key).into(), slot.current.into());
+                        }
+                    }
                 }
             }
 
             state_diff.pre.insert(addr, pre_state);
 
-            // determine the change type
-            // if the account was created _and_ not empty we need to treat it as modified,
-            // so that it is retained later in `diff_traces`
+            // Geth drops every account that was empty before the transaction from the pre state,
+            // whether the transaction created it or only funded it.
             // See <https://etherscan.io/tx/0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d>
             // <https://github.com/paradigmxyz/reth/issues/19703#issuecomment-3527067849>
-            let pre_change = if changed_acc.created && db_acc.is_empty() {
-                AccountChangeKind::Create
-            } else {
-                AccountChangeKind::Modify
-            };
-            let post_change = if changed_acc.selfdestructed {
-                AccountChangeKind::SelfDestruct
-            } else {
-                AccountChangeKind::Modify
-            };
-
-            account_change_kinds.insert(addr, (pre_change, post_change));
+            if db_acc.is_empty() {
+                empty_before.insert(addr);
+            }
 
             // Don't insert selfdestructed accounts into post state
             if !changed_acc.selfdestructed {
@@ -454,38 +525,30 @@ impl<'a> GethTraceBuilder<'a> {
         }
 
         // ensure we're only keeping changed entries
-        state_diff.retain_changed().remove_zero_storage_values();
+        state_diff.retain_changed();
 
-        self.diff_traces(&mut state_diff.pre, &mut state_diff.post, account_change_kinds);
+        self.diff_traces(&mut state_diff.pre, &mut state_diff.post, &empty_before);
         Ok(PreStateFrame::Diff(state_diff))
     }
 
-    /// Returns the difference between the pre and post state of the transaction depending on the
-    /// kind of changes of that account (pre,post)
+    /// Returns the difference between the pre and post state of the transaction.
+    ///
+    /// `empty_before` holds the accounts that were empty before the transaction. They are removed
+    /// from `pre` after `post` is diffed against them.
     fn diff_traces(
         &self,
         pre: &mut BTreeMap<Address, AccountState>,
         post: &mut BTreeMap<Address, AccountState>,
-        change_type: HashMap<Address, (AccountChangeKind, AccountChangeKind)>,
+        empty_before: &AddressSet,
     ) {
-        post.retain(|addr, post_state| {
-            // Don't keep destroyed accounts in the post state
-            if change_type.get(addr).map(|ty| ty.1.is_selfdestruct()).unwrap_or(false) {
-                return false;
-            }
+        for (addr, post_state) in post.iter_mut() {
             if let Some(pre_state) = pre.get(addr) {
                 // remove any unchanged account info
                 post_state.remove_matching_account_info(pre_state);
             }
+        }
 
-            true
-        });
-
-        // Don't keep created accounts the pre state
-        pre.retain(|addr, _pre_state| {
-            // only keep accounts that are not created
-            change_type.get(addr).map(|ty| !ty.0.is_created()).unwrap_or(true)
-        });
+        pre.retain(|addr, _pre_state| !empty_before.contains(addr));
     }
 
     /// Traces ERC-7562 calls using the call tracer.

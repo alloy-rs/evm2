@@ -4,7 +4,7 @@ use crate::{
     EvmConfig, EvmTypesHost, SpecId,
     constants::{
         CALL_DEPTH_LIMIT, MAX_CODE_SIZE, MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE,
-        MAX_INITCODE_SIZE_AMSTERDAM,
+        MAX_INITCODE_SIZE_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
     },
     interpreter::{instructions as instr, op},
 };
@@ -86,7 +86,8 @@ impl Version {
     ///
     /// Without EIP-8037, [`tx_gas_limit_cap`](Self::tx_gas_limit_cap) (EIP-7825) bounds `tx.gas`
     /// itself, which also bounds the execution gas. With EIP-8037, `tx.gas` may exceed it because
-    /// the excess funds the state-gas reservoir, so it only bounds the required execution gas.
+    /// the excess funds the state-gas reservoir, so it only bounds the required execution gas, and
+    /// `tx.gas` is bounded by [`MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM`] instead.
     ///
     /// The Ethereum transaction handlers enforce these caps through
     /// [`validate_tx_gas_limit_cap`](crate::ethereum::validate_tx_gas_limit_cap) and
@@ -96,7 +97,7 @@ impl Version {
     #[inline]
     pub const fn tx_gas_caps(&self) -> (u64, u64) {
         if self.feature(EvmFeatures::EIP8037) {
-            (u64::MAX, self.tx_gas_limit_cap)
+            (MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, self.tx_gas_limit_cap)
         } else {
             (self.tx_gas_limit_cap, u64::MAX)
         }
@@ -389,7 +390,10 @@ mod tests {
         assert_eq!(osaka.tx_gas_caps(), (MAX_TX_GAS_LIMIT_OSAKA, u64::MAX));
 
         let amsterdam = Version::base(SpecId::AMSTERDAM);
-        assert_eq!(amsterdam.tx_gas_caps(), (u64::MAX, MAX_TX_GAS_LIMIT_OSAKA));
+        assert_eq!(
+            amsterdam.tx_gas_caps(),
+            (MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_GAS_LIMIT_OSAKA)
+        );
 
         let mut amsterdam_without_eip8037 = Version::new(SpecId::AMSTERDAM);
         amsterdam_without_eip8037.features.remove(EvmFeatures::EIP8037);
