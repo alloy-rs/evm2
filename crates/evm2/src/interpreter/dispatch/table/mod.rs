@@ -1,7 +1,4 @@
-use super::{
-    DynInspector, InspectMode, NoInspector, WatchInspector, inc_pc, run_state,
-    stop_if_config_changed,
-};
+use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
 use crate::{
     EvmConfig, EvmTypesHost, OpcodeSet,
     interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut},
@@ -113,12 +110,6 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     let instruction = C::OPCODE_CONFIG.instruction(op);
     let instr = instruction.instr;
     let dynamic_gas = instruction.dynamic_gas;
-    let message = (M::INSPECT || M::WATCH) && C::OPCODE_CONFIG.is_message_opcode(op);
-    if message {
-        // The message hooks see the instruction's position, even if no step hook published it.
-        state.set_pc_stack_len(pc.as_ptr(), stack.len());
-        state.begin_message_op();
-    }
     let r;
     match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
@@ -134,23 +125,12 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
             r = Err(e);
         }
     }
-    if message {
-        state.end_message_op();
-    }
     if M::INSPECT {
-        // A hook that ran inside the instruction may have stopped the frame; keep that stop.
-        if let Err(e) = r {
-            state.set_result(Err(e));
-        } else if message && state.result().is_ok() {
-            // A step hook may follow in the loop, so the reload waits for it.
-            stop_if_config_changed(state);
-        }
+        state.set_result(r);
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
         return (Pc::new(core::ptr::null()), gas);
-    } else if message && state.result().is_ok() {
-        stop_if_config_changed(state);
     }
     (pc, gas)
 }
@@ -161,10 +141,8 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
     let (state, pc, stack) = run_state(interpreter);
-    if state.is_inspecting() {
-        if state.steps() == OpcodeSet::EMPTY {
-            return run_inner::<T, WatchInspector>(state, pc, stack, instructions);
-        }
+    // An inspector that steps nothing runs the plain loop.
+    if state.is_inspecting() && state.steps() != OpcodeSet::EMPTY {
         if state.steps() == OpcodeSet::ALL {
             return run_inner::<T, DynInspector<true>>(state, pc, stack, instructions);
         }
@@ -211,11 +189,6 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
                 loop_state = imp::loop_state(state.gas_mut());
             }
             if state.result().is_err() {
-                return finish_run(state, cursor, loop_state);
-            }
-        } else if M::WATCH {
-            // The message handlers stop the frame with a real `pc`, the others with a NULL one.
-            if cursor.pc().as_ptr().is_null() || state.result().is_err() {
                 return finish_run(state, cursor, loop_state);
             }
         } else if cursor.pc().as_ptr().is_null() {

@@ -49,10 +49,11 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     /// Whether the dispatch left the run because the inspector's config changed, not because the
     /// frame stopped.
     reload_table: bool,
-    /// Whether an instruction that can run a child message is executing, for the debug check that
-    /// every such instruction is flagged.
-    #[cfg(debug_assertions)]
-    message_op: bool,
+    /// Whether the inspector's config changed while a child message ran, so the instruction that
+    /// ran it leaves the dispatch when the message returns.
+    reload_pending: bool,
+    /// Where the frame continues after leaving the dispatch for a reload.
+    reload_pc: *const u8,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table, for the tail-call backend.
     #[cfg(tco)]
@@ -120,8 +121,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             inspector: None,
             steps: OpcodeSet::EMPTY,
             reload_table: false,
-            #[cfg(debug_assertions)]
-            message_op: false,
+            reload_pending: false,
+            reload_pc: core::ptr::null(),
             #[cfg(tco)]
             inspect_table: None,
             spec: SpecId::DEFAULT,
@@ -441,10 +442,19 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         Ok(stop)
     }
 
-    /// Returns whether an instruction flagged as running child messages is executing.
-    #[cfg(debug_assertions)]
-    pub(crate) const fn in_message_op(&self) -> bool {
-        self.message_op
+    /// Notes that the inspector's config changed if it no longer matches the table this frame
+    /// runs on, for the instruction that ran a child message to act on when it returns.
+    ///
+    /// Not inlined, so the config it builds does not grow the stack of the host, which sits under
+    /// every nested frame.
+    #[inline(never)]
+    pub(crate) fn note_inspector_config_change(&mut self) {
+        if let Some(inspector) = self.inspector
+            // SAFETY: The inspector pointer is valid while the frame executes.
+            && unsafe { inspector.as_ref() }.inspector_config().steps != self.steps
+        {
+            self.reload_pending = true;
+        }
     }
 
     /// Runs the interpreter until it stops.
@@ -559,7 +569,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     }
 
     /// Runs the frame on the table for its inspector's config, and again on the table for the new
-    /// config each time a message opcode changes it.
+    /// config each time a child message changes it.
     ///
     /// Only `self` is live across the dispatch call, which recurses once per nested frame.
     #[inline(always)]
@@ -578,6 +588,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             }
             self.reload_table = false;
             self.result = Ok(());
+            // Dispatch exits from plain handlers do not publish the position.
+            self.pc = self.reload_pc;
         }
     }
 
@@ -592,14 +604,14 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let inspector = unsafe { self.inspector.unwrap_unchecked().as_ref() };
         self.steps = inspector.inspector_config().steps;
         if self.steps == OpcodeSet::EMPTY {
-            return config.watch_instructions;
+            return config.instructions;
         }
         #[cfg(tco)]
         {
             if self.steps == OpcodeSet::ALL {
                 return config.inspect_instructions;
             }
-            // A sparse set runs the watch table's handlers, with the inspect table's at the
+            // A sparse set runs the plain handlers, with the inspect table's at the
             // opcodes in the set. The table lives in this interpreter and is rebuilt when the set
             // or the config differs from the previous run's, so the pooled interpreters of a deep
             // call stack mostly reuse theirs.
@@ -608,13 +620,13 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
                 Box::new(SparseTable {
                     steps: OpcodeSet::EMPTY,
                     source: core::ptr::null(),
-                    instructions: *config.watch_instructions,
+                    instructions: *config.instructions,
                 })
             });
             if table.steps != self.steps || table.source != source {
                 table.steps = self.steps;
                 table.source = source;
-                table.instructions = *config.watch_instructions;
+                table.instructions = *config.instructions;
                 for op in 0..=u8::MAX {
                     if self.steps.contains(op) {
                         table.instructions[op as usize] = config.inspect_instructions[op as usize];
@@ -697,18 +709,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.steps
     }
 
-    /// Returns whether the inspector's config no longer matches the table this frame runs on.
-    ///
-    /// Not inlined, so the config it builds does not grow the stack of a message opcode handler,
-    /// which sits under every nested frame.
-    #[inline(never)]
-    pub(crate) fn inspector_config_changed(&self) -> bool {
-        // SAFETY: Only inspected frames call this, and the inspector pointer is valid while the
-        // frame executes.
-        let inspector = unsafe { self.0.inspector.unwrap_unchecked().as_ref() };
-        inspector.inspector_config().steps != self.0.steps
-    }
-
     /// Leaves the dispatch so that the frame continues on the table for the inspector's config.
     #[inline]
     pub(crate) const fn request_reload(&mut self) {
@@ -716,22 +716,20 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.result = Err(InstrStop::Stop);
     }
 
-    /// Marks the start of an instruction that can run a child message.
+    /// Returns the stop a message hook set on this frame, if any. If the inspector's config
+    /// changed while the child message ran, instead leaves the dispatch after the instruction at
+    /// `pc`, so the frame continues on the table for the new config.
     #[inline(always)]
-    pub(crate) const fn begin_message_op(&mut self) {
-        #[cfg(debug_assertions)]
-        {
-            self.0.message_op = true;
+    pub(crate) const fn after_message(&mut self, pc: &mut Pc) -> Result {
+        if self.0.reload_pending {
+            cold_path();
+            self.0.reload_pending = false;
+            // SAFETY: `pc` is at a message instruction, which a next instruction follows.
+            unsafe { pc.advance_unchecked(1) };
+            self.0.reload_pc = pc.as_ptr();
+            self.request_reload();
         }
-    }
-
-    /// Marks the end of an instruction that can run a child message.
-    #[inline(always)]
-    pub(crate) const fn end_message_op(&mut self) {
-        #[cfg(debug_assertions)]
-        {
-            self.0.message_op = false;
-        }
+        self.0.result
     }
 
     #[inline]

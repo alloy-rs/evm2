@@ -1,4 +1,4 @@
-use super::{InspectMode, run_state, stop_if_config_changed};
+use super::{InspectMode, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
@@ -53,11 +53,6 @@ extern_table! {
         instructions: *const (),
     ) {
         let instruction = C::OPCODE_CONFIG.instruction(OP);
-        let message = (M::INSPECT || M::WATCH) && C::OPCODE_CONFIG.is_message_opcode(OP);
-        if message && !M::INSPECT {
-            // The message hooks see the message opcode, even though the hooks do not step it.
-            state.set_pc_stack_len(pc.as_ptr(), stack.len());
-        }
         let instr: InstructionImplFn<T> = instruction.instr;
         let dynamic_gas = instruction.dynamic_gas;
         if M::INSPECT {
@@ -83,18 +78,12 @@ extern_table! {
         if M::INSPECT || dynamic_gas {
             state.gas_mut().set_remaining(remaining_gas.get());
         }
-        if message {
-            state.begin_message_op();
-        }
         let (r, stack_len) = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
             let mut stack_view = unsafe { stack.borrow() };
             let r = instr(&mut pc, stack_view.as_mut(), state);
             (r, stack_view.len)
         };
-        if message {
-            state.end_message_op();
-        }
         stack.set_len(stack_len);
         if dynamic_gas {
             remaining_gas.set(state.gas_mut().remaining());
@@ -116,12 +105,6 @@ extern_table! {
                 cold_path();
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
             }
-        }
-        if message
-            // A message hook may have stopped this frame, and the plain handlers do not look.
-            && (state.result().is_err() || stop_if_config_changed(state))
-        {
-            tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
         let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };

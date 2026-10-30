@@ -4,8 +4,8 @@ use crate::{
     EvmFeatures, EvmTypesHost,
     bytecode::Bytecode,
     interpreter::{
-        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
-        Word, derive_create_destination,
+        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Pc, Result,
+        StackMut, Word, derive_create_destination,
     },
     utils::WordExt,
     version::GasId,
@@ -231,6 +231,7 @@ fn call_inner<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
+    pc: &mut Pc,
     kind: MessageKind,
 ) -> Result {
     let mut message = Message::<T>::default();
@@ -257,32 +258,33 @@ fn call_inner<T: EvmTypesHost>(
         state.memory().set_unchecked(return_memory_range.start, output);
     }
     state.swap_return_data(&mut result.output);
-    stack.push_u64(result.stop.is_success() as u64)
+    stack.push_u64(result.stop.is_success() as u64)?;
+    state.after_message(pc)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas, message)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub fn call(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::Call)
+    call_inner(stack, cx.gas, cx.state, cx.pc, MessageKind::Call)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas, message)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub fn callcode(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::CallCode)
+    call_inner(stack, cx.gas, cx.state, cx.pc, MessageKind::CallCode)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas, message)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub fn delegatecall(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::DelegateCall)
+    call_inner(stack, cx.gas, cx.state, cx.pc, MessageKind::DelegateCall)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas, message)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub fn staticcall(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::StaticCall)
+    call_inner(stack, cx.gas, cx.state, cx.pc, MessageKind::StaticCall)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas, message)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
-    create_inner(stack, cx.gas, cx.state, IS_CREATE2)
+    create_inner(stack, cx.gas, cx.state, cx.pc, IS_CREATE2)
 }
 
 #[inline(never)]
@@ -290,6 +292,7 @@ fn create_inner<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
+    pc: &mut Pc,
     is_create2: bool,
 ) -> Result {
     require_non_staticcall(state)?;
@@ -416,7 +419,8 @@ fn create_inner<T: EvmTypesHost>(
     } else {
         state.clear_return_data();
     }
-    stack.push(result.created_address_for_parent())
+    stack.push(result.created_address_for_parent())?;
+    state.after_message(pc)
 }
 
 #[instruction(dynamic_gas)]

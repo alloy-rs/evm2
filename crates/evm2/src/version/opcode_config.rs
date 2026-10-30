@@ -153,12 +153,6 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         self.instruction_impls.is_unknown(opcode)
     }
 
-    /// Returns whether the instruction for `opcode` can run a child message.
-    #[inline(always)]
-    pub(crate) const fn is_message_opcode(&self, opcode: u8) -> bool {
-        self.instruction_impls.is_message(opcode)
-    }
-
     /// Sets the static gas cost and instruction for `opcode`.
     ///
     /// An `I: Instruction` is implemented using the [`#[instruction]`](evm2_macros::instruction)
@@ -168,7 +162,7 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         assert!(opcode != op::INVALID, "INVALID opcode cannot be overridden");
         self.set_static_gas(opcode, gas);
         self.instruction_sets[opcode as usize] += 1;
-        if self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS, I::MESSAGE) {
+        if self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS) {
             self.bump_revision(opcode);
         }
     }
@@ -249,14 +243,13 @@ impl StaticGasTable {
 struct InstructionImplTable<T: EvmTypesHost> {
     instrs: [Option<InstructionImplFn<T>>; 256],
     dynamic_gas: [bool; 256],
-    message: [bool; 256],
 }
 
 impl<T: EvmTypesHost> InstructionImplTable<T> {
     /// Creates an empty instruction implementation table.
     #[inline]
     const fn empty() -> Self {
-        Self { instrs: [None; 256], dynamic_gas: [false; 256], message: [false; 256] }
+        Self { instrs: [None; 256], dynamic_gas: [false; 256] }
     }
 
     /// Returns the instruction implementation for `opcode`.
@@ -276,25 +269,12 @@ impl<T: EvmTypesHost> InstructionImplTable<T> {
         self.instrs[opcode as usize].is_none()
     }
 
-    /// Returns whether the instruction implementation for `opcode` can run a child message.
-    #[inline(always)]
-    const fn is_message(&self, opcode: u8) -> bool {
-        self.message[opcode as usize]
-    }
-
     /// Sets the instruction implementation for `opcode`.
     #[inline(always)]
-    const fn set(
-        &mut self,
-        opcode: u8,
-        instr: InstructionImplFn<T>,
-        dynamic_gas: bool,
-        message: bool,
-    ) -> bool {
+    const fn set(&mut self, opcode: u8, instr: InstructionImplFn<T>, dynamic_gas: bool) -> bool {
         let index = opcode as usize;
         self.instrs[index] = Some(instr);
         self.dynamic_gas[index] = dynamic_gas;
-        self.message[index] = message;
         true
     }
 }
@@ -316,16 +296,6 @@ mod tests {
     fn invalid_instruction_cannot_be_overridden() {
         let mut tables = OpcodeConfig::<BaseEvmTypes>::empty(SpecId::default());
         tables.set_instruction::<instr::stop<BaseEvmTypes>>(op::INVALID, 0);
-    }
-
-    #[test]
-    fn message_flag_follows_the_instruction() {
-        let mut config = OpcodeConfig::<BaseEvmTypes>::empty(SpecId::default());
-        config.set_instruction::<instr::call<BaseEvmTypes>>(0xb0, 100);
-        config.set_instruction::<instr::add<BaseEvmTypes>>(op::ADD, 3);
-        assert!(config.is_message_opcode(0xb0));
-        assert!(!config.is_message_opcode(op::ADD));
-        assert!(!config.is_message_opcode(op::CALL));
     }
 
     #[test]

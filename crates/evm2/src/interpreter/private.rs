@@ -10,9 +10,6 @@ pub trait Instruction<T: EvmTypesHost = crate::BaseEvmTypes> {
     /// Whether this instruction needs mutable gas state.
     const DYNAMIC_GAS: bool = true;
 
-    /// Whether this instruction can run a child message.
-    const MESSAGE: bool = false;
-
     /// Executes this instruction.
     fn execute(pc: &mut Pc, stack: StackMut<'_>, state: &mut InterpreterState<'_, '_, T>)
     -> Result;
