@@ -1,4 +1,8 @@
-use crate::{BaseEvmTypes, EvmTypesHost, bytecode::Bytecode};
+use crate::{
+    BaseEvmTypes, EvmTypesHost, Version,
+    bytecode::Bytecode,
+    interpreter::{InstrStop, Word},
+};
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 
 /// EVM message kind.
@@ -172,9 +176,51 @@ pub fn derive_create_destination(
     }
 }
 
+/// Returns the reason a create message fails before its destination is accessed, if any.
+///
+/// `balance` and `nonce` are the creator's, and are zero for an absent account. Failures are
+/// checked in order: call depth, insufficient balance for `value`, then, for a nested create
+/// (`depth` above [`Version::initial_call_depth`]), a creator nonce at `u64::MAX` (EIP-2681). The
+/// transaction itself bumps the nonce of a top-level create, so that one skips the nonce check.
+#[inline]
+pub fn create_preaccess_failure(
+    balance: Word,
+    nonce: u64,
+    value: Word,
+    depth: u16,
+    version: &Version,
+) -> Option<InstrStop> {
+    if depth > version.max_call_depth() {
+        Some(InstrStop::CallTooDeep)
+    } else if balance < value {
+        Some(InstrStop::OutOfFunds)
+    } else if depth > version.initial_call_depth && nonce == u64::MAX {
+        Some(InstrStop::NonceOverflow)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SpecId;
+
+    #[test]
+    fn create_preaccess_failure_order_and_nesting() {
+        let mut version = Version::new(SpecId::CANCUN);
+        version.initial_call_depth = 5;
+        let max = version.max_call_depth();
+        let check = |balance, nonce, value, depth| {
+            create_preaccess_failure(Word::from(balance), nonce, Word::from(value), depth, &version)
+        };
+
+        assert_eq!(check(0u64, u64::MAX, 1u64, max + 1), Some(InstrStop::CallTooDeep));
+        assert_eq!(check(0, u64::MAX, 1, max), Some(InstrStop::OutOfFunds));
+        assert_eq!(check(1, u64::MAX, 1, max), Some(InstrStop::NonceOverflow));
+        assert_eq!(check(1, u64::MAX, 1, version.initial_call_depth), None);
+        assert_eq!(check(0, 0, 0, max), None);
+    }
 
     #[test]
     fn is_static_follows_caller_or_staticcall_kind() {

@@ -124,7 +124,7 @@ use crate::{
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
-        MessageResult, MessageResultExt, Word,
+        MessageResult, MessageResultExt, Word, create_preaccess_failure,
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
@@ -1463,13 +1463,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         &mut self,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
-        if message.depth > self.version().max_call_depth() {
-            return Ok(Self::error_message_result(
-                InstrStop::CallTooDeep,
-                message.gas_limit,
-                message.reservoir,
-            ));
-        }
         if let Err(error) = self.prepare_create_message(message) {
             return match error {
                 HostError::Halt(stop) => {
@@ -1510,20 +1503,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
         let nested = message.depth > self.version().initial_call_depth;
-        let info = if message.value > 0 || nested {
-            self.state.account_info_untracked(&message.caller).map_err(HostError::from)?
-        } else {
-            None
-        };
-
-        if message.value > 0 && info.as_ref().is_none_or(|info| info.balance < message.value) {
-            return Err(InstrStop::OutOfFunds.into());
-        }
-
-        // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 fail the frame and return
-        // zero instead of wrapping or saturating the creator nonce.
-        if nested && info.as_ref().is_some_and(|info| info.nonce == u64::MAX) {
-            return Err(InstrStop::NonceOverflow.into());
+        // A too-deep create fails on depth alone, without reading the creator.
+        let info =
+            if message.depth <= self.version().max_call_depth() && (message.value > 0 || nested) {
+                self.state.account_info_untracked(&message.caller).map_err(HostError::from)?
+            } else {
+                None
+            };
+        let (balance, nonce) = info.as_ref().map_or((Word::ZERO, 0), |i| (i.balance, i.nonce));
+        if let Some(stop) =
+            create_preaccess_failure(balance, nonce, message.value, message.depth, self.version())
+        {
+            return Err(stop.into());
         }
 
         // `destination` already holds the contract address (derived when the message was
