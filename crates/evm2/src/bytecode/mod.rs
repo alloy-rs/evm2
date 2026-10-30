@@ -217,6 +217,16 @@ impl Bytecode {
         }
     }
 
+    /// Creates a new [`Bytecode`] from code read from state.
+    ///
+    /// Valid EIP-7702 delegation designators become EIP-7702 bytecode and anything else is legacy
+    /// code. Unlike [`Self::new_raw_checked`], code starting with the EIP-7702 magic that is not a
+    /// valid designator is accepted as legacy, since it may have been deployed before EIP-3541.
+    #[inline]
+    pub fn from_stored(bytes: Bytes) -> Self {
+        Self::new_eip7702_raw(bytes.clone()).unwrap_or_else(|_| Self::new_legacy(bytes))
+    }
+
     /// Creates a new EIP-7702 [`Bytecode`] from raw bytes.
     ///
     /// Returns an error if the bytes are not valid EIP-7702 bytecode.
@@ -506,6 +516,27 @@ mod tests {
         assert_eq!(bytecode.eip7702_address(), Some(address));
         assert_eq!(bytecode.original_bytes().len(), EIP7702_BYTECODE_LEN);
         assert_eq!(&bytecode.original_byte_slice()[..3], &[0xEF, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn from_stored_accepts_non_designator_magic_as_legacy() {
+        let address = Address::new([0x01; 20]);
+        let designator = Bytecode::new_eip7702(address).original_bytes();
+        let from_designator = Bytecode::from_stored(designator.clone());
+        assert_eq!(from_designator.kind(), BytecodeKind::Eip7702);
+        assert_eq!(from_designator.eip7702_address(), Some(address));
+
+        for bytes in [
+            Bytes::from_static(&[0xEF, 0x01, 0x00, 0x60, 0x01]),
+            designator.slice(..EIP7702_BYTECODE_LEN - 1),
+            Bytes::from([designator.as_ref(), &[op::STOP]].concat()),
+            Bytes::from_static(&[0xEF, 0x01, 0x01]),
+        ] {
+            assert!(Bytecode::new_raw_checked(bytes.clone()).is_err());
+            let bytecode = Bytecode::from_stored(bytes.clone());
+            assert_eq!(bytecode.kind(), BytecodeKind::Legacy);
+            assert_eq!(bytecode.original_bytes(), bytes);
+        }
     }
 
     #[test]

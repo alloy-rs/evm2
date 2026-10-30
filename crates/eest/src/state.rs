@@ -6,7 +6,7 @@ use evm2::{
 
 /// Parses fixture bytecode into evm2 bytecode.
 pub(crate) fn parse_bytecode(code: alloy_primitives::Bytes) -> Bytecode {
-    Bytecode::new_raw_checked(code.clone()).unwrap_or_else(|_| Bytecode::new_legacy(code))
+    Bytecode::from_stored(code)
 }
 
 /// Inserts an account and its storage into an in-memory database.

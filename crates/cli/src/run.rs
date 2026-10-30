@@ -700,7 +700,7 @@ fn parse_fixture_bench(bench: &Bench, fixture_path: &str) -> eyre::Result<Prepar
     let mut db = InMemoryDB::default();
     let mut accounts = Vec::new();
     for (address, account) in &unit.pre {
-        let bytecode = Bytecode::new_legacy(account.code.clone());
+        let bytecode = Bytecode::from_stored(account.code.clone());
         let code_hash = bytecode.hash_slow();
         let info = AccountInfo::default()
             .with_balance(account.balance)
