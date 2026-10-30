@@ -608,7 +608,6 @@ evm_versions! {
             BALANCE: 400,
             EXTCODESIZE: 700,
             EXTCODECOPY: 700,
-            CREATE: ZERO,
             CALL: 700,
             CALLCODE: 700,
             DELEGATECALL: 700,
@@ -623,9 +622,6 @@ evm_versions! {
         features: [
             EIP161,
             CODE_SIZE_CHECK,
-        ],
-        static_gas: [
-            EXP: EXP,
         ],
         dynamic_gas: [
             ExpByte: 50,
@@ -664,7 +660,6 @@ evm_versions! {
             SLOAD: ISTANBUL_SLOAD_GAS,
             BALANCE: 700,
             EXTCODEHASH: 700,
-            SSTORE: ZERO,
         ],
         dynamic_gas: [
             SstoreStatic: ISTANBUL_SLOAD_GAS,
@@ -686,12 +681,10 @@ evm_versions! {
             EXTCODESIZE: WARM_STORAGE_READ_COST,
             EXTCODEHASH: WARM_STORAGE_READ_COST,
             EXTCODECOPY: WARM_STORAGE_READ_COST,
-            SSTORE: ZERO,
             CALL: WARM_STORAGE_READ_COST,
             CALLCODE: WARM_STORAGE_READ_COST,
             DELEGATECALL: WARM_STORAGE_READ_COST,
             STATICCALL: WARM_STORAGE_READ_COST,
-            SELFDESTRUCT: 5000,
         ],
         dynamic_gas: [
             SstoreStatic: WARM_STORAGE_READ_COST,
@@ -716,10 +709,6 @@ evm_versions! {
         ops: [
             BASEFEE: BASE,
         ],
-        static_gas: [
-            SSTORE: ZERO,
-            SELFDESTRUCT: 5000,
-        ],
         dynamic_gas: [
             SstoreClearingSlotRefund: WARM_SSTORE_RESET + EIP2930_ACCESS_LIST_STORAGE_KEY,
             SelfdestructRefund: 0,
@@ -740,10 +729,6 @@ evm_versions! {
         ],
         ops: [
             PUSH0: BASE,
-        ],
-        static_gas: [
-            CREATE: ZERO,
-            CREATE2: ZERO,
         ],
         dynamic_gas: [
             TxInitcodeCost: INITCODE_WORD_COST,
@@ -798,13 +783,6 @@ evm_versions! {
             SLOTNUM: BASE,
         ],
         static_gas: [
-            CREATE: ZERO,
-            CREATE2: ZERO,
-            SSTORE: ZERO,
-            CALL: WARM_STORAGE_READ_COST,
-            CALLCODE: WARM_STORAGE_READ_COST,
-            DELEGATECALL: WARM_STORAGE_READ_COST,
-            STATICCALL: WARM_STORAGE_READ_COST,
             // EIP-8038 §"EXT* family update": EXTCODESIZE and EXTCODECOPY perform
             // two database reads (load the account, then read its code), so their
             // per-access base is charged an extra warm access above the normal
@@ -814,7 +792,6 @@ evm_versions! {
             // is still added by `load_account`.
             EXTCODESIZE: WARM_STORAGE_READ_COST + WARM_STORAGE_READ_COST,
             EXTCODECOPY: WARM_STORAGE_READ_COST + WARM_STORAGE_READ_COST,
-            SELFDESTRUCT: 5000,
         ],
         dynamic_gas: [
             CodeDepositCost: 0,

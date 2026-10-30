@@ -52,7 +52,7 @@ pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
 /// is charged. It receives the interpreter [`Gas`], the state, the destination address, and the
 /// [`SStore`] result of the write. It may charge gas through `Gas` or fail through
 /// [`InterpreterState::fail`] and return the error. An `Err` stops the instruction and skips the
-/// remaining charges. The JIT does not run the hook.
+/// remaining charges.
 #[inline(always)]
 pub fn sstore_with<T: EvmTypesHost>(
     gas: &mut Gas,

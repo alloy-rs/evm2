@@ -86,9 +86,7 @@ impl BalContext {
 
     /// Detaches the read BAL, so reads resolve from the cache/database again.
     ///
-    /// The counterpart to [`Self::set_bal`]: without it an attached BAL cannot be
-    /// removed, and a caller wanting unrestricted reads has to attach an empty one
-    /// with [`Self::set_allow_db_fallback`] enabled to get the same behavior.
+    /// The counterpart to [`Self::set_bal`].
     #[inline]
     pub fn clear_bal(&mut self) {
         self.bal = None;

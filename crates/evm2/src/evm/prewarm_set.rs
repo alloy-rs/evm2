@@ -1,21 +1,20 @@
 //! Pre-warmed address and storage-slot set for entries warmed before EVM execution begins.
 //!
 //! [`PrewarmSet`] holds the warm entries that come from chain/transaction configuration rather
-//! than from an executing opcode: precompiles, the coinbase/beneficiary (EIP-3651), the EIP-2930
-//! access list (addresses and their storage slots), and the non-revertible base warm accounts
-//! (recipient, EIP-7702 authorities, system contracts). It is a port of revm's
-//! `WarmAddresses`, adapted to evm2's primitive types.
+//! than from an executing opcode: precompiles, the coinbase/beneficiary (EIP-3651), the call
+//! recipient, system contracts, and the EIP-2930 access list (addresses and their storage slots).
+//! It is a port of revm's `WarmAddresses`, adapted to evm2's primitive types.
 //!
 //! Warm addresses are tracked in two places. Short addresses — 18 leading zero bytes and a
 //! last-two-byte value below [`SHORT_ADDRESS_CAP`], which is where precompiles and similar
 //! low-numbered addresses fall — live in a bit vector for fast lookups. The first few other warm
-//! addresses (the coinbase and the recipient) live in a small inline list that is
+//! addresses (such as the coinbase and the recipient) live in a small inline list that is
 //! compared without hashing. Every remaining warm address, along with any address that carries warm
 //! storage slots, lives in `access_list`.
 //!
-//! Note this is *not* the complete EIP-2929 initial warm set: the sender and recipient are also
-//! warm from the start, but they are tracked per account by [`crate::evm::State`] instead — as is
-//! all runtime warmth introduced while executing EVM code.
+//! Note this is *not* the complete EIP-2929 initial warm set: the sender and the EIP-7702
+//! authorities are also warm, but [`crate::evm::State`] tracks them per account, as it does all
+//! runtime warmth introduced while executing EVM code.
 
 use crate::{interpreter::Word, utils::BitArray};
 use alloy_primitives::{
@@ -32,8 +31,8 @@ const SHORT_ADDRESS_CAP: usize = 320;
 
 /// Number of non-short warm addresses kept in the inline list before falling back to the map.
 ///
-/// A transaction warms at most the coinbase and the recipient through
-/// [`PrewarmSet::warm`]. Scanning this many addresses is cheaper than hashing.
+/// A transaction typically warms the coinbase and the recipient through [`PrewarmSet::warm`].
+/// Scanning this many addresses is cheaper than hashing.
 const INLINE_CAP: usize = 3;
 
 /// Bit vector indexed by short address. See [`short_address`].
@@ -63,10 +62,9 @@ pub(crate) fn short_address(address: &Address) -> Option<usize> {
 pub struct PrewarmSet {
     /// Warm addresses keyed by address, each holding its warm storage slots.
     ///
-    /// This holds the EIP-2930 access list, non-short warm addresses, and the non-revertible base
-    /// warm entries (recipient, EIP-7702 authorities, system contracts) added via
-    /// [`Self::warm`] and [`Self::warm_storage`]: they are warmed
-    /// before or alongside execution and survive [`crate::evm::State::rollback`]. An address
+    /// This holds the EIP-2930 access list and the non-short warm addresses (coinbase, recipient,
+    /// system contracts) added via [`Self::warm`] and [`Self::warm_storage`]: they are warmed
+    /// before execution and survive [`crate::evm::State::rollback`]. An address
     /// present with an empty slot set is warm with no warm storage slots.
     access_list: AddressMap<HashSet<Word>>,
     /// Bit vector of warm short addresses. An address shorter than [`SHORT_ADDRESS_CAP`] sets
@@ -105,10 +103,9 @@ impl PrewarmSet {
     ///
     /// Short addresses set a bit in `short_addresses`, the first few others fill the inline list,
     /// and the rest are inserted into `access_list` with no warm storage slots. Used for
-    /// precompiles, the coinbase/beneficiary, and the transaction-initial warmth established
-    /// before any rollback checkpoint (recipient, EIP-7702 authorities, system
-    /// contracts). This warmth survives [`crate::evm::State::rollback`] and is cleared per
-    /// transaction by [`Self::clear`].
+    /// precompiles, the coinbase/beneficiary, the recipient, and system contracts, which are
+    /// warmed before any rollback checkpoint. This warmth survives
+    /// [`crate::evm::State::rollback`] and is cleared per transaction by [`Self::clear`].
     #[inline]
     pub fn warm(&mut self, address: &Address) {
         if self.warm_short_address(address) {

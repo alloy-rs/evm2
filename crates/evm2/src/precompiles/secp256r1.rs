@@ -14,13 +14,12 @@ use crate::{
 use alloy_primitives::Bytes;
 
 /// Base gas fee for secp256r1 p256verify operation.
-#[allow(dead_code)]
 pub(crate) const P256VERIFY_BASE_GAS_FEE: u64 = 3450;
 
 /// Base gas fee for secp256r1 p256verify operation post Osaka.
 pub(crate) const P256VERIFY_BASE_GAS_FEE_OSAKA: u64 = 6900;
 
-/// secp256r1 precompile logic with Osaka gas cost. It takes the input bytes sent to the precompile
+/// secp256r1 precompile logic. It takes the input bytes sent to the precompile
 /// and the gas limit. The output represents the result of verifying the
 /// secp256r1 signature of the input.
 ///
@@ -29,7 +28,6 @@ pub(crate) const P256VERIFY_BASE_GAS_FEE_OSAKA: u64 = 6900;
 /// | signed message hash |  r  |  s  | public key x | public key y |
 /// | :-----------------: | :-: | :-: | :----------: | :----------: |
 /// |          32         | 32  | 32  |     32       |      32      |
-#[allow(dead_code)]
 pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     p256_verify_inner(input, gas, P256VERIFY_BASE_GAS_FEE)
 }
@@ -51,7 +49,7 @@ fn p256_verify_inner(input: &[u8], gas: &mut GasTracker, gas_cost: u64) -> Preco
 
 /// Returns `Some(())` if the signature included in the input byte slice is
 /// valid, `None` otherwise.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn verify_impl(input: &[u8]) -> bool {
     verify_impl_with_crypto(input, &crate::precompiles::DefaultCrypto::new())
 }

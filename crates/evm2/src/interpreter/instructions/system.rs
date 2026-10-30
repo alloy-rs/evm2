@@ -408,7 +408,7 @@ pub fn create_with<T: EvmTypesHost>(
 
     // EIP-8037: charge the CREATE account-creation state gas on this frame
     // before the child gas/reservoir split, conditional on the destination not already existing.
-    // The single destination read decides the charge (and warms the address); a create at a
+    // The single destination read decides the charge; it does not warm the address. A create at a
     // pre-existing leaf pays nothing, so its child is not shortchanged by an unneeded spill. The
     // charge is refunded via `refill_reservoir` if the create fails to deploy (see the
     // create-failure path after `execute_message`).
@@ -425,7 +425,7 @@ pub fn create_with<T: EvmTypesHost>(
             return Ok(());
         }
 
-        // The destination is loaded here and made warm. Balance, nonce, and depth pre-access
+        // The destination is loaded here, without warming it. Balance, nonce, and depth pre-access
         // failures return above before the destination is accessed.
         let features = state.version().features;
         if state

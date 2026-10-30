@@ -78,14 +78,6 @@ impl<T: EvmTypesHost> Precompile<T> {
     }
 }
 
-fn dummy_precompile<T: EvmTypesHost>(
-    _evm: &mut Evm<'_, T>,
-    _message: &Message<T>,
-    _gas: &mut GasTracker,
-) -> PrecompileResult {
-    unreachable!("dummy precompile data must be replaced before use")
-}
-
 /// Address-free precompile data.
 #[derive_where(Clone, Debug)]
 pub struct PrecompileData<T: EvmTypesHost = BaseEvmTypes> {
@@ -96,8 +88,6 @@ pub struct PrecompileData<T: EvmTypesHost = BaseEvmTypes> {
 }
 
 impl<T: EvmTypesHost> PrecompileData<T> {
-    const DUMMY: Self = Self::new(PrecompileId::custom("__dummy__"), dummy_precompile);
-
     /// Creates precompile data.
     #[inline]
     pub const fn new(id: PrecompileId, f: PrecompileFn<T>) -> Self {
@@ -253,7 +243,7 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
         F: FnOnce(PrecompileData<T>) -> PrecompileData<T>,
     {
         if let Some(data) = self.inner.get_mut(address) {
-            *data = f(core::mem::replace(data, PrecompileData::DUMMY));
+            *data = f(data.clone());
         }
     }
 
@@ -264,7 +254,7 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
         F: FnMut(&Address, PrecompileData<T>) -> PrecompileData<T>,
     {
         for (address, data) in &mut self.inner {
-            *data = f(address, core::mem::replace(data, PrecompileData::DUMMY));
+            *data = f(address, data.clone());
         }
     }
 
@@ -278,8 +268,7 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
         F: FnOnce(Option<PrecompileData<T>>) -> Option<PrecompileData<T>>,
     {
         if let Some(data) = self.inner.get_mut(address) {
-            let current = core::mem::replace(data, PrecompileData::DUMMY);
-            if let Some(new_data) = f(Some(current)) {
+            if let Some(new_data) = f(Some(data.clone())) {
                 *data = new_data;
             } else {
                 self.inner.remove(address);

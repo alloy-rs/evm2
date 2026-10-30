@@ -457,8 +457,7 @@ impl GasParams {
     /// EIP-7976: the non-zero weight).
     ///
     /// Intrinsic gas is `intrinsic_tokens * TxTokenCost`. Sum the tokens over several inputs
-    /// before pricing them, and pass the summed floor tokens to
-    /// [`tx_floor_cost_with_tokens`](Self::tx_floor_cost_with_tokens).
+    /// before pricing them, and price the summed floor tokens with the EIP-7623 floor.
     #[inline]
     pub fn tx_calldata_tokens(&self, input: &[u8]) -> (u64, u64) {
         let zero_bytes = count_zero_bytes(input);
@@ -470,29 +469,12 @@ impl GasParams {
         )
     }
 
-    /// Returns the EIP-7623 calldata floor gas: `TxFloorCostBase` plus `TxFloorCostPerToken` for
-    /// each of `floor_tokens` (see [`tx_calldata_tokens`](Self::tx_calldata_tokens)) and for the
-    /// access list's bytes, weighted by `TxAccessListFloorByteMultiplier`.
+    /// Returns the EIP-7623 calldata floor gas: `base` plus `TxFloorCostPerToken` for each of
+    /// `floor_tokens` (see [`tx_calldata_tokens`](Self::tx_calldata_tokens)) and for the access
+    /// list's bytes, weighted by `TxAccessListFloorByteMultiplier`.
     ///
-    /// The caller checks that EIP-7623 is active. Under EIP-2780 the transaction's floor is based
-    /// on its decomposed intrinsic base instead of `TxFloorCostBase`, which this function does
-    /// not know.
-    #[inline]
-    pub const fn tx_floor_cost_with_tokens(
-        &self,
-        floor_tokens: u64,
-        access_list_accounts: u64,
-        access_list_storage_keys: u64,
-    ) -> u64 {
-        self.tx_floor_cost_with_base(
-            self.get(GasId::TxFloorCostBase),
-            floor_tokens,
-            access_list_accounts,
-            access_list_storage_keys,
-        )
-    }
-
-    /// Like [`tx_floor_cost_with_tokens`](Self::tx_floor_cost_with_tokens), with an explicit base.
+    /// The caller checks that EIP-7623 is active and passes the floor base: `TxFloorCostBase`, or
+    /// under EIP-2780 the transaction's decomposed intrinsic base.
     #[inline]
     pub(crate) const fn tx_floor_cost_with_base(
         &self,
@@ -662,15 +644,15 @@ mod tests {
         let prague = gas_params(SpecId::PRAGUE);
         assert_eq!(prague.tx_calldata_tokens(&input), (6, 6));
         assert_eq!(prague.tx_calldata_tokens(&[]), (0, 0));
-        assert_eq!(prague.tx_floor_cost_with_tokens(6, 0, 0), 21_000 + 6 * 10);
-        assert_eq!(prague.tx_floor_cost_with_tokens(6, 3, 4), 21_000 + 6 * 10);
+        assert_eq!(prague.tx_floor_cost_with_base(21_000, 6, 0, 0), 21_000 + 6 * 10);
+        assert_eq!(prague.tx_floor_cost_with_base(21_000, 6, 3, 4), 21_000 + 6 * 10);
 
         // EIP-7976: the floor weighs every byte by 4. EIP-7981 adds the access list bytes.
         let amsterdam = gas_params(SpecId::AMSTERDAM);
         assert_eq!(amsterdam.tx_calldata_tokens(&input), (6, 12));
-        assert_eq!(amsterdam.tx_floor_cost_with_tokens(12, 0, 0), 12_000 + 12 * 16);
+        assert_eq!(amsterdam.tx_floor_cost_with_base(12_000, 12, 0, 0), 12_000 + 12 * 16);
         assert_eq!(
-            amsterdam.tx_floor_cost_with_tokens(12, 1, 1),
+            amsterdam.tx_floor_cost_with_base(12_000, 12, 1, 1),
             12_000 + (12 + (20 + 32) * 4) * 16
         );
     }

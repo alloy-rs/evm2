@@ -198,16 +198,8 @@ impl<T: EvmTypesHost> fmt::Debug for ExecutedTx<'_, '_, T> {
 
 impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     #[inline]
-    pub(crate) const fn from_result(
-        evm: &'evm mut Evm<'host, T>,
-        result: TxResult<T>,
-        has_pending_state: bool,
-    ) -> Self {
-        Self {
-            evm,
-            result: Some(result),
-            state: if has_pending_state { StateStatus::Present } else { StateStatus::Cleared },
-        }
+    pub(crate) const fn from_result(evm: &'evm mut Evm<'host, T>, result: TxResult<T>) -> Self {
+        Self { evm, result: Some(result), state: StateStatus::Present }
     }
 
     #[inline]

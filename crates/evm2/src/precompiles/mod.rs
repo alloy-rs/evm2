@@ -174,7 +174,7 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
 }
 
 #[cfg(feature = "std")]
-type BasePrecompileCache<T> = [OnceLock<PrecompileMap<T>>; 7];
+type BasePrecompileCache<T> = [OnceLock<PrecompileMap<T>>; SpecId::COUNT];
 
 /// Append-only list of the [`BasePrecompileCache`] of each host type, starting at
 /// [`BASE_PRECOMPILES`].
@@ -206,19 +206,9 @@ static BASE_PRECOMPILES: OnceLock<BasePrecompileNode> = OnceLock::new();
 #[cfg(feature = "std")]
 #[inline]
 fn cached_base_precompiles<T: EvmTypesHost>(spec: SpecId) -> &'static PrecompileMap<T> {
-    let index = match spec {
-        SpecId::FRONTIER | SpecId::HOMESTEAD | SpecId::TANGERINE | SpecId::SPURIOUS_DRAGON => 0,
-        SpecId::BYZANTIUM | SpecId::PETERSBURG => 1,
-        SpecId::ISTANBUL => 2,
-        SpecId::BERLIN | SpecId::LONDON | SpecId::MERGE | SpecId::SHANGHAI => 3,
-        SpecId::CANCUN => 4,
-        SpecId::PRAGUE => 5,
-        SpecId::OSAKA | SpecId::AMSTERDAM => 6,
-    };
-
     shared_base_precompiles::<T>()
         .downcast_ref::<BasePrecompileCache<T>>()
-        .expect("base precompile cache type mismatch")[index]
+        .expect("base precompile cache type mismatch")[spec as usize]
         .get_or_init(|| base_precompiles::<T>(spec))
 }
 

@@ -466,10 +466,11 @@ impl<'a> State<'a> {
         self.logs.push(log);
     }
 
-    /// Returns the pre-warmed set (precompiles, coinbase, access list).
+    /// Returns the pre-warmed set (precompiles, coinbase, recipient, system contracts, access
+    /// list).
     ///
-    /// This is not the complete EIP-2929 initial warm set -- sender and recipient are warmed per
-    /// account instead. See [`PrewarmSet`].
+    /// This is not the complete EIP-2929 initial warm set -- the sender and EIP-7702 authorities
+    /// are warmed per account instead. See [`PrewarmSet`].
     #[inline]
     #[must_use]
     pub const fn prewarm_set(&self) -> &PrewarmSet {
@@ -705,15 +706,12 @@ impl<'a> State<'a> {
             let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
                 return Ok(false);
             };
-            // `set_balance` touches the account, matching the touch the prior `transfer` performed.
             from_account.set_balance(new_from_balance);
-            from_account.touch();
         }
         {
             let mut to_account = self.account(to)?;
             let new_to_balance = to_account.balance().saturating_add(*value);
             to_account.set_balance(new_to_balance);
-            to_account.touch();
         }
         Ok(true)
     }
@@ -738,7 +736,7 @@ impl<'a> State<'a> {
         }
 
         // Deduct the endowment from the caller. A zero endowment moves nothing and leaves the
-        // caller untouched, matching the prior `transfer` behaviour.
+        // caller untouched.
         if !value.is_zero() {
             let mut caller_account = self.account(caller)?;
             let Some(new_caller_balance) = caller_account.balance().checked_sub(*value) else {
