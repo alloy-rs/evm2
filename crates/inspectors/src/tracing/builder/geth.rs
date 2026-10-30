@@ -437,7 +437,14 @@ impl<'a> GethTraceBuilder<'a> {
             // insert the original value of all loaded storage slots
             if storage_enabled {
                 for (key, slot) in loaded_acc.storage.iter() {
-                    acc_state.storage.insert((*key).into(), slot.original.into());
+                    // The state stream reports the slots of a selfdestructed account after the
+                    // wipe, as zero. geth reads a slot when the opcode runs, so use the database.
+                    let original = if loaded_acc.selfdestructed {
+                        db.get_storage(&addr, key)?
+                    } else {
+                        slot.original
+                    };
+                    acc_state.storage.insert((*key).into(), original.into());
                 }
             }
 
