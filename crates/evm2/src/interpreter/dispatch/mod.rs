@@ -52,15 +52,6 @@ const fn instruction_len(op: u8) -> usize {
     }
 }
 
-/// Returns whether `op` executes a child message.
-#[inline(always)]
-const fn is_message_op(op: u8) -> bool {
-    matches!(
-        op,
-        op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
-    )
-}
-
 /// Ends the frame's run after a message opcode if its inspector's config changed, so the frame
 /// continues on the table for the new config. Returns whether it did.
 #[inline(always)]
@@ -97,7 +88,7 @@ where
         ($($op:literal,)*) => {
             $(
                 if instruction_changed(vt, previous_opcode_config, $op) && !vt.is_unknown_opcode($op) {
-                    table[$op] = if is_message_op($op) {
+                    table[$op] = if vt.is_message_opcode($op) {
                         imp::dispatch::<T, C, MM, $op> as imp::RawInstrFn<T>
                     } else {
                         imp::dispatch::<T, C, M, $op> as imp::RawInstrFn<T>

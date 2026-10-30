@@ -241,8 +241,8 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, DatabaseError, Evm, EvmTypesHost, ExecutionConfig, Precompiles, SpecId,
-        Version,
+        BaseEvmConfig, BaseEvmTypes, DatabaseError, Evm, EvmConfig, EvmTypesHost, ExecutionConfig,
+        OpcodeConfig, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
@@ -250,7 +250,7 @@ mod tests {
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
             GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageResult,
-            MessageResultExt, Word, op,
+            MessageResultExt, Word, instructions as instr, op,
         },
         registry::TxRegistry,
         test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
@@ -598,6 +598,8 @@ mod tests {
         call_sites: Vec<(u8, usize)>,
         /// Stops the parent frame when a child message ends.
         stop_after_child: bool,
+        /// Stops every frame before it runs.
+        stop_on_init: bool,
     }
 
     impl ConfigInspector {
@@ -630,6 +632,12 @@ mod tests {
         fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
             let opcode = self.running.pop().unwrap();
             self.step_ends.push((opcode, interp.gas().remaining(), interp.stack().to_vec()));
+        }
+
+        fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            if self.stop_on_init {
+                interp.set_stop(InstrStop::Revert);
+            }
         }
 
         fn log(&mut self, log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
@@ -802,6 +810,69 @@ mod tests {
             // The frame stopped at the CALL, before the later CREATE.
             assert_eq!(inspector.creates, 0);
         }
+    }
+
+    #[test]
+    fn stop_set_before_the_run_ends_the_frame_without_steps() {
+        let code = vec![op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP];
+        let run = |steps| {
+            let inspector = ConfigInspector { stop_on_init: true, ..ConfigInspector::new(steps) };
+            run_evm_with_inspector(code.clone(), &MessageExt::default(), 100_000, inspector).0
+        };
+        let full = run(OpcodeSet::ALL);
+        assert_eq!((full.stop, full.gas.remaining()), (InstrStop::Revert, 100_000));
+        for steps in [OpcodeSet::EMPTY, opcode_set([op::SLOAD]), opcode_set([op::SSTORE])] {
+            assert_eq!(run(steps), full);
+        }
+    }
+
+    /// The base config with `CALL` also installed at [`CUSTOM_CALL`].
+    struct CustomCallConfig;
+
+    const CUSTOM_CALL: u8 = 0xb0;
+
+    impl EvmConfig<BaseEvmTypes> for CustomCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<instr::call<BaseEvmTypes>>(CUSTOM_CALL, 100);
+            config
+        };
+    }
+
+    #[test]
+    fn custom_message_opcode_publishes_position_and_rereads_the_steps() {
+        let mut code = call_code(Address::from([0x66; 20]));
+        code.extend([CUSTOM_CALL, op::GAS, op::POP, op::STOP]);
+        let run = |inspector: ConfigInspector| {
+            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                ExecutionConfig::for_config::<CustomCallConfig>(),
+                SpecId::OSAKA,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                InMemoryDB::default(),
+                Precompiles::base(SpecId::OSAKA),
+            );
+            evm.set_inspector(inspector);
+            let mut message = MessageExt {
+                gas_limit: 100_000,
+                code: legacy_bytecode(code.clone()),
+                ..Default::default()
+            };
+            let result = Host::execute_message(&mut evm, &mut message).unwrap();
+            (result, evm.clear_inspector_as::<ConfigInspector>().unwrap())
+        };
+        let (expected, full) = run(ConfigInspector::new(OpcodeSet::ALL));
+        assert_eq!(full.call_sites, [(CUSTOM_CALL, 7)]);
+
+        // The child message of the custom opcode switches the steps to `GAS`, and no steps before.
+        let (result, inspector) =
+            run(ConfigInspector::new(OpcodeSet::EMPTY).switching_to(opcode_set([op::GAS])));
+        assert_eq!(result, expected);
+        assert_eq!(inspector.call_sites, full.call_sites);
+        let gas = full.steps.iter().position(|record| record.0 == op::GAS).unwrap();
+        assert_eq!(inspector.steps, [full.steps[gas].clone()]);
     }
 
     #[test]

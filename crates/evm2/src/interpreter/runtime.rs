@@ -15,10 +15,15 @@ use alloy_primitives::{Address, B256, Bytes};
 use core::{fmt, hint::cold_path, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
+/// Instruction table for a sparse set of stepped opcodes.
 #[cfg(tco)]
-use crate::evm::config::InspectTable;
-#[cfg(tco)]
-use core::borrow::Borrow;
+struct SparseTable<T: EvmTypesHost> {
+    /// The stepped opcodes.
+    steps: OpcodeSet,
+    /// The config's inspect table the entries at `steps` came from.
+    source: *const InstrTable<T>,
+    instructions: InstrTable<T>,
+}
 
 /// EVM interpreter.
 #[derive_where(Debug)]
@@ -41,10 +46,11 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
-    /// The shared table the frame runs on, if the inspector steps a sparse set.
+    /// The last sparse inspected run's step set, the config table it was built from, and the
+    /// table, for the tail-call backend.
     #[cfg(tco)]
     #[derive_where(skip)]
-    inspect_table: Option<InspectTable<T>>,
+    inspect_table: Option<Box<SparseTable<T>>>,
     pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
     pub(in crate::interpreter) stack: Box<StackBacking>,
@@ -543,15 +549,15 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline(always)]
     fn run_inspected(&mut self) -> InstrStop {
         loop {
+            // A hook before the run, such as `initialize_interp`, may have stopped the frame.
+            if let Err(stop) = self.result {
+                cold_path();
+                return stop;
+            }
             let instructions = self.select_inspect_table();
-            // SAFETY: The table is a static one, or a shared one that `self` holds until the run
-            // ends.
+            // SAFETY: The table is a static one, or the one `self` holds until the next selection.
             let stop = dispatch::run(self, unsafe { &*instructions });
             if stop != InstrStop::ReloadTable {
-                #[cfg(tco)]
-                {
-                    self.inspect_table = None;
-                }
                 return stop;
             }
             self.result = Ok(());
@@ -563,21 +569,51 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline(never)]
     fn select_inspect_table(&mut self) -> *const InstrTable<T> {
         // SAFETY: `prepare_run` initialized the host. The config is read again on each reload and
-        // the table is held for the run, so neither is used after the host replaced it.
+        // only its static tables are used, so nothing outlives a replaced config.
         let config = unsafe { self.execution_config_detached() };
         // SAFETY: `run_inner` installed the inspector, which is valid for this run.
         let inspector = unsafe { self.inspector.unwrap_unchecked().as_ref() };
         self.steps = inspector.config().steps;
-        let table = config.inspect_instructions_for(self.steps);
         #[cfg(tco)]
-        let table = {
-            let instructions: *const InstrTable<T> = table.borrow();
-            self.inspect_table = Some(table);
-            instructions
-        };
+        {
+            if self.steps == OpcodeSet::EMPTY {
+                return config.watch_instructions;
+            }
+            if self.steps == OpcodeSet::ALL {
+                return config.inspect_instructions;
+            }
+            // A sparse set runs the watch table's handlers, with the inspect table's at the
+            // opcodes in the set. The table lives in this interpreter and is rebuilt when the set
+            // or the config differs from the previous run's, so the pooled interpreters of a deep
+            // call stack mostly reuse theirs.
+            let source: *const InstrTable<T> = config.inspect_instructions;
+            let table = self.inspect_table.get_or_insert_with(|| {
+                Box::new(SparseTable {
+                    steps: OpcodeSet::EMPTY,
+                    source: core::ptr::null(),
+                    instructions: *config.watch_instructions,
+                })
+            });
+            if table.steps != self.steps || table.source != source {
+                table.steps = self.steps;
+                table.source = source;
+                table.instructions = *config.watch_instructions;
+                for op in 0..=u8::MAX {
+                    if self.steps.contains(op) {
+                        table.instructions[op as usize] = config.inspect_instructions[op as usize];
+                    }
+                }
+            }
+            &raw const table.instructions
+        }
         #[cfg(not(tco))]
-        let table: *const InstrTable<T> = table;
-        table
+        {
+            if self.steps == OpcodeSet::EMPTY {
+                config.instructions
+            } else {
+                config.inspect_instructions
+            }
+        }
     }
 
     /// Takes an owned error recorded by an instruction or inspector hook.
@@ -646,6 +682,14 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[cfg(not(tco))]
     pub(crate) const fn steps(&self) -> OpcodeSet {
         self.0.steps
+    }
+
+    /// Returns the active opcode config without borrowing the interpreter.
+    #[inline]
+    #[cfg(not(tco))]
+    pub(crate) fn opcode_config(&self) -> &'host crate::OpcodeConfig<T> {
+        // SAFETY: The host is installed for the whole run and outlives it.
+        unsafe { self.0.execution_config_detached() }.opcode_config()
     }
 
     /// Returns whether the inspector's config no longer matches the table this frame runs on.

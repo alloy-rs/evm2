@@ -1,4 +1,4 @@
-use super::{InspectMode, is_message_op, run_state, stop_if_config_changed};
+use super::{InspectMode, run_state, stop_if_config_changed};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
@@ -111,7 +111,7 @@ extern_table! {
             }
         }
         if (M::INSPECT || M::WATCH)
-            && is_message_op(OP)
+            && C::OPCODE_CONFIG.is_message_opcode(OP)
             // A message hook may have stopped this frame, and the plain handlers do not look.
             && (state.result().is_err() || stop_if_config_changed(state))
         {

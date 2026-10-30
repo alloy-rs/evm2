@@ -1,5 +1,5 @@
 use super::{
-    DynInspector, InspectMode, NoInspector, WatchInspector, inc_pc, is_message_op, run_state,
+    DynInspector, InspectMode, NoInspector, WatchInspector, inc_pc, run_state,
     stop_if_config_changed,
 };
 use crate::{
@@ -168,10 +168,12 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
     // The hooks run here, outside the stack borrow, because a hook may access the stack through
     // the interpreter and no handler may hold the borrow meanwhile.
     let steps = if M::INSPECT { state.steps() } else { OpcodeSet::EMPTY };
+    let opcode_config = (M::INSPECT || M::WATCH).then(|| state.opcode_config());
     loop {
         let op = cursor.pc().op();
         let step = M::INSPECT && steps.contains(op);
-        if (M::INSPECT || M::WATCH) && is_message_op(op) {
+        let message = opcode_config.is_some_and(|config| config.is_message_opcode(op));
+        if message {
             // The message hooks see the message opcode, even if the hooks do not step it.
             state.set_pc_stack_len(cursor.pc().as_ptr(), cursor.stack_len());
         }
@@ -203,8 +205,7 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
         } else if cursor.pc().as_ptr().is_null() {
             return finish_run(state, cursor, loop_state);
         }
-        if (M::INSPECT || M::WATCH)
-            && is_message_op(op)
+        if message
             // A message hook may have stopped this frame, and the plain handlers do not look.
             && (state.result().is_err() || stop_if_config_changed(state))
         {
