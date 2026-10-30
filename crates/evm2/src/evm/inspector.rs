@@ -116,8 +116,9 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Returns what this inspector observes, as an [`InspectorConfig`].
     ///
     /// Read when a frame starts and when a child message of the frame returns, so a child message
-    /// may change the answer. A change that a hook makes itself, such as in [`Self::step`], takes
-    /// effect when the next child message of the frame returns. The default observes everything.
+    /// may change the answer. A message that a hook runs through the host counts as a child
+    /// message. A change that a hook makes itself, such as in [`Self::step`], takes effect when the
+    /// next child message of the frame returns. The default observes everything.
     #[inline]
     fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::new()
@@ -819,6 +820,122 @@ mod tests {
         );
         assert_eq!(result, full);
         assert_eq!(inspector.creates, 0);
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum HookMessage {
+        Step,
+        StepEnd,
+        Log,
+    }
+
+    /// Runs a child message from a hook, which switches its own steps from every opcode to `ADD`.
+    struct HookMessageInspector {
+        trigger: HookMessage,
+        switched: bool,
+        steps: Vec<u8>,
+        step_ends: Vec<u8>,
+    }
+
+    impl HookMessageInspector {
+        fn new(trigger: HookMessage) -> Self {
+            Self { trigger, switched: false, steps: Vec::new(), step_ends: Vec::new() }
+        }
+
+        fn run_child(&mut self, host: &mut Evm<'_, BaseEvmTypes>) {
+            if !self.switched {
+                let mut child = MessageExt { gas_limit: 1000, depth: 1, ..Default::default() };
+                Host::execute_message(host, &mut child).unwrap();
+            }
+        }
+    }
+
+    impl Inspector<BaseEvmTypes> for HookMessageInspector {
+        fn inspector_config(&self) -> InspectorConfig {
+            let steps = if self.switched { opcode_set([op::ADD]) } else { OpcodeSet::ALL };
+            InspectorConfig::new().with_steps(steps)
+        }
+
+        fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            self.steps.push(interp.opcode());
+            if self.trigger == HookMessage::Step && interp.opcode() == op::ADD {
+                self.run_child(interp.host());
+            }
+        }
+
+        fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            self.step_ends.push(self.steps[self.step_ends.len()]);
+            if self.trigger == HookMessage::StepEnd && self.step_ends.len() == 3 {
+                self.run_child(interp.host());
+            }
+        }
+
+        fn log(&mut self, _log: &Log, host: &mut Evm<'_, BaseEvmTypes>) {
+            if self.trigger == HookMessage::Log {
+                self.run_child(host);
+            }
+        }
+
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            self.switched |= message.depth > 0;
+            None
+        }
+    }
+
+    #[test]
+    fn message_run_by_a_hook_reloads_without_repeating_or_skipping_an_instruction() {
+        let code = vec![
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            2,
+            op::ADD,
+            op::POP,
+            op::PUSH0,
+            op::PUSH0,
+            op::LOG0,
+            op::PUSH1,
+            3,
+            op::PUSH1,
+            4,
+            op::ADD,
+            op::POP,
+            op::STOP,
+        ];
+        let (expected, expected_logs) =
+            run_evm_uninspected(InMemoryDB::default(), code.clone(), 100_000);
+        for (trigger, steps) in [
+            (HookMessage::Step, vec![op::PUSH1, op::PUSH1, op::ADD, op::ADD]),
+            (HookMessage::StepEnd, vec![op::PUSH1, op::PUSH1, op::ADD, op::ADD]),
+            (
+                HookMessage::Log,
+                vec![
+                    op::PUSH1,
+                    op::PUSH1,
+                    op::ADD,
+                    op::POP,
+                    op::PUSH0,
+                    op::PUSH0,
+                    op::LOG0,
+                    op::ADD,
+                ],
+            ),
+        ] {
+            let (result, inspector, evm) = run_evm_with_inspector(
+                code.clone(),
+                &MessageExt::default(),
+                100_000,
+                HookMessageInspector::new(trigger),
+            );
+            assert_eq!(result, expected);
+            assert_eq!(evm.logs(), expected_logs);
+            assert_eq!(inspector.steps, steps);
+            assert_eq!(inspector.step_ends, steps);
+        }
     }
 
     #[test]

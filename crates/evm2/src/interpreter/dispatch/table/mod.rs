@@ -113,7 +113,6 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     let instruction = C::OPCODE_CONFIG.instruction(op);
     let instr = instruction.instr;
     let dynamic_gas = instruction.flags.contains(InstructionFlags::DYNAMIC_GAS);
-    let message = instruction.flags.contains(InstructionFlags::MESSAGE);
     let r;
     match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
@@ -130,13 +129,20 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
         }
     }
     if M::INSPECT {
-        state.set_result(r);
+        // Only a stop replaces the result, which a hook may have set during the instruction.
+        if let Err(e) = r {
+            if e == InstrStop::Reload {
+                // The frame continues after the instruction.
+                inc_pc(&mut pc, op);
+            }
+            state.set_result(Err(e));
+        }
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
-        if message {
-            // A message instruction may stop with `InstrStop::Reload`, and the frame resumes
-            // after it.
+        if e == InstrStop::Reload {
+            // The frame continues after the instruction, which the null `pc` does not tell.
+            inc_pc(&mut pc, op);
             state.set_pc(pc.as_ptr());
         }
         return (Pc::new(core::ptr::null()), gas);
@@ -224,7 +230,8 @@ fn run_stepped<T: EvmTypesHost, M: InspectMode<T>>(
     imp::sync_loop_state(state, loop_state);
     M::step(state, cursor.pc(), cursor.stack_len());
     loop_state = imp::loop_state(state.gas_mut());
-    if state.result().is_err() {
+    // A reload that a message from the hook requested waits for the end of the step.
+    if state.result().is_err() && state.result() != Err(InstrStop::Reload) {
         return Err(finish_run(state, cursor, loop_state));
     }
 
@@ -264,8 +271,8 @@ fn finish_run<T: EvmTypesHost>(
 ) -> InstrStop {
     cold_path();
     let (pc, stack_len) = (cursor.pc(), cursor.stack_len());
-    // The NULL `pc` is only a loop-exit sentinel; never publish it. A message instruction that
-    // stops a frame has published its own.
+    // The NULL `pc` is only a loop-exit sentinel; never publish it. A handler that stops the frame
+    // for a reload has published its own.
     let pc = if !pc.as_ptr().is_null() {
         pc.as_ptr()
     } else if state.result() == Err(InstrStop::Reload) {

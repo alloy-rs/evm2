@@ -563,10 +563,14 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline(always)]
     fn run_inspected(&mut self) -> InstrStop {
         loop {
-            // A hook before the run, such as `initialize_interp`, may have stopped the frame.
+            // A hook before the run, such as `initialize_interp`, may have stopped the frame, or
+            // run a message that changed the config, which the table selection below picks up.
             if let Err(stop) = self.result {
                 cold_path();
-                return stop;
+                if stop != InstrStop::Reload {
+                    return stop;
+                }
+                self.result = Ok(());
             }
             let instructions = self.select_inspect_table();
             // SAFETY: The table is a static one, or the one `self` holds until the next selection.
@@ -576,9 +580,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             }
             cold_path();
             self.result = Ok(());
-            // The stop left the pc at the message instruction.
-            // SAFETY: A next instruction follows a message instruction.
-            self.pc = unsafe { self.pc.add(dispatch::instruction_len(*self.pc)) };
         }
     }
 

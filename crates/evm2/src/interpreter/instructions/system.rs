@@ -226,27 +226,27 @@ fn prepare_call<T: EvmTypesHost>(
     Ok(new_account_state_gas)
 }
 
-#[instruction(message, no_stack_preamble, dynamic_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub fn call(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::Call)
 }
 
-#[instruction(message, no_stack_preamble, dynamic_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub fn callcode(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::CallCode)
 }
 
-#[instruction(message, no_stack_preamble, dynamic_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub fn delegatecall(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::DelegateCall)
 }
 
-#[instruction(message, no_stack_preamble, dynamic_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub fn staticcall(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::StaticCall)
 }
 
-#[instruction(message, no_stack_preamble, dynamic_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx.gas, cx.state, IS_CREATE2)
 }
@@ -265,7 +265,7 @@ fn call_inner<T: EvmTypesHost>(
 ///
 /// This is the body of [`call`], [`callcode`], [`delegatecall`] and [`staticcall`], for custom
 /// call instructions that need extra behavior. Use it from an
-/// `#[instruction(message, no_stack_preamble, dynamic_gas)]` function with `stack`, `cx.gas` and
+/// `#[instruction(no_stack_preamble, dynamic_gas)]` function with `stack`, `cx.gas` and
 /// `cx.state`.
 ///
 /// `before` runs after every charge the opcode makes, the EIP-8037 new-account state gas
@@ -321,6 +321,7 @@ pub fn call_with<T: EvmTypesHost>(
     }
     state.swap_return_data(&mut result.output);
     stack.push_u64(result.stop.is_success() as u64)?;
+    // A stop that a hook set, or a reload that the host requested, ends the instruction.
     state.result()
 }
 
@@ -490,6 +491,7 @@ pub fn create_with<T: EvmTypesHost>(
         state.clear_return_data();
     }
     stack.push(result.created_address_for_parent())?;
+    // A stop that a hook set, or a reload that the host requested, ends the instruction.
     state.result()
 }
 
@@ -1090,7 +1092,7 @@ mod tests {
 
     // Keeps `KEPT_GAS` of the forwarded gas in the caller and charges `AFTER_FEE` after a
     // successful child; a failed child fails the instruction.
-    #[instruction(message, no_stack_preamble, dynamic_gas)]
+    #[instruction(no_stack_preamble, dynamic_gas)]
     fn hooked_call(cx: _) -> Result {
         call_with(
             stack,
@@ -1108,7 +1110,7 @@ mod tests {
         )
     }
 
-    #[instruction(message, no_stack_preamble, dynamic_gas)]
+    #[instruction(no_stack_preamble, dynamic_gas)]
     fn hooked_create(cx: _) -> Result {
         create_with(
             stack,

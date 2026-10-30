@@ -39,12 +39,6 @@ use syn::{
 ///   checks.
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
-/// - `#[instruction(message)]`: Marks an instruction that runs a child message, such as a custom
-///   call or create built on `call_with` or `create_with`. When the child message changes the
-///   inspector's config, the host stops the frame, and the instruction must return that stop by
-///   returning `state.result()` after the message, as `call_with` and `create_with` do. The frame
-///   then continues after the instruction on the table for the new config. The flag makes the
-///   dispatch keep the instruction's position for that.
 /// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete EVM type
 ///   family instead of generating a generic implementation.
 /// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic EVM
@@ -146,7 +140,6 @@ impl Parse for InstructionAttr {
 struct InstructionAttrs {
     no_stack_preamble: bool,
     dynamic_gas: bool,
-    message: bool,
     evm_types: Option<Type>,
     evm_types_span: Option<proc_macro2::Span>,
     evm_types_bounds: Vec<Punctuated<TypeParamBound, Token![+]>>,
@@ -163,9 +156,6 @@ impl InstructionAttrs {
                 }
                 InstructionAttr::Flag(arg) if arg == "dynamic_gas" => {
                     attrs.dynamic_gas = true;
-                }
-                InstructionAttr::Flag(arg) if arg == "message" => {
-                    attrs.message = true;
                 }
                 InstructionAttr::Flag(arg) => {
                     return Err(syn::Error::new_spanned(
@@ -309,11 +299,6 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         if instruction_attrs.dynamic_gas {
             flags = quote! {
                 #flags.union(evm2::interpreter::private::InstructionFlags::DYNAMIC_GAS)
-            };
-        }
-        if instruction_attrs.message {
-            flags = quote! {
-                #flags.union(evm2::interpreter::private::InstructionFlags::MESSAGE)
             };
         }
         flags
