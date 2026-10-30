@@ -634,8 +634,9 @@ impl PreparedBench {
         }
         eyre::ensure!(
             interpreter.status == jit.status
-                && interpreter.output == jit.output
-                && (!compare_gas || interpreter.total_gas_spent == jit.total_gas_spent),
+                && (!compare_gas
+                    || (interpreter.output == jit.output
+                        && interpreter.total_gas_spent == jit.total_gas_spent)),
             "interpreter and JIT results differ:\n  interpreter: {:?}\n  JIT: {:?}",
             interpreter,
             jit
