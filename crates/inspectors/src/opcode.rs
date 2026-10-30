@@ -97,16 +97,14 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // update gas usage for the last opcode
         if let Some(pending) = self.pending_steps.pop() {
-            // The sentry rejects SSTORE before charging gas, but out-of-gas hooks already
-            // see the zeroed frame remainder.
-            let gas_cost = if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
-                0
-            } else {
-                pending
-                    .gas_remaining
-                    .saturating_sub(interp.gas().remaining())
-                    .saturating_sub(pending.child_gas_used)
-            };
+            // An out-of-gas step consumes the whole remainder it started with, except the
+            // reentrancy sentry, which rejects SSTORE before charging gas.
+            let gas_cost = match interp.result() {
+                Err(InstrStop::ReentrancySentryOOG) => 0,
+                Err(stop) if stop.is_out_of_gas() => pending.gas_remaining,
+                _ => pending.gas_remaining.saturating_sub(interp.gas().remaining()),
+            }
+            .saturating_sub(pending.child_gas_used);
             let opcode = pending.opcode;
             *self.opcode_gas.entry(opcode).or_default() += gas_cost;
         }

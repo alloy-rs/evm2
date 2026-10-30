@@ -626,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn inspector_gas_is_valid_after_out_of_gas() {
+    fn inspector_can_recover_from_out_of_gas() {
         struct GasInspector {
             recover: bool,
             failures: usize,
@@ -635,7 +635,6 @@ mod tests {
         impl Inspector<BaseEvmTypes> for GasInspector {
             fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 if matches!(interp.result(), Err(InstrStop::OutOfGas | InstrStop::MemoryOOG)) {
-                    assert_eq!(interp.gas().remaining(), 0);
                     self.failures += 1;
                     if self.recover {
                         interp.gas_mut().set_remaining(17);

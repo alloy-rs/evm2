@@ -569,8 +569,14 @@ impl JsInspector {
         };
         let refund = call.enclosing_refund + frame_refund;
         debug_assert!(refund >= 0, "transaction-wide refund counter went negative: {refund}");
+        // An out-of-gas step consumes the whole remainder it started with.
+        let cost = if interp.result().is_err_and(InstrStop::is_out_of_gas) {
+            pending.instruction.gas
+        } else {
+            interp.gas().spent().saturating_sub(pending.gas_spent_before)
+        };
         let info = StepInfo {
-            cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
+            cost,
             refund: refund.max(0) as u64,
             // Geth reports the depth starting at 1 for the top-level call.
             depth: u64::from(depth) + 1,
