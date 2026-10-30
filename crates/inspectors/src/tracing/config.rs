@@ -94,6 +94,13 @@ pub struct TracingInspectorConfig {
     /// Required for parity `vmTrace` memory and storage. The remaining gas after returning from a
     /// call or gaining gas is recorded whenever steps are enabled, independently of this option.
     pub record_step_deltas: bool,
+    /// Whether to record the code size of the target of each `EXTCODESIZE`, `EXTCODECOPY` and
+    /// `EXTCODEHASH` step in
+    /// [`CallTraceStep::contract_size`](crate::tracing::types::CallTraceStep::contract_size), as
+    /// geth's ERC-7562 tracer does.
+    ///
+    /// Only set by [`Self::from_geth_erc7562_config`]; it requires [`Self::record_steps`].
+    pub record_contract_sizes: bool,
 }
 
 impl TracingInspectorConfig {
@@ -113,6 +120,7 @@ impl TracingInspectorConfig {
             record_logs: true,
             record_immediate_bytes: true,
             record_step_deltas: true,
+            record_contract_sizes: true,
         }
     }
 
@@ -132,6 +140,7 @@ impl TracingInspectorConfig {
             record_opcodes_filter: None,
             record_immediate_bytes: false,
             record_step_deltas: false,
+            record_contract_sizes: false,
         }
     }
 
@@ -153,6 +162,7 @@ impl TracingInspectorConfig {
             record_opcodes_filter: None,
             record_immediate_bytes: false,
             record_step_deltas: false,
+            record_contract_sizes: false,
         }
     }
 
@@ -195,6 +205,7 @@ impl TracingInspectorConfig {
             record_opcodes_filter: None,
             record_immediate_bytes: false,
             record_step_deltas: false,
+            record_contract_sizes: false,
         }
     }
 
@@ -266,6 +277,7 @@ impl TracingInspectorConfig {
             .set_stack_snapshots(StackSnapshotType::Full)
             // need state diffs to capture SLOAD values in accessedSlots.reads
             .set_state_diffs(true)
+            .set_contract_sizes(true)
             .steps()
     }
 
@@ -319,6 +331,7 @@ impl TracingInspectorConfig {
         self.record_opcodes_filter = self.record_opcodes_filter.or(other.record_opcodes_filter);
         self.record_immediate_bytes |= other.record_immediate_bytes;
         self.record_step_deltas |= other.record_step_deltas;
+        self.record_contract_sizes |= other.record_contract_sizes;
         self
     }
 
@@ -399,6 +412,13 @@ impl TracingInspectorConfig {
     /// [`Self::record_step_deltas`].
     pub const fn set_step_deltas(mut self, record_step_deltas: bool) -> Self {
         self.record_step_deltas = record_step_deltas;
+        self
+    }
+
+    /// Configure whether the tracer should record contract sizes, see
+    /// [`Self::record_contract_sizes`].
+    pub const fn set_contract_sizes(mut self, record_contract_sizes: bool) -> Self {
+        self.record_contract_sizes = record_contract_sizes;
         self
     }
 

@@ -559,14 +559,9 @@ impl<'a> GethTraceBuilder<'a> {
     }
 
     /// Traces ERC-7562 calls using the call tracer.
-    pub fn geth_erc7562_traces(
-        &self,
-        opts: Erc7562Config,
-        gas_used: u64,
-        db: &mut dyn DynDatabase,
-    ) -> DbResult<Erc7562Frame> {
+    pub fn geth_erc7562_traces(&self, opts: Erc7562Config, gas_used: u64) -> Erc7562Frame {
         if self.nodes.is_empty() {
-            return Ok(Default::default());
+            return Default::default();
         }
 
         let include_logs = opts.with_log.unwrap_or_default();
@@ -654,10 +649,9 @@ impl<'a> GethTraceBuilder<'a> {
                     let address = Address::from_word((*item).into());
                     ext_code_access_info.push(format!("{address:?}"));
                     if let Entry::Vacant(e) = contract_size.entry(address)
-                        && let Some(account) = db.get_account(&address)?
-                        && let Some(code) = load_account_code(db, &account)?
+                        && let Some(size) = step.contract_size
                     {
-                        e.insert(ContractSize { contract_size: code.len() as u64, opcode: op });
+                        e.insert(ContractSize { contract_size: size, opcode: op });
                     }
                 }
 
@@ -727,7 +721,7 @@ impl<'a> GethTraceBuilder<'a> {
                 frames[parent].frame.calls.push(frame);
             } else {
                 debug_assert!(frames.is_empty(), "only one root node has no parent");
-                return Ok(frame);
+                return frame;
             }
         }
     }
@@ -845,13 +839,10 @@ mod tests {
                     CallConfig { with_log: Some(with_log), ..Default::default() },
                     0,
                 );
-                let erc = builder
-                    .geth_erc7562_traces(
-                        Erc7562Config { with_log: Some(with_log), ..Default::default() },
-                        0,
-                        &mut EmptyDB::default(),
-                    )
-                    .unwrap();
+                let erc = builder.geth_erc7562_traces(
+                    Erc7562Config { with_log: Some(with_log), ..Default::default() },
+                    0,
+                );
                 let mut pending = vec![(&call, &erc)];
                 let mut visited = Vec::new();
                 while let Some((call, erc)) = pending.pop() {

@@ -8,7 +8,7 @@ use crate::{
             CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
             TraceMemberOrder,
         },
-        utils::gas_used,
+        utils::{gas_used, load_account_code},
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -542,6 +542,20 @@ impl TracingInspector {
             None
         };
 
+        let contract_size = if self.config.record_contract_sizes
+            && matches!(op.get(), op::EXTCODESIZE | op::EXTCODECOPY | op::EXTCODEHASH)
+            && let Some(item) = interp.stack().as_slice().last()
+        {
+            let address = Address::from_word((*item).into());
+            let state = interp.host().state_mut();
+            let size = state.account_info_untracked(&address).ok().flatten().and_then(|info| {
+                load_account_code(state.initial_mut(), &info).ok().flatten().map(|code| code.len())
+            });
+            Some(size.unwrap_or_default() as u64)
+        } else {
+            None
+        };
+
         let step_idx = node.trace.steps.len();
         node.trace.steps.push(CallTraceStep {
             pc: interp.pc(),
@@ -553,6 +567,7 @@ impl TracingInspector {
             gas_refund_counter: interp.gas().refunded() as u64,
             gas_used,
             immediate_bytes,
+            contract_size,
 
             // These fields will be populated in `step_end`.
             push_stack: None,

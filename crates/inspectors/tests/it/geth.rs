@@ -404,6 +404,25 @@ fn test_geth_erc7562_tracer() {
     }
 }
 
+/// geth reads the code size when the opcode runs, so an account created earlier in the same
+/// transaction has a size.
+#[test]
+fn erc7562_contract_size_of_account_created_in_same_transaction() {
+    // CREATE a contract whose runtime code is 5 bytes, then EXTCODESIZE the created address.
+    let code = hex!("6460056000f36000526005601b6000f03b00");
+    let (trace, _) = trace_contract(
+        SpecId::CANCUN,
+        GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default()),
+        code.into(),
+    );
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+
+    let created = frame.calls[0].to.unwrap();
+    assert_eq!(frame.contract_size.len(), 1);
+    assert_eq!(frame.contract_size[&created].contract_size, 5);
+    assert_eq!(frame.contract_size[&created].opcode, op::EXTCODESIZE);
+}
+
 fn trace_contract(
     spec: SpecId,
     opts: GethDebugTracingOptions,
@@ -2226,13 +2245,10 @@ fn test_geth_failed_root_logs() {
                     }
                 }
 
-                let frame = builder
-                    .geth_erc7562_traces(
-                        Erc7562Config { with_log: Some(with_log), ..Default::default() },
-                        res.result.tx_gas_used(),
-                        &mut EmptyDB::default(),
-                    )
-                    .unwrap();
+                let frame = builder.geth_erc7562_traces(
+                    Erc7562Config { with_log: Some(with_log), ..Default::default() },
+                    res.result.tx_gas_used(),
+                );
                 assert_eq!(frame.error.as_deref(), error);
                 assert_eq!(frame.logs.len(), expected_logs);
                 if expected_logs == 0 {
