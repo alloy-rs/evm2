@@ -46,6 +46,9 @@ pub(crate) enum TestErrorKind {
     /// Numeric value overflowed the target type.
     #[error("value overflows {0}")]
     Overflow(&'static str),
+    /// Sender is required when signatures are not validated.
+    #[error("transaction sender is required")]
+    MissingSender,
     /// Signed transaction has an invalid signature.
     #[error("{0}")]
     InvalidSignedTransaction(String),
