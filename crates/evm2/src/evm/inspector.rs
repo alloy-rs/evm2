@@ -57,9 +57,9 @@ impl FromIterator<u8> for OpcodeSet {
 
 /// Which parts of execution an [`Inspector`] observes.
 ///
-/// Returned by [`Inspector::config`]. The EVM reads it when a frame starts and after each message
-/// opcode returns into the frame, and runs the frame on an instruction table that only calls the
-/// step hooks the config asks for.
+/// Returned by [`Inspector::inspector_config`]. The EVM reads it when a frame starts and after each
+/// message opcode returns into the frame, and runs the frame on an instruction table that only
+/// calls the step hooks the config asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InspectorConfig {
     /// Opcodes for which [`Inspector::step`] and [`Inspector::step_end`] are called.
@@ -116,7 +116,7 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// The EVM may call the step hooks for more opcodes than asked for, for example when several
     /// inspectors share a frame, so a hook must ignore the opcodes it does not handle.
     #[inline]
-    fn config(&self) -> InspectorConfig {
+    fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::new()
     }
 
@@ -225,7 +225,7 @@ pub struct NoopInspector(());
 
 impl<T: EvmTypesHost> Inspector<T> for NoopInspector {
     #[inline]
-    fn config(&self) -> InspectorConfig {
+    fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::new().with_steps(OpcodeSet::EMPTY)
     }
 }
@@ -625,7 +625,7 @@ mod tests {
     }
 
     impl Inspector<BaseEvmTypes> for ConfigInspector {
-        fn config(&self) -> InspectorConfig {
+        fn inspector_config(&self) -> InspectorConfig {
             let steps = match self.after {
                 Some(after) if self.switched => after,
                 _ => self.before,

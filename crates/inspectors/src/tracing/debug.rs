@@ -374,8 +374,8 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
         delegate!(self => inspector.initialize_interp(interp))
     }
 
-    fn config(&self) -> InspectorConfig {
-        delegate!(self => inspector.config())
+    fn inspector_config(&self) -> InspectorConfig {
+        delegate!(self => inspector.inspector_config())
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {

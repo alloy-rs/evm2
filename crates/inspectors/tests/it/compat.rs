@@ -576,9 +576,9 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
         self.inner().initialize_interp(interp);
     }
 
-    fn config(&self) -> InspectorConfig {
+    fn inspector_config(&self) -> InspectorConfig {
         // SAFETY: As in `inner`.
-        unsafe { &*self.inspector }.config()
+        unsafe { &*self.inspector }.inspector_config()
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {

@@ -45,7 +45,7 @@ impl FourByteInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for FourByteInspector {
-    fn config(&self) -> InspectorConfig {
+    fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::new().with_steps(OpcodeSet::EMPTY)
     }
 

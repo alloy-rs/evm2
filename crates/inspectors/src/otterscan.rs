@@ -52,7 +52,7 @@ impl InternalOperationsInspector {
 }
 
 impl<T: EvmTypesHost> Inspector<T> for InternalOperationsInspector {
-    fn config(&self) -> InspectorConfig {
+    fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::new().with_steps(OpcodeSet::EMPTY)
     }
 

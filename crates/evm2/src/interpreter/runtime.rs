@@ -590,7 +590,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let config = unsafe { self.execution_config_detached() };
         // SAFETY: `run_inner` installed the inspector, which is valid for this run.
         let inspector = unsafe { self.inspector.unwrap_unchecked().as_ref() };
-        self.steps = inspector.config().steps;
+        self.steps = inspector.inspector_config().steps;
         if self.steps == OpcodeSet::EMPTY {
             return config.watch_instructions;
         }
@@ -706,7 +706,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         // SAFETY: Only inspected frames call this, and the inspector pointer is valid while the
         // frame executes.
         let inspector = unsafe { self.0.inspector.unwrap_unchecked().as_ref() };
-        inspector.config().steps != self.0.steps
+        inspector.inspector_config().steps != self.0.steps
     }
 
     /// Leaves the dispatch so that the frame continues on the table for the inspector's config.

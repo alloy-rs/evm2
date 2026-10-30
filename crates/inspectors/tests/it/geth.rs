@@ -2315,7 +2315,7 @@ fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
 
 #[test]
 fn mux_and_debug_inspector_forward_the_steps_of_their_members() {
-    let steps = |inspector: &dyn Inspector<BaseEvmTypes>| inspector.config().steps;
+    let steps = |inspector: &dyn Inspector<BaseEvmTypes>| inspector.inspector_config().steps;
     let four_byte = GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FourByteTracer);
     let keccak = GethDebugTracerType::JsTracer(KECCAK256_PREIMAGE_TRACER.into());
     let mux = |tracers: &[&GethDebugTracerType]| {

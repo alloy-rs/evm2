@@ -303,9 +303,10 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
     }
 
     #[inline]
-    fn config(&self) -> InspectorConfig {
+    fn inspector_config(&self) -> InspectorConfig {
         let mut config = InspectorConfig::new().with_steps(OpcodeSet::EMPTY);
-        each_member!(&self, |member| config = config.union(Inspector::<T>::config(member)));
+        each_member!(&self, |member| config =
+            config.union(Inspector::<T>::inspector_config(member)));
         config
     }
 

@@ -166,7 +166,7 @@ impl TransferInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for TransferInspector {
-    fn config(&self) -> InspectorConfig {
+    fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::new().with_steps(OpcodeSet::EMPTY)
     }
 
