@@ -5,7 +5,6 @@ use super::{
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
-    env::TxEnv,
     evm::inspector::Inspector,
     interpreter::dispatch,
     trustme,
@@ -32,8 +31,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) pc: *const u8,
     output: Range<u32>,
     #[derive_where(skip)]
-    tx_env: Option<&'frame TxEnv<T>>,
-    #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
@@ -42,6 +39,11 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) stack: Box<StackBacking>,
 
     pub(in crate::interpreter) gas: Gas,
+    /// Remaining gas plus spilled state gas at the start of the current inspected step.
+    step_gas_before: u64,
+    /// Remaining gas plus spilled state gas once the current step finished charging, if it
+    /// marked that point.
+    step_gas_after_charge: Option<u64>,
     pub(in crate::interpreter) result: Result,
     error: Option<ExecutionError>,
     spec: SpecId,
@@ -58,17 +60,15 @@ unsafe impl<T> Send for Interpreter<'_, '_, T>
 where
     T: EvmTypesHost,
     T::MessageExt: Sync,
-    T::TxEnvExt: Sync,
 {
 }
 
 impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
-    /// Creates an interpreter from a transaction-global environment and a frame-local message,
-    /// which carries the bytecode to run.
-    pub fn new(tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) -> Self {
+    /// Creates an interpreter from a frame-local message, which carries the bytecode to run.
+    pub fn new(message: &'frame Message<T>) -> Self {
         // SAFETY: Calling init right after.
         let mut interp = unsafe { Self::uninit() };
-        interp.init(tx_env, message);
+        interp.init(message);
         interp
     }
 
@@ -83,11 +83,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             bytecode_ref: None,
             stack_len: 0,
             gas: Gas::new(0),
+            step_gas_before: 0,
+            step_gas_after_charge: None,
             memory: Memory::new(),
             result: Ok(()),
             error: None,
             output: 0..0,
-            tx_env: None,
             message: None,
             is_static: false,
             return_data: Bytes::new(),
@@ -101,7 +102,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     }
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
-    fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
+    fn init(&mut self, message: &'frame Message<T>) {
         let gas_limit = message.gas_limit;
         let is_static = message.is_static();
         self.set_bytecode(&message.code);
@@ -111,7 +112,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.result = Ok(());
         self.error = None;
         self.output = 0..0;
-        self.tx_env = Some(tx_env);
         self.message = Some(message);
         self.is_static = is_static;
         self.return_data = Bytes::new();
@@ -127,7 +127,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     pub(crate) fn clear_frame_refs(&mut self) {
         self.bytecode = Default::default();
         self.bytecode_ref = None;
-        self.tx_env = None;
         self.message = None;
         self.host = None;
         self.inspector = None;
@@ -237,6 +236,26 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.gas = gas;
     }
 
+    /// Returns the execution gas the current step charged, before its effects.
+    ///
+    /// This is the gas remaining at the start of the step minus the gas remaining once the step
+    /// finished charging, leaving out state gas that spills into the remaining gas because the
+    /// reservoir was short or is refilled from it. State gas is not part of the execution cost;
+    /// [`Gas::state_gas_spent`] reports it. Call and create steps finish charging right before
+    /// they hand gas to the child, so their cost includes the forwarded gas for calls and
+    /// excludes it for creates. Any other step finishes charging when it ends, which makes its
+    /// cost the execution gas it consumed.
+    ///
+    /// Only meaningful in [`Inspector::step_end`](crate::inspector::Inspector::step_end).
+    #[inline]
+    pub const fn step_cost(&self) -> u64 {
+        let after = match self.step_gas_after_charge {
+            Some(after) => after,
+            None => self.gas.remaining_excluding_state_spill(),
+        };
+        self.step_gas_before.saturating_sub(after)
+    }
+
     /// Returns the current linear memory.
     #[inline]
     pub const fn memory(&self) -> &Memory {
@@ -278,13 +297,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[doc(hidden)]
     pub const fn message_field_offset_for_jit() -> usize {
         core::mem::offset_of!(Self, message)
-    }
-
-    /// Returns the cached transaction-global environment.
-    #[inline]
-    pub const fn tx_env(&self) -> &'frame TxEnv<T> {
-        // SAFETY: `tx_env` is initialized before execution starts.
-        unsafe { self.tx_env.unwrap_unchecked() }
     }
 
     /// Returns return data from the last call-like operation.
@@ -573,14 +585,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.stack_len = stack_len;
     }
 
-    /// Returns the cached transaction-global environment.
-    #[inline]
-    pub const fn tx(&self) -> &'frame TxEnv<T> {
-        // SAFETY: `tx_env` is initialized at the beginning of `run` and remains set for
-        // instruction execution.
-        unsafe { self.0.tx_env.unwrap_unchecked() }
-    }
-
     /// Returns the active base specification ID.
     #[inline]
     pub const fn spec(&self) -> SpecId {
@@ -700,6 +704,8 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
+        self.0.step_gas_before = self.0.gas.remaining_excluding_state_spill();
+        self.0.step_gas_after_charge = None;
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
@@ -719,6 +725,13 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step_end(&mut self.0);
         }
+    }
+
+    /// Marks that the current step finished charging gas, so [`Interpreter::step_cost`] stops
+    /// counting gas after this point.
+    #[inline]
+    pub(crate) const fn finish_step_charge(&mut self, gas: &Gas) {
+        self.0.step_gas_after_charge = Some(gas.remaining_excluding_state_spill());
     }
 
     #[inline]
@@ -749,15 +762,14 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
 
     pub(crate) fn pop<'frame, 'host>(
         &mut self,
-        tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
     ) -> Box<Interpreter<'frame, 'host, T>> {
         let frame = match self.frames.pop() {
             Some(mut frame) => {
-                frame.init(tx_env, message);
+                frame.init(message);
                 frame
             }
-            None => Box::new(Interpreter::new(tx_env, message)),
+            None => Box::new(Interpreter::new(message)),
         };
         // SAFETY: Frames stored in the pool have their frame-local references cleared before they
         // are erased to `'static`. Rebinding the lifetime is only used to initialize the next
@@ -790,13 +802,12 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
 #[cfg(test)]
 mod owned_error_tests {
     use super::*;
-    use crate::{DatabaseError, env::TxEnvExt, interpreter::MessageExt, test_utils::TestTypes};
+    use crate::{DatabaseError, interpreter::MessageExt, test_utils::TestTypes};
 
     #[test]
     fn owned_error_is_taken_on_exit() {
-        let tx = TxEnvExt::default();
         let message = MessageExt::default();
-        let mut interpreter = Interpreter::<TestTypes>::new(&tx, &message);
+        let mut interpreter = Interpreter::<TestTypes>::new(&message);
         let error = DatabaseError::new(core::fmt::Error, false);
         let stop = interpreter.fail(error.clone());
         let result = interpreter.finish_run(stop);

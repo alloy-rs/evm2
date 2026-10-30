@@ -117,11 +117,17 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
+    ///
+    /// The active inspector observes the call only when [`Evm::set_inspect_system_calls`] is set.
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
-        // System calls are not inspected.
-        let inspector = self.inspector.take();
-        let result = self.execute_system_call(tx);
-        self.inspector = inspector;
+        let result = if self.inspect_system_calls {
+            self.execute_system_call(tx)
+        } else {
+            let inspector = self.inspector.take();
+            let result = self.execute_system_call(tx);
+            self.inspector = inspector;
+            result
+        };
         match result {
             Ok(outcome) => self.finish_executed_tx(outcome),
             Err(error) => {
@@ -139,7 +145,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
         let SystemTx { caller, system_contract_address, data, gas_limit, .. } = tx;
         self.state.prewarm(&system_contract_address);
-        let tx_env = TxEnvExt {
+        self.tx_env = TxEnvExt {
             origin: caller,
             gas_price: U256::ZERO,
             chain_id: U256::from(self.version().chain_id),
@@ -165,9 +171,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             U256::ZERO,
             &mut tx_gas,
         )?;
-        let result =
-            execute_initial_frame(self, &tx_env, frame, &mut tx_gas, gas_limit, reservoir)?;
-        let gas_spent = gas_limit.saturating_sub(result.gas.remaining());
+        let result = execute_initial_frame(self, frame, &mut tx_gas, gas_limit, reservoir)?;
+        // The reservoir is funded on top of `gas_limit`, so the state gas it paid for is added
+        // back; otherwise `total_gas_spent` would not cover `state_gas_spent`.
+        let gas_spent = gas_limit
+            .saturating_sub(result.gas.remaining())
+            .saturating_add(reservoir.saturating_sub(result.gas.reservoir()));
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
         } else {
@@ -237,11 +246,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, Precompiles, SpecId,
+        BaseEvmTypes, Inspector, Precompiles, SpecId,
         bytecode::Bytecode,
         env::BlockEnvExt,
         evm::{AccountInfo, InMemoryDB},
-        interpreter::{GasTracker, InstrStop, Message, op},
+        interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileResult},
         registry::{HandlerError, TxRegistry},
     };
@@ -519,5 +528,99 @@ mod tests {
         assert_eq!(result.result.stop, InstrStop::OutOfGas);
         assert_eq!(result.result.total_gas_spent, 3_000);
         assert!(!result.pending_state.is_changed());
+    }
+
+    #[test]
+    fn system_call_total_includes_reservoir_funded_state_gas() {
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            1,
+            op::PUSH0,
+            op::SSTORE,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = TestEvm::new(
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().discard();
+
+        // One new slot: its state gas comes from the system call's reservoir, the regular gas
+        // (PUSH1, PUSH0, cold SSTORE) from `gas_limit`.
+        let state_gas = evm.version().gas_params.get(GasId::SstoreSetState);
+        let regular_gas = 3 + 2 + 2_100 + 10_000;
+        assert!(result.status);
+        assert_eq!(result.state_gas_spent, state_gas);
+        assert_eq!(result.total_gas_spent, regular_gas + state_gas);
+        assert_eq!(result.execution_gas_spent(), regular_gas);
+    }
+
+    #[derive(Debug, Default)]
+    struct CountingInspector {
+        calls: usize,
+        call_ends: usize,
+        steps: usize,
+    }
+
+    impl Inspector<BaseEvmTypes> for CountingInspector {
+        fn step(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            self.steps += 1;
+        }
+
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            _message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            self.calls += 1;
+            None
+        }
+
+        fn call_end(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            _message: &Message<BaseEvmTypes>,
+            _result: &mut MessageResult<BaseEvmTypes>,
+        ) {
+            self.call_ends += 1;
+        }
+    }
+
+    #[rstest::rstest]
+    #[case(false, 0, 0)]
+    #[case(true, 1, 3)]
+    fn system_call_inspection_is_opt_in(
+        #[case] inspect: bool,
+        #[case] expected_calls: usize,
+        #[case] expected_steps: usize,
+    ) {
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH0, op::STOP]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = TestEvm::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(CountingInspector::default());
+        evm.set_inspect_system_calls(inspect);
+
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
+        assert!(result.result.status);
+
+        let inspector = evm.clear_inspector_as::<CountingInspector>().expect("inspector kept");
+        assert_eq!(inspector.calls, expected_calls);
+        assert_eq!(inspector.call_ends, expected_calls);
+        assert_eq!(inspector.steps, expected_steps);
     }
 }

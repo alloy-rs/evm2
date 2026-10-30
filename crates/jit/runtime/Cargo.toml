@@ -35,7 +35,6 @@ dashmap = "6"
 derive_more = { version = "2", default-features = false, features = ["debug"] }
 eyre.workspace = true
 libc.workspace = true
-libloading = "0.9"
 tempfile = "3.10"
 quanta.workspace = true
 rayon.workspace = true

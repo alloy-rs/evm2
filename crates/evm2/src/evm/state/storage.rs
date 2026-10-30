@@ -58,6 +58,20 @@ impl StorageOverlay {
     pub fn is_changed(&self) -> bool {
         self.wiped || self.changed_slots().next().is_some()
     }
+
+    /// Rereads the slots first loaded under the account's creation after that creation was rolled
+    /// back.
+    ///
+    /// Such a slot cached zero instead of its backing value, and the rollback restores its zero
+    /// current value. A slot that fails to reload keeps its zero and its marker, so its read stays
+    /// in the overlay for the BAL and its next load rereads it and reports the error.
+    pub(super) fn reload_zeroed(&mut self, address: &Address, database: &mut dyn DynDatabase) {
+        for (key, slot) in &mut self.slots {
+            if slot.created_zero {
+                let _ = slot.reload_created_zero(address, key, database);
+            }
+        }
+    }
 }
 
 /// Persistent storage slot cached by [`super::State`].
@@ -71,6 +85,9 @@ pub struct StorageSlot {
     pub value: Tracked<Word>,
     /// Whether the slot was warmed during execution this transaction, for EIP-2929 gas accounting.
     pub is_warm: bool,
+    /// Whether the slot was first loaded while its account was created in the transaction, so it
+    /// cached zero instead of its backing value. Rolling that creation back reloads the slot.
+    pub(crate) created_zero: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -82,11 +99,24 @@ impl StorageSlot {
         if wiped { !self.value.current.is_zero() } else { self.value.is_changed() }
     }
 
+    /// Rereads a zero cached under a creation that was rolled back.
+    #[cold]
+    pub(super) fn reload_created_zero(
+        &mut self,
+        address: &Address,
+        key: &Word,
+        database: &mut dyn DynDatabase,
+    ) -> DbResult<()> {
+        self.value = Tracked::new(database.get_storage(address, key)?);
+        self.created_zero = false;
+        Ok(())
+    }
+
     /// Creates a freshly loaded slot whose original and current values are `value`, with the given
-    /// EIP-2929 warmth.
+    /// EIP-2929 warmth. `created_zero` marks a zero cached without a database read.
     #[inline]
-    fn loaded(value: Word, is_warm: bool) -> Self {
-        Self { value: Tracked::new(value), is_warm, _non_exhaustive: () }
+    fn loaded(value: Word, is_warm: bool, created_zero: bool) -> Self {
+        Self { value: Tracked::new(value), is_warm, created_zero, _non_exhaustive: () }
     }
 }
 
@@ -186,7 +216,8 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     /// slot's [`StorageSlot::is_warm`] is seeded from the base warm set (EIP-2930 access list),
     /// mirroring how [`account_raw`](super::State) seeds an account's warmth. The load itself
     /// records no revert entry: the cached value's original equals its current, so it is left in
-    /// place by [`State::rollback`](super::State::rollback) as a harmless cache. Used by
+    /// place by [`State::rollback`](super::State::rollback) as a harmless cache, except that a
+    /// creation's rollback reloads the slots it read as zero. Used by
     /// [`State::storage_slot`](super::State::storage_slot) to reach a single slot directly.
     #[inline]
     pub fn into_slot_with_skip(
@@ -232,6 +263,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && is_cold {
                     return Err(LoadError::ColdLoadSkipped);
                 }
+                // A rollback that failed to reload the slot leaves it for this load to retry.
+                if slot.created_zero && !created {
+                    slot.reload_created_zero(address, &key, &mut inner.database)?;
+                }
                 (slot, is_cold)
             }
             hash_map::Entry::Vacant(entry) => {
@@ -242,11 +277,13 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 // Like revm, an unloaded slot of a created account reads zero without a database
                 // read, since the creation discards the address's old storage.
                 let value = if storage.wiped || created {
+                    // The zero needs no database read, but a strict BAL must still cover the slot.
+                    inner.database.check_bal_storage(address, &key)?;
                     Word::ZERO
                 } else {
                     inner.database.get_storage(address, &key)?
                 };
-                (entry.insert(StorageSlot::loaded(value, is_warm)), !is_warm)
+                (entry.insert(StorageSlot::loaded(value, is_warm, created)), !is_warm)
             }
         };
         if WARM && is_cold {
@@ -278,6 +315,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub(crate) fn zero_loaded(&mut self) {
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value.set_current(Word::ZERO);
+            slot.created_zero = false;
         });
     }
 }
@@ -397,10 +435,12 @@ mod tests {
         SpecId, Version,
         evm::{
             CacheDB,
+            bal::{AccountBal, Bal, BalChanges, BalError, BlockAccessIndex},
             state::{AccountInfo, State},
         },
     };
-    use alloc::vec;
+    use alloc::{sync::Arc, vec};
+    use alloy_eip7928::StorageChange;
     use alloy_primitives::Address;
 
     #[test]
@@ -610,5 +650,39 @@ mod tests {
         let mut slot = state.storage_slot(&address, key).unwrap();
         assert!(slot.is_warm());
         assert!(!slot.warm(), "base-prewarmed slot must not report a cold transition");
+    }
+
+    #[test]
+    fn created_account_slot_reads_keep_strict_bal_coverage() {
+        let creator = Address::with_last_byte(0x50);
+        let address = Address::with_last_byte(0x51);
+        let (covered, uncovered) = (Word::from(7), Word::from(9));
+        let mut account = AccountBal::default();
+        account.storage.storage.insert(
+            covered,
+            BalChanges::new(vec![StorageChange::new(BlockAccessIndex::new(1), Word::from(42))]),
+        );
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
+        database.insert_account_storage(&address, &uncovered, &Word::from(20));
+        let mut state = State::new(database);
+        state.set_bal(Arc::new(Bal::from_iter([(address, account)])));
+        state.set_bal_index(BlockAccessIndex::new(2));
+        let version = Version::base(SpecId::LONDON);
+        state.create_account(&creator, &address, &Word::ZERO, version.features).unwrap().unwrap();
+
+        // The created account reads zero, but a slot missing from the BAL is still invalid.
+        let error = state.storage_slot(&address, uncovered).unwrap_err();
+        assert!(error.downcast_ref::<BalError>().is_some());
+        let error = state.storage_slot_untracked(&address, &uncovered).unwrap_err();
+        assert!(error.downcast_ref::<BalError>().is_some());
+        assert!(!state.accounts[&address].storage.slots.contains_key(&uncovered));
+
+        assert_eq!(state.storage_slot(&address, covered).unwrap().current(), Word::ZERO);
+        assert_eq!(state.storage_slot_untracked(&address, &covered).unwrap(), Word::ZERO);
+
+        // With database fallback enabled, an uncovered slot is allowed and still reads zero.
+        state.set_allow_bal_db_fallback(true);
+        assert_eq!(state.storage_slot(&address, uncovered).unwrap().current(), Word::ZERO);
     }
 }

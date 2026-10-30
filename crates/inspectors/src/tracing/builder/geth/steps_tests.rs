@@ -2,6 +2,7 @@ use super::*;
 use crate::tracing::types::{
     CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason,
 };
+use alloc::string::String;
 use evm2::{
     evm::EmptyDB,
     interpreter::{InstrStop, opcode::OpCode},
@@ -30,6 +31,7 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
                 reason: StorageChangeReason::SSTORE,
             })
         }),
+        storage_slot: (op == op::SSTORE).then(|| Box::new((U256::ZERO, U256::from(pc)))),
         status: (op == op::REVERT).then_some(InstrStop::Revert),
         immediate_bytes: None,
         decoded: None,
@@ -54,6 +56,21 @@ fn struct_log_errors_exclude_reverts() {
         let log = step.convert_to_geth_struct_log(&Default::default(), 1, None);
         assert_eq!(log.error.is_some(), has_error, "{status:?}");
     }
+}
+
+#[test]
+fn struct_log_omits_zero_refund_and_empty_memory() {
+    let opts = GethDefaultTracingOptions::default().enable_memory();
+    let mut step = test_step(0, op::PUSH0);
+    step.memory = Some(RecordedMemory::new(&[]));
+    let log = step.convert_to_geth_struct_log(&opts, 1, None);
+    assert_eq!((log.refund_counter, log.memory), (None, None));
+
+    step.gas_refund_counter = 4800;
+    step.memory = Some(RecordedMemory::new(&[1]));
+    let log = step.convert_to_geth_struct_log(&opts, 1, None);
+    assert_eq!(log.refund_counter, Some(4800));
+    assert_eq!(log.memory.map(|memory| memory.len()), Some(1));
 }
 
 #[test]
@@ -191,6 +208,8 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
         })
         .collect();
     nodes[0].trace.steps.last_mut().unwrap().status = Some(InstrStop::OutOfGas);
+    // The SLOAD reads the value its delegatecall child wrote.
+    nodes[2].trace.steps[2].storage_slot = Some(Box::new((U256::ZERO, U256::from(30))));
     let builder = GethTraceBuilder::new(nodes);
     let expected = [
         (0, 1),
@@ -238,20 +257,35 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
                     .map(|value| { BTreeMap::from([(B256::ZERO, U256::from(value).into())]) })
             );
         }
-        for limit in [0, 1, 3, 6, 9, 99] {
+        let sizes: Vec<_> = frame.struct_logs.iter().map(struct_log_json_len).collect();
+        let total: usize = sizes.iter().sum();
+        for limit in
+            [0, 1, sizes[0], sizes[0] + sizes[1], sizes[..5].iter().sum(), total, 2 * total]
+        {
             let limited = builder.geth_traces(
                 123,
                 Bytes::new(),
                 GethDefaultTracingOptions {
-                    limit: Some(limit),
+                    limit: Some(limit as u64),
                     disable_storage: Some(disable_storage),
                     enable_return_data: Some(true),
                     ..Default::default()
                 },
             );
-            let len =
-                if limit == 0 { expected.len() } else { (limit as usize).min(expected.len()) };
-            assert_eq!(limited.struct_logs, frame.struct_logs[..len]);
+            let mut written = 0;
+            let len = if limit == 0 {
+                expected.len()
+            } else {
+                sizes
+                    .iter()
+                    .take_while(|size| {
+                        let logged = written <= limit;
+                        written += **size;
+                        logged
+                    })
+                    .count()
+            };
+            assert_eq!(limited.struct_logs, frame.struct_logs[..len], "limit {limit}");
         }
     }
     assert!(
@@ -269,18 +303,17 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
 }
 
 #[test]
-fn storage_snapshots_keep_empty_reads_and_custom_changes() {
-    let mut custom_change = test_step(2, op::SSTORE);
-    // Public trace nodes can carry a storage change on a different opcode.
-    custom_change.op = OpCode::new_or_unknown(op::ADD);
+fn storage_snapshots_accumulate_and_skip_failed_steps() {
+    let mut failed = test_step(4, op::SSTORE);
+    failed.status = Some(InstrStop::OutOfGas);
+    let mut sload = test_step(1, op::SLOAD);
+    sload.storage_slot = Some(Box::new((U256::ZERO, U256::from(1))));
+    // A step that is not an SLOAD or SSTORE has no slot.
+    let mut add = test_step(2, op::ADD);
+    add.storage_slot = None;
     let builder = GethTraceBuilder::new(vec![CallTraceNode {
         trace: CallTrace {
-            steps: vec![
-                test_step(0, op::PUSH0),
-                test_step(1, op::SLOAD),
-                custom_change,
-                test_step(3, op::SLOAD),
-            ],
+            steps: vec![test_step(0, op::PUSH0), sload, add, failed],
             ..Default::default()
         },
         ..Default::default()
@@ -296,11 +329,104 @@ fn storage_snapshots_keep_empty_reads_and_custom_changes() {
         );
         assert_eq!(frame.struct_logs.len(), 4);
         assert!(frame.struct_logs[0].storage.is_none());
-        assert_eq!(frame.struct_logs[1].storage, (!disable_storage).then(BTreeMap::new));
-        assert!(frame.struct_logs[2].storage.is_none());
         assert_eq!(
-            frame.struct_logs[3].storage,
-            (!disable_storage).then(|| { BTreeMap::from([(B256::ZERO, U256::from(2).into())]) })
+            frame.struct_logs[1].storage,
+            (!disable_storage).then(|| BTreeMap::from([(B256::ZERO, U256::from(1).into())]))
         );
+        assert!(frame.struct_logs[2].storage.is_none());
+        assert!(frame.struct_logs[3].storage.is_none());
+    }
+}
+
+/// The entries are what go-ethereum master's struct logger writes (`debug_traceCall`).
+#[test]
+fn struct_log_json_len_matches_geth() {
+    for json in [
+        r#"{"pc":0,"op":"ADD","gas":979000,"gasCost":3,"depth":1,"error":"stack underflow (0 \u003c=\u003e 2)","stack":[]}"#,
+        r#"{"pc":4,"op":"SSTORE","gas":978994,"gasCost":12100,"depth":1,"stack":["0x1","0x0"],"storage":{"0x0000000000000000000000000000000000000000000000000000000000000000":"0x0000000000000000000000000000000000000000000000000000000000000001"}}"#,
+        r#"{"pc":7,"op":"SLOAD","gas":868971,"gasCost":100,"depth":1,"stack":["0x0"],"storage":{"0x0000000000000000000000000000000000000000000000000000000000000000":"0x0000000000000000000000000000000000000000000000000000000000000001"}}"#,
+        r#"{"pc":11,"op":"PUSH1","gas":868862,"gasCost":3,"depth":1,"stack":[],"memory":["0x0000000000000000000000000000000000000000000000000000000000000001"]}"#,
+        r#"{"pc":13,"op":"MLOAD","gas":868859,"gasCost":3,"depth":1,"stack":["0x0"],"memory":["0x0000000000000000000000000000000000000000000000000000000000000001"]}"#,
+        r#"{"pc":14,"op":"PUSH1","gas":868856,"gasCost":3,"depth":1,"stack":["0x1"],"memory":["0x0000000000000000000000000000000000000000000000000000000000000001"]}"#,
+        r#"{"pc":0,"op":"PUSH1","gas":979000,"gasCost":3,"depth":1,"stack":[]}"#,
+        r#"{"pc":4,"op":"SSTORE","gas":978994,"gasCost":12100,"depth":1,"stack":["0x0","0x5"],"storage":{"0x0000000000000000000000000000000000000000000000000000000000000005":"0x0000000000000000000000000000000000000000000000000000000000000000"},"refund":11616}"#,
+        r#"{"pc":33,"op":"STOP","gas":978997,"gasCost":0,"depth":1,"stack":["0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff60"]}"#,
+        r#"{"pc":1,"op":"STOP","gas":5,"gasCost":0,"depth":1,"returnData":"0xdeadbeef","refund":4800}"#,
+        r#"{"pc":20,"op":"opcode 0xc not defined","gas":5,"gasCost":0,"depth":12,"error":"gas uint64 overflow \u0026 more"}"#,
+    ] {
+        let log: StructLog = serde_json::from_str(json).unwrap();
+        assert_eq!(struct_log_json_len(&log), json.len(), "{json}");
+    }
+}
+
+#[test]
+fn struct_log_json_len_skips_the_fields_geth_omits() {
+    let log = StructLog {
+        pc: 1,
+        op: "STOP".into(),
+        gas: 5,
+        depth: 1,
+        error: Some(String::new()),
+        return_data: Some(Bytes::new()),
+        memory: Some(vec![]),
+        storage: Some(BTreeMap::new()),
+        refund_counter: Some(0),
+        ..Default::default()
+    };
+    let json = r#"{"pc":1,"op":"STOP","gas":5,"gasCost":0,"depth":1}"#;
+    assert_eq!(struct_log_json_len(&log), json.len());
+}
+
+#[test]
+fn struct_log_json_len_counts_the_state_gas_fields() {
+    for (cost, reservoir) in [(None, None), (Some(0), Some(0)), (Some(-1234), Some(99_999))] {
+        let log = StructLog {
+            op: "SSTORE".into(),
+            gas: 100,
+            depth: 2,
+            state_gas_cost: cost,
+            state_gas_reservoir: reservoir,
+            ..Default::default()
+        };
+        assert_eq!(
+            struct_log_json_len(&log),
+            serde_json::to_string(&log).unwrap().len(),
+            "{cost:?} {reservoir:?}"
+        );
+    }
+}
+
+#[test]
+fn struct_log_limit_counts_json_bytes() {
+    let steps = [op::PUSH1, op::PUSH1, op::SSTORE, op::STOP]
+        .iter()
+        .enumerate()
+        .map(|(pc, &op)| test_step(pc, op))
+        .collect();
+    let builder = GethTraceBuilder::new(vec![CallTraceNode {
+        trace: CallTrace { steps, ..Default::default() },
+        ..Default::default()
+    }]);
+    let unlimited = builder.geth_traces(0, Bytes::new(), Default::default()).struct_logs;
+    let sizes: Vec<_> = unlimited.iter().map(struct_log_json_len).collect();
+    assert_eq!(unlimited.len(), 4);
+    // geth logs a step while the bytes written so far do not exceed the limit, so the step that
+    // crosses the limit is the last one.
+    for limit in [1, sizes[0], sizes[0] + 1, sizes[0] + sizes[1], sizes[..3].iter().sum(), 10_000] {
+        let mut written = 0;
+        let expected = sizes
+            .iter()
+            .take_while(|size| {
+                let logged = written <= limit;
+                written += **size;
+                logged
+            })
+            .count();
+        let frame = builder.geth_traces(
+            0,
+            Bytes::new(),
+            GethDefaultTracingOptions { limit: Some(limit as u64), ..Default::default() },
+        );
+        assert_eq!(frame.struct_logs.len(), expected, "limit {limit}");
     }
 }

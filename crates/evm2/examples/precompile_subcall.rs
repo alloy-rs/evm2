@@ -4,7 +4,7 @@ use alloy_primitives::{Address, Bytes, U256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
-    env::{BlockEnvExt, TxEnvExt},
+    env::BlockEnvExt,
     evm::{AccountInfo, InMemoryDB, precompile::PrecompileOutput},
     interpreter::{GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, Word, op},
     precompiles::{Precompile, PrecompileError, PrecompileHalt, PrecompileId, PrecompileResult},
@@ -27,7 +27,7 @@ fn main() {
         ..MessageExt::default()
     };
 
-    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+    let result = Host::execute_message(&mut evm, &mut message).unwrap();
     assert_eq!(result.stop, InstrStop::Return);
     assert_eq!(result.output.len(), 32);
 
@@ -86,12 +86,12 @@ fn staticcall_precompile(
         ..MessageExt::default()
     };
 
-    let result = Host::execute_message(evm, &TxEnvExt::default(), &mut child)?;
+    let result = Host::execute_message(evm, &mut child)?;
     gas.merge_child_gas(result.gas, result.stop);
 
     match result.stop {
         stop if stop.is_success() => Ok(PrecompileOutput::new(result.output)),
-        stop if stop.is_revert() => Err(PrecompileError::Revert(result.output)),
+        stop if stop.is_frame_revert() => Err(PrecompileError::Revert(result.output)),
         stop => Err(PrecompileHalt::Other(format!("subcall halted with {stop:?}").into()).into()),
     }
 }

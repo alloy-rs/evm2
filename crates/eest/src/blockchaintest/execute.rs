@@ -210,8 +210,7 @@ fn execute_suite_with_resources(
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in &suite.0 {
         if !test_filter.matches(name)
-            || test_case.network.is_transition()
-            || is_blockchain_fork_skipped(fork_to_spec_id(test_case.network))
+            || fork_schedule(test_case.network).is_none_or(|schedule| schedule.is_skipped())
         {
             summary.skipped += 1;
             continue;
@@ -261,12 +260,17 @@ fn execute_case(
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
 ) -> Result<Option<B256>, TestError> {
-    let spec = fork_to_spec_id(test_case.network);
+    let schedule = fork_schedule(test_case.network).expect("unsupported forks are skipped");
+    let spec = schedule.initial;
     let mut parent_block_hash = Some(test_case.genesis_block_header.hash);
     let mut parent_excess_blob_gas =
         test_case.genesis_block_header.excess_blob_gas.unwrap_or_default().saturating_to::<u64>();
-    let mut block_env =
-        block_env_from_header(&test_case.genesis_block_header, parent_excess_blob_gas, spec);
+    let mut block_env = block_env_from_header(
+        &test_case.genesis_block_header,
+        parent_excess_blob_gas,
+        &schedule,
+        spec,
+    );
     let total_blocks = test_case.blocks.len();
     let mut db_stats_counts = DbStatsCounts::default();
     // `evm2 capture` keeps only the accounts the blocks touch and zeroes the genesis state
@@ -280,6 +284,8 @@ fn execute_case(
         let block_number = block_number(block);
         let block_gas_used = block_gas_used(block);
         let total_transactions = block_transactions(block).len();
+        let spec = block_header(block)
+            .map_or(spec, |header| schedule.spec_at(header.number, header.timestamp));
         hook.block_started(BlockStarted {
             block_index,
             total_blocks,
@@ -295,6 +301,7 @@ fn execute_case(
             block_number,
             total_transactions,
             block,
+            &schedule,
             spec,
             database,
             &mut block_env,
@@ -382,6 +389,7 @@ fn execute_block(
     block_number: Option<U256>,
     total_transactions: usize,
     block: &Block,
+    schedule: &ForkSchedule,
     spec: SpecId,
     database: &mut InMemoryDB,
     block_env: &mut BlockEnv,
@@ -419,7 +427,7 @@ fn execute_block(
     if let Some(header) = block_header(block) {
         block_hash = Some(header.hash);
         beacon_root = header.parent_beacon_block_root;
-        next_block_env = block_env_from_header(header, *parent_excess_blob_gas, spec);
+        next_block_env = block_env_from_header(header, *parent_excess_blob_gas, schedule, spec);
         this_excess_blob_gas = header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>());
         expected_state_root = Some(header.state_root);
     }
@@ -851,6 +859,7 @@ fn pre_block_system_calls(
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(root.as_slice()),
             "eip4788",
+            false,
         )?;
     }
     if spec.enables(SpecId::PRAGUE)
@@ -862,6 +871,7 @@ fn pre_block_system_calls(
             HISTORY_STORAGE_ADDRESS,
             Bytes::copy_from_slice(hash.as_slice()),
             "eip2935",
+            false,
         )?;
     }
     Ok(())
@@ -910,13 +920,21 @@ fn post_block_transition(
     }
 
     if spec.enables(SpecId::PRAGUE) {
-        run_system_call(evm, block_state, WITHDRAWAL_REQUEST_ADDRESS, Bytes::new(), "eip7002")?;
+        run_system_call(
+            evm,
+            block_state,
+            WITHDRAWAL_REQUEST_ADDRESS,
+            Bytes::new(),
+            "eip7002",
+            true,
+        )?;
         run_system_call(
             evm,
             block_state,
             evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7251",
+            true,
         )?;
     }
 
@@ -928,6 +946,7 @@ fn post_block_transition(
             evm2::evm::BUILDER_DEPOSIT_REQUEST_ADDRESS,
             Bytes::new(),
             "eip8282_deposit",
+            true,
         )?;
         run_system_call(
             evm,
@@ -935,6 +954,7 @@ fn post_block_transition(
             evm2::evm::BUILDER_EXIT_REQUEST_ADDRESS,
             Bytes::new(),
             "eip8282_exit",
+            true,
         )?;
     }
     Ok(())
@@ -946,9 +966,15 @@ fn run_system_call(
     address: Address,
     data: Bytes,
     label: &'static str,
+    checked: bool,
 ) -> Result<(), TestErrorKind> {
     let executed = evm.system_call(SystemTx::new(address, data))?;
     if !executed.result().status {
+        // A failed unchecked call keeps the state accesses it recorded, which a BAL lists as reads.
+        if !checked {
+            let _ = executed.commit_to(block_state);
+            return Ok(());
+        }
         let _ = executed.discard();
         let has_code = match evm.read_account_info(&address) {
             Ok(info) => info.is_some_and(|info| !info.is_empty_code_hash()),
@@ -1018,7 +1044,12 @@ fn parse_state(
     Ok(database)
 }
 
-fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecId) -> BlockEnv {
+fn block_env_from_header(
+    header: &BlockHeader,
+    excess_blob_gas: u64,
+    schedule: &ForkSchedule,
+    spec: SpecId,
+) -> BlockEnv {
     let excess_blob_gas =
         header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>()).unwrap_or(excess_blob_gas);
     BlockEnvExt {
@@ -1034,7 +1065,7 @@ fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecI
             U256::ZERO
         },
         blob_basefee: U256::from(
-            blob_params_for_timestamp(header.timestamp, spec).calc_blob_fee(excess_blob_gas),
+            schedule.blob_params(header.timestamp, spec).calc_blob_fee(excess_blob_gas),
         ),
         slot_num: header.slot_number.unwrap_or_default(),
         ext: (),
@@ -1340,43 +1371,125 @@ fn is_blockchain_fork_skipped(spec: SpecId) -> bool {
     is_fork_skipped(spec)
 }
 
-fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
-    match fork {
-        ForkSpec::Frontier => SpecId::FRONTIER,
-        ForkSpec::Homestead => SpecId::HOMESTEAD,
-        ForkSpec::EIP150 => SpecId::TANGERINE,
-        ForkSpec::EIP158 => SpecId::SPURIOUS_DRAGON,
-        ForkSpec::Byzantium => SpecId::BYZANTIUM,
-        ForkSpec::Constantinople | ForkSpec::ConstantinopleFix => SpecId::PETERSBURG,
-        ForkSpec::Istanbul => SpecId::ISTANBUL,
-        ForkSpec::Berlin => SpecId::BERLIN,
-        ForkSpec::London => SpecId::LONDON,
+/// The specs a fork runs, in order.
+struct ForkSchedule {
+    initial: SpecId,
+    /// The spec that a transition fork switches to, and when.
+    transition: Option<(Activation, SpecId)>,
+    /// Whether the blob schedule is BPO2 throughout, as before the BPO2 to Amsterdam transition.
+    bpo2_blobs: bool,
+}
+
+/// When a transition fork activates.
+#[derive(Clone, Copy)]
+enum Activation {
+    Block(u64),
+    Timestamp(u64),
+}
+
+impl ForkSchedule {
+    const fn fixed(spec: SpecId) -> Self {
+        Self { initial: spec, transition: None, bpo2_blobs: false }
+    }
+
+    const fn transition(initial: SpecId, activation: Activation, spec: SpecId) -> Self {
+        Self { initial, transition: Some((activation, spec)), bpo2_blobs: false }
+    }
+
+    const fn with_bpo2_blobs(mut self) -> Self {
+        self.bpo2_blobs = true;
+        self
+    }
+
+    /// Returns the blob parameters of the block with this timestamp and spec.
+    fn blob_params(&self, timestamp: U256, spec: SpecId) -> BlobParams {
+        if self.bpo2_blobs {
+            BlobParams::bpo2()
+        } else {
+            blob_params_for_timestamp(timestamp, spec)
+        }
+    }
+
+    /// Returns the spec of the block with this number and timestamp.
+    fn spec_at(&self, number: U256, timestamp: U256) -> SpecId {
+        match self.transition {
+            Some((Activation::Block(at), spec)) if number >= U256::from(at) => spec,
+            Some((Activation::Timestamp(at), spec)) if timestamp >= U256::from(at) => spec,
+            _ => self.initial,
+        }
+    }
+
+    /// Returns whether any spec of the fork is skipped.
+    fn is_skipped(&self) -> bool {
+        is_blockchain_fork_skipped(self.initial)
+            || self.transition.is_some_and(|(_, spec)| is_blockchain_fork_skipped(spec))
+    }
+}
+
+/// Returns the specs of a fork, or `None` for the transitions that the runner does not support:
+/// the DAO fork, and the BPO blob schedule forks, which share a spec.
+const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
+    use Activation::{Block, Timestamp};
+    const AT_5: Activation = Block(5);
+    const AT_15K: Activation = Timestamp(15_000);
+
+    Some(match fork {
+        ForkSpec::Frontier => ForkSchedule::fixed(SpecId::FRONTIER),
+        ForkSpec::Homestead => ForkSchedule::fixed(SpecId::HOMESTEAD),
+        ForkSpec::EIP150 => ForkSchedule::fixed(SpecId::TANGERINE),
+        ForkSpec::EIP158 => ForkSchedule::fixed(SpecId::SPURIOUS_DRAGON),
+        ForkSpec::Byzantium => ForkSchedule::fixed(SpecId::BYZANTIUM),
+        ForkSpec::Constantinople | ForkSpec::ConstantinopleFix => {
+            ForkSchedule::fixed(SpecId::PETERSBURG)
+        }
+        ForkSpec::Istanbul => ForkSchedule::fixed(SpecId::ISTANBUL),
+        ForkSpec::Berlin => ForkSchedule::fixed(SpecId::BERLIN),
+        ForkSpec::London => ForkSchedule::fixed(SpecId::LONDON),
         ForkSpec::Paris
         | ForkSpec::MergeEOF
         | ForkSpec::MergeMeterInitCode
-        | ForkSpec::MergePush0 => SpecId::MERGE,
-        ForkSpec::Shanghai => SpecId::SHANGHAI,
-        ForkSpec::Cancun => SpecId::CANCUN,
-        ForkSpec::Prague => SpecId::PRAGUE,
-        ForkSpec::Osaka => SpecId::OSAKA,
-        ForkSpec::Amsterdam => SpecId::AMSTERDAM,
-        ForkSpec::FrontierToHomesteadAt5
-        | ForkSpec::HomesteadToDaoAt5
-        | ForkSpec::HomesteadToEIP150At5
-        | ForkSpec::EIP158ToByzantiumAt5
-        | ForkSpec::ByzantiumToConstantinopleAt5
-        | ForkSpec::ByzantiumToConstantinopleFixAt5
-        | ForkSpec::BerlinToLondonAt5
-        | ForkSpec::ParisToShanghaiAtTime15k
-        | ForkSpec::ShanghaiToCancunAtTime15k
-        | ForkSpec::CancunToPragueAtTime15k
-        | ForkSpec::PragueToOsakaAtTime15k
+        | ForkSpec::MergePush0 => ForkSchedule::fixed(SpecId::MERGE),
+        ForkSpec::Shanghai => ForkSchedule::fixed(SpecId::SHANGHAI),
+        ForkSpec::Cancun => ForkSchedule::fixed(SpecId::CANCUN),
+        ForkSpec::Prague => ForkSchedule::fixed(SpecId::PRAGUE),
+        ForkSpec::Osaka => ForkSchedule::fixed(SpecId::OSAKA),
+        ForkSpec::Amsterdam => ForkSchedule::fixed(SpecId::AMSTERDAM),
+        ForkSpec::FrontierToHomesteadAt5 => {
+            ForkSchedule::transition(SpecId::FRONTIER, AT_5, SpecId::HOMESTEAD)
+        }
+        ForkSpec::HomesteadToEIP150At5 => {
+            ForkSchedule::transition(SpecId::HOMESTEAD, AT_5, SpecId::TANGERINE)
+        }
+        ForkSpec::EIP158ToByzantiumAt5 => {
+            ForkSchedule::transition(SpecId::SPURIOUS_DRAGON, AT_5, SpecId::BYZANTIUM)
+        }
+        ForkSpec::ByzantiumToConstantinopleAt5 | ForkSpec::ByzantiumToConstantinopleFixAt5 => {
+            ForkSchedule::transition(SpecId::BYZANTIUM, AT_5, SpecId::PETERSBURG)
+        }
+        ForkSpec::BerlinToLondonAt5 => {
+            ForkSchedule::transition(SpecId::BERLIN, AT_5, SpecId::LONDON)
+        }
+        ForkSpec::ParisToShanghaiAtTime15k => {
+            ForkSchedule::transition(SpecId::MERGE, AT_15K, SpecId::SHANGHAI)
+        }
+        ForkSpec::ShanghaiToCancunAtTime15k => {
+            ForkSchedule::transition(SpecId::SHANGHAI, AT_15K, SpecId::CANCUN)
+        }
+        ForkSpec::CancunToPragueAtTime15k => {
+            ForkSchedule::transition(SpecId::CANCUN, AT_15K, SpecId::PRAGUE)
+        }
+        ForkSpec::PragueToOsakaAtTime15k => {
+            ForkSchedule::transition(SpecId::PRAGUE, AT_15K, SpecId::OSAKA)
+        }
+        ForkSpec::BPO2ToAmsterdamAtTime15k => {
+            ForkSchedule::transition(SpecId::OSAKA, AT_15K, SpecId::AMSTERDAM).with_bpo2_blobs()
+        }
+        ForkSpec::HomesteadToDaoAt5
         | ForkSpec::OsakaToBPO1AtTime15k
         | ForkSpec::BPO1ToBPO2AtTime15k
         | ForkSpec::BPO2ToBPO3AtTime15k
-        | ForkSpec::BPO3ToBPO4AtTime15k
-        | ForkSpec::BPO2ToAmsterdamAtTime15k => unreachable!("transition forks are skipped"),
-    }
+        | ForkSpec::BPO3ToBPO4AtTime15k => return None,
+    })
 }
 
 #[cfg(test)]
