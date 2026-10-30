@@ -203,8 +203,11 @@ class NoBenchCounts(Exception):
     """The binary ran without counting a benchmark loop: it predates ``EVM2_PERF_CONTROL``."""
 
 
-def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
-    """Run ``evm2 run`` under ``perf stat``; return ``(instructions, cycles)`` of its bench loop.
+def perf_counts(binary: str, args: list[str]) -> tuple[int, int, int | None]:
+    """Run ``evm2 run`` under ``perf stat``; return ``(instructions, cycles, iterations)``.
+
+    The counts cover its bench loop, and ``iterations`` is the number of iterations the CLI
+    reports having counted, or ``None`` when the binary predates that report.
 
     The counters start disabled and the CLI enables them around the loop through
     ``EVM2_PERF_CONTROL``, so the compile cost, which is large and noisy, is not counted.
@@ -217,7 +220,7 @@ def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
     fds = [ctl_read, ctl_write, ack_read, ack_write]
     try:
         with tempfile.NamedTemporaryFile("r") as out:
-            subprocess.run(
+            result = subprocess.run(
                 [
                     *no_aslr(),
                     "perf",
@@ -254,4 +257,5 @@ def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
             os.close(fd)
     if not stats.get("instructions:u"):
         raise NoBenchCounts(binary)
-    return int(stats["instructions:u"]), int(stats["cycles:u"])
+    counted = [int(n) for n in re.findall(r"perf counted (\d+) iterations", result.stderr)]
+    return int(stats["instructions:u"]), int(stats["cycles:u"]), sum(counted) or None
