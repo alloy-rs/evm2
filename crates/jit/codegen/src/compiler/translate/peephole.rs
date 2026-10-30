@@ -208,30 +208,34 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// EXP base, exp => base ** exp.
     ///
-    /// Dynamic gas is folded into the section gas cost by `SectionsAnalysis` when the
-    /// exponent is a compile-time constant, so the section gas check already covers it.
-    /// For constant-base cases with a dynamic exponent, charge the dynamic gas and compute the
-    /// result inline.
+    /// A constant exponent has its dynamic gas folded into the section gas cost by
+    /// `SectionsAnalysis` (see `Bytecode::exp_static_gas`), so it is lowered without charging
+    /// gas. For constant-base cases with a dynamic exponent, charge the dynamic gas and compute
+    /// the result inline.
     fn peephole_exp(&mut self) -> bool {
         let [base, exponent] = self.const_operands();
-        match exponent {
-            // x ** 0 => 1.
-            Some(U256::ZERO) => self.fold_const(1),
-            // x ** 1 => x.
-            Some(U256::ONE) => {
-                let [a, _] = self.popn();
-                self.push(a);
+        if let Some(exponent) = exponent
+            && self.bytecode.exp_static_gas(self.current_inst.unwrap()).is_some()
+        {
+            match exponent {
+                // x ** 0 => 1.
+                U256::ZERO => self.fold_const(1),
+                // x ** 1 => x.
+                U256::ONE => {
+                    let [a, _] = self.popn();
+                    self.push(a);
+                }
+                // x ** 2 => x * x.
+                _ if exponent == 2 => {
+                    let [a, _] = self.popn();
+                    let r = self.bcx.imul(a, a);
+                    self.push(r);
+                }
+                _ => {
+                    let sp = self.sp_after_inputs();
+                    let _ = self.call_builtin(Builtin::Pow, &[sp]);
+                }
             }
-            // x ** 2 => x * x.
-            Some(e) if e == 2 => {
-                let [a, _] = self.popn();
-                let r = self.bcx.imul(a, a);
-                self.push(r);
-            }
-            Some(_) => return false,
-            None => {}
-        }
-        if exponent.is_some() {
             return true;
         }
         match base {

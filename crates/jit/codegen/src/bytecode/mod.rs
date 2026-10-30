@@ -724,13 +724,24 @@ impl<'a> Bytecode<'a> {
     /// Returns the known output of the given instruction if translation can store it instead of
     /// executing the instruction.
     ///
-    /// EXP's dynamic gas is only charged statically when its exponent is known, and a constant
-    /// output joined across call contexts does not imply a constant exponent.
+    /// A constant output joined across call contexts does not imply that EXP's exponent is
+    /// constant, so EXP's dynamic gas must also be static.
     pub(crate) fn foldable_output(&self, inst: Inst) -> Option<U256> {
-        if self.insts[inst].opcode == op::EXP && self.const_operand(inst, 1).is_none() {
+        if self.insts[inst].opcode == op::EXP && self.exp_static_gas(inst).is_none() {
             return None;
         }
         self.const_output(inst)
+    }
+
+    /// Returns the dynamic gas of the EXP instruction if it is charged statically with its
+    /// section.
+    ///
+    /// This holds exactly when the exponent is a known constant. Translation then never charges
+    /// the dynamic gas itself, whether it folds, inlines or calls the gas-free builtin, and
+    /// otherwise charges it at run time.
+    pub(crate) fn exp_static_gas(&self, inst: Inst) -> Option<u64> {
+        debug_assert_eq!(self.insts[inst].opcode, op::EXP);
+        Some(self.gas_params.exp_cost(self.const_operand(inst, 1)?))
     }
 
     /// Returns the first constant EVM memory access `(offset, len)` for the given instruction.
