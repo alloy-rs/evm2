@@ -11,7 +11,6 @@ use crate::tracing::{
         },
         builtins::{PrecompileList, register_builtins, to_serde_value},
     },
-    tx_state::TxState,
     types::CallKind,
     utils,
 };
@@ -332,7 +331,6 @@ impl JsInspector {
         }
         self.ensure_not_interrupted()?;
         let TxResultWithState { result, pending_state, .. } = res;
-        let state = TxState::from_pending(pending_state);
 
         let mut output_bytes = None;
         let mut error = None;
@@ -377,7 +375,7 @@ impl JsInspector {
             error,
         };
         let ctx = ctx.into_js_object(&mut self.ctx)?;
-        let result = self.reusable_db.with_changes_scope(&state, db, || {
+        let result = self.reusable_db.with_changes_scope(pending_state.changes(), db, || {
             self.result_fn.call(&self.this, &[ctx.into(), self.reusable_db.value()], &mut self.ctx)
         });
         self.ensure_not_interrupted()?;
@@ -1567,6 +1565,93 @@ mod tests {
             let res = run_trace(code, Some(contract.into()), true);
             assert_eq!(res, expected);
         }
+    }
+
+    /// Traces a call of `code` at address 0x01.. on a state where its slots 0 and 1 hold 5 and 7
+    /// and the account at 0x02.. has slot 1 set to 9, then returns `getState` in `result` for the
+    /// slots of both accounts.
+    fn result_storage(
+        spec: SpecId,
+        code: &str,
+        prep: impl FnOnce(&mut Evm<'_, BaseEvmTypes>),
+    ) -> serde_json::Value {
+        let tracer = r#"{
+            fault: function() {},
+            result: function(ctx, db) {
+                var read = function(address, slot) {
+                    return Number(BigInt(toHex(db.getState(toAddress(address), toWord(slot)))));
+                };
+                var a = '0101010101010101010101010101010101010101';
+                var b = '0202020202020202020202020202020202020202';
+                return [read(a, '0x00'), read(a, '0x01'), read(a, '0x02'), read(b, '0x01')];
+            }
+        }"#;
+        let (first, second) = (Address::repeat_byte(1), Address::repeat_byte(2));
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            &Address::ZERO,
+            AccountInfo { balance: U256::from(1e18), ..Default::default() },
+        );
+        db.insert_account_info(
+            &first,
+            AccountInfo {
+                code: Some(Bytecode::new_legacy(hex::decode(code).unwrap().into())),
+                ..Default::default()
+            },
+        );
+        db.insert_account_info(&second, AccountInfo::default());
+        db.insert_account_storage(&first, &U256::ZERO, &U256::from(5));
+        db.insert_account_storage(&first, &U256::from(1), &U256::from(7));
+        db.insert_account_storage(&second, &U256::from(1), &U256::from(9));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            spec,
+            evm2::env::BlockEnvExt::default(),
+            ethereum_tx_registry(spec),
+            db,
+            Precompiles::base(spec),
+        );
+        evm.set_inspector(JsInspector::new(tracer.to_string(), serde_json::Value::Null).unwrap());
+        prep(&mut evm);
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 1_000_000,
+                to: TxKind::Call(first),
+                ..Default::default()
+            }),
+            Address::ZERO,
+        );
+        let res = evm.transact(&tx).expect("pass without error").detach();
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        let block = *evm.block_env();
+        inspector.json_result(&res, &tx, &block, evm.database_mut()).unwrap()
+    }
+
+    #[test]
+    fn test_db_get_state_result_reads_final_storage() {
+        // SSTORE(1, 3), SSTORE(2, 4) on an account whose slot 0 holds 5: written slots read their
+        // final value and unloaded ones the database.
+        let res = result_storage(SpecId::CANCUN, "600360015560046002550000", |_| {});
+        assert_eq!(res, json!([5, 3, 4, 9]));
+    }
+
+    #[test]
+    fn test_db_get_state_result_of_resumed_account_keeps_database_baseline() {
+        // An account that existed before the transaction, as when an embedder resumes it on a
+        // fresh overlay, keeps its database baseline although it is marked as created.
+        let code = "6003600155";
+        let first = Address::repeat_byte(1);
+        let res = result_storage(SpecId::CANCUN, code, |evm| {
+            evm.state_mut().account(&first).unwrap().mark_created_keeping_storage();
+        });
+        assert_eq!(res, json!([5, 3, 0, 9]));
+    }
+
+    #[test]
+    fn test_db_get_state_result_of_wiped_account_is_zero() {
+        // SLOAD(0), POP, SSTORE(2, 4), SELFDESTRUCT(0): before Cancun the account's storage is
+        // wiped, including the slot only read and the slot written.
+        let res = result_storage(SpecId::SHANGHAI, "6000545060046002556000ff", |_| {});
+        assert_eq!(res, json!([0, 0, 0, 9]));
     }
 
     #[test]
