@@ -1947,14 +1947,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     ///
     /// The section head already charged the static gas of the instructions after the access, but
     /// the interpreter charges the resize before them. This adds that gas back around the resize,
-    /// so the stop reason is the one of the instruction that runs out of gas, and fails with
-    /// `OutOfGas` if the resize used that gas.
+    /// so the stop reason is the one of the instruction that runs out of gas. It fails with
+    /// `OutOfGas` if the resize used that gas, even if an instruction after the access would halt
+    /// for another reason first.
     fn build_mresize(&mut self, mut min_size: B::Value, exact: Option<(B::Value, B::Value)>) {
         let owed = match self.current_inst {
             Some(inst) if self.config.gas_metering => self.bytecode.inst(inst).gas_owed(),
             _ => 0,
         };
-        let unchecked_gas = self.unchecked_gas;
         if owed != 0 {
             self.add_gas_remaining(owed as i64);
         }
@@ -1973,7 +1973,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             let out_of_gas = self.bcx.icmp_imm(IntCC::SignedLessThan, remaining, 0);
             self.build_check(out_of_gas, InstrStop::OutOfGas);
         }
-        self.unchecked_gas = unchecked_gas;
     }
 
     /// Splits a value into a base value and a constant addend.

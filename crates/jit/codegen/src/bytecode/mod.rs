@@ -1110,15 +1110,22 @@ impl InstData {
     /// `MLOAD`, `MSTORE` or `MSTORE8`.
     #[inline]
     pub(crate) fn gas_owed(&self) -> u32 {
-        debug_assert!(matches!(self.opcode, op::GAS | op::MLOAD | op::MSTORE | op::MSTORE8));
+        debug_assert!(self.tracks_gas_owed());
         self.data
     }
 
     /// Sets the static gas charged ahead of this instruction.
     #[inline]
     pub(crate) fn set_gas_owed(&mut self, gas: u32) {
-        debug_assert!(matches!(self.opcode, op::GAS | op::MLOAD | op::MSTORE | op::MSTORE8));
+        debug_assert!(self.tracks_gas_owed());
         self.data = gas;
+    }
+
+    /// Returns `true` if this instruction observes or fails on the remaining gas in a way that
+    /// depends on the gas the section head charged for the instructions after it.
+    #[inline]
+    pub(crate) const fn tracks_gas_owed(&self) -> bool {
+        matches!(self.opcode, op::GAS | op::MLOAD | op::MSTORE | op::MSTORE8)
     }
 
     /// Returns the program counter of a `JUMPDEST`.

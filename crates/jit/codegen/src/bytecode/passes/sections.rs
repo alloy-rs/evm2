@@ -233,7 +233,7 @@ impl SectionsAnalysis {
         let (inp, out) = data.stack_io();
         self.stack.process(inp, out);
         self.gas.process(data.base_gas);
-        if matches!(data.opcode, op::GAS | op::MLOAD | op::MSTORE | op::MSTORE8) {
+        if data.tracks_gas_owed() {
             self.gas.process_gas(inst);
         }
 
