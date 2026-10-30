@@ -15,6 +15,7 @@ use crate::execution::CompiledMode;
 
 const NEXTEST_ENV: &str = "NEXTEST";
 const COMPILED_EEST_SUBSET_ENV: &str = "EVM2_COMPILED_EEST_SUBSET";
+const IGNORE_LISTS_TRIAL: &str = "ignore_lists_match_fixtures";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CompiledEestSubset {
@@ -129,8 +130,6 @@ fn collect_trials(args: &Arguments, suites: &[TestSuite]) -> Result<Vec<Trial>, 
         return exact_trial(suites, filter).map(|trial| trial.into_iter().collect());
     }
 
-    check_ignored_tests(suites)?;
-
     let mut trials = Vec::new();
     for suite in suites {
         if let Some(trial) = batched_trial(suite)? {
@@ -148,15 +147,17 @@ fn collect_trials(args: &Arguments, suites: &[TestSuite]) -> Result<Vec<Trial>, 
             }
         }
     }
+    trials.extend(ignore_lists_trial(suites)?);
     Ok(trials)
 }
 
-/// Fails when an ignore pattern matches no discovered fixture, so dead entries cannot accumulate.
+/// Builds a trial that fails when an ignore pattern matches no discovered fixture, so dead
+/// entries cannot accumulate. The failure names each dead pattern and the roots searched.
 ///
-/// Skipped when the roots are not the full default set: an explicit root, additional tests,
-/// `SUBDIR`, or an execution-specs-only run leave patterns without fixtures. Patterns in a
+/// Returns no trial when the roots are not the full default set: an explicit root, additional
+/// tests, `SUBDIR`, or an execution-specs-only run leave patterns without fixtures. Patterns in a
 /// main-only list are checked only when the owning suite has a `main` root.
-fn check_ignored_tests(suites: &[TestSuite]) -> Result<(), String> {
+fn ignore_lists_trial(suites: &[TestSuite]) -> Result<Option<Trial>, String> {
     let roots = || suites.iter().flat_map(|suite| &suite.roots);
     let subdir = env::var_os(STATE_TEST_SUBDIR_ENV).is_some_and(|subdir| !subdir.is_empty());
     if subdir
@@ -164,7 +165,7 @@ fn check_ignored_tests(suites: &[TestSuite]) -> Result<(), String> {
         || additional_tests_path().is_some()
         || roots().any(|root| root.name.ends_with("::custom"))
     {
-        return Ok(());
+        return Ok(None);
     }
 
     let mut names = Vec::new();
@@ -186,14 +187,31 @@ fn check_ignored_tests(suites: &[TestSuite]) -> Result<(), String> {
         .collect::<Vec<_>>();
     dead.sort_unstable();
     dead.dedup();
-    if dead.is_empty() {
-        return Ok(());
-    }
-    let dead = dead.iter().map(|pattern| format!("  {pattern}")).collect::<Vec<_>>().join("\n");
-    Err(format!("ignore patterns that match no fixture; remove them:\n{dead}"))
+
+    let mut searched = roots().map(|root| root.path.display().to_string()).collect::<Vec<_>>();
+    searched.sort_unstable();
+    searched.dedup();
+
+    Ok(Some(Trial::test(IGNORE_LISTS_TRIAL, move || {
+        if dead.is_empty() {
+            return Ok(());
+        }
+        let dead = dead.iter().map(|pattern| format!("  {pattern}")).collect::<Vec<_>>();
+        let searched = searched.iter().map(|root| format!("  {root}")).collect::<Vec<_>>();
+        Err(format!(
+            "ignore patterns that match no fixture; remove them:\n{}\nsearched roots:\n{}",
+            dead.join("\n"),
+            searched.join("\n")
+        )
+        .into())
+    })))
 }
 
 fn exact_trial(suites: &[TestSuite], name: &str) -> Result<Option<Trial>, String> {
+    if name == IGNORE_LISTS_TRIAL {
+        return ignore_lists_trial(suites);
+    }
+
     if let Some(suite) = suites.iter().find(|suite| suite.run_files.is_some() && suite.name == name)
     {
         return batched_trial(suite);
