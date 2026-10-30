@@ -10,7 +10,6 @@ use crate::utils::{
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
-use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
     geth::{
         CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
@@ -699,9 +698,9 @@ fn test_geth_mux_tracer() {
     assert!(res.result.is_success());
 
     let (ctx, inspector) = evm.ctx_inspector();
-    let frame = inspector
-        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
-        .unwrap();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
 
     assert_eq!(frame.0.len(), 5);
     assert!(frame.0.contains_key(&GethDebugTracerType::BuiltInTracer(
@@ -1722,11 +1721,15 @@ fn test_geth_opcode_limit_end_to_end() {
         assert_eq!(steps[8]["depth"], 2);
         assert_eq!(steps[11]["depth"], 1);
 
-        // The cap must count steps across call frames, including a cap inside the child.
-        for limit in [2, 9, 12] {
+        // The limit counts bytes of JSON across call frames, including a cap inside the child.
+        // geth logs a step while the JSON written so far is within the limit, so the bytes of the
+        // first `steps - 1` steps let `steps` steps through.
+        let sizes: Vec<_> = steps.iter().map(geth_json_len).collect();
+        for steps in [2, 9, 12] {
+            let limit: usize = sizes[..steps - 1].iter().sum();
             let (limited, limited_gas) = run(json!({ "limit": limit }));
             let mut expected = full.clone();
-            expected["structLogs"].as_array_mut().unwrap().truncate(limit);
+            expected["structLogs"].as_array_mut().unwrap().truncate(steps);
             assert_eq!(limited, expected);
             assert_eq!(limited_gas, gas_used);
         }
@@ -1737,6 +1740,24 @@ fn test_geth_opcode_limit_end_to_end() {
         assert_eq!(calls["calls"].as_array().unwrap().len(), 1);
         assert_eq!(run(json!({ "tracer": "callTracer", "limit": 2 })).0, calls);
     }
+}
+
+/// Returns the bytes of the JSON geth writes for a struct log, which leaves out a zero refund and
+/// empty return data, memory and storage.
+fn geth_json_len(log: &serde_json::Value) -> usize {
+    let mut log = log.clone();
+    let fields = log.as_object_mut().unwrap();
+    for (name, empty) in [
+        ("refund", serde_json::json!(0)),
+        ("returnData", serde_json::json!("0x")),
+        ("memory", serde_json::json!([])),
+        ("storage", serde_json::json!({})),
+    ] {
+        if fields.get(name) == Some(&empty) {
+            fields.remove(name);
+        }
+    }
+    log.to_string().len()
 }
 
 /// Execute real bytecode and compare capped capture with the complete execution.
@@ -1789,11 +1810,34 @@ fn test_geth_opcode_limit() {
             full.return_value,
             if terminal == op::INVALID { Bytes::new() } else { hex!("2a").into() }
         );
-        // Includes caps before CALL, on CALL, in the child, and after returning to the parent.
-        for limit in [None, Some(0), Some(2), Some(8), Some(9), Some(12), Some(u64::MAX)] {
+        // Includes caps before CALL, on CALL, in the child, and after returning to the parent. The
+        // limit counts bytes of JSON, and the first `steps - 1` steps let `steps` steps through.
+        let sizes: Vec<_> = full
+            .struct_logs
+            .iter()
+            .map(|log| geth_json_len(&serde_json::to_value(log).unwrap()))
+            .collect();
+        let step_limit = |steps: usize| sizes[..steps - 1].iter().sum::<usize>() as u64;
+        for limit in [
+            None,
+            Some(0),
+            Some(step_limit(2)),
+            Some(step_limit(8)),
+            Some(step_limit(9)),
+            Some(step_limit(12)),
+            Some(u64::MAX),
+        ] {
             let opts = GethDefaultTracingOptions { limit, ..Default::default() };
-            let expected_len = limit.filter(|n| *n != 0).map_or(full.struct_logs.len(), |n| {
-                full.struct_logs.len().min(usize::try_from(n).unwrap_or(usize::MAX))
+            let expected_len = limit.filter(|n| *n != 0).map_or(full.struct_logs.len(), |limit| {
+                let mut written = 0;
+                sizes
+                    .iter()
+                    .take_while(|size| {
+                        let logged = written as u64 <= limit;
+                        written += **size;
+                        logged
+                    })
+                    .count()
             });
             let mut expected = full.clone();
             expected.struct_logs.truncate(expected_len);
@@ -1802,10 +1846,14 @@ fn test_geth_opcode_limit() {
             for _ in 0..2 {
                 let actual = run(&mut inspector, opts);
                 assert_eq!(actual, expected, "limit {limit:?}, terminal {terminal}");
-                assert_eq!(
-                    inspector.traces().nodes().iter().map(|n| n.trace.steps.len()).sum::<usize>(),
-                    expected_len
-                );
+                // Capture stops at the most steps the limit can hold, at least a byte count's worth
+                // of the smallest log each.
+                let recorded =
+                    inspector.traces().nodes().iter().map(|n| n.trace.steps.len()).sum::<usize>();
+                assert!(recorded >= expected_len);
+                if let Some(limit) = limit.filter(|limit| *limit != 0) {
+                    assert!(recorded as u64 <= limit / 48 + 1);
+                }
                 inspector.fuse();
             }
             // Builder options also apply to already collected unlimited traces.
@@ -2056,7 +2104,7 @@ fn test_debug_default_tracer_moves_stacks() {
     caller_code.extend_from_slice(&hex!("5af150600700"));
 
     for disable_stack in [false, true] {
-        for limit in [None, Some(0), Some(10)] {
+        for limit in [None, Some(0), Some(1000)] {
             let config = GethDefaultTracingOptions {
                 disable_stack: Some(disable_stack),
                 limit,
@@ -2261,9 +2309,9 @@ fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
         .unwrap();
 
     let (ctx, inspector) = evm.ctx_inspector();
-    let frame = inspector
-        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
-        .unwrap();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
     let GethTrace::JS(preimages) = &frame.0[&key] else { panic!("expected a JSON object") };
     assert_eq!(preimages.as_object().unwrap().len(), 1);
 }
@@ -2418,6 +2466,51 @@ fn mux_flat_call_tracer_does_not_shift_call_tracer_log_positions() {
         panic!("expected a flat call tracer frame");
     };
     assert_eq!(traces.len(), 1);
+}
+
+#[test]
+fn mux_runs_nested_mux_and_erc7562_tracers() {
+    let (contract, db) = contract_with_code(&hex!("5f5f00"));
+    let nested = serde_json::json!({"callTracer": {}, "noopTracer": {}});
+    let nested_key = GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::MuxTracer);
+    let config = MuxConfig(HashMap::from_iter([
+        (GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FourByteTracer), None),
+        (GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::Erc7562Tracer), None),
+        (nested_key.clone(), Some(GethDebugTracerConfig(nested))),
+    ]));
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(MuxInspector::try_from_config(config).unwrap());
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
+
+    assert_eq!(frame.0.len(), 3);
+    assert!(matches!(
+        frame.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::Erc7562Tracer)],
+        GethTrace::Erc7562Tracer(_)
+    ));
+    let GethTrace::MuxTracer(nested) = &frame.0[&nested_key] else {
+        panic!("expected a nested mux frame");
+    };
+    assert_eq!(nested.0.len(), 2);
+    assert!(matches!(
+        nested.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer)],
+        GethTrace::CallTracer(_)
+    ));
+    assert!(matches!(
+        nested.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::NoopTracer)],
+        GethTrace::NoopTracer(_)
+    ));
 }
 
 /// The expected snapshots come from go-ethereum master a0cba163: the struct logger adds the slot
@@ -2663,5 +2756,77 @@ fn test_geth_prestate_diff_reports_cleared_code() {
     assert_eq!(
         serde_json::to_value(&diff.post[&authority]).unwrap(),
         serde_json::json!({ "code": "0x", "nonce": 1 })
+    );
+}
+
+/// Geth keeps the pre state of a selfdestructed account whole, with every slot the transaction
+/// read, including unchanged and zero ones.
+#[test]
+fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let contract = address!("1111111111111111111111111111111111111111");
+    let beneficiary = address!("3333333333333333333333333333333333333333");
+
+    // SLOAD 1, SLOAD 2, SELFDESTRUCT to the beneficiary.
+    let code = Bytes::from(hex!("6001545060025450733333333333333333333333333333333333333333ff"));
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &contract,
+        AccountInfo {
+            balance: U256::from(7),
+            nonce: 1,
+            code_hash: alloy_primitives::keccak256(&code),
+            code: Some(Bytecode::new_raw(code)),
+            ..Default::default()
+        },
+    );
+    db.insert_account_storage(&contract, &U256::from(1), &U256::from(0x2a));
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
+        .build_mainnet();
+
+    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
+    let mut insp =
+        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut db = evm.ctx.db.clone();
+    let res = evm
+        .with_inspector(&mut insp)
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = insp
+        .with_transaction_gas_used(res.result.tx_gas_used())
+        .geth_builder()
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
+        .unwrap();
+    let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
+
+    // Output of geth's `evm t8n --state.fork London` with the prestate tracer in diff mode.
+    assert!(!diff.post.contains_key(&contract));
+    assert_eq!(diff.post[&beneficiary].balance, Some(U256::from(7)));
+    assert_eq!(
+        serde_json::to_value(&diff.pre[&contract]).unwrap(),
+        serde_json::json!({
+            "balance": "0x7",
+            "code": "0x6001545060025450733333333333333333333333333333333333333333ff",
+            "nonce": 1,
+            "storage": {
+                "0x0000000000000000000000000000000000000000000000000000000000000001":
+                    "0x000000000000000000000000000000000000000000000000000000000000002a",
+                "0x0000000000000000000000000000000000000000000000000000000000000002":
+                    "0x0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        })
     );
 }

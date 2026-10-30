@@ -312,8 +312,15 @@ impl ReusableCallFrame {
         let get_to = state_fn(ctx, state.clone(), 0, |state, _, ctx| {
             address_to_uint8_array_value(state.borrow().contract, ctx)
         });
-        let get_value =
-            state_fn(ctx, state.clone(), 0, |state, _, _| Ok(to_bigint(state.borrow().value)));
+        // Geth passes no value for STATICCALL, which `getValue()` reports as undefined.
+        let get_value = state_fn(ctx, state.clone(), 0, |state, _, _| {
+            let state = state.borrow();
+            Ok(if matches!(state.kind, FrameKind::Call(CallKind::StaticCall)) {
+                JsValue::undefined()
+            } else {
+                to_bigint(state.value)
+            })
+        });
         let get_input = state_fn(ctx, state.clone(), 0, |state, _, ctx| {
             to_uint8_array_value(state.borrow().input.clone(), ctx)
         });
@@ -726,16 +733,18 @@ impl StackView {
     }
 
     /// Returns the item `idx` positions from the top of the pre-execution stack.
-    fn peek(&self, idx: usize) -> JsResult<U256> {
+    fn peek(&self, idx: i64) -> JsResult<U256> {
         let Some(post) = self.post else {
             return Err(type_error("tracer accessed stack outside of a callback".to_string()));
         };
         let saved = self.saved.len();
-        let item = if idx < saved {
-            Some(self.saved[saved - 1 - idx])
-        } else {
-            (idx < self.len).then(|| post.get(self.len - 1 - idx).copied()).flatten()
-        };
+        let item = usize::try_from(idx).ok().and_then(|idx| {
+            if idx < saved {
+                Some(self.saved[saved - 1 - idx])
+            } else {
+                (idx < self.len).then(|| post.get(self.len - 1 - idx).copied()).flatten()
+            }
+        });
         item.ok_or_else(|| {
             type_error(format!(
                 "tracer accessed out of bound stack: size {}, index {idx}",
@@ -865,8 +874,7 @@ fn build_step_stack_object(state: Shared<StepLogState>, ctx: &mut Context) -> Js
         Ok(JsValue::from(state.borrow().stack.len()))
     });
     let peek = state_fn(ctx, state, 1, |state, args, ctx| {
-        let len = state.borrow().stack.len();
-        let idx = parse_stack_index(args.get_or_undefined(0), len, ctx)?;
+        let idx = to_int64(args.get_or_undefined(0), ctx)?;
         Ok(to_bigint(state.borrow().stack.peek(idx)?))
     });
 
@@ -881,37 +889,35 @@ fn build_step_memory_object(state: Shared<StepLogState>, ctx: &mut Context) -> J
         Ok(JsValue::from(state.borrow().memory.len() as u64))
     });
     let slice = state_fn(ctx, state.clone(), 2, |state, args, ctx| {
-        let len = state.borrow().memory.len();
-        let start = parse_memory_offset(args.get_or_undefined(0), "start", ctx)?;
-        let end = parse_memory_offset(args.get_or_undefined(1), "end", ctx)?;
-        if end == start {
+        let begin = to_int64(args.get_or_undefined(0), ctx)?;
+        let end = to_int64(args.get_or_undefined(1), ctx)?;
+        if end == begin {
             return uint8_array_from_block(AlignedVec::from_iter(0, core::iter::empty()), ctx);
         }
-        if end < start {
-            return Err(memory_out_of_bounds_error(len, start, end.saturating_sub(start)));
+        if end < begin || begin < 0 {
+            return Err(type_error(format!(
+                "tracer accessed out of bound memory: offset {begin}, end {end}"
+            )));
         }
-        if end > len {
-            let padding = end - len;
-            if padding > MEMORY_PAD_LIMIT {
-                return Err(type_error(format!(
-                    "reached limit for padding memory slice: {padding}"
-                )));
-            }
+        let len = state.borrow().memory.len();
+        let padding = end - len as i64;
+        if padding > MEMORY_PAD_LIMIT {
+            return Err(type_error(format!("reached limit for padding memory slice: {padding}")));
         }
-        let bytes = state.borrow().memory.bytes(start..end)?;
+        let bytes = state.borrow().memory.bytes(begin as usize..end as usize)?;
         uint8_array_from_block(bytes, ctx)
     });
     let get_uint = state_fn(ctx, state, 1, |state, args, ctx| {
         let len = state.borrow().memory.len();
-        let offset = parse_memory_index(args.get_or_undefined(0), "offset", len, ctx)?;
-        let Some(end) = offset.checked_add(32) else {
-            return Err(memory_out_of_bounds_error(len, offset, 32));
-        };
-        if end > len {
-            return Err(memory_out_of_bounds_error(len, offset, 32));
+        let offset = to_int64(args.get_or_undefined(0), ctx)?;
+        if offset < 0 || offset.saturating_add(32) > len as i64 {
+            return Err(type_error(format!(
+                "tracer accessed out of bound memory: available {len}, offset {offset}, size 32"
+            )));
         }
-        let bytes = state.borrow().memory.bytes(offset..end)?;
-        uint8_array_from_block(bytes, ctx)
+        let offset = offset as usize;
+        let bytes = state.borrow().memory.bytes(offset..offset + 32)?;
+        Ok(to_bigint(U256::from_be_slice(bytes.as_slice())))
     });
 
     obj.set(js_string!("slice"), slice, false, ctx)?;
@@ -944,59 +950,27 @@ fn build_step_contract_object(
     Ok(obj)
 }
 
-fn parse_stack_index(value: &JsValue, len: usize, ctx: &mut Context) -> JsResult<usize> {
-    let index = value.to_numeric_number(ctx)?;
-    if !index.is_finite() || index < 0. || index > usize::MAX as f64 {
-        return Err(type_error(format!(
-            "tracer accessed out of bound stack: size {len}, index {index}"
-        )));
-    }
-    Ok(index as usize)
-}
-
-fn invalid_memory_index_error(name: &str, index: impl core::fmt::Display) -> JsError {
-    type_error(format!("invalid memory {name}: {index}"))
-}
-
-const MEMORY_PAD_LIMIT: usize = 1024 * 1024;
-
-fn memory_out_of_bounds_error(len: usize, offset: usize, size: usize) -> JsError {
-    type_error(format!(
-        "tracer accessed out of bound memory: available {len}, offset {offset}, size {size}"
-    ))
-}
-
-fn parse_memory_index(
-    value: &JsValue,
-    name: &str,
-    len: usize,
-    ctx: &mut Context,
-) -> JsResult<usize> {
-    let index = parse_memory_offset(value, name, ctx)?;
-    if index > len {
-        return Err(invalid_memory_index_error(name, index));
-    }
-    Ok(index)
-}
-
-fn parse_memory_offset(value: &JsValue, name: &str, ctx: &mut Context) -> JsResult<usize> {
-    if value.is_undefined() {
-        return Err(invalid_memory_index_error(name, "undefined"));
-    }
-    if let Some(index) = value.as_number()
-        && (!index.is_finite() || index < 0.)
-    {
-        return Err(invalid_memory_index_error(name, index));
-    }
-    if let Some(index) = value.as_bigint() {
-        // Boa's `ToIndex` rejects BigInt, but stack-derived tracer values are BigInt.
-        let index = index.to_string();
-        index.parse::<usize>().map_err(|_| invalid_memory_index_error(name, &index))
+/// Converts a JS argument to the `int64` goja passes to a Go callback.
+///
+/// NaN and infinities become 0, fractions truncate toward zero and values outside the `int64`
+/// range become `i64::MIN`, as Go's float conversion does on amd64.
+fn to_int64(value: &JsValue, ctx: &mut Context) -> JsResult<i64> {
+    // Boa's `ToNumber` rejects BigInt, but stack-derived tracer values are BigInt. Geth's bigint
+    // objects reach goja through their `Number` value, so go through a float as well.
+    let number = match value.as_bigint() {
+        Some(value) => value.to_f64(),
+        None => value.to_number(ctx)?,
+    };
+    Ok(if !number.is_finite() {
+        0
+    } else if (-(2f64.powi(63))..2f64.powi(63)).contains(&number) {
+        number as i64
     } else {
-        let index = value.to_index(ctx)?;
-        usize::try_from(index).map_err(|_| invalid_memory_index_error(name, index))
-    }
+        i64::MIN
+    })
 }
+
+const MEMORY_PAD_LIMIT: i64 = 1024 * 1024;
 
 /// Represents the contract object
 #[derive(Clone, Debug, Default)]
@@ -1550,7 +1524,7 @@ mod tests {
                 db.with_changes_scope(&state, &mut database, || {
                     with_step(&log, opcode::STOP, &stack, &memory, &contract, || {
                         assert!(ctx.eval(Source::from_bytes(
-                            "savedLog.stack.peek(0) === 42n && savedLog.memory.getUint(0)[0] === 7 && savedDb.getBalance('00') === 0n"
+                            "savedLog.stack.peek(0) === 42n && savedLog.memory.getUint(0) >> 248n === 7n && savedDb.getBalance('00') === 0n"
                         )).unwrap().as_boolean().unwrap());
                         match outcome {
                             0 => Ok(JsValue::undefined()),
@@ -1603,7 +1577,7 @@ mod tests {
             view.post = Some(post);
             assert_eq!(view.len(), 3);
             for (idx, expected) in pre.iter().rev().enumerate() {
-                assert_eq!(view.peek(idx).unwrap(), *expected, "op {op:#x} idx {idx}");
+                assert_eq!(view.peek(idx as i64).unwrap(), *expected, "op {op:#x} idx {idx}");
             }
             assert!(view.peek(3).is_err());
         }
