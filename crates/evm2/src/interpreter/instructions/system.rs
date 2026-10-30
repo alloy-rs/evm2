@@ -4,9 +4,8 @@ use crate::{
     EvmFeatures, EvmTypesHost,
     bytecode::Bytecode,
     interpreter::{
-        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Pc, MessageResult,
-        Result,
-        StackMut, Word, derive_create_destination,
+        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, MessageResult,
+        Pc, Result, StackMut, Word, derive_create_destination,
     },
     utils::WordExt,
     version::GasId,
@@ -232,17 +231,18 @@ fn call_inner<T: EvmTypesHost>(
     stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
+    pc: &mut Pc,
     kind: MessageKind,
 ) -> Result {
-    call_with(stack, gas, state, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
+    call_with(stack, gas, state, pc, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
 }
 
 /// Executes a call opcode of `kind` with hooks around its child message.
 ///
 /// This is the body of [`call`], [`callcode`], [`delegatecall`] and [`staticcall`], for custom
 /// call instructions that need extra behavior. Use it from an
-/// `#[instruction(no_stack_preamble, dynamic_gas)]` function with `stack`, `cx.gas` and
-/// `cx.state`.
+/// `#[instruction(no_stack_preamble, dynamic_gas)]` function with `stack`, `cx.gas`,
+/// `cx.state` and `cx.pc`.
 ///
 /// `before` runs after every charge the opcode makes, the EIP-8037 new-account state gas
 /// included, and after the forwarded gas is taken from `gas`, right before the child message
@@ -331,9 +331,10 @@ fn create_inner<T: EvmTypesHost>(
     stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
+    pc: &mut Pc,
     is_create2: bool,
 ) -> Result {
-    create_with(stack, gas, state, is_create2, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
+    create_with(stack, gas, state, pc, is_create2, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
 }
 
 /// Executes `CREATE` or `CREATE2` with hooks around its child message.
@@ -1099,6 +1100,7 @@ mod tests {
             stack,
             cx.gas,
             cx.state,
+            cx.pc,
             MessageKind::Call,
             |gas, _, message| {
                 message.gas_limit -= KEPT_GAS;
@@ -1117,6 +1119,7 @@ mod tests {
             stack,
             cx.gas,
             cx.state,
+            cx.pc,
             false,
             |gas, _, message| {
                 message.gas_limit -= KEPT_GAS;
