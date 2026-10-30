@@ -268,6 +268,9 @@ trait InspectMode<T: EvmTypesHost> {
     /// backend, and in the loop on the others.
     const WATCH: bool = false;
 
+    /// Whether the inspector steps every opcode, so the dispatch loop need not look at the set.
+    const ALL_STEPS: bool = false;
+
     fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
 
     fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
@@ -303,6 +306,26 @@ impl<T: EvmTypesHost> InspectMode<T> for WatchInspector {
 }
 
 struct DynInspector;
+
+/// Loop mode of [`DynInspector`] for an inspector that steps every opcode.
+#[cfg(not(tco))]
+struct DynAllInspector;
+
+#[cfg(not(tco))]
+impl<T: EvmTypesHost> InspectMode<T> for DynAllInspector {
+    const INSPECT: bool = true;
+    const ALL_STEPS: bool = true;
+
+    #[inline(always)]
+    fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {
+        state.inspect_step(pc, stack_len);
+    }
+
+    #[inline(always)]
+    fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {
+        state.inspect_step_end(pc, stack_len);
+    }
+}
 
 impl<T: EvmTypesHost> InspectMode<T> for DynInspector {
     const INSPECT: bool = true;

@@ -1,5 +1,5 @@
 use super::{
-    DynInspector, InspectMode, NoInspector, WatchInspector, inc_pc, run_state,
+    DynAllInspector, DynInspector, InspectMode, NoInspector, WatchInspector, inc_pc, run_state,
     stop_if_config_changed,
 };
 use crate::{
@@ -151,6 +151,9 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
         if state.steps() == OpcodeSet::EMPTY {
             return run_inner::<T, WatchInspector>(state, pc, stack, instructions);
         }
+        if state.steps() == OpcodeSet::ALL {
+            return run_inner::<T, DynAllInspector>(state, pc, stack, instructions);
+        }
         return run_inner::<T, DynInspector>(state, pc, stack, instructions);
     }
     run_inner::<T, NoInspector>(state, pc, stack, instructions)
@@ -171,7 +174,7 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
     let opcode_config = (M::INSPECT || M::WATCH).then(|| state.opcode_config());
     loop {
         let op = cursor.pc().op();
-        let step = M::INSPECT && steps.contains(op);
+        let step = M::INSPECT && (M::ALL_STEPS || steps.contains(op));
         let message = opcode_config.is_some_and(|config| config.is_message_opcode(op));
         if message {
             // The message hooks see the message opcode, even if the hooks do not step it.
