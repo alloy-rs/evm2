@@ -410,7 +410,10 @@ impl Bytecode {
                 cell.set(hash);
             }
         } else {
-            debug_assert_eq!(self.hash_slow(), hash, "seeded hash differs from cached hash");
+            debug_assert!(
+                hash.is_zero() || self.hash_slow() == hash,
+                "seeded hash differs from cached hash"
+            );
         }
     }
 
@@ -586,6 +589,7 @@ mod tests {
         let bytecode = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
         bytecode.seed_hash(B256::ZERO);
         assert_eq!(bytecode.hash_slow(), keccak256([0x60, 0x01]));
+        bytecode.seed_hash(B256::ZERO);
     }
 
     #[test]
