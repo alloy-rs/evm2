@@ -578,11 +578,8 @@ impl EvmDbReader for ChangesDbReader<'_> {
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
         if let Some(account) = self.changes.account_changes_for(address) {
-            // A loaded slot holds its final value, zero if the account was wiped. One left at a
-            // cached zero by a failed rollback reload of a creation reads the database.
-            if let Some(loaded) = account.storage.slots.get(slot)
-                && (account.created || !loaded.awaits_reload())
-            {
+            // A loaded slot holds its final value, zero if the account was wiped.
+            if let Some(loaded) = account.storage.slots.get(slot) {
                 return Ok(loaded.value.current);
             }
             // A deleted or wiped account has only the storage it wrote. So does one created from
