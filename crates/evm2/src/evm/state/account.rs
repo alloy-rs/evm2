@@ -224,14 +224,6 @@ impl Account {
         Self { original, present, ..Self::default() }
     }
 
-    /// Applies isolated execution changes, retaining parent originals and account warmth.
-    #[cfg(test)]
-    pub(crate) fn merge_isolated(&mut self, child: Self) {
-        self.present = child.present;
-        self.flags |= child.flags - AccountFlags::WARM;
-        self.storage.merge_isolated(child.storage);
-    }
-
     /// Marks the account as created during the transaction, which also flags its code as changed.
     ///
     /// The first creation mark decides whether the account keeps its storage baseline.
@@ -273,7 +265,6 @@ impl Account {
     #[inline]
     pub(crate) fn is_existing_dead(&self) -> bool {
         self.present.as_ref().is_some_and(AccountInfo::is_empty)
-            || (self.present.is_none() && self.original.is_some())
     }
 
     /// Returns the account's new bytecode keyed by code hash when its code changed during the
@@ -465,9 +456,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Returns whether the account is dead by the EIP-161 definition while existing in the overlay.
     ///
-    /// An account is existing-dead when it has zero nonce, zero balance, and empty code, or when it
-    /// was deleted in this transaction but existed at the transaction boundary. Spurious Dragon
-    /// deletes such touched accounts during transaction finalization.
+    /// An account is existing-dead when it has zero nonce, zero balance, and empty code. Spurious
+    /// Dragon deletes such touched accounts during transaction finalization.
     #[inline]
     pub fn is_existing_dead(&self) -> bool {
         self.tracked.is_existing_dead()
