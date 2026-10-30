@@ -4,7 +4,7 @@ use alloy_rpc_types_trace::opcode::OpcodeGas;
 use evm2::{
     EvmTypesHost, Inspector,
     interpreter::{
-        InstrStop, Interpreter, Message, MessageKind, MessageResult,
+        Interpreter, Message, MessageKind, MessageResult,
         opcode::{OpCode, op},
     },
 };
@@ -97,10 +97,10 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // update gas usage for the last opcode
         if let Some(pending) = self.pending_steps.pop() {
-            // An out-of-gas step costs its step cost, which stops counting where its charging
-            // finished, minus the gas a child used before a post-child hook ran out of gas.
-            let gas_cost = if interp.result().is_err_and(InstrStop::is_out_of_gas) {
-                interp.step_cost().saturating_sub(pending.child_gas_used)
+            // A step that charged nothing costs nothing, even when it stops out of gas and the
+            // frame's remainder is consumed, as with the SSTORE reentrancy sentry.
+            let gas_cost = if interp.step_cost() == 0 {
+                0
             } else {
                 pending
                     .gas_remaining
