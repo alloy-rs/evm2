@@ -2,7 +2,7 @@
 
 use alloy_primitives::{
     Address,
-    map::{AddressMap, U256Map},
+    map::{AddressMap, U256Map, U256Set},
 };
 use core::convert::Infallible;
 use evm2::{
@@ -46,6 +46,9 @@ pub(crate) struct TxAccount {
     pub(crate) selfdestructed: bool,
     /// Whether the transaction wiped the account's storage, so slots it did not load read zero.
     pub(crate) wiped: bool,
+    /// Slots of a wiped account that the transaction only read, with their value from before the
+    /// wipe, which no longer holds.
+    pub(crate) wiped_reads: U256Set,
     /// Storage slots loaded during the transaction, changed and unchanged. A loaded slot that the
     /// transaction left unchanged, or that a storage wipe reset, has its value before the
     /// transaction as both `original` and `current`.
@@ -110,7 +113,11 @@ impl StateChangeSink for TxState {
         key: Word,
         value: Word,
     ) -> Result<(), Self::Error> {
-        self.accounts.entry(address).or_default().storage.insert(key, Tracked::new(value));
+        let account = self.accounts.entry(address).or_default();
+        if account.wiped {
+            account.wiped_reads.insert(key);
+        }
+        account.storage.insert(key, Tracked::new(value));
         Ok(())
     }
 }

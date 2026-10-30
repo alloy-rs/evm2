@@ -580,11 +580,11 @@ impl EvmDbReader for ChangesDbReader<'_> {
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
         if let Some(account) = self.changes.accounts.get(address) {
             // A wiped account's slots that the transaction only read hold their value from before
-            // the wipe, so only the slots it changed count.
-            if let Some(slot) = account.storage.get(slot)
-                && !(account.wiped && slot.original == slot.current)
+            // the wipe, which no longer holds.
+            if let Some(tracked) = account.storage.get(slot)
+                && !account.wiped_reads.contains(slot)
             {
-                return Ok(slot.current);
+                return Ok(tracked.current);
             }
             // A deleted or wiped account has only the storage it wrote. So does one created from
             // nothing: an account that existed before, such as one an embedder resumed on a fresh
@@ -1241,6 +1241,11 @@ mod tests {
         let mut wiped_account = account(true, alive.clone(), U256::from(1), 6);
         // A slot loaded before the wipe and not rewritten.
         wiped_account.storage.insert(U256::from(3), Tracked::new(U256::from(9)));
+        wiped_account.wiped_reads.insert(U256::from(3));
+        // A slot rewritten after the wipe to the value it had before.
+        wiped_account
+            .storage
+            .insert(U256::from(4), Tracked::from_parts(U256::from(9), U256::from(9)));
         state.accounts.insert(wiped, wiped_account);
         state.accounts.insert(deleted, account(false, None, U256::from(1), 0));
         let created_account =
@@ -1263,6 +1268,7 @@ mod tests {
             (wiped, 1, 6),
             (wiped, 2, 0),
             (wiped, 3, 0),
+            (wiped, 4, 9),
             // A deleted account has no storage.
             (deleted, 1, 0),
             (deleted, 2, 0),
