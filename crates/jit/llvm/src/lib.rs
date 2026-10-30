@@ -721,21 +721,6 @@ impl EvmLlvmBackend {
             .unwrap_or_default()
     }
 
-    /// Links a relocatable object into this backend's JITDylib and returns the function address
-    /// and resource tracker that owns the linked code.
-    pub fn link_jit_object(
-        &mut self,
-        symbol_name: &CStr,
-        object: &[u8],
-        symbols: &[(CString, usize)],
-    ) -> Result<(usize, orc::ResourceTracker)> {
-        let orc = self.ensure_orc()?;
-        let (addr, tracker) =
-            link_jit_object_in_dylib(orc, orc.jd(), symbol_name, object, symbols)?;
-        orc.loaded_trackers.push(tracker);
-        Ok((addr, orc.loaded_trackers.pop().unwrap()))
-    }
-
     /// Links a relocatable object into a fresh JITDylib and returns the function address,
     /// resource tracker, and guard for the JITDylib that owns the linked code.
     pub fn link_jit_object_in_fresh_dylib(
@@ -1481,20 +1466,6 @@ impl Builder for EvmLlvmBuilder<'_> {
     fn imul_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value {
         let rhs = self.iconst(lhs.get_type(), rhs);
         self.imul(lhs, rhs)
-    }
-
-    fn umax(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        let ty = lhs.get_type();
-        let name = format!("llvm.umax.{}", fmt_ty(ty));
-        let max = self.get_or_add_function(&name, |this| this.fn_type(Some(ty), &[ty, ty]));
-        self.call(max, &[lhs, rhs]).unwrap()
-    }
-
-    fn umin(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        let ty = lhs.get_type();
-        let name = format!("llvm.umin.{}", fmt_ty(ty));
-        let min = self.get_or_add_function(&name, |this| this.fn_type(Some(ty), &[ty, ty]));
-        self.call(min, &[lhs, rhs]).unwrap()
     }
 
     fn bswap(&mut self, value: Self::Value) -> Self::Value {

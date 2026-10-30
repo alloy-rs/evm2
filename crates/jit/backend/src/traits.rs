@@ -390,8 +390,6 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn isub_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;
     fn imul_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;
 
-    fn umax(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
-    fn umin(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
     fn bswap(&mut self, value: Self::Value) -> Self::Value;
 
     fn bitor(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
