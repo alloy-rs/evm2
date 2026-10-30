@@ -397,7 +397,7 @@ pub unsafe fn __revmc_builtin_blob_hash<T: EvmTypesHost>(
 ///
 /// `owed` is the static gas that the section head charged for the instructions after the access.
 /// The interpreter charges the resize before them, so the resize runs with that gas added back,
-/// and fails with `OutOfGas` if it left the instructions after the access unpaid.
+/// and leaves the remaining gas negative if the resize used it. Compiled code checks it later.
 /// `offset_too_large` means the access offset does not fit in 64 bits.
 #[inline]
 pub unsafe fn __revmc_builtin_mresize<T: EvmTypesHost>(
@@ -416,11 +416,7 @@ pub unsafe fn __revmc_builtin_mresize<T: EvmTypesHost>(
     }
     ecx.gas.set_remaining(remaining);
     ensure_memory(ecx, min_size as usize, 0)?;
-    let remaining = ecx.gas.remaining().wrapping_sub(owed);
-    ecx.gas.set_remaining(remaining);
-    if (remaining as i64) < 0 {
-        return Err(InstrStop::OutOfGas.into());
-    }
+    ecx.gas.set_remaining(ecx.gas.remaining().wrapping_sub(owed));
     Ok(())
 }
 

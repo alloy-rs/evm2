@@ -1908,6 +1908,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // Analysis proved this access always grows memory to exactly `min_size`.
         if direct_resize_size != 0 {
             self.build_mresize(min_size, exact);
+            self.leave_owed_gas_unchecked();
             self.cached_mem_base = None;
             return self.build_memory_addr(offset);
         }
@@ -1927,7 +1928,26 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             this.bcx.set_current_block_cold();
             this.build_mresize(min_size, exact);
         });
+        self.leave_owed_gas_unchecked();
         self.build_memory_addr(offset)
+    }
+
+    /// Returns the static gas that the section head charged for the instructions after the
+    /// current memory access.
+    fn memory_access_gas_owed(&self) -> u32 {
+        match self.current_inst {
+            Some(inst) if self.config.gas_metering => self.bytecode.inst(inst).gas_owed(),
+            _ => 0,
+        }
+    }
+
+    /// Marks the gas owed to the instructions after a memory resize as unchecked.
+    ///
+    /// The resize may have used that gas, which leaves the remaining gas negative. A later
+    /// instruction that fails for its own reason must report it, so the check waits for the next
+    /// [`build_gas_check`](Self::build_gas_check).
+    fn leave_owed_gas_unchecked(&mut self) {
+        self.unchecked_gas = self.unchecked_gas.max(self.memory_access_gas_owed().into());
     }
 
     /// Calls the `mresize` builtin for the current memory access.
@@ -1938,12 +1958,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     ///
     /// The builtin also gets the static gas that the section head charged for the instructions
     /// after the access, so that the stop reason is the one of the instruction that runs out of
-    /// gas. It checks the remaining gas, which clears `unchecked_gas`.
+    /// gas.
     fn build_mresize(&mut self, mut min_size: B::Value, exact: Option<(B::Value, B::Value)>) {
-        let owed = match self.current_inst {
-            Some(inst) if self.config.gas_metering => self.bytecode.inst(inst).gas_owed(),
-            _ => 0,
-        };
+        let owed = self.memory_access_gas_owed();
         let owed = self.bcx.iconst(self.isize_type, owed as i64);
         let mut offset_too_large = self.bcx.iconst(self.i8_type, 0);
         if let Some((offset_word, len)) = exact {
@@ -1954,7 +1971,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             min_size = self.bcx.uadd_sat(offset, len);
         }
         let _ = self.call_builtin(Builtin::Mresize, &[self.ecx, min_size, owed, offset_too_large]);
-        self.unchecked_gas = 0;
     }
 
     /// Splits a value into a base value and a constant addend.

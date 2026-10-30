@@ -2118,6 +2118,13 @@ tests! {
             gas_limit: 31,
             expected_return: InstrStop::OutOfGas,
         }),
+        // The resize of the first `MSTORE` uses the gas that the later instructions need. The
+        // `MSTORE8` after them fails its own resize first.
+        mstore_resize_then_later_resize_oog(@raw {
+            bytecode: &asm("PUSH 3 JUMP JUMPDEST PUSH0 PUSH 0x100 MSTORE PUSH 1 PUSH 0x2000 MSTORE8 PUSH 1 PUSH 2 ADD POP STOP"),
+            gas_limit: 60,
+            expected_return: InstrStop::MemoryOOG,
+        }),
         mload_dyn_offset_2_pow_64(@raw {
             bytecode: &asm("PUSH9 0x010000000000000000 PUSH0 MSTORE PUSH0 MLOAD MLOAD"),
             expected_return: InstrStop::InvalidOperandOOG,
