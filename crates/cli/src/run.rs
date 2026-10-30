@@ -380,7 +380,7 @@ fn bench<T>(n_iters: u64, name: &str, mut f: impl FnMut() -> eyre::Result<T>) {
     let d = t.elapsed();
     perf_control("disable");
     if counting {
-        eprintln!("{name}: perf counted {n_iters} iterations");
+        eprintln!("perf counted {n_iters} iterations");
     }
     eprintln!("{name}: {:>9?} ({d:>12?} / {n_iters})", d / n_iters as u32);
 }

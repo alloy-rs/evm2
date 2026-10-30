@@ -257,5 +257,5 @@ def perf_counts(binary: str, args: list[str]) -> tuple[int, int, int | None]:
             os.close(fd)
     if not stats.get("instructions:u"):
         raise NoBenchCounts(binary)
-    counted = [int(n) for n in re.findall(r"perf counted (\d+) iterations", result.stderr)]
-    return int(stats["instructions:u"]), int(stats["cycles:u"]), sum(counted) or None
+    counted = re.findall(r"^perf counted (\d+) iterations$", result.stderr, re.MULTILINE)
+    return int(stats["instructions:u"]), int(stats["cycles:u"]), sum(map(int, counted)) or None
