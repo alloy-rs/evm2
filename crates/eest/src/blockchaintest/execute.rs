@@ -24,7 +24,7 @@ use crate::{
 };
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
-use alloy_eips::{eip2718::Typed2718, eip7840::BlobParams};
+use alloy_eips::{eip2718::Typed2718, eip4844::DATA_GAS_PER_BLOB, eip7840::BlobParams};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
@@ -47,6 +47,10 @@ pub use crate::execution::ExecutionMode;
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
+
+/// EIP-7934 maximum RLP-encoded block size: `MAX_BLOCK_SIZE` (10 MiB) minus `SAFETY_MARGIN`
+/// (2 MiB).
+const MAX_RLP_BLOCK_SIZE: usize = 10 * 1024 * 1024 - 2 * 1024 * 1024;
 
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug)]
@@ -263,14 +267,8 @@ fn execute_case(
     let schedule = fork_schedule(test_case.network).expect("unsupported forks are skipped");
     let spec = schedule.initial;
     let mut parent_block_hash = Some(test_case.genesis_block_header.hash);
-    let mut parent_excess_blob_gas =
-        test_case.genesis_block_header.excess_blob_gas.unwrap_or_default().saturating_to::<u64>();
-    let mut block_env = block_env_from_header(
-        &test_case.genesis_block_header,
-        parent_excess_blob_gas,
-        &schedule,
-        spec,
-    );
+    let mut parent_header = &test_case.genesis_block_header;
+    let mut block_env = block_env_from_header(parent_header, &schedule, spec);
     let total_blocks = test_case.blocks.len();
     let mut db_stats_counts = DbStatsCounts::default();
     // `evm2 capture` keeps only the accounts the blocks touch and zeroes the genesis state
@@ -306,7 +304,7 @@ fn execute_case(
             database,
             &mut block_env,
             &mut parent_block_hash,
-            &mut parent_excess_blob_gas,
+            &mut parent_header,
             hook,
             resources,
             config.trace,
@@ -381,20 +379,20 @@ enum BlockResolution {
 }
 
 #[expect(clippy::too_many_arguments)]
-fn execute_block(
+fn execute_block<'a>(
     path: &Path,
     name: &str,
     block_index: usize,
     total_blocks: usize,
     block_number: Option<U256>,
     total_transactions: usize,
-    block: &Block,
+    block: &'a Block,
     schedule: &ForkSchedule,
     spec: SpecId,
     database: &mut InMemoryDB,
     block_env: &mut BlockEnv,
     parent_block_hash: &mut Option<B256>,
-    parent_excess_blob_gas: &mut u64,
+    parent_header: &mut &'a BlockHeader,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
     trace: bool,
@@ -420,15 +418,13 @@ fn execute_block(
 
     let mut block_hash = None;
     let mut beacon_root = None;
-    let mut this_excess_blob_gas = None;
     let mut expected_state_root = None;
 
     let mut next_block_env = *block_env;
     if let Some(header) = block_header(block) {
         block_hash = Some(header.hash);
         beacon_root = header.parent_beacon_block_root;
-        next_block_env = block_env_from_header(header, *parent_excess_blob_gas, schedule, spec);
-        this_excess_blob_gas = header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>());
+        next_block_env = block_env_from_header(header, schedule, spec);
         expected_state_root = Some(header.state_root);
     }
 
@@ -484,6 +480,12 @@ fn execute_block(
             ));
         }
 
+        if let Some(header) = block_header(block)
+            && let Err(reason) = validate_block_header(block, header, parent_header, schedule, spec)
+        {
+            return reject_block(should_fail, path, name, reason);
+        }
+
         if let Err(err) = pre_block_system_calls(
             &mut evm,
             &mut block_state,
@@ -505,6 +507,7 @@ fn execute_block(
         let mut cumulative_tx_gas_used = 0u64;
         let mut block_execution_gas_used = 0u64;
         let mut block_state_gas_used = 0u64;
+        let mut block_blob_gas_used = 0u64;
         let mut receipts = Vec::with_capacity(transactions.len());
         for (transaction_index, raw_tx) in transactions.iter().enumerate() {
             hook.transaction_started(TransactionStarted {
@@ -532,32 +535,58 @@ fn execute_block(
                 }
             };
 
-            // EIP-8037: per-dimension block-level inclusion check (execution-specs
-            // `process_transaction`). A transaction is only includable when its gas limit --
+            // Block-level inclusion check (execution-specs `check_transaction`): the transaction's
+            // gas limit must fit the block gas remaining, and its blobs the block blob gas
+            // remaining. Under EIP-8037 (Amsterdam+) the gas limit is checked per dimension:
             // capped by the EIP-7825 limit on the execution dimension, uncapped on the state
-            // dimension -- still fits the block gas remaining on both dimensions.
-            if spec.enables(SpecId::AMSTERDAM)
-                && let Some(header) = block_header(block)
-            {
+            // dimension.
+            if let Some(header) = block_header(block) {
                 let block_gas_limit = header.gas_limit.saturating_to::<u64>();
                 let tx_gas_limit = tx.gas_limit();
-                let execution_gas_available =
-                    block_gas_limit.saturating_sub(block_execution_gas_used);
-                let state_gas_available = block_gas_limit.saturating_sub(block_state_gas_used);
-                if tx_gas_limit.min(evm.version().tx_gas_limit_cap) > execution_gas_available
+                let (execution_gas_used, state_gas_used, execution_gas_limit) =
+                    if spec.enables(SpecId::AMSTERDAM) {
+                        (
+                            block_execution_gas_used,
+                            block_state_gas_used,
+                            tx_gas_limit.min(evm.version().tx_gas_limit_cap),
+                        )
+                    } else {
+                        (cumulative_tx_gas_used, cumulative_tx_gas_used, tx_gas_limit)
+                    };
+                let execution_gas_available = block_gas_limit.saturating_sub(execution_gas_used);
+                let state_gas_available = block_gas_limit.saturating_sub(state_gas_used);
+                if execution_gas_limit > execution_gas_available
                     || tx_gas_limit > state_gas_available
                 {
-                    if should_fail {
-                        return Ok(BlockResolution::Discard);
-                    }
-                    return Err(TestError::case(
+                    return reject_block(
+                        should_fail,
                         path,
                         name,
-                        TestErrorKind::UnexpectedFailure(format!(
+                        format!(
                             "transaction gas limit {tx_gas_limit} exceeds available block gas \
                              (execution {execution_gas_available}, state {state_gas_available})"
-                        )),
-                    ));
+                        ),
+                    );
+                }
+
+                if spec.enables(SpecId::CANCUN) {
+                    let blob_gas = blob_gas_used(raw_tx);
+                    let blob_gas_available = schedule
+                        .blob_params(header.timestamp, spec)
+                        .max_blob_gas_per_block()
+                        .saturating_sub(block_blob_gas_used);
+                    if blob_gas > blob_gas_available {
+                        return reject_block(
+                            should_fail,
+                            path,
+                            name,
+                            format!(
+                                "transaction blob gas {blob_gas} exceeds available block blob \
+                                 gas {blob_gas_available}"
+                            ),
+                        );
+                    }
+                    block_blob_gas_used += blob_gas;
                 }
             }
 
@@ -649,6 +678,21 @@ fn execute_block(
             }
         }
 
+        if spec.enables(SpecId::CANCUN)
+            && let Some(header) = block_header(block)
+            && header.blob_gas_used != Some(U256::from(block_blob_gas_used))
+        {
+            return reject_block(
+                should_fail,
+                path,
+                name,
+                format!(
+                    "block blob gas used mismatch: header {:?}, computed {block_blob_gas_used}",
+                    header.blob_gas_used
+                ),
+            );
+        }
+
         if compare_receipt_root && let Some(header) = block_header(block) {
             let got = alloy_consensus::proofs::calculate_receipt_root(&receipts);
             if got != header.receipt_trie {
@@ -734,8 +778,8 @@ fn execute_block(
             *database = restored_database;
             *block_env = next_block_env;
             *parent_block_hash = block_hash;
-            if let Some(excess_blob_gas) = this_excess_blob_gas {
-                *parent_excess_blob_gas = excess_blob_gas;
+            if let Some(header) = block_header(block) {
+                *parent_header = header;
             }
             if trace || compare_state_root {
                 let got = state_root_from_database(database);
@@ -837,6 +881,67 @@ fn block_ommers(block: &Block) -> &[BlockHeader] {
         return ommers;
     }
     block.rlp_decoded.as_ref().map(|decoded| decoded.uncle_headers.as_slice()).unwrap_or_default()
+}
+
+/// Block-level validity checks that execution-specs performs before executing the transactions:
+/// the EIP-7934 block RLP size limit and the EIP-4844 header blob fields.
+fn validate_block_header(
+    block: &Block,
+    header: &BlockHeader,
+    parent: &BlockHeader,
+    schedule: &ForkSchedule,
+    spec: SpecId,
+) -> Result<(), String> {
+    if spec.enables(SpecId::OSAKA) && block.rlp.len() > MAX_RLP_BLOCK_SIZE {
+        return Err(format!(
+            "block RLP size {} exceeds the limit {MAX_RLP_BLOCK_SIZE}",
+            block.rlp.len()
+        ));
+    }
+
+    if !spec.enables(SpecId::CANCUN) {
+        if header.excess_blob_gas.is_some() || header.blob_gas_used.is_some() {
+            return Err("pre-Cancun block header carries blob gas fields".to_string());
+        }
+        return Ok(());
+    }
+
+    if header.blob_gas_used.is_none() {
+        return Err("block header is missing blobGasUsed".to_string());
+    }
+    let expected_excess_blob_gas =
+        schedule.blob_params(header.timestamp, spec).next_block_excess_blob_gas_osaka(
+            parent.excess_blob_gas.unwrap_or_default().saturating_to(),
+            parent.blob_gas_used.unwrap_or_default().saturating_to(),
+            parent.base_fee_per_gas.unwrap_or_default().saturating_to(),
+        );
+    if header.excess_blob_gas != Some(U256::from(expected_excess_blob_gas)) {
+        return Err(format!(
+            "excess blob gas mismatch: header {:?}, expected {expected_excess_blob_gas}",
+            header.excess_blob_gas
+        ));
+    }
+    Ok(())
+}
+
+/// Resolves an invalid block: it is discarded when the fixture expects an exception, and a test
+/// failure otherwise.
+fn reject_block(
+    should_fail: bool,
+    path: &Path,
+    name: &str,
+    reason: String,
+) -> Result<BlockResolution, TestError> {
+    if should_fail {
+        Ok(BlockResolution::Discard)
+    } else {
+        Err(TestError::case(path, name, TestErrorKind::UnexpectedFailure(reason)))
+    }
+}
+
+/// Returns the blob gas a transaction consumes (EIP-4844).
+const fn blob_gas_used(tx: &Transaction) -> u64 {
+    tx.blob_versioned_hashes.len() as u64 * DATA_GAS_PER_BLOB
 }
 
 fn pre_block_system_calls(
@@ -968,6 +1073,18 @@ fn run_system_call(
     label: &'static str,
     checked: bool,
 ) -> Result<(), TestErrorKind> {
+    // A checked call to a target without code is an invalid block (execution-specs
+    // `SYSTEM_CONTRACT_EMPTY`); the EVM itself treats it as a successful no-op.
+    if checked {
+        let info = evm
+            .read_account_info(&address)
+            .map_err(|code| TestErrorKind::UnexpectedFailure(code.to_string()))?;
+        if info.is_none_or(|info| info.is_empty_code_hash()) {
+            return Err(TestErrorKind::UnexpectedFailure(format!(
+                "{label} system contract has no code"
+            )));
+        }
+    }
     let executed = evm.system_call(SystemTx::new(address, data))?;
     if !executed.result().status {
         // A failed unchecked call keeps the state accesses it recorded, which a BAL lists as reads.
@@ -976,14 +1093,7 @@ fn run_system_call(
             return Ok(());
         }
         let _ = executed.discard();
-        let has_code = match evm.read_account_info(&address) {
-            Ok(info) => info.is_some_and(|info| !info.is_empty_code_hash()),
-            Err(code) => return Err(TestErrorKind::UnexpectedFailure(code.to_string())),
-        };
-        if has_code {
-            return Err(TestErrorKind::SystemCall(label));
-        }
-        return Ok(());
+        return Err(TestErrorKind::SystemCall(label));
     }
     let _ = executed.commit_to(block_state);
     Ok(())
@@ -1044,14 +1154,8 @@ fn parse_state(
     Ok(database)
 }
 
-fn block_env_from_header(
-    header: &BlockHeader,
-    excess_blob_gas: u64,
-    schedule: &ForkSchedule,
-    spec: SpecId,
-) -> BlockEnv {
-    let excess_blob_gas =
-        header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>()).unwrap_or(excess_blob_gas);
+fn block_env_from_header(header: &BlockHeader, schedule: &ForkSchedule, spec: SpecId) -> BlockEnv {
+    let excess_blob_gas = header.excess_blob_gas.unwrap_or_default().saturating_to::<u64>();
     BlockEnvExt {
         number: header.number,
         beneficiary: header.coinbase,
