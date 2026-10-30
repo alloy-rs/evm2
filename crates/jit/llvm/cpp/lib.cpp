@@ -35,6 +35,18 @@ extern "C" LLVMAttributeRef evm2_jit_llvm_create_initializes_attr(LLVMContextRef
   return wrap(Attribute::get(Ctx, Attribute::Initializes, ArrayRef(CR)));
 }
 
+extern "C" LLVMAttributeRef evm2_jit_llvm_create_arg_mem_only_attr(LLVMContextRef C) {
+  return wrap(Attribute::getWithMemoryEffects(*unwrap(C), MemoryEffects::argMemOnly()));
+}
+
+extern "C" LLVMAttributeRef evm2_jit_llvm_create_async_uwtable_attr(LLVMContextRef C) {
+  return wrap(Attribute::getWithUWTableKind(*unwrap(C), UWTableKind::Async));
+}
+
+extern "C" LLVMAttributeRef evm2_jit_llvm_create_no_captures_attr(LLVMContextRef C) {
+  return wrap(Attribute::getWithCaptureInfo(*unwrap(C), CaptureInfo::none()));
+}
+
 /// Remove a JITDylib from the ExecutionSession.
 extern "C" LLVMErrorRef
 evm2_jit_llvm_execution_session_remove_jit_dylib(LLVMOrcExecutionSessionRef ES,

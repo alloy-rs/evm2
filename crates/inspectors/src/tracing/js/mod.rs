@@ -587,6 +587,13 @@ impl JsInspector {
             input: &call.contract.input,
             call_id: call.id,
         };
+        // Geth fills the log in its step hook, which a tracer without `step` never runs, so
+        // `fault` sees an empty log with only the error set.
+        let info = if self.step_fn.is_none() {
+            StepInfo { error: info.error, ..Default::default() }
+        } else {
+            info
+        };
         let (stack, memory, host) = interp.stack_memory_host();
         let res = self.reusable_db.with_state_scope(host.state_mut(), || {
             self.reusable_step_log.with_scope(
@@ -685,19 +692,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         let result = interp.result().err();
         let is_fault = result.is_some_and(|stop| should_fault(stop, pending.instruction.op));
         let error = result.and_then(|stop| utils::fmt_error_msg(stop, TraceStyle::Geth));
-        if self.step_fn.is_none() {
-            if !is_fault {
-                return;
-            }
-            // Fault-only tracers expose post-execution stack and memory.
-            pending.snapshot.record(PreStep {
-                pc: pending.instruction.pc,
-                op: pending.instruction.op,
-                gas_remaining: pending.instruction.gas,
-                stack: interp.stack().as_slice(),
-                memory: interp.memory().as_slice(),
-            });
-        } else {
+        if self.step_fn.is_some() {
             self.invoke_step_hook(interp, false, if is_fault { None } else { error.clone() });
             if self.check_and_halt(interp) || self.hook_errored() {
                 return;

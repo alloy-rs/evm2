@@ -8,7 +8,6 @@ use crate::{
             CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
             TraceMemberOrder,
         },
-        utils::gas_used,
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -75,12 +74,6 @@ pub use mux::{Error as MuxError, MuxInspector};
 
 mod debug;
 pub use debug::{DebugInspector, DebugInspectorError};
-
-/// Returns the effective gas refund after the calldata floor adjustment.
-#[inline]
-pub(crate) const fn final_refunded<E>(gas: &TxResultExt<E>) -> u64 {
-    gas.final_refunded()
-}
 
 /// An inspector that collects call traces.
 ///
@@ -519,9 +512,6 @@ impl TracingInspector {
             Bytes::new()
         };
 
-        let gas_used =
-            gas_used(interp.spec(), interp.gas().spent(), interp.gas().refunded() as u64);
-
         let mut immediate_bytes = None;
         if self.config.record_immediate_bytes {
             let size = usize::from(immediate_size(op.get()));
@@ -551,7 +541,6 @@ impl TracingInspector {
             returndata,
             gas_remaining: interp.gas().remaining(),
             gas_refund_counter: interp.gas().refunded() as u64,
-            gas_used,
             immediate_bytes,
 
             // These fields will be populated in `step_end`.
