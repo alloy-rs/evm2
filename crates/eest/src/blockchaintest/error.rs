@@ -53,6 +53,9 @@ pub(crate) enum TestErrorKind {
     /// The test's chain configuration has no blob parameters for the active fork.
     #[error("blob schedule has no entry for {0:?}")]
     MissingBlobSchedule(BlobFork),
+    /// The test's blob schedule has a zero base fee update fraction for the active fork.
+    #[error("blob schedule entry for {0:?} has a zero base fee update fraction")]
+    ZeroBlobUpdateFraction(BlobFork),
     /// Sender is required in blockchain tests.
     #[error("transaction sender is required")]
     MissingSender,

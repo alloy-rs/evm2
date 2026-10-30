@@ -1438,6 +1438,9 @@ impl ForkSchedule {
             .blob_schedule
             .get(&blob_fork)
             .ok_or(TestErrorKind::MissingBlobSchedule(blob_fork))?;
+        if entry.base_fee_update_fraction.is_zero() {
+            return Err(TestErrorKind::ZeroBlobUpdateFraction(blob_fork));
+        }
         Ok(Some(entry.params()))
     }
 
@@ -1621,6 +1624,25 @@ mod tests {
         let err = blob_params(Path::new("test.json"), "test", &case, &BlockHeader::default())
             .unwrap_err();
         assert!(matches!(err.kind, TestErrorKind::MissingBlobSchedule(BlobFork::Cancun)));
+    }
+
+    #[test]
+    fn blob_params_reject_a_zero_update_fraction() {
+        let config = ChainConfig {
+            chainid: U256::ONE,
+            blob_schedule: BTreeMap::from([(
+                BlobFork::Cancun,
+                BlobScheduleEntry {
+                    target: U256::from(3),
+                    max: U256::from(6),
+                    base_fee_update_fraction: U256::ZERO,
+                },
+            )]),
+        };
+        let case = test_case(ForkSpec::Cancun, Some(config));
+        let err = blob_params(Path::new("test.json"), "test", &case, &BlockHeader::default())
+            .unwrap_err();
+        assert!(matches!(err.kind, TestErrorKind::ZeroBlobUpdateFraction(BlobFork::Cancun)));
     }
 
     #[test]
