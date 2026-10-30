@@ -32,7 +32,7 @@ fn skipped_forks() -> &'static [SpecId] {
 }
 
 /// Parses a case-insensitive hardfork name into a spec ID.
-fn parse_fork(name: &str) -> Option<SpecId> {
+pub fn parse_fork(name: &str) -> Option<SpecId> {
     macro_rules! parse {
         ([$name:ident] $($spec:ident $lower:ident,)*) => {
             match $name.to_ascii_lowercase().as_str() {

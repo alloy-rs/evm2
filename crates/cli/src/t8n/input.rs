@@ -268,24 +268,17 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Error> {
     serde_json::from_slice(&data).map_err(|source| Error::Json { path: path.to_path_buf(), source })
 }
 
-/// Resolves a go-ethereum fork name to the matching evm2 specification.
+/// Resolves a go-ethereum fork name to the matching evm2 specification: its own names for the forks
+/// evm2 names the same way, and an alias for each other go-ethereum name. An unknown name fails.
 pub fn parse_fork(name: &str) -> Result<SpecId, Error> {
-    Ok(match name {
-        "Frontier" => SpecId::FRONTIER,
-        "Homestead" => SpecId::HOMESTEAD,
-        "EIP150" => SpecId::TANGERINE,
-        "EIP158" => SpecId::SPURIOUS_DRAGON,
-        "Byzantium" => SpecId::BYZANTIUM,
-        "ConstantinopleFix" => SpecId::PETERSBURG,
-        "Istanbul" | "MuirGlacier" => SpecId::ISTANBUL,
-        "Berlin" => SpecId::BERLIN,
-        "London" | "ArrowGlacier" | "GrayGlacier" => SpecId::LONDON,
-        "Merge" | "Paris" => SpecId::MERGE,
-        "Shanghai" => SpecId::SHANGHAI,
-        "Cancun" => SpecId::CANCUN,
-        "Prague" => SpecId::PRAGUE,
-        "Osaka" => SpecId::OSAKA,
-        "Amsterdam" => SpecId::AMSTERDAM,
-        _ => return Err(Error::UnsupportedFork(name.to_string())),
-    })
+    let spec = match name {
+        "EIP150" => Some(SpecId::TANGERINE),
+        "EIP158" => Some(SpecId::SPURIOUS_DRAGON),
+        "ConstantinopleFix" => Some(SpecId::PETERSBURG),
+        "MuirGlacier" => Some(SpecId::ISTANBUL),
+        "ArrowGlacier" | "GrayGlacier" => Some(SpecId::LONDON),
+        "Paris" => Some(SpecId::MERGE),
+        _ => evm2_eest::parse_fork(name),
+    };
+    spec.ok_or_else(|| Error::UnsupportedFork(name.to_string()))
 }

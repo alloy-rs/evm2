@@ -52,6 +52,7 @@ pub use fixture_io::{
     read_blockchain as read_blockchain_fixture, read_to_string as read_fixture_text,
     write_blockchain as write_blockchain_fixture,
 };
+pub use forks::parse_fork;
 pub use runner::run as run_statetests;
 pub use state::{
     insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
