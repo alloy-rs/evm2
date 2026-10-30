@@ -1,5 +1,5 @@
 use crate::fixture::Suites;
-use alloy_primitives::{B256, hex};
+use alloy_primitives::{B256, hex, map::B256Map};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
     BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId,
@@ -60,7 +60,7 @@ pub(crate) struct PreparedBench {
     db: InMemoryDB,
     tx: RecoveredTxEnvelope,
     entry_bytecode: Option<alloy_primitives::Bytes>,
-    functions: Arc<HashMap<B256, EvmCompilerFn>>,
+    functions: Arc<B256Map<EvmCompilerFn>>,
 }
 
 impl PreparedBench {
@@ -81,7 +81,7 @@ impl PreparedBench {
             return None;
         }
 
-        let mut functions = HashMap::new();
+        let mut functions = B256Map::default();
         for account in accounts {
             let func = *compiler.functions.entry((account.code_hash, spec)).or_insert_with(|| {
                 let name = format!("contract_{}_{spec:?}", hex::encode(account.code_hash));
@@ -101,7 +101,7 @@ impl PreparedBench {
             spec,
             block: case.block(),
             db: case.state(),
-            tx: case.tx(spec),
+            tx: case.tx(),
             entry_bytecode: case.entry_bytecode(),
             functions: Arc::new(functions),
         })
@@ -114,11 +114,12 @@ impl PreparedBench {
         let jit = self.run_jit().unwrap_or_else(|err| {
             panic!("{} JIT benchmark transaction must execute: {err:?}", self.name)
         });
-        assert_eq!(
-            interpreter.status, jit.status,
-            "{} interpreter and JIT status differ",
-            self.name
+        assert!(
+            interpreter.status,
+            "{} benchmark transaction must succeed: {:?}",
+            self.name, interpreter.stop
         );
+        assert_eq!(interpreter, jit, "{} interpreter and JIT results differ", self.name);
     }
 
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
@@ -199,7 +200,7 @@ impl Runner {
 
 #[derive(Clone, Debug)]
 struct FixedJitRunner {
-    functions: Arc<HashMap<B256, EvmCompilerFn>>,
+    functions: Arc<B256Map<EvmCompilerFn>>,
 }
 
 impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {

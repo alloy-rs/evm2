@@ -61,8 +61,10 @@ def llvm_env(root: str) -> dict[str, str]:
     evm2-jit-llvm build script otherwise use whichever llvm-config comes first in PATH.
     """
     with open(os.path.join(root, "crates", "jit", "llvm", "Cargo.toml")) as f:
-        m = re.search(r'"llvm(\d+)-\d+"', f.read())
-    llvm_config = m and shutil.which(f"llvm-config-{m[1]}")
+        # Older code selects LLVM through an inkwell feature, newer code through llvm-sys.
+        m = re.search(r'"llvm(\d+)-\d+"|^llvm-sys = "(\d+)\d"', f.read(), re.M)
+    version = m and (m[1] or m[2])
+    llvm_config = version and shutil.which(f"llvm-config-{version}")
     if not llvm_config:
         return {}
     bindir = subprocess.run(

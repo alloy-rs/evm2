@@ -134,9 +134,9 @@ use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
-#[cfg(feature = "async")]
-use core::future::Future;
 use core::ptr::NonNull;
+#[cfg(feature = "async")]
+use core::{any::TypeId, future::Future};
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -195,11 +195,22 @@ pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + '
     ///
     /// Record execution errors with [`Interpreter::fail`]; the EVM extracts them after this
     /// method returns.
+    ///
+    /// The EVM calls this only while [`Self::supports`] holds for the active execution config;
+    /// other callers must check it first.
     fn run<'frame, 'host>(
         &self,
         interpreter: &mut Interpreter<'frame, 'host, T>,
         host: &mut T::Host<'host>,
     ) -> Option<InstrStop>;
+
+    /// Returns whether this runner can execute frames under `config`.
+    ///
+    /// The EVM calls this when the runner or the execution config changes, not per frame, and
+    /// skips the runner while it returns `false`.
+    fn supports(&self, _config: &ExecutionConfig<T>) -> bool {
+        true
+    }
 }
 
 /// EVM host and transaction dispatcher.
@@ -223,8 +234,14 @@ pub struct Evm<'a, T: EvmTypesHost> {
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
     inspector: Option<InspectorSlot<'a, T>>,
+    inspect_system_calls: bool,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
+    /// Whether `interpreter_runner` is set and supports `execution_config`.
+    ///
+    /// Refreshed whenever either changes.
+    #[derive_where(skip)]
+    runner_supported: bool,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
@@ -238,7 +255,11 @@ pub struct Evm<'a, T: EvmTypesHost> {
     #[cfg(feature = "async")]
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
-    evm_send: bool,
+    /// The erased value types last verified as `Send` by [`Evm::evm_is_send`] or
+    /// [`Evm::evm_is_send_with_inspector`].
+    #[cfg(feature = "async")]
+    #[derive_where(skip)]
+    send_types: Option<ErasedTypeIds>,
 }
 
 impl<'a, T: EvmTypes> Evm<'a, T> {
@@ -352,13 +373,16 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            inspect_system_calls: false,
             interpreter_runner: None,
+            runner_supported: false,
             current_frame: None,
             frame_checkpoint: None,
             running: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
-            evm_send: false,
+            #[cfg(feature = "async")]
+            send_types: None,
         }
     }
 
@@ -410,6 +434,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn assert_execution_config_mutable(&self) {
         assert!(!self.running, "execution config cannot be modified during EVM execution");
+    }
+
+    #[inline]
+    fn refresh_runner_support(&mut self) {
+        self.runner_supported = self
+            .interpreter_runner
+            .as_ref()
+            .is_some_and(|runner| runner.supports(&self.execution_config));
     }
 
     #[inline]
@@ -592,6 +624,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.block = block;
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
+        self.refresh_runner_support();
     }
 
     #[inline]
@@ -605,9 +638,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.spec_id = spec_id;
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
+        // Refresh before the old registry and precompiles drop, so an unwinding destructor
+        // cannot leave a stale verdict.
+        self.refresh_runner_support();
         self.registry = registry;
         self.precompiles = precompiles;
-        self.evm_send = false;
     }
 
     /// Returns the accepted-state overlay database.
@@ -627,7 +662,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// available through [`Self::database_mut`].
     #[inline]
     pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase + 'a>> {
-        self.evm_send = false;
         self.state.overlay_db_mut()
     }
 
@@ -659,7 +693,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_database(&mut self, database: impl DynDatabase + 'a) {
         self.state.set_initial(database);
-        self.evm_send = false;
     }
 
     #[cfg(feature = "async")]
@@ -672,7 +705,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn assert_erased_send(&self) {
         assert!(
-            self.evm_send,
+            self.send_types == Some(self.erased_type_ids()),
             "async EVM execution requires EVM erased fields to be verified as Send with \
              Evm::evm_is_send"
         );
@@ -682,10 +715,24 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         );
     }
 
+    #[cfg(feature = "async")]
+    #[inline]
+    fn erased_type_ids(&self) -> ErasedTypeIds {
+        ErasedTypeIds {
+            database: self.database().type_id(),
+            precompiles: self.precompiles().type_id(),
+            inspector: self.inspector().map(|inspector| inspector.type_id()),
+        }
+    }
+
     /// Marks this EVM as thread-sendable after checking the current erased field types.
     ///
     /// This requires no active inspector. Use [`Self::evm_is_send_with_inspector`] when an
     /// inspector is installed.
+    ///
+    /// Async execution re-checks that the erased types are still the verified ones, so replacing
+    /// one with a different type makes it panic until the new types are verified.
+    #[cfg(feature = "async")]
     #[inline]
     pub fn evm_is_send<D, P>(&mut self) -> &mut Self
     where
@@ -696,11 +743,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.assert_database_type::<D>();
         self.assert_precompiles_type::<P>();
         assert!(self.inspector.is_none(), "inspector type mismatch");
-        self.evm_send = true;
+        self.send_types = Some(self.erased_type_ids());
         self
     }
 
     /// Marks this EVM as thread-sendable after checking the current erased field types.
+    #[cfg(feature = "async")]
     #[inline]
     pub fn evm_is_send_with_inspector<D, P, I>(&mut self) -> &mut Self
     where
@@ -712,10 +760,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.assert_database_type::<D>();
         self.assert_precompiles_type::<P>();
         self.assert_inspector_type::<I>();
-        self.evm_send = true;
+        self.send_types = Some(self.erased_type_ids());
         self
     }
 
+    #[cfg(feature = "async")]
     #[inline]
     fn assert_database_type<D: DynDatabase + 'static>(&self)
     where
@@ -724,6 +773,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         assert_eq!(self.database().type_id(), typeid::of::<D>(), "database type mismatch");
     }
 
+    #[cfg(feature = "async")]
     #[inline]
     fn assert_precompiles_type<P: PrecompileProvider<T> + 'static>(&self)
     where
@@ -736,6 +786,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         );
     }
 
+    #[cfg(feature = "async")]
     #[inline]
     fn assert_inspector_type<I: Inspector<T> + 'static>(&self)
     where
@@ -796,7 +847,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Returns the mutable EVM state.
     #[inline]
     pub const fn state_mut(&mut self) -> &mut State<'a> {
-        self.evm_send = false;
         &mut self.state
     }
 
@@ -807,9 +857,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Returns the logs emitted by the current in-flight transaction mutably.
-    ///
-    /// Unlike [`Self::state_mut`], this keeps the EVM verified as `Send`, since logs are not
-    /// erased.
     #[inline]
     pub const fn logs_mut(&mut self) -> &mut Vec<Log> {
         self.state.logs_mut()
@@ -843,7 +890,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
         self.precompiles = boxed_precompile_provider(precompiles);
-        self.evm_send = false;
     }
 
     /// Replaces the precompile provider with an already boxed one.
@@ -851,7 +897,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_boxed_precompiles(&mut self, precompiles: Box<dyn PrecompileProvider<T> + 'a>) {
         self.assert_precompiles_mutable();
         self.precompiles = precompiles;
-        self.evm_send = false;
     }
 
     /// Returns the precompile provider as `P` if it has that concrete type.
@@ -959,7 +1004,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
         self.inspector = Some(InspectorSlot::Owned(boxed_inspector(inspector)));
-        self.evm_send = false;
     }
 
     /// Sets the active boxed execution inspector.
@@ -967,14 +1011,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + 'a>) {
         self.assert_inspector_mutable();
         self.inspector = Some(InspectorSlot::Owned(inspector));
-        self.evm_send = false;
     }
 
     /// Removes the active execution inspector.
     #[inline]
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T> + 'a>> {
         self.assert_inspector_mutable();
-        self.evm_send = false;
         match self.inspector.take()? {
             InspectorSlot::Owned(inspector) => Some(inspector),
             InspectorSlot::Borrowed(_) => unreachable!("borrowed inspector outlived its call"),
@@ -996,11 +1038,26 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
     }
 
+    /// Returns whether [`Self::system_call`] runs with the active inspector installed.
+    #[inline]
+    pub const fn inspects_system_calls(&self) -> bool {
+        self.inspect_system_calls
+    }
+
+    /// Sets whether [`Self::system_call`] runs with the active inspector installed.
+    ///
+    /// Defaults to `false`: system calls are not inspected.
+    #[inline]
+    pub const fn set_inspect_system_calls(&mut self, inspect: bool) {
+        self.inspect_system_calls = inspect;
+    }
+
     /// Sets the optional external interpreter runner.
     #[inline]
     pub fn set_interpreter_runner<R: InterpreterRunner<T>>(&mut self, runner: R) {
         self.assert_interpreter_runner_mutable();
         self.interpreter_runner = Some(Arc::new(runner));
+        self.refresh_runner_support();
     }
 
     /// Sets the optional shared external interpreter runner.
@@ -1008,13 +1065,16 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_shared_interpreter_runner(&mut self, runner: Arc<dyn InterpreterRunner<T>>) {
         self.assert_interpreter_runner_mutable();
         self.interpreter_runner = Some(runner);
+        self.refresh_runner_support();
     }
 
     /// Removes the optional external interpreter runner.
     #[inline]
     pub fn clear_interpreter_runner(&mut self) -> Option<Arc<dyn InterpreterRunner<T>>> {
         self.assert_interpreter_runner_mutable();
-        self.interpreter_runner.take()
+        let runner = self.interpreter_runner.take();
+        self.refresh_runner_support();
+        runner
     }
 
     /// Returns the active EVM version.
@@ -1115,14 +1175,24 @@ impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     }
 }
 
+/// The concrete types of the erased database, precompile provider, and inspector.
+#[cfg(feature = "async")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ErasedTypeIds {
+    database: TypeId,
+    precompiles: TypeId,
+    inspector: Option<TypeId>,
+}
+
 #[cfg(feature = "async")]
 struct SendEvmRef<'a, 'evm, T: EvmTypesHost> {
     evm: &'a mut Evm<'evm, T>,
 }
 
 #[cfg(feature = "async")]
-// SAFETY: `SendEvmRef` is only constructed by async entrypoints after `Evm::evm_is_send` has
-// verified the concrete erased field types as `Send`.
+// SAFETY: `SendEvmRef` is only constructed by async entrypoints for an `Evm<'static, T>` whose
+// erased field types `Evm::evm_is_send` verified as `Send`. The `'static` bound keeps a verified
+// type from being replaced by a shorter-lived instance of itself, which `TypeId` cannot tell apart.
 unsafe impl<T> Send for SendEvmRef<'_, '_, T>
 where
     T: EvmTypesHost,
@@ -1253,6 +1323,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     + 'fut
     where
         T::Tx: Sync,
+        'a: 'static,
     {
         self.assert_erased_send();
         let stack = self.async_stack();
@@ -1417,7 +1488,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 HostError::Execution(error) => Err(error),
             };
         }
-        message.code_address = message.destination;
         // Empty initcode deploys an empty contract without executing the bytecode's padding STOP.
         let (stop, gas, output) = if message.code.is_empty() {
             (
@@ -1713,10 +1783,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
-        let interpreter_runner = guard.evm.interpreter_runner.clone();
+        let runner =
+            guard.evm.interpreter_runner.as_ref().filter(|_| guard.evm.runner_supported).cloned();
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(guard.evm, inspector)
-        } else if let Some(runner) = interpreter_runner
+        } else if let Some(runner) = runner
             && let Some(stop) = runner.run(interp_ref, guard.evm)
         {
             interp_ref.finish_run(stop)
@@ -1771,9 +1842,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
         let is_cold = account.warm();
 
-        let (balance, nonce, code_hash, exists, is_empty) = match account.get() {
-            Some(info) => (info.balance, info.nonce, info.code_hash, true, info.is_empty()),
-            None => (Word::ZERO, 0, B256::ZERO, false, true),
+        let is_empty_for_new_account_gas = account.is_empty_for_new_account_gas(self.features);
+        let (balance, nonce, code_hash, is_empty) = match account.get() {
+            Some(info) => (info.balance, info.nonce, info.code_hash, info.is_empty()),
+            None => (Word::ZERO, 0, B256::ZERO, true),
         };
 
         // load code
@@ -1787,19 +1859,11 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             nonce,
             code_hash,
             code,
-            exists,
             is_empty,
+            is_empty_for_new_account_gas,
             is_cold,
             _non_exhaustive: (),
         })
-    }
-
-    fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> Result<bool, DatabaseError> {
-        Ok(self.state.account(address)?.is_empty_for_new_account_gas(features))
     }
 
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError> {
@@ -1904,19 +1968,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, HostError> {
         let features = self.features;
-        let eip2929 = features.contains(EvmFeatures::EIP2929);
         let (is_cold, target_is_empty_for_new_account_gas) =
-            match self.state.account_with_skip(target, eip2929 && skip_cold_load) {
-                Ok(mut account) => {
-                    let is_cold = account.warm() && eip2929;
-                    (is_cold, account.is_empty_for_new_account_gas(features))
-                }
+            match self.state.account_with_skip(target, skip_cold_load) {
+                Ok(mut account) => (account.warm(), account.is_empty_for_new_account_gas(features)),
                 Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
                 Err(code) => return Err(code.into()),
             };
-        if skip_cold_load && is_cold {
-            return Err(InstrStop::OutOfGas.into());
-        }
         let (previously_destroyed, balance, should_destroy) = {
             let account = self.state.account(contract)?;
             let should_destroy = !features.contains(EvmFeatures::EIP6780) || account.is_created();
@@ -1961,10 +2018,11 @@ pub struct AccountLoad {
     pub code_hash: B256,
     /// Account bytecode.
     pub code: Bytecode,
-    /// Whether the account exists in state.
-    pub exists: bool,
     /// Whether the account is empty.
     pub is_empty: bool,
+    /// Whether the account is empty for new-account gas: absent or empty under EIP-161, absent
+    /// and untouched before it.
+    pub is_empty_for_new_account_gas: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -3292,6 +3350,94 @@ mod tests {
     #[test]
     fn interpreter_runner_can_fallback_to_interpreter() {
         assert_eq!(run_with_test_interpreter_runner(None, &[op::STOP]), InstrStop::Stop);
+    }
+
+    #[derive(Debug)]
+    struct SpecBoundRunner {
+        spec_id: SpecId,
+        initial_call_depth: u16,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl InterpreterRunner<BaseEvmTypes> for SpecBoundRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Some(InstrStop::Return)
+        }
+
+        fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            config.base_spec_id() == self.spec_id
+                && config.version().initial_call_depth == self.initial_call_depth
+        }
+    }
+
+    #[test]
+    fn interpreter_runner_support_follows_runner_and_execution_config() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let message = MessageExt {
+            gas_limit: 30_000,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..Default::default()
+        };
+        let run = |evm: &mut Evm<'_, BaseEvmTypes>| {
+            let stop = evm.run_interpreter(&message).unwrap();
+            (stop, calls.load(Ordering::Relaxed))
+        };
+        let set_spec = |evm: &mut Evm<'_, BaseEvmTypes>, spec_id: SpecId| {
+            evm.set_execution_config(
+                ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id),
+                spec_id,
+                TxRegistry::new(),
+                Precompiles::base(spec_id),
+            );
+        };
+
+        evm.set_shared_interpreter_runner(Arc::new(SpecBoundRunner {
+            spec_id: SpecId::PRAGUE,
+            initial_call_depth: 0,
+            calls: Arc::clone(&calls),
+        }));
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 0));
+
+        set_spec(&mut evm, SpecId::PRAGUE);
+        assert_eq!(run(&mut evm), (InstrStop::Return, 1));
+
+        set_spec(&mut evm, SpecId::OSAKA);
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 1));
+
+        set_spec(&mut evm, SpecId::PRAGUE);
+        assert_eq!(run(&mut evm), (InstrStop::Return, 2));
+
+        let mut version = *Version::base(SpecId::PRAGUE);
+        version.initial_call_depth = 1;
+        evm.set_block_and_execution_config_within_spec(
+            BlockEnvExt::default(),
+            ExecutionConfig::for_spec_and_version(SpecId::PRAGUE, version),
+        );
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 2));
+
+        evm.set_block_and_execution_config_within_spec(
+            BlockEnvExt::default(),
+            ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::PRAGUE),
+        );
+        assert_eq!(run(&mut evm), (InstrStop::Return, 3));
+
+        let runner = evm.clear_interpreter_runner().unwrap();
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 3));
+
+        evm.set_shared_interpreter_runner(runner);
+        assert_eq!(run(&mut evm), (InstrStop::Return, 4));
     }
 
     #[test]
@@ -4907,27 +5053,6 @@ mod tests {
 
         assert!(result.is_err());
         assert!(evm.logs().is_empty());
-    }
-
-    #[cfg(feature = "async")]
-    #[test]
-    #[should_panic(expected = "async EVM execution cannot run with a borrowed inspector")]
-    fn transact_with_inspector_rejects_nested_async_send() {
-        let mut evm = scoped_inspector_evm();
-        evm.registry.register(
-            TEST_TX_TYPE,
-            TxEnvelope::as_legacy,
-            handler(
-                |_| Ok(()),
-                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
-                    drop(req.host.transact_async_send(&test_tx(1)));
-                    Ok(TxResultExt::default())
-                },
-            ),
-        );
-        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
-
-        let _ = evm.transact_with_inspector(&test_tx(0), &mut CallCounter::default());
     }
 
     #[test]

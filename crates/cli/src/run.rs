@@ -1,5 +1,5 @@
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, hex, keccak256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, hex, keccak256, map::B256Map};
 use clap::ValueEnum;
 use evm2::{
     BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId, Version,
@@ -18,7 +18,6 @@ use evm2_jit_runtime::{
 };
 use std::{
     borrow::Cow,
-    collections::HashMap,
     hint::black_box,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -101,8 +100,9 @@ pub(crate) struct RunArgs {
     /// Disable frame pointers in the compiled function.
     #[arg(long)]
     no_frame_pointers: bool,
-    #[arg(long, default_value = "1000000000")]
-    gas_limit: u64,
+    /// Transaction gas limit. Defaults to the fixture's, or the Osaka cap for bytecode.
+    #[arg(long)]
+    gas_limit: Option<u64>,
 }
 
 impl RunArgs {
@@ -200,7 +200,7 @@ impl RunArgs {
                 compiler.set_frame_pointers(false);
             }
 
-            let parsed = compiler.parse(bytecode.as_slice().into(), compile_spec_id)?;
+            let parsed = compiler.parse(bytecode.as_slice(), compile_spec_id)?;
             if self.display || self.parse_only {
                 println!("{name}()\n{parsed:#}");
             }
@@ -243,7 +243,7 @@ impl RunArgs {
                 }
             } else if self.load.is_none() {
                 let func = unsafe { compiler.jit_function(f_id)? };
-                let mut functions = HashMap::new();
+                let mut functions = B256Map::default();
                 functions.insert(keccak256(&bytecode), func);
                 compiler.clear_ir()?;
                 pending_jit = Some((compiler, functions));
@@ -465,7 +465,7 @@ struct Bench {
     source: BenchSource,
     spec_id: SpecId,
     calldata: Option<Vec<u8>>,
-    gas_limit: u64,
+    gas_limit: Option<u64>,
     assert_success: bool,
 }
 
@@ -485,7 +485,7 @@ impl Bench {
             source: BenchSource::Fixture(bench.fixture_path),
             spec_id: spec,
             calldata: None,
-            gas_limit: u64::MAX,
+            gas_limit: None,
             assert_success: true,
         })
     }
@@ -515,7 +515,7 @@ fn fixture_from_bytecode(
     bytecode: Vec<u8>,
     spec_id: SpecId,
     calldata: Option<Vec<u8>>,
-    gas_limit: u64,
+    gas_limit: Option<u64>,
 ) -> Bench {
     Bench {
         name: name.into(),
@@ -538,7 +538,7 @@ struct PreparedBench {
     block: BlockEnv,
     db: InMemoryDB,
     tx: RecoveredTxEnvelope,
-    functions: Arc<HashMap<B256, EvmCompilerFn>>,
+    functions: Arc<B256Map<EvmCompilerFn>>,
     assert_success: bool,
 }
 
@@ -547,14 +547,14 @@ type LlvmCompiler = EvmCompiler<EvmLlvmBackend>;
 impl PreparedBench {
     fn load(bench: &Bench) -> eyre::Result<(Self, LlvmCompiler)> {
         let mut compiler = EvmCompiler::new_llvm(false)?;
-        let prepared = Self::load_with_functions(bench, &mut compiler, HashMap::new())?;
+        let prepared = Self::load_with_functions(bench, &mut compiler, B256Map::default())?;
         Ok((prepared, compiler))
     }
 
     fn load_with_functions(
         bench: &Bench,
         compiler: &mut LlvmCompiler,
-        mut functions: HashMap<B256, EvmCompilerFn>,
+        mut functions: B256Map<EvmCompilerFn>,
     ) -> eyre::Result<Self> {
         let (name, accounts, block, db, tx) = parse_bench(bench)?;
         for account in &accounts {
@@ -587,7 +587,7 @@ impl PreparedBench {
     ) -> eyre::Result<(Self, libloading::Library)> {
         let (name, accounts, block, db, tx) = parse_bench(bench)?;
         let lib = unsafe { libloading::Library::new(lib_path) }?;
-        let mut functions = HashMap::new();
+        let mut functions = B256Map::default();
         for account in &accounts {
             if account.bytecode.is_empty() || functions.contains_key(&account.code_hash) {
                 continue;
@@ -658,7 +658,7 @@ impl PreparedBench {
 
 #[derive(Clone, Debug)]
 struct FixedJitRunner {
-    functions: Arc<HashMap<B256, EvmCompilerFn>>,
+    functions: Arc<B256Map<EvmCompilerFn>>,
 }
 
 impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
@@ -726,7 +726,8 @@ fn parse_bytecode_bench(bench: &Bench, bytecode: &[u8]) -> eyre::Result<Prepared
     let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
     let code_hash = bytecode.hash_slow();
     db.insert_account_info(&BENCH_TARGET, AccountInfo::default().with_code(bytecode.clone()));
-    let gas_limit = bench.gas_limit();
+    let gas_limit =
+        bench.gas_limit.unwrap_or_else(|| Version::base(SpecId::OSAKA).tx_gas_limit_cap);
     let tx = TxLegacy {
         chain_id: None,
         nonce: 0,
@@ -808,7 +809,10 @@ fn build_fixture_tx(
         .gas_limit
         .get(indexes.gas)
         .ok_or_else(|| eyre::eyre!("fixture gas index {} does not exist", indexes.gas))?;
-    let gas_limit = u64_value(gas_limit)?.min(bench.gas_limit());
+    let gas_limit = match bench.gas_limit {
+        Some(gas_limit) => gas_limit,
+        None => u64_value(gas_limit)?,
+    };
     let value = *raw
         .value
         .get(indexes.value)
@@ -825,12 +829,6 @@ fn build_fixture_tx(
         input: data,
     };
     Ok(Recovered::new_unchecked(TxEnvelope::Legacy(tx), caller))
-}
-
-impl Bench {
-    fn gas_limit(&self) -> u64 {
-        self.gas_limit.min(Version::base(self.spec_id).tx_gas_limit_cap)
-    }
 }
 
 fn u128_value(value: U256) -> eyre::Result<u128> {

@@ -1,6 +1,5 @@
 //! Geth trace builder
 use crate::tracing::{
-    final_refunded,
     tx_state::TxState,
     types::{CallKind, CallTraceNode, CallTraceStepStackItem},
     utils::load_account_code,
@@ -230,7 +229,7 @@ impl<'a> GethTraceBuilder<'a> {
     ) -> DefaultFrame {
         self.geth_traces_inner(
             gas.tx_gas_used(),
-            Some((gas.execution_gas_spent(), gas.state_gas_spent(), final_refunded(gas))),
+            Some((gas.execution_gas_spent(), gas.state_gas_spent(), gas.final_refunded())),
             return_value,
             opts,
             None,
@@ -301,7 +300,7 @@ impl<'a> GethTraceBuilder<'a> {
         self.geth_call_traces_inner(
             opts,
             gas.tx_gas_used(),
-            Some((gas.execution_gas_spent(), gas.state_gas_spent(), final_refunded(gas))),
+            Some((gas.execution_gas_spent(), gas.state_gas_spent(), gas.final_refunded())),
         )
     }
 
@@ -493,8 +492,8 @@ impl<'a> GethTraceBuilder<'a> {
                 // Geth keeps the pre state of a selfdestructed account as it looked it up, with
                 // every slot the transaction touched, unchanged and zero ones included.
                 if changed_acc.selfdestructed {
-                    for key in changed_acc.storage.keys() {
-                        pre_state.storage.insert((*key).into(), db.get_storage(&addr, key)?.into());
+                    for (key, slot) in changed_acc.storage.iter() {
+                        pre_state.storage.insert((*key).into(), slot.original.into());
                     }
                 } else {
                     for (key, slot) in changed_acc.changed_storage() {

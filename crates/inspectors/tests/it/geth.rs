@@ -1739,6 +1739,58 @@ fn test_geth_opcode_limit_end_to_end() {
     }
 }
 
+/// geth emits a child's steps right after the call step that entered it. A zero-value call to an
+/// excluded precompile attaches no child, so it must not take the next call's child.
+#[test]
+fn test_geth_struct_logs_follow_calls_with_excluded_precompiles() {
+    let account = address!("1000000000000000000000000000000000000001");
+    let child = address!("0000000000000000000000000000000000001234");
+    let call = |target: [u8; 2]| {
+        [
+            vec![op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0],
+            vec![op::PUSH2, target[0], target[1], op::PUSH2, 0xff, 0xff, op::CALL, op::POP],
+        ]
+        .concat()
+    };
+    // Call the identity precompile, then the child, which runs a few opcodes.
+    let code = [call([0, 4]), call([0x12, 0x34]), vec![op::STOP]].concat();
+    let child_code = vec![op::PUSH1, 1, op::PUSH1, 1, op::ADD, op::STOP];
+
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            for (addr, code) in [(account, code), (child, child_code)] {
+                db.insert_account_info(
+                    &addr,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(code.into())),
+                        ..Default::default()
+                    },
+                );
+            }
+        });
+    let config = TracingInspectorConfig::default_geth().set_exclude_precompile_calls(true);
+    let mut inspector = TracingInspector::new(config);
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TxKind::Call(account),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = inspector.geth_builder().geth_traces(0, Bytes::new(), Default::default());
+    let ops: Vec<_> = frame.struct_logs.iter().map(|log| (&*log.op, log.depth)).collect();
+    let mut expected = vec![("PUSH1", 1); 5];
+    expected.extend([("PUSH2", 1), ("PUSH2", 1), ("CALL", 1), ("POP", 1)]);
+    expected.extend(vec![("PUSH1", 1); 5]);
+    expected.extend([("PUSH2", 1), ("PUSH2", 1), ("CALL", 1)]);
+    expected.extend([("PUSH1", 2), ("PUSH1", 2), ("ADD", 2), ("STOP", 2)]);
+    expected.extend([("POP", 1), ("STOP", 1)]);
+    assert_eq!(ops, expected);
+}
+
 /// Returns the bytes of the JSON geth writes for a struct log, which leaves out a zero refund and
 /// empty return data, memory and storage.
 fn geth_json_len(log: &serde_json::Value) -> usize {
@@ -2674,13 +2726,11 @@ fn test_geth_prestate_diff_reports_cleared_code() {
     );
 }
 
-/// Geth keeps the pre state of a selfdestructed account whole, with every slot the transaction
-/// read, including unchanged and zero ones.
-#[test]
-fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
+/// Runs a London transaction that reads slots 1 (holds `0x2a`) and 2 (zero) of a contract and
+/// selfdestructs it, and returns the contract and the prestate frame.
+fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreStateFrame) {
     let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
     let contract = address!("1111111111111111111111111111111111111111");
-    let beneficiary = address!("3333333333333333333333333333333333333333");
 
     // SLOAD 1, SLOAD 2, SELFDESTRUCT to the beneficiary.
     let code = Bytes::from(hex!("6001545060025450733333333333333333333333333333333333333333ff"));
@@ -2705,7 +2755,6 @@ fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
         .build_mainnet();
 
-    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
     let mut insp =
         TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
     let mut db = evm.ctx.db.clone();
@@ -2725,6 +2774,16 @@ fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
         .geth_builder()
         .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
         .unwrap();
+    (contract, frame)
+}
+
+/// Geth keeps the pre state of a selfdestructed account whole, with every slot the transaction
+/// read, including unchanged and zero ones.
+#[test]
+fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
+    let beneficiary = address!("3333333333333333333333333333333333333333");
+    let (contract, frame) =
+        trace_london_selfdestruct(PreStateConfig { diff_mode: Some(true), ..Default::default() });
     let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
 
     // Output of geth's `evm t8n --state.fork London` with the prestate tracer in diff mode.
@@ -2732,6 +2791,30 @@ fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
     assert_eq!(diff.post[&beneficiary].balance, Some(U256::from(7)));
     assert_eq!(
         serde_json::to_value(&diff.pre[&contract]).unwrap(),
+        serde_json::json!({
+            "balance": "0x7",
+            "code": "0x6001545060025450733333333333333333333333333333333333333333ff",
+            "nonce": 1,
+            "storage": {
+                "0x0000000000000000000000000000000000000000000000000000000000000001":
+                    "0x000000000000000000000000000000000000000000000000000000000000002a",
+                "0x0000000000000000000000000000000000000000000000000000000000000002":
+                    "0x0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        })
+    );
+}
+
+/// geth reads a slot before the transaction runs, so the pre state of a contract that selfdestructs
+/// reports the value the slot held, not the zero its storage wipe leaves behind.
+#[test]
+fn test_geth_prestate_selfdestruct_reports_slots_before_the_wipe() {
+    let (contract, frame) = trace_london_selfdestruct(PreStateConfig::default());
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+
+    // Output of geth's `evm t8n --state.fork London` with the prestate tracer.
+    assert_eq!(
+        serde_json::to_value(&prestate.0[&contract]).unwrap(),
         serde_json::json!({
             "balance": "0x7",
             "code": "0x6001545060025450733333333333333333333333333333333333333333ff",

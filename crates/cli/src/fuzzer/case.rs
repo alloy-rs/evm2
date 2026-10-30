@@ -96,19 +96,21 @@ impl CaseGenerator {
     pub(crate) fn generate(&mut self, rng: &mut Gen) -> &EvmCase {
         let Self { case, program, address_pool, call_pool } = self;
         let EvmCase { spec, block, tx, extra_txs, features, accounts } = case;
-        *spec = match rng.range(13) {
+        *spec = match rng.range(15) {
             0 => SpecId::FRONTIER,
             1 => SpecId::HOMESTEAD,
             2 => SpecId::TANGERINE,
             3 => SpecId::SPURIOUS_DRAGON,
             4 => SpecId::BYZANTIUM,
-            5 => SpecId::ISTANBUL,
-            6 => SpecId::BERLIN,
-            7 => SpecId::LONDON,
-            8 => SpecId::SHANGHAI,
-            9 => SpecId::CANCUN,
-            10 => SpecId::PRAGUE,
-            11 => SpecId::OSAKA,
+            5 => SpecId::PETERSBURG,
+            6 => SpecId::ISTANBUL,
+            7 => SpecId::BERLIN,
+            8 => SpecId::LONDON,
+            9 => SpecId::MERGE,
+            10 => SpecId::SHANGHAI,
+            11 => SpecId::CANCUN,
+            12 => SpecId::PRAGUE,
+            13 => SpecId::OSAKA,
             _ => SpecId::AMSTERDAM,
         };
         let spec = *spec;

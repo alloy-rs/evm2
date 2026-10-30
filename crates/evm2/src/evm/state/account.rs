@@ -497,13 +497,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if account.is_empty_code_hash() {
             return Ok(Bytecode::default());
         }
-        if let Some(code) = account.code.as_ref()
-            && !code.is_empty()
-        {
-            return Ok(code.clone());
-        }
         let code_hash = account.code_hash;
-        self.inner.database.get_code_by_hash(&code_hash)
+        let code = match account.code.as_ref() {
+            Some(code) if !code.is_empty() => code.clone(),
+            _ => self.inner.database.get_code_by_hash(&code_hash)?,
+        };
+        code.seed_hash(code_hash);
+        Ok(code)
     }
 
     /// Loads the account's bytecode as it stood at the start of the transaction.
@@ -520,13 +520,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if account.is_empty_code_hash() {
             return Ok(Bytecode::default());
         }
-        if let Some(code) = account.code.as_ref()
-            && !code.is_empty()
-        {
-            return Ok(code.clone());
-        }
         let code_hash = account.code_hash;
-        self.inner.database.get_code_by_hash(&code_hash)
+        let code = match account.code.as_ref() {
+            Some(code) if !code.is_empty() => code.clone(),
+            _ => self.inner.database.get_code_by_hash(&code_hash)?,
+        };
+        code.seed_hash(code_hash);
+        Ok(code)
     }
 
     /// Touches the account, recording a revert snapshot the first time it is mutated.
@@ -822,6 +822,30 @@ mod tests {
 
         let loaded = state.account(&address).unwrap().load_code().unwrap();
         assert_eq!(loaded, code);
+    }
+
+    #[test]
+    fn loaded_code_is_seeded_with_account_code_hash() {
+        use alloy_primitives::Bytes;
+
+        // A hash that is not the keccak of the code proves `hash_slow` returns the seeded value
+        // instead of hashing.
+        let seed = B256::repeat_byte(0x5e);
+        let address = Address::from([0x8d; 20]);
+        let fresh = || Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
+        assert_ne!(fresh().hash_slow(), seed);
+
+        let mut database = CacheDB::default();
+        database
+            .insert_account_info(&address, AccountInfo::new(Word::ZERO, 1, seed, Some(fresh())));
+        let mut state = State::new(database);
+
+        assert_eq!(state.account(&address).unwrap().load_code().unwrap().hash_slow(), seed);
+        assert_eq!(state.account(&address).unwrap().original_code().unwrap().hash_slow(), seed);
+
+        let overlay_address = Address::from([0x8e; 20]);
+        state.account(&overlay_address).unwrap().set_code(seed, fresh());
+        assert_eq!(state.account(&overlay_address).unwrap().load_code().unwrap().hash_slow(), seed);
     }
 
     #[test]

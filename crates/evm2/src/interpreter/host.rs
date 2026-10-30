@@ -1,7 +1,6 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, ExecutionError,
-    HostError, SpecId,
+    BaseEvmTypes, DatabaseError, EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
@@ -71,7 +70,6 @@ impl<E> MessageResultExt<E> {
         if self.gas.refunded() <= 0 {
             return 0;
         }
-        let max_refund_quotient = if max_refund_quotient == 0 { 1 } else { max_refund_quotient };
         // EIP-8037: the unused state-gas reservoir is reimbursed to the caller, so it
         // is not part of the gas actually spent. The EIP-3529 refund cap is a fraction
         // of the gas the transaction truly consumed, so the reservoir must be excluded
@@ -142,13 +140,6 @@ pub trait Host<T: EvmTypesHost> {
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError>;
 
-    /// Returns whether an account is empty/non-existent for new-account gas checks.
-    fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> Result<bool, DatabaseError>;
-
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError>;
 
@@ -211,6 +202,5 @@ mod tests {
         assert_eq!(result.final_refund(100, 2), 40);
         assert_eq!(result.final_refund(100, 5), 16);
         assert_eq!(result.final_refund(100, 1), 60);
-        assert_eq!(result.final_refund(100, 0), 60);
     }
 }

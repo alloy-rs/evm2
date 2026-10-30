@@ -25,8 +25,8 @@ use syn::{
 ///   reference per non-`_` pattern. Inputs that overlap output slots are shared reborrows of the
 ///   output slot; other inputs are shared references. Use reference patterns like `[&x]: [Word]` to
 ///   copy.
-/// - `-> out`: Automatic stack output. The output name is a mutable `Word` slot. Multiple outputs
-///   can be written as `-> Result<out1, out2>` for fallible instructions.
+/// - `-> out`: Automatic stack output. The output name is a mutable `Word` slot. At most one output
+///   is supported.
 /// - `-> Result`: Fallible instruction with no automatic outputs. The body must evaluate to
 ///   `evm2::interpreter::Result`, so `?` can be used to return an `InstrStop`.
 /// - `-> Result<out>`: Fallible instruction with automatic outputs. The body gets mutable output
@@ -109,7 +109,7 @@ enum InstructionAttr {
 impl Parse for InstructionAttr {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let ident = input.parse::<Ident>()?;
-        if ident == "EvmTypes" || ident == "evm_types" {
+        if ident == "EvmTypes" {
             let span = ident.span();
             if input.peek(Token![=]) {
                 input.parse::<Token![=]>()?;
@@ -237,22 +237,49 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
     } else {
         quote! { where #evm_types: #evm_types_bound #( + #evm_types_bounds)* }
     };
-    let (_, outputs) = parse_return(sig.output);
+    let outputs = match parse_return(sig.output) {
+        Ok(outputs) => outputs,
+        Err(err) => return err.to_compile_error(),
+    };
 
     let mut has_cx = false;
     let mut cx_arg = None;
     let mut inputs = Vec::new();
+    let mut has_stack_inputs = false;
     for arg in sig.inputs {
-        let FnArg::Typed(arg) = arg else { continue };
+        let FnArg::Typed(arg) = arg else {
+            return syn::Error::new_spanned(arg, "`self` is not supported in #[instruction]")
+                .to_compile_error();
+        };
         if is_infer(&arg.ty) {
-            let Pat::Ident(PatIdent { ident, .. }) = *arg.pat else { continue };
+            let Pat::Ident(PatIdent { ident, .. }) = *arg.pat else {
+                return syn::Error::new_spanned(arg.pat, "expected an identifier for `cx: _`")
+                    .to_compile_error();
+            };
+            if has_cx {
+                return syn::Error::new_spanned(ident, "duplicate `cx: _` argument")
+                    .to_compile_error();
+            }
             has_cx = true;
             cx_arg = Some(ident);
         } else if is_word_slice(&arg.ty) {
-            let Pat::Slice(PatSlice { elems, .. }) = *arg.pat else { continue };
+            let Pat::Slice(PatSlice { elems, .. }) = *arg.pat else {
+                return syn::Error::new_spanned(
+                    arg.pat,
+                    "expected a slice pattern like `[a, b]` for `[Word]` stack inputs",
+                )
+                .to_compile_error();
+            };
             if let Some(rest) = elems.iter().find(|pat| matches!(pat, Pat::Rest(_))) {
                 return syn::Error::new_spanned(rest, "`..` is not supported in stack inputs")
                     .to_compile_error();
+            }
+            if std::mem::replace(&mut has_stack_inputs, true) {
+                return syn::Error::new_spanned(
+                    elems,
+                    "duplicate `[..]: [Word]` stack inputs argument",
+                )
+                .to_compile_error();
             }
             inputs.extend(elems);
         } else {
@@ -262,6 +289,14 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             )
             .to_compile_error();
         }
+    }
+
+    if instruction_attrs.no_stack_preamble && (!inputs.is_empty() || !outputs.is_empty()) {
+        return syn::Error::new(
+            ident.span(),
+            "stack inputs and outputs are not supported with `no_stack_preamble`",
+        )
+        .to_compile_error();
     }
 
     let body = body(input.block.stmts, outputs.is_empty());
@@ -361,26 +396,34 @@ fn is_word_slice(ty: &Type) -> bool {
     path.get_ident().is_some_and(|ident| ident == "Word")
 }
 
-fn parse_return(output: ReturnType) -> (bool, Vec<Ident>) {
+fn parse_return(output: ReturnType) -> syn::Result<Vec<Ident>> {
     let ReturnType::Type(_, ty) = output else {
-        return (false, Vec::new());
+        return Ok(Vec::new());
     };
-    let Type::Path(TypePath { path, .. }) = *ty else {
-        return (false, Vec::new());
+    let unsupported = |ty: &dyn quote::ToTokens| {
+        syn::Error::new_spanned(
+            ty,
+            "unsupported #[instruction] return type; use `-> out`, `-> Result`, or `-> Result<out>`",
+        )
+    };
+    let Type::Path(TypePath { path, .. }) = &*ty else {
+        return Err(unsupported(&ty));
     };
     let Some(segment) = path.segments.last() else {
-        return (false, Vec::new());
+        return Err(unsupported(&ty));
     };
-    if segment.ident == "Result" {
-        let outputs = match &segment.arguments {
-            PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) => {
-                args.iter().filter_map(generic_ident).collect()
+    if segment.ident != "Result" {
+        return Ok(vec![path.get_ident().cloned().ok_or_else(|| unsupported(&ty))?]);
+    }
+    match &segment.arguments {
+        PathArguments::None => Ok(Vec::new()),
+        PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) => {
+            if let Some(extra) = args.iter().nth(1) {
+                return Err(syn::Error::new_spanned(extra, "multiple outputs not supported"));
             }
-            _ => Vec::new(),
-        };
-        (true, outputs)
-    } else {
-        (false, vec![segment.ident.clone()])
+            args.iter().map(|arg| generic_ident(arg).ok_or_else(|| unsupported(arg))).collect()
+        }
+        PathArguments::Parenthesized(_) => Err(unsupported(&ty)),
     }
 }
 
@@ -422,14 +465,6 @@ fn stack_setup(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
 }
 
 fn stack_bindings(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
-    if outputs.len() > 1 {
-        return syn::Error::new(
-            outputs.iter().map(|i| i.span()).reduce(|a, b| a.join(b).unwrap_or(a)).unwrap(),
-            "multiple outputs not supported",
-        )
-        .into_compile_error();
-    }
-
     let count = inputs.len().max(outputs.len());
     let mut bindings = Vec::with_capacity(count);
     for i in 0..count {
