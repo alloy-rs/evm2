@@ -245,6 +245,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
     let mut has_cx = false;
     let mut cx_arg = None;
     let mut inputs = Vec::new();
+    let mut has_stack_inputs = false;
     for arg in sig.inputs {
         let FnArg::Typed(arg) = arg else {
             return syn::Error::new_spanned(arg, "`self` is not supported in #[instruction]")
@@ -255,6 +256,10 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
                 return syn::Error::new_spanned(arg.pat, "expected an identifier for `cx: _`")
                     .to_compile_error();
             };
+            if has_cx {
+                return syn::Error::new_spanned(ident, "duplicate `cx: _` argument")
+                    .to_compile_error();
+            }
             has_cx = true;
             cx_arg = Some(ident);
         } else if is_word_slice(&arg.ty) {
@@ -269,6 +274,13 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
                 return syn::Error::new_spanned(rest, "`..` is not supported in stack inputs")
                     .to_compile_error();
             }
+            if std::mem::replace(&mut has_stack_inputs, true) {
+                return syn::Error::new_spanned(
+                    elems,
+                    "duplicate `[..]: [Word]` stack inputs argument",
+                )
+                .to_compile_error();
+            }
             inputs.extend(elems);
         } else {
             return syn::Error::new_spanned(
@@ -277,6 +289,14 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             )
             .to_compile_error();
         }
+    }
+
+    if instruction_attrs.no_stack_preamble && (!inputs.is_empty() || !outputs.is_empty()) {
+        return syn::Error::new(
+            ident.span(),
+            "stack inputs and outputs are not supported with `no_stack_preamble`",
+        )
+        .to_compile_error();
     }
 
     let body = body(input.block.stmts, outputs.is_empty());
@@ -390,6 +410,9 @@ fn parse_return(output: ReturnType) -> syn::Result<Vec<Ident>> {
     match &segment.arguments {
         PathArguments::None => Ok(Vec::new()),
         PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) => {
+            if let Some(extra) = args.iter().nth(1) {
+                return Err(syn::Error::new_spanned(extra, "multiple outputs not supported"));
+            }
             args.iter().map(|arg| generic_ident(arg).ok_or_else(|| unsupported(arg))).collect()
         }
         PathArguments::Parenthesized(_) => Err(unsupported(&ty)),
@@ -434,14 +457,6 @@ fn stack_setup(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
 }
 
 fn stack_bindings(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
-    if outputs.len() > 1 {
-        return syn::Error::new(
-            outputs.iter().map(|i| i.span()).reduce(|a, b| a.join(b).unwrap_or(a)).unwrap(),
-            "multiple outputs not supported",
-        )
-        .into_compile_error();
-    }
-
     let count = inputs.len().max(outputs.len());
     let mut bindings = Vec::with_capacity(count);
     for i in 0..count {
