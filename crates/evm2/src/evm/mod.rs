@@ -4324,12 +4324,11 @@ mod tests {
         assert!(info.is_empty_code_hash());
 
         let pending = state.take_pending_state();
-        assert!(pending.accounts.contains_key(&contract), "account change recorded");
-        assert!(pending.selfdestructs.contains(&contract));
+        assert!(pending.accounts[&contract].flags.contains(AccountFlags::DESTROYED));
     }
 
     #[test]
-    fn commit_transaction_clears_detached_selfdestructs() {
+    fn commit_transaction_clears_detached_destroyed_flag() {
         let contract = Address::from([0x44; 20]);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let mut database = InMemoryDB::default();
