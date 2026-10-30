@@ -290,7 +290,7 @@ impl DebugInspector {
                     .into_localized_transaction_traces(tx_info)
                     .into()
             }
-            Self::Erc7562Tracer(inspector) => inspector.frame(tx, &res.result).into(),
+            Self::Erc7562Tracer(inspector) => inspector.frame(tx, &res.result)?.into(),
             Self::Keccak256Preimage(inspector) => GethTrace::JS(inspector.json_result()?),
             Self::Default(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
@@ -433,6 +433,9 @@ pub enum DebugInspectorError {
     /// The keccak256 preimage tracer reached its limit of recorded bytes
     #[error(transparent)]
     Keccak256Preimage(#[from] crate::tracing::Keccak256PreimageLimitExceeded),
+    /// The erc7562 tracer reached its limit of recorded preimage bytes
+    #[error(transparent)]
+    Erc7562(#[from] crate::tracing::Erc7562LimitExceeded),
     /// Error from JS inspector
     #[cfg(feature = "js-tracer")]
     #[error(transparent)]

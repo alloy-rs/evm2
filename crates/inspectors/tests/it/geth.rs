@@ -20,8 +20,8 @@ use evm2::{
     ethereum::ethereum_tx_registry,
 };
 use evm2_inspectors::tracing::{
-    DebugInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MEMORY_PAD_LIMIT,
-    MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig,
+    DebugInspector, Erc7562Inspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
+    MEMORY_PAD_LIMIT, MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig,
 };
 use std::collections::BTreeMap;
 
@@ -595,6 +595,58 @@ fn test_geth_erc7562_accessed_slots_and_ignored_opcodes() {
             (op::TSTORE, 1),
         ])
     );
+}
+
+#[test]
+fn test_geth_erc7562_bounds_retained_preimages() {
+    let contract = address!("1000000000000000000000000000000000000001");
+    let spec = SpecId::CANCUN;
+    // KECCAK256 of 60 and of 61 bytes of zero padding.
+    let code = Bytes::from(vec![
+        op::PUSH1,
+        60,
+        op::PUSH0,
+        op::KECCAK256,
+        op::POP,
+        op::PUSH1,
+        61,
+        op::PUSH0,
+        op::KECCAK256,
+        op::STOP,
+    ]);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
+    );
+    let block = *Context::mainnet().block();
+    for (limit, preimages) in [(121, Some(2)), (120, None)] {
+        let mut inspector = Erc7562Inspector::new(Erc7562Config::default())
+            .with_limits(TraceLimits::default().set_max_recorded_bytes(Some(limit)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            db.clone(),
+            Precompiles::base(spec),
+        );
+        evm.set_inspector(&mut inspector);
+        let tx = TxEnv {
+            gas_limit: 1_000_000,
+            gas_price: 0,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        };
+        let envelope = tx.envelope();
+        let res = evm.transact(&envelope).unwrap().detach();
+        drop(evm);
+
+        assert_eq!(inspector.limit_exceeded(), preimages.is_none());
+        assert_eq!(
+            inspector.frame(&envelope, &res.result).ok().map(|frame| frame.keccak.len()),
+            preimages
+        );
+    }
 }
 
 #[test]

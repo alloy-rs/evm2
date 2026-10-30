@@ -9,10 +9,15 @@
 //! counters of the frame that runs it as the instruction is about to execute, reading the stack,
 //! the memory and the state like geth does. A step that fails counts like any other.
 //!
+//! A frame that fails at a `KECCAK256` still leaves its preimage, and a preimage can reach 1 MiB of
+//! zero padding for a few hundred gas, so the [`TraceLimits`] of the inspector bound the bytes of
+//! the preimages it retains, which geth does not. [`DEFAULT_MAX_RECORDED_BYTES`] is the default.
+//!
 //! See also <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/eth/tracers/native/erc7562.go>
 
 use crate::tracing::{
-    GethTraceBuilder, TracingInspector, TracingInspectorConfig, keccak::memory_copy_padded,
+    DEFAULT_MAX_RECORDED_BYTES, GethTraceBuilder, TraceLimits, TracingInspector,
+    TracingInspectorConfig, keccak::memory_copy_padded, limits::TraceBudget,
     utils::load_account_code,
 };
 use alloc::{borrow::Cow, collections::BTreeSet, format, vec::Vec};
@@ -29,6 +34,12 @@ use evm2::{
     EvmTypes, Inspector, TxResultExt,
     interpreter::{InstrStop, Interpreter, Message, MessageResult, opcode::op},
 };
+use thiserror::Error;
+
+/// The result of an [`Erc7562Inspector`] would miss preimages: it reached its byte limit.
+#[derive(Clone, Copy, Debug, Error)]
+#[error("erc7562Tracer reached its limit of recorded preimage bytes")]
+pub struct LimitExceeded;
 
 /// Inspector that collects what geth's `erc7562Tracer` reports for a transaction.
 #[derive(Clone, Debug)]
@@ -43,6 +54,8 @@ pub struct Erc7562Inspector {
     frames: Vec<FrameCounters>,
     /// The preimages of the `KECCAK256` operations of the transaction, sorted.
     keccak: BTreeSet<Bytes>,
+    /// The bytes of the preimages.
+    budget: TraceBudget,
     /// The instruction that ran last, in any frame.
     last: Option<LastStep>,
 }
@@ -87,7 +100,29 @@ impl Erc7562Inspector {
                 with_log: Some(with_log),
                 ..Default::default()
             }));
-        Self { with_log, ignored, calls, frames: Vec::new(), keccak: BTreeSet::new(), last: None }
+        let limits =
+            TraceLimits::default().set_max_recorded_bytes(Some(DEFAULT_MAX_RECORDED_BYTES));
+        Self {
+            with_log,
+            ignored,
+            calls,
+            frames: Vec::new(),
+            keccak: BTreeSet::new(),
+            budget: TraceBudget { limits, ..Default::default() },
+            last: None,
+        }
+    }
+
+    /// Bounds the bytes of the preimages that the inspector retains by the given limits, which
+    /// default to [`DEFAULT_MAX_RECORDED_BYTES`].
+    pub const fn with_limits(mut self, limits: TraceLimits) -> Self {
+        self.budget.limits = limits;
+        self
+    }
+
+    /// Returns whether a preimage was omitted after reaching the byte limit.
+    pub const fn limit_exceeded(&self) -> bool {
+        self.budget.exceeded()
     }
 
     /// Clears what the inspector collected, to trace the next transaction.
@@ -95,6 +130,8 @@ impl Erc7562Inspector {
         self.calls.fuse();
         self.frames.clear();
         self.keccak.clear();
+        self.budget.recorded = 0;
+        self.budget.exceeded = false;
         self.last = None;
     }
 
@@ -105,11 +142,16 @@ impl Erc7562Inspector {
     }
 
     /// Returns the result of the tracer for a transaction that ran with this inspector.
+    ///
+    /// Fails if the byte limit was reached, because the result would miss preimages.
     pub fn frame<E>(
         &mut self,
         tx: &Recovered<impl Transaction>,
         result: &TxResultExt<E>,
-    ) -> Erc7562Frame {
+    ) -> Result<Erc7562Frame, LimitExceeded> {
+        if self.budget.exceeded() {
+            return Err(LimitExceeded);
+        }
         self.calls.recover_runtime_oog_root(tx, result);
         self.calls.set_transaction_gas_limit(tx.gas_limit());
         self.calls.set_transaction_caller(tx.signer());
@@ -157,7 +199,7 @@ impl Erc7562Inspector {
             frame.calls.reverse();
             match nodes[frames.len()].parent {
                 Some(parent) => frames[parent].1.calls.push(frame),
-                None => return frame,
+                None => return Ok(frame),
             }
         }
     }
@@ -300,8 +342,10 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
                 }
             }
             op::KECCAK256 => {
-                if let Some(preimage) = Self::preimage(interp, top, second)
+                if !self.budget.exceeded()
+                    && let Some(preimage) = Self::preimage(interp, top, second)
                     && !self.keccak.contains(&*preimage)
+                    && self.budget.reserve(preimage.len())
                 {
                     self.keccak.insert(Bytes::from(preimage.into_owned()));
                 }
@@ -310,6 +354,7 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
         }
         // Only `EXTCODE*` and `GAS` look at the instruction that ran before them.
         self.last = (is_ext(op) || op == op::GAS).then_some(LastStep { op, top });
+        self.budget.halt(interp, true);
     }
 
     fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {

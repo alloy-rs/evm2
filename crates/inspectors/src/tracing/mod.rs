@@ -38,7 +38,7 @@ mod config;
 pub use config::{OpcodeFilter, StackSnapshotType, TracingInspectorConfig};
 
 mod erc7562;
-pub use erc7562::Erc7562Inspector;
+pub use erc7562::{Erc7562Inspector, LimitExceeded as Erc7562LimitExceeded};
 
 mod fourbyte;
 pub use fourbyte::FourByteInspector;
