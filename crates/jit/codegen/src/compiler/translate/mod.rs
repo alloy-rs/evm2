@@ -597,7 +597,13 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // At section heads: load from the alloca once and reset the section offset.
         // Within a section: derive from section_start_bytes + compile-time offset.
         let (inp, out) = data.stack_io();
-        let diff = out as i32 - inp as i32;
+        // An invalid immediate needs the stack bounds of its opcode but halts before it writes
+        // anything, so it must not publish a longer stack.
+        let diff = if data.flags.contains(InstFlags::INVALID_IMMEDIATE) {
+            0
+        } else {
+            out as i32 - inp as i32
+        };
         self.len_offset = 0;
         if data.is_stack_section_head() {
             let section = data.stack_section;

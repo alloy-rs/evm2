@@ -627,6 +627,12 @@ fn run_compiled_test_case_with_context(
     let actual_stack =
         unsafe { stack.as_slice(*stack_len).iter().map(|x| x.to_u256()).collect::<Vec<_>>() };
 
+    // An invalid immediate halts before its opcode writes the stack, so the published length stays
+    // that of the interpreter and no unwritten slot is read.
+    if actual_return == InstrStop::InvalidImmediateEncoding && modify_ecx.is_none() {
+        assert_eq!(actual_stack.len(), interpreter.stack().len(), "stack length mismatch");
+    }
+
     // On EVM halt all available gas is consumed, so resulting stack, memory, and gas do not
     // matter. We do less work than the interpreter by bailing out earlier due to sections.
     if !actual_return.is_halt() {
