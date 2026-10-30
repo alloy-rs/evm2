@@ -52,7 +52,7 @@ pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
     interpreter: &mut Interpreter<'frame, 'host, T>,
     host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
-    if !backend.supports_host::<T>(host.execution_config()) {
+    if !backend.enabled() || !backend.supports_host::<T>(host.execution_config()) {
         return None;
     }
     run_supported(backend, interpreter, host)

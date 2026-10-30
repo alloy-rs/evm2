@@ -195,6 +195,9 @@ pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + '
     ///
     /// Record execution errors with [`Interpreter::fail`]; the EVM extracts them after this
     /// method returns.
+    ///
+    /// The EVM calls the runner through a borrow of the `Arc` stored in `host`, so the runner
+    /// must not replace or swap `*host`.
     fn run<'frame, 'host>(
         &self,
         interpreter: &mut Interpreter<'frame, 'host, T>,
@@ -426,6 +429,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn assert_execution_config_mutable(&self) {
         assert!(!self.running, "execution config cannot be modified during EVM execution");
+    }
+
+    #[inline]
+    fn refresh_runner_support(&mut self) {
+        self.runner_supported = self
+            .interpreter_runner
+            .as_ref()
+            .is_some_and(|runner| runner.supports(&self.execution_config));
     }
 
     #[inline]
@@ -1051,14 +1062,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let runner = self.interpreter_runner.take();
         self.refresh_runner_support();
         runner
-    }
-
-    #[inline]
-    fn refresh_runner_support(&mut self) {
-        self.runner_supported = self
-            .interpreter_runner
-            .as_ref()
-            .is_some_and(|runner| runner.supports(&self.execution_config));
     }
 
     /// Returns the active EVM version.
@@ -1757,17 +1760,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
-        let runner = if guard.evm.runner_supported {
-            guard.evm.interpreter_runner.as_deref().map(NonNull::from)
-        } else {
-            None
-        };
+        let runner = guard
+            .evm
+            .interpreter_runner
+            .as_deref()
+            .filter(|_| guard.evm.runner_supported)
+            .map(NonNull::from);
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(guard.evm, inspector)
         } else if let Some(runner) = runner
-            // SAFETY: The runner lives in the `Arc` stored in `self`, which cannot be replaced,
-            // cleared, or dropped while `running` is set, so the pointee outlives this call. It
-            // is called through a pointer because it also receives `&mut Evm`.
+            // SAFETY: The runner lives in the `Arc` stored in `self`. The setters assert `!running`,
+            // and `InterpreterRunner::run` forbids replacing `*host`, so the `Arc` is neither
+            // replaced nor dropped during this call and the pointee outlives it. It is called
+            // through a pointer because it also receives `&mut Evm`.
             && let Some(stop) = unsafe { runner.as_ref() }.run(interp_ref, guard.evm)
         {
             interp_ref.finish_run(stop)
@@ -3348,6 +3353,7 @@ mod tests {
     #[derive(Debug)]
     struct SpecBoundRunner {
         spec_id: SpecId,
+        initial_call_depth: u16,
         calls: Arc<AtomicUsize>,
     }
 
@@ -3363,6 +3369,7 @@ mod tests {
 
         fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
             config.base_spec_id() == self.spec_id
+                && config.version().initial_call_depth == self.initial_call_depth
         }
     }
 
@@ -3387,9 +3394,7 @@ mod tests {
         };
         let set_spec = |evm: &mut Evm<'_, BaseEvmTypes>, spec_id: SpecId| {
             evm.set_execution_config(
-                <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
-                    spec_id,
-                ),
+                ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id),
                 spec_id,
                 TxRegistry::new(),
                 Precompiles::base(spec_id),
@@ -3398,6 +3403,7 @@ mod tests {
 
         evm.set_shared_interpreter_runner(Arc::new(SpecBoundRunner {
             spec_id: SpecId::PRAGUE,
+            initial_call_depth: 0,
             calls: Arc::clone(&calls),
         }));
         assert_eq!(run(&mut evm), (InstrStop::Stop, 0));
@@ -3411,11 +3417,25 @@ mod tests {
         set_spec(&mut evm, SpecId::PRAGUE);
         assert_eq!(run(&mut evm), (InstrStop::Return, 2));
 
-        let runner = evm.clear_interpreter_runner().unwrap();
+        let mut version = *Version::base(SpecId::PRAGUE);
+        version.initial_call_depth = 1;
+        evm.set_block_and_execution_config_within_spec(
+            BlockEnvExt::default(),
+            ExecutionConfig::for_spec_and_version(SpecId::PRAGUE, version),
+        );
         assert_eq!(run(&mut evm), (InstrStop::Stop, 2));
 
-        evm.set_shared_interpreter_runner(runner);
+        evm.set_block_and_execution_config_within_spec(
+            BlockEnvExt::default(),
+            ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::PRAGUE),
+        );
         assert_eq!(run(&mut evm), (InstrStop::Return, 3));
+
+        let runner = evm.clear_interpreter_runner().unwrap();
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 3));
+
+        evm.set_shared_interpreter_runner(runner);
+        assert_eq!(run(&mut evm), (InstrStop::Return, 4));
     }
 
     #[test]
