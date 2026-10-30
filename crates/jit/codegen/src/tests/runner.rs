@@ -529,16 +529,10 @@ fn run_compiled_test_case_with_context(
     let halts = expected_return.is_halt();
     if halts {
         assert!(
-            matches!(expected_stack, &[] | STACK_WHAT_INTERPRETER_SAYS),
-            "halting test case sets an unchecked `expected_stack`"
-        );
-        assert!(
-            matches!(expected_memory, &[] | MEMORY_WHAT_INTERPRETER_SAYS),
-            "halting test case sets an unchecked `expected_memory`"
-        );
-        assert!(
-            matches!(expected_gas, 0 | GAS_WHAT_INTERPRETER_SAYS),
-            "halting test case sets an unchecked `expected_gas`"
+            matches!(expected_stack, &[] | STACK_WHAT_INTERPRETER_SAYS)
+                && matches!(expected_memory, &[] | MEMORY_WHAT_INTERPRETER_SAYS)
+                && matches!(expected_gas, 0 | GAS_WHAT_INTERPRETER_SAYS),
+            "halting test case sets an unchecked stack, memory, or gas expectation"
         );
     }
 
