@@ -86,6 +86,7 @@ impl Bytecode<'_> {
                 if data.flags.contains(InstFlags::NOOP)
                     || data.flags.contains(InstFlags::DISABLED)
                     || data.flags.contains(InstFlags::UNKNOWN)
+                    || data.flags.contains(InstFlags::INVALID_IMMEDIATE)
                 {
                     continue;
                 }
@@ -244,29 +245,21 @@ fn transfer_liveness(
             transfer_swap(live, h_before, depth);
         }
         op::SWAPN => {
-            if let Some(DecodedImm::Single(depth)) = imm
-                && (depth as usize) < h_before
-            {
+            if let Some(DecodedImm::Single(depth)) = imm {
                 transfer_swap(live, h_before, depth as usize);
             }
-            // Infeasible depth or decode failure: conservative no-op.
         }
         op::DUP1..=op::DUP16 => {
             let depth = (opcode - op::DUP1 + 1) as usize;
             transfer_dup(live, h_before, depth);
         }
         op::DUPN => {
-            if let Some(DecodedImm::Single(depth)) = imm
-                && depth >= 1
-                && (depth as usize) <= h_before
-            {
+            if let Some(DecodedImm::Single(depth)) = imm {
                 transfer_dup(live, h_before, depth as usize);
             }
         }
         op::EXCHANGE => {
-            if let Some(DecodedImm::Pair(n, m)) = imm
-                && (m as usize) < h_before
-            {
+            if let Some(DecodedImm::Pair(n, m)) = imm {
                 let tos = h_before - 1;
                 let pos_a = tos - n as usize;
                 let pos_b = tos - m as usize;
@@ -349,19 +342,15 @@ fn all_outputs_dead(
         (op::SWAP1..=op::SWAP16, _) => {
             swap_all_dead(live, h_before, (opcode - op::SWAP1 + 1) as usize)
         }
-        (op::SWAPN, Some(DecodedImm::Single(d))) if (d as usize) < h_before => {
-            swap_all_dead(live, h_before, d as usize)
-        }
+        (op::SWAPN, Some(DecodedImm::Single(d))) => swap_all_dead(live, h_before, d as usize),
         // DUP: only the new TOS is a real output.
         (op::DUP1..=op::DUP16, _) => !live[h_before],
         (op::DUPN, Some(DecodedImm::Single(_))) => !live[h_before],
         // EXCHANGE: only the two exchanged non-TOS positions are written.
-        (op::EXCHANGE, Some(DecodedImm::Pair(n, m))) if (m as usize) < h_before => {
+        (op::EXCHANGE, Some(DecodedImm::Pair(n, m))) => {
             let tos = h_before - 1;
             !live[tos - n as usize] && !live[tos - m as usize]
         }
-        // Infeasible immediates — conservatively not dead.
-        (op::DUPN | op::SWAPN | op::EXCHANGE, _) => false,
         // Generic: all output positions must be dead.
         _ if out > 0 => {
             let write_base = h_before - inp;

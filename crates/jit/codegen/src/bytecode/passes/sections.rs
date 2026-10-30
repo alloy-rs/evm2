@@ -473,21 +473,21 @@ mod tests {
         assert_eq!(head.gas_section.gas_cost, 2, "only CALLDATASIZE gas (2) should be charged");
     }
 
-    /// DUPN with an invalid immediate must have stack_io = (0, 0) so that section analysis
-    /// matches translate (which emits `InvalidImmediateEncoding` and diverges).
-    /// Previously, the fallback to OPCODE_INFO's placeholder `(0, 1)` inflated the section's
-    /// cumulative diff, causing translate to underflow the virtual stack on a subsequent SSTORE.
+    /// DUPN with an invalid immediate diverges like a disabled opcode, so the instructions after
+    /// it do not join its section: translate halts with `InvalidImmediateEncoding` before them.
     #[test]
-    fn invalid_dupn_imm_does_not_inflate_section() {
+    fn invalid_dupn_imm_diverges() {
         // PUSH0, DUPN 0x5b (invalid immediate), PUSH0, SSTORE, STOP
-        // Without the fix, DUPN had stack_io=(0,1), inflating the section diff by 1.
-        // Translate would skip the +1 (goto_return!(fail)), then SSTORE's diff=-2 would
-        // underflow the virtual stack.
         let bytecode = analyze_code_spec(
             vec![op::PUSH0, op::DUPN, 0x5b, op::PUSH0, op::SSTORE, op::STOP],
             SpecId::AMSTERDAM,
         );
         let dupn = bytecode.inst(Inst::from_usize(1));
+        assert!(dupn.is_diverging(), "DUPN with invalid immediate must diverge");
         assert_eq!(dupn.stack_io(), (0, 0), "DUPN with invalid immediate must have zero stack I/O");
+
+        // The instructions after it are dead, so they add no stack inputs or gas to a section.
+        let after = bytecode.inst(Inst::from_usize(3));
+        assert!(after.is_dead_code());
     }
 }
