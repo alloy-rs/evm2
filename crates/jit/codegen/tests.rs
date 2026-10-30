@@ -112,7 +112,6 @@ fn compile_test(path: &Path, build_dir: &Path, test_name: &str) {
     let mut compiler = EvmCompiler::new_llvm(false).unwrap();
     compiler.set_opt_level(OptimizationLevel::Default);
     compiler.set_profiling_support(false);
-    compiler.set_simple_perf(false);
     compiler.set_module_name(test_name);
     compiler.set_dump_to(Some(build_dir.to_path_buf()));
     unsafe {

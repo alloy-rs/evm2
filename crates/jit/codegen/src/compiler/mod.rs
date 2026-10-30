@@ -320,7 +320,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// This setting is applied once per process on first JIT compilation.
     /// Subsequent compilers inherit the value set by the first.
     ///
-    /// Defaults to `true`.
+    /// Defaults to `false`.
     pub fn debug_support(&self) -> bool {
         self.backend.config().debug_support
     }
@@ -367,7 +367,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// This setting is applied once per process on first JIT compilation.
     /// Subsequent compilers inherit the value set by the first.
     ///
-    /// Defaults to `true`.
+    /// Defaults to `false`.
     pub fn simple_perf(&self) -> bool {
         self.backend.config().simple_perf
     }
