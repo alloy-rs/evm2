@@ -10,6 +10,7 @@ use crate::utils::{
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
+use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
     geth::{
         CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
@@ -2448,9 +2449,9 @@ fn mux_flat_call_tracer_does_not_shift_call_tracer_log_positions() {
         .unwrap();
 
     let (ctx, inspector) = evm.ctx_inspector();
-    let frame = inspector
-        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
-        .unwrap();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
 
     let GethTrace::CallTracer(call_frame) =
         &frame.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer)]
