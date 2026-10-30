@@ -350,7 +350,7 @@ fn fault_memory<'a>(log: &StructLog, op: u8, error: &str, memory: &'a [u8]) -> C
     // The opcode only reached its failure after paying for the expansion, so a size the gas
     // cannot cover was never allocated.
     let cost = |words: usize| 3 * words as u128 + (words as u128 * words as u128) / 512;
-    if words * 32 <= memory.len()
+    if words <= memory.len() / 32
         || cost(words).saturating_sub(cost(memory.len() / 32)) > u128::from(log.gas)
     {
         return Cow::Borrowed(memory);
