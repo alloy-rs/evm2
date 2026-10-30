@@ -34,9 +34,9 @@
 //! 1. **Accepted overlay**: transaction-boundary state accepted by prior commits. It shadows the
 //!    wrapped database and is visible to later transactions executed by the same [`Evm`].
 //! 2. **Transaction scratch**: writes, warm-access state, transient storage, journal entries,
-//!    touched accounts, selfdestruct markers, and logs for the currently executing transaction. It
-//!    is cleared after `commit`, `commit_to`, `commit_with`, `discard`, `discard_with`, or `detach`
-//!    while retaining capacity where possible.
+//!    touched and selfdestructed account flags, and logs for the currently executing transaction.
+//!    It is cleared after `commit`, `commit_to`, `commit_with`, `discard`, `discard_with`, or
+//!    `detach` while retaining capacity where possible.
 //! 3. **Block accumulator**: optional block-level state output. It coalesces committed transaction
 //!    writes and keeps block-boundary originals.
 //!

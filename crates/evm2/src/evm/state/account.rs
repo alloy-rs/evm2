@@ -210,8 +210,7 @@ pub(crate) struct Account {
     pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
     pub(crate) present: Option<AccountInfo>,
-    /// Lifecycle flags: warm, touched, destroyed, created, keeps-storage, and
-    /// code changed.
+    /// Lifecycle flags: warm, touched, destroyed, created, keeps-storage, and code changed.
     pub(crate) flags: AccountFlags,
     /// Persistent transaction storage owned by this account.
     pub(crate) storage: StorageOverlay,

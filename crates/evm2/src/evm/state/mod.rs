@@ -918,7 +918,9 @@ impl<'a> State<'a> {
     pub(crate) fn finalize_transaction(&mut self, version: &Version) -> DbResult<()> {
         // Finalization neither touches nor destroys accounts, so one pass over the overlay selects
         // both sets. Selfdestructed accounts are always touched, so they are not selected twice.
-        // Only the selected accounts need another lookup, and they are rare.
+        // Only the selected accounts need another lookup, and they are rare. EIP-161 deletes
+        // touched dead accounts at transaction finalization. Before EIP-161, touching a
+        // non-existent account materializes it as empty.
         let eip161 = version.feature(EvmFeatures::EIP161);
         let mut destroyed = Vec::new();
         let mut finalize = Vec::new();
@@ -926,8 +928,6 @@ impl<'a> State<'a> {
             if entry.flags.contains(AccountFlags::DESTROYED) {
                 destroyed.push(address);
             } else if entry.flags.contains(AccountFlags::TOUCHED)
-                // EIP-161 deletes touched dead accounts at transaction finalization. Before
-                // EIP-161, touching a non-existent account materializes it as empty.
                 && if eip161 { entry.is_existing_dead() } else { entry.present.is_none() }
             {
                 finalize.push(address);
@@ -987,8 +987,8 @@ impl<'a> State<'a> {
     /// This is the inverse of the detach performed by
     /// [`ExecutedTx::detach`](crate::ExecutedTx::detach): the pending accounts and storage become
     /// the transaction layer again, as if the transaction had just been finalized. Touch and
-    /// selfdestruct flags are kept, so finalizing again would replay EIP-8246 resets and
-    /// dead-account deletions: call [`Self::commit_transaction`] before executing another
+    /// selfdestruct flags are kept, so finalizing again would reset EIP-8246 survivors a second
+    /// time: call [`Self::commit_transaction`] before executing another
     /// transaction. Other transaction scratch (journal, logs, warm sets, transient storage) is not
     /// affected.
     pub fn set_pending_state(&mut self, pending: PendingState) {
