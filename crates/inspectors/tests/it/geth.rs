@@ -1739,6 +1739,58 @@ fn test_geth_opcode_limit_end_to_end() {
     }
 }
 
+/// geth emits a child's steps right after the call step that entered it. A zero-value call to an
+/// excluded precompile attaches no child, so it must not take the next call's child.
+#[test]
+fn test_geth_struct_logs_follow_calls_with_excluded_precompiles() {
+    let account = address!("1000000000000000000000000000000000000001");
+    let child = address!("0000000000000000000000000000000000001234");
+    let call = |target: [u8; 2]| {
+        [
+            vec![op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0],
+            vec![op::PUSH2, target[0], target[1], op::PUSH2, 0xff, 0xff, op::CALL, op::POP],
+        ]
+        .concat()
+    };
+    // Call the identity precompile, then the child, which runs a few opcodes.
+    let code = [call([0, 4]), call([0x12, 0x34]), vec![op::STOP]].concat();
+    let child_code = vec![op::PUSH1, 1, op::PUSH1, 1, op::ADD, op::STOP];
+
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            for (addr, code) in [(account, code), (child, child_code)] {
+                db.insert_account_info(
+                    &addr,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(code.into())),
+                        ..Default::default()
+                    },
+                );
+            }
+        });
+    let config = TracingInspectorConfig::default_geth().set_exclude_precompile_calls(true);
+    let mut inspector = TracingInspector::new(config);
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TxKind::Call(account),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = inspector.geth_builder().geth_traces(0, Bytes::new(), Default::default());
+    let ops: Vec<_> = frame.struct_logs.iter().map(|log| (&*log.op, log.depth)).collect();
+    let mut expected = vec![("PUSH1", 1); 5];
+    expected.extend([("PUSH2", 1), ("PUSH2", 1), ("CALL", 1), ("POP", 1)]);
+    expected.extend(vec![("PUSH1", 1); 5]);
+    expected.extend([("PUSH2", 1), ("PUSH2", 1), ("CALL", 1)]);
+    expected.extend([("PUSH1", 2), ("PUSH1", 2), ("ADD", 2), ("STOP", 2)]);
+    expected.extend([("POP", 1), ("STOP", 1)]);
+    assert_eq!(ops, expected);
+}
+
 /// Returns the bytes of the JSON geth writes for a struct log, which leaves out a zero refund and
 /// empty return data, memory and storage.
 fn geth_json_len(log: &serde_json::Value) -> usize {
