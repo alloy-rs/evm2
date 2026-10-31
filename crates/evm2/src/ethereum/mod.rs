@@ -419,7 +419,7 @@ pub const fn validate_intrinsic_gas(
 /// Validates that the gas limit covers the calldata floor gas.
 pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult<()> {
     if gas_limit < floor_gas {
-        return Err(HandlerError::IntrinsicGasTooLow { required: floor_gas, got: gas_limit });
+        return Err(HandlerError::GasLimitBelowFloor { required: floor_gas, got: gas_limit });
     }
     Ok(())
 }
@@ -993,7 +993,7 @@ mod tests {
         if gas_limit < 31_050 {
             assert_eq!(
                 result,
-                Err(HandlerError::IntrinsicGasTooLow { required: 31_050, got: gas_limit })
+                Err(HandlerError::GasLimitBelowFloor { required: 31_050, got: gas_limit })
             );
         } else {
             let result = result.unwrap();

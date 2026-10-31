@@ -65,6 +65,14 @@ pub enum HandlerError {
         /// Transaction gas limit.
         got: u64,
     },
+    /// Transaction gas limit is lower than the calldata floor gas (EIP-7623).
+    #[error("gas limit below floor gas: required {required}, got {got}")]
+    GasLimitBelowFloor {
+        /// Required floor gas.
+        required: u64,
+        /// Transaction gas limit.
+        got: u64,
+    },
     /// Sender cannot pay value plus maximum gas cost.
     #[error("lack of funds ({balance}) for max fee ({fee})")]
     InsufficientFunds {
