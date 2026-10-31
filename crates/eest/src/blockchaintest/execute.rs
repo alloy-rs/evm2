@@ -27,11 +27,7 @@ use crate::{
 };
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
-use alloy_eips::{
-    eip2718::Typed2718,
-    eip4844::DATA_GAS_PER_BLOB,
-    eip7840::{BLOB_BASE_COST, BlobParams},
-};
+use alloy_eips::{eip2718::Typed2718, eip4844::DATA_GAS_PER_BLOB, eip7840::BlobParams};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, aliases::U512};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
@@ -443,15 +439,7 @@ fn execute_block<'a>(
             .map_err(|err| TestError::case(path, name, err))?;
         blob_params = schedule
             .blob_params(header.number, header.timestamp)
-            .map_err(|err| TestError::case(path, name, err))?
-            // The reserve price of EIP-7918 comes from the spec, not from the fixture's schedule.
-            .map(|params| {
-                if spec.enables(SpecId::OSAKA) {
-                    params.with_blob_base_cost(BLOB_BASE_COST)
-                } else {
-                    params
-                }
-            });
+            .map_err(|err| TestError::case(path, name, err))?;
         expected_state_root = Some(header.state_root);
     }
     // The blob checks multiply the blob counts by the blob gas, which must not overflow.
@@ -1685,7 +1673,8 @@ impl ForkSchedule {
         number: U256,
         timestamp: U256,
     ) -> Result<Option<BlobParams>, TestErrorKind> {
-        let Some(blob_fork) = self.stage_at(number, timestamp).blob_fork else { return Ok(None) };
+        let stage = self.stage_at(number, timestamp);
+        let Some(blob_fork) = stage.blob_fork else { return Ok(None) };
         let entry = self
             .blob_schedule
             .get(&blob_fork)
@@ -1693,7 +1682,7 @@ impl ForkSchedule {
         if entry.base_fee_update_fraction.is_zero() {
             return Err(TestErrorKind::ZeroBlobUpdateFraction(blob_fork));
         }
-        Ok(Some(entry.params()))
+        Ok(Some(entry.params(stage.spec)))
     }
 
     /// Returns whether any spec of the fork is skipped.
@@ -1824,6 +1813,7 @@ mod tests {
     use crate::tx::recover_address;
     #[cfg(feature = "jit")]
     use alloy_consensus::{SignableTransaction, TxLegacy, crypto::secp256k1};
+    use alloy_eips::eip7840::BLOB_BASE_COST;
     #[cfg(feature = "jit")]
     use alloy_primitives::{TxKind, to_eip155_v};
     #[cfg(feature = "jit")]
@@ -1874,6 +1864,23 @@ mod tests {
         };
         assert_eq!(blob_params(14_999).update_fraction, BlobParams::bpo1().update_fraction);
         assert_eq!(blob_params(15_000).update_fraction, BlobParams::bpo2().update_fraction);
+    }
+
+    #[test]
+    fn blob_params_carry_the_reserve_price_from_osaka() {
+        let config = |fork, entry| ChainConfig {
+            chainid: U256::ONE,
+            blob_schedule: BTreeMap::from([(fork, BlobScheduleEntry::from(entry))]),
+        };
+        let header = BlockHeader::default();
+        let osaka_config = config(BlobFork::Osaka, BlobParams::osaka());
+        let osaka = test_case(ForkSpec::Osaka, Some(osaka_config));
+        let params = blob_params(Path::new("test.json"), "test", &osaka, &header);
+        assert_eq!(params.unwrap().unwrap().blob_base_cost, BLOB_BASE_COST);
+        let prague_config = config(BlobFork::Prague, BlobParams::prague());
+        let prague = test_case(ForkSpec::Prague, Some(prague_config));
+        let params = blob_params(Path::new("test.json"), "test", &prague, &header);
+        assert_eq!(params.unwrap().unwrap().blob_base_cost, 0);
     }
 
     #[test]
