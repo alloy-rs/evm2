@@ -46,9 +46,13 @@ impl BlockStateAccumulator {
     }
 
     /// Returns storage-wipe addresses in arbitrary set order.
+    ///
+    /// An account deleted by the block is not listed: its deletion already wipes its storage.
     #[inline]
     pub fn storage_wipes(&self) -> impl Iterator<Item = Address> + '_ {
-        self.storage_wipes.iter().copied()
+        self.storage_wipes.iter().copied().filter(|address| {
+            self.accounts.get(address).is_none_or(|delta| delta.current.is_some())
+        })
     }
 
     /// Returns storage deltas with storage keys in arbitrary map order.
@@ -120,13 +124,6 @@ impl StateChangeSink for BlockStateAccumulator {
         match self.accounts.entry(change.address) {
             hash_map::Entry::Occupied(mut entry) => {
                 let delta = entry.get_mut();
-                // Reviving an account deleted earlier in the block re-records the deletion's
-                // implied storage wipe: the deletion dropped the wipe marker because applying
-                // `current == None` wipes storage at the sink, but applying a live account does
-                // not, so pre-block storage would otherwise leak through the revival.
-                if delta.current.is_none() && current.is_some() && delta.original.is_some() {
-                    self.storage_wipes.insert(change.address);
-                }
                 delta.set_current(current);
                 if !delta.is_changed() {
                     entry.remove();
@@ -141,7 +138,13 @@ impl StateChangeSink for BlockStateAccumulator {
         }
 
         if deletes_account {
-            self.storage_wipes.remove(&change.address);
+            // A delta left after a deletion means the account existed before the block, so its
+            // pre-block storage is destroyed. The marker stays so a later revival still wipes it.
+            if self.accounts.contains_key(&change.address) {
+                self.storage_wipes.insert(change.address);
+            } else {
+                self.storage_wipes.remove(&change.address);
+            }
             self.storage.remove(&change.address);
         } else if created {
             // Only a newly created delta can have slots recorded against pre-block storage: while
@@ -203,13 +206,19 @@ impl StateChangeSink for BlockStateAccumulator {
 impl StateChangeSource for BlockStateAccumulator {
     #[inline]
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        visit_block_changes(&self.accounts, &self.storage_wipes, &self.storage, &self.code, sink)
+        visit_block_changes(
+            &self.accounts,
+            &self.storage_wipes_sorted(),
+            &self.storage,
+            &self.code,
+            sink,
+        )
     }
 }
 
 fn visit_block_changes<S: StateChangeSink>(
     accounts: &AddressMap<Tracked<Option<AccountInfo>>>,
-    storage_wipes: &AddressSet,
+    storage_wipes: &[Address],
     storage: &AddressMap<U256Map<Tracked<Word>>>,
     code: &B256Map<Bytecode>,
     sink: &mut S,
@@ -220,10 +229,8 @@ fn visit_block_changes<S: StateChangeSink>(
         sink.bytecode(code_hash, code)?;
     }
 
-    let mut storage_wipes = storage_wipes.iter().copied().collect::<Vec<_>>();
-    storage_wipes.sort_unstable();
-    for address in &storage_wipes {
-        sink.storage_wipe(*address)?;
+    for &address in storage_wipes {
+        sink.storage_wipe(address)?;
     }
 
     let mut storage_accounts = storage.iter().collect::<Vec<_>>();
@@ -261,13 +268,14 @@ fn visit_block_changes<S: StateChangeSink>(
 mod tests {
     use super::{
         super::{
-            Account, AccountInfo, PendingState, StateChangeSource, StorageOverlay, StorageSlot,
-            Tracked,
+            Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSource, StorageChange,
+            StorageOverlay, StorageSlot, Tracked,
         },
         BlockStateAccumulator,
     };
     use crate::interpreter::Word;
     use alloy_primitives::{Address, map::U256Map};
+    use core::convert::Infallible;
 
     use super::super::StateChangeSink;
     #[cfg(feature = "serde")]
@@ -399,28 +407,99 @@ mod tests {
         assert_eq!(storage[0].1.current, Word::from(7));
     }
 
+    /// A change a sink observed, in arrival order.
+    #[derive(Debug, Eq, PartialEq)]
+    enum Event {
+        Wipe(Address),
+        Storage { address: Address, key: Word, original: Word, current: Word },
+        Account { address: Address, original: Option<AccountInfo>, current: Option<AccountInfo> },
+    }
+
+    #[derive(Default)]
+    struct Recorder(Vec<Event>);
+
+    impl StateChangeSink for Recorder {
+        type Error = Infallible;
+
+        fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+            self.0.push(Event::Account {
+                address: change.address,
+                original: change.original.cloned(),
+                current: change.current.cloned(),
+            });
+            Ok(())
+        }
+
+        fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
+            self.0.push(Event::Wipe(address));
+            Ok(())
+        }
+
+        fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+            self.0.push(Event::Storage {
+                address: change.address,
+                key: change.key,
+                original: change.original,
+                current: change.current,
+            });
+            Ok(())
+        }
+    }
+
+    fn emitted(accumulator: &BlockStateAccumulator) -> Vec<Event> {
+        let mut recorder = Recorder::default();
+        accumulator.visit(&mut recorder).expect("recorder is infallible");
+        recorder.0
+    }
+
     #[test]
-    fn block_accumulator_restores_wipe_when_deleted_account_is_revived() {
+    fn block_accumulator_emits_only_the_deletion_for_deleted_account() {
+        // The deletion wipes the account's storage at a sink by itself, so a sink sees no
+        // separate wipe even though the accumulator keeps the marker for a later revival.
+        let address = Address::from([0x58; 20]);
+        let original = AccountInfo::default().with_balance(Word::from(3));
+        let mut accumulator = BlockStateAccumulator::new();
+
+        changes(address, Some(original.clone()), None, true, U256Map::default())
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+
+        assert!(accumulator.storage_wipes_sorted().is_empty());
+        assert_eq!(
+            emitted(&accumulator),
+            [Event::Account { address, original: Some(original), current: None }]
+        );
+    }
+
+    #[test]
+    fn block_accumulator_keeps_wipe_when_deleted_account_is_revived() {
         // Selfdestruct followed by a revival in a later transaction of the same block (a plain
-        // transfer or a re-create) must keep the deletion's storage wipe: the revived account is
-        // applied as a live account, which does not wipe storage at the sink by itself.
+        // transfer or a re-create): the revived account is a live account, which does not wipe
+        // storage at a sink by itself, so the sink must still see the wipe.
         let address = Address::from([0x55; 20]);
         let original = AccountInfo::default().with_balance(Word::from(3));
         let revived = AccountInfo::default().with_balance(Word::from(1));
         let mut accumulator = BlockStateAccumulator::new();
 
-        let delete = changes(address, Some(original.clone()), None, true, U256Map::default());
-        delete.visit(&mut accumulator).expect("block accumulator is infallible");
-        assert!(accumulator.storage_wipes_sorted().is_empty(), "deletion subsumes the wipe");
+        changes(address, Some(original.clone()), None, true, U256Map::default())
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+        changes(address, None, Some(revived.clone()), false, U256Map::default())
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
 
-        let revive = changes(address, None, Some(revived.clone()), false, U256Map::default());
-        revive.visit(&mut accumulator).expect("block accumulator is infallible");
-
-        let accounts = accumulator.accounts_sorted();
-        assert_eq!(accounts.len(), 1);
-        assert_eq!(accounts[0].1.original.as_ref(), Some(&original));
-        assert_eq!(accounts[0].1.current.as_ref(), Some(&revived));
         assert_eq!(accumulator.storage_wipes_sorted(), [address]);
+        assert_eq!(
+            emitted(&accumulator),
+            [
+                Event::Wipe(address),
+                Event::Account {
+                    address,
+                    original: Some(original.clone()),
+                    current: Some(revived)
+                },
+            ]
+        );
 
         // Reviving back to a value equal to the original collapses the account delta, but the
         // wipe still stands: the account's pre-block storage was destroyed.
@@ -431,8 +510,53 @@ mod tests {
         changes(address, None, Some(original), false, U256Map::default())
             .visit(&mut collapsing)
             .expect("block accumulator is infallible");
-        assert!(collapsing.accounts_sorted().is_empty());
-        assert_eq!(collapsing.storage_wipes_sorted(), [address]);
+        assert_eq!(emitted(&collapsing), [Event::Wipe(address)]);
+    }
+
+    #[test]
+    fn block_accumulator_emits_wipe_and_new_slots_when_deleted_account_is_recreated() {
+        let address = Address::from([0x59; 20]);
+        let (kept, rewritten) = (Word::from(1), Word::from(2));
+        let original = AccountInfo::default().with_balance(Word::from(3));
+        let recreated = AccountInfo::default().with_nonce(1);
+        let mut accumulator = BlockStateAccumulator::new();
+
+        // A pre-block slot changes, then the account is deleted, then re-created with a new slot.
+        changes(
+            address,
+            Some(original.clone()),
+            Some(original.clone()),
+            false,
+            slot(kept, Word::from(5), Word::from(6)),
+        )
+        .visit(&mut accumulator)
+        .expect("block accumulator is infallible");
+        changes(address, Some(original.clone()), None, true, U256Map::default())
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+        changes(
+            address,
+            None,
+            Some(recreated.clone()),
+            true,
+            slot(rewritten, Word::ZERO, Word::from(7)),
+        )
+        .visit(&mut accumulator)
+        .expect("block accumulator is infallible");
+
+        assert_eq!(
+            emitted(&accumulator),
+            [
+                Event::Wipe(address),
+                Event::Storage {
+                    address,
+                    key: rewritten,
+                    original: Word::ZERO,
+                    current: Word::from(7),
+                },
+                Event::Account { address, original: Some(original), current: Some(recreated) },
+            ]
+        );
     }
 
     #[test]
