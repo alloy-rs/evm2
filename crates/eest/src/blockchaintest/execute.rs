@@ -1741,28 +1741,8 @@ const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
     const AT_15K: Activation = Timestamp(15_000);
 
     Some(match fork {
-        ForkSpec::Frontier => ForkSchedule::fixed(SpecId::FRONTIER),
-        ForkSpec::Homestead => ForkSchedule::fixed(SpecId::HOMESTEAD),
-        ForkSpec::EIP150 => ForkSchedule::fixed(SpecId::TANGERINE),
-        ForkSpec::EIP158 => ForkSchedule::fixed(SpecId::SPURIOUS_DRAGON),
-        ForkSpec::Byzantium => ForkSchedule::fixed(SpecId::BYZANTIUM),
-        ForkSpec::Constantinople | ForkSpec::ConstantinopleFix => {
-            ForkSchedule::fixed(SpecId::PETERSBURG)
-        }
-        ForkSpec::Istanbul => ForkSchedule::fixed(SpecId::ISTANBUL),
-        ForkSpec::Berlin => ForkSchedule::fixed(SpecId::BERLIN),
-        ForkSpec::London => ForkSchedule::fixed(SpecId::LONDON),
-        ForkSpec::Paris
-        | ForkSpec::MergeEOF
-        | ForkSpec::MergeMeterInitCode
-        | ForkSpec::MergePush0 => ForkSchedule::fixed(SpecId::MERGE),
-        ForkSpec::Shanghai => ForkSchedule::fixed(SpecId::SHANGHAI),
-        ForkSpec::Cancun => ForkSchedule::fixed(SpecId::CANCUN),
-        ForkSpec::Prague => ForkSchedule::fixed(SpecId::PRAGUE),
-        ForkSpec::Osaka => ForkSchedule::fixed(SpecId::OSAKA),
         ForkSpec::BPO1 => ForkSchedule::new(ForkStage::bpo(BlobFork::Bpo1), None),
         ForkSpec::BPO2 => ForkSchedule::new(ForkStage::bpo(BlobFork::Bpo2), None),
-        ForkSpec::Amsterdam => ForkSchedule::fixed(SpecId::AMSTERDAM),
         ForkSpec::FrontierToHomesteadAt5 => {
             ForkSchedule::transition(SpecId::FRONTIER, AT_5, SpecId::HOMESTEAD)
         }
@@ -1810,7 +1790,10 @@ const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
             ForkStage::bpo(BlobFork::Bpo2),
             Some((AT_15K, ForkStage::new(SpecId::AMSTERDAM))),
         ),
-        ForkSpec::HomesteadToDaoAt5 => return None,
+        fixed => match fixed.to_spec_id() {
+            Some(spec) => ForkSchedule::fixed(spec),
+            None => return None,
+        },
     })
 }
 

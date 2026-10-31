@@ -4,6 +4,7 @@
 //! transaction outcomes; timed runs use a no-op hook and include database setup,
 //! transaction decoding, execution and block commits.
 
+use crate::reference;
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, B256, Bytes, Keccak256, Log, TxKind, U256};
 use alloy_rpc_types_eth::{AccessList as RpcAccessList, AccessListItem as RpcAccessListItem};
@@ -18,8 +19,8 @@ use evm2_eest::{
     BlockchainTestExecuteConfig, NameFilter,
     blockchaintest::{
         Block, BlockFinished, BlockHeader, BlockStarted, BlockchainTest, BlockchainTestCase,
-        CaseStarted, ForkSpec, Hook, Transaction, TransactionFinished, TransactionStarted,
-        Withdrawal, blob_params,
+        CaseStarted, Hook, Transaction, TransactionFinished, TransactionStarted, Withdrawal,
+        blob_params,
     },
     execute_blockchain_tests_suite,
 };
@@ -29,7 +30,6 @@ use revm::{
     context_interface::{Cfg, block::BlobExcessGasAndPrice, either::Either},
     database::{CacheDB, EmptyDB, InMemoryDB as RevmInMemoryDB},
     handler::EvmTr,
-    primitives::hardfork::SpecId as RevmSpecId,
     state::{AccountInfo as RevmAccountInfo, Bytecode as RevmBytecode},
 };
 use std::path::Path;
@@ -239,7 +239,10 @@ impl ReplayFixture {
     /// final block's hash. Pre-merge forks and block access lists are unsupported.
     pub fn from_case(name: String, case: BlockchainTestCase) -> Self {
         assert_canonical(&name, &case);
-        let spec = fork_to_spec_id(case.network);
+        let spec = case
+            .network
+            .to_spec_id()
+            .unwrap_or_else(|| panic!("replay fixture fork {:?} is not supported", case.network));
         assert!(spec.enables(SpecId::MERGE), "replay corpus must be post-merge");
         Self { name: name.clone(), spec, suite: BlockchainTest([(name, case)].into()) }
     }
@@ -313,7 +316,7 @@ impl ReplayFixture {
     pub fn execute_revm_on(&self, database: &mut RevmInMemoryDB, hook: &mut dyn Hook) {
         let case = self.case();
         let spec = self.spec;
-        let revm_spec = revm_spec_id(spec);
+        let revm_spec = reference::spec_id(spec);
 
         let mut cfg = CfgEnv::new();
         cfg.set_spec_and_mainnet_gas_params(revm_spec);
@@ -551,51 +554,6 @@ fn block_withdrawals(block: &Block) -> &[Withdrawal] {
         return withdrawals;
     }
     block.rlp_decoded.as_ref().map(|decoded| decoded.withdrawals.as_slice()).unwrap_or_default()
-}
-
-fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
-    match fork {
-        ForkSpec::Frontier => SpecId::FRONTIER,
-        ForkSpec::Homestead => SpecId::HOMESTEAD,
-        ForkSpec::EIP150 => SpecId::TANGERINE,
-        ForkSpec::EIP158 => SpecId::SPURIOUS_DRAGON,
-        ForkSpec::Byzantium => SpecId::BYZANTIUM,
-        ForkSpec::Constantinople | ForkSpec::ConstantinopleFix => SpecId::PETERSBURG,
-        ForkSpec::Istanbul => SpecId::ISTANBUL,
-        ForkSpec::Berlin => SpecId::BERLIN,
-        ForkSpec::London => SpecId::LONDON,
-        ForkSpec::Paris
-        | ForkSpec::MergeEOF
-        | ForkSpec::MergeMeterInitCode
-        | ForkSpec::MergePush0 => SpecId::MERGE,
-        ForkSpec::Shanghai => SpecId::SHANGHAI,
-        ForkSpec::Cancun => SpecId::CANCUN,
-        ForkSpec::Prague => SpecId::PRAGUE,
-        ForkSpec::Osaka | ForkSpec::BPO1 | ForkSpec::BPO2 => SpecId::OSAKA,
-        ForkSpec::Amsterdam => SpecId::AMSTERDAM,
-        other => panic!("replay fixture fork {other:?} is not supported"),
-    }
-}
-
-fn revm_spec_id(spec: SpecId) -> RevmSpecId {
-    match spec {
-        SpecId::FRONTIER => RevmSpecId::FRONTIER,
-        SpecId::HOMESTEAD => RevmSpecId::HOMESTEAD,
-        SpecId::TANGERINE => RevmSpecId::TANGERINE,
-        SpecId::SPURIOUS_DRAGON => RevmSpecId::SPURIOUS_DRAGON,
-        SpecId::BYZANTIUM => RevmSpecId::BYZANTIUM,
-        SpecId::PETERSBURG => RevmSpecId::PETERSBURG,
-        SpecId::ISTANBUL => RevmSpecId::ISTANBUL,
-        SpecId::BERLIN => RevmSpecId::BERLIN,
-        SpecId::LONDON => RevmSpecId::LONDON,
-        SpecId::MERGE => RevmSpecId::MERGE,
-        SpecId::SHANGHAI => RevmSpecId::SHANGHAI,
-        SpecId::CANCUN => RevmSpecId::CANCUN,
-        SpecId::PRAGUE => RevmSpecId::PRAGUE,
-        SpecId::OSAKA => RevmSpecId::OSAKA,
-        SpecId::AMSTERDAM => RevmSpecId::AMSTERDAM,
-        other => panic!("unsupported replay spec: {other:?}"),
-    }
 }
 
 fn authorization_list(raw: &Transaction) -> Option<Vec<SignedAuthorization>> {

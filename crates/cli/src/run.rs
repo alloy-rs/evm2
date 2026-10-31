@@ -83,8 +83,9 @@ pub(crate) struct RunArgs {
     out_dir: Option<PathBuf>,
     #[arg(short = 'O', long, default_value = "2")]
     opt_level: OptimizationLevel,
-    #[arg(long, value_enum, default_value = "osaka")]
-    spec_id: SpecIdValueEnum,
+    /// Spec to run: a fork name such as `osaka`, or `latest` for the newest one.
+    #[arg(long, value_parser = parse_spec_id, default_value = SpecId::DEFAULT.name())]
+    spec_id: SpecId,
     #[arg(long)]
     debug_assertions: bool,
     #[arg(long)]
@@ -117,7 +118,7 @@ impl RunArgs {
         let Some(bench_name) = self.bench_name.clone() else {
             eyre::bail!("missing <BENCH_NAME>; use `--list` to see available benchmarks");
         };
-        let spec_id = self.spec_id.into();
+        let spec_id = self.spec_id;
         let calldata = self
             .calldata
             .as_deref()
@@ -423,61 +424,11 @@ fn perf_report(n_iters: u64) {
     writeln!(report, "{n_iters}").expect("failed to write the perf report");
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-#[clap(rename_all = "lowercase")]
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
-enum SpecIdValueEnum {
-    FRONTIER,
-    FRONTIER_THAWING,
-    HOMESTEAD,
-    DAO_FORK,
-    TANGERINE,
-    SPURIOUS_DRAGON,
-    BYZANTIUM,
-    CONSTANTINOPLE,
-    PETERSBURG,
-    ISTANBUL,
-    MUIR_GLACIER,
-    BERLIN,
-    LONDON,
-    ARROW_GLACIER,
-    GRAY_GLACIER,
-    MERGE,
-    SHANGHAI,
-    CANCUN,
-    PRAGUE,
-    OSAKA,
-    AMSTERDAM,
-    LATEST,
-}
-
-impl From<SpecIdValueEnum> for SpecId {
-    fn from(value: SpecIdValueEnum) -> Self {
-        match value {
-            SpecIdValueEnum::FRONTIER => Self::FRONTIER,
-            SpecIdValueEnum::FRONTIER_THAWING => Self::FRONTIER,
-            SpecIdValueEnum::HOMESTEAD => Self::HOMESTEAD,
-            SpecIdValueEnum::DAO_FORK => Self::HOMESTEAD,
-            SpecIdValueEnum::TANGERINE => Self::TANGERINE,
-            SpecIdValueEnum::SPURIOUS_DRAGON => Self::SPURIOUS_DRAGON,
-            SpecIdValueEnum::BYZANTIUM => Self::BYZANTIUM,
-            SpecIdValueEnum::CONSTANTINOPLE => Self::PETERSBURG,
-            SpecIdValueEnum::PETERSBURG => Self::PETERSBURG,
-            SpecIdValueEnum::ISTANBUL => Self::ISTANBUL,
-            SpecIdValueEnum::MUIR_GLACIER => Self::ISTANBUL,
-            SpecIdValueEnum::BERLIN => Self::BERLIN,
-            SpecIdValueEnum::LONDON => Self::LONDON,
-            SpecIdValueEnum::ARROW_GLACIER => Self::LONDON,
-            SpecIdValueEnum::GRAY_GLACIER => Self::LONDON,
-            SpecIdValueEnum::MERGE => Self::MERGE,
-            SpecIdValueEnum::SHANGHAI => Self::SHANGHAI,
-            SpecIdValueEnum::CANCUN => Self::CANCUN,
-            SpecIdValueEnum::PRAGUE => Self::PRAGUE,
-            SpecIdValueEnum::OSAKA => Self::OSAKA,
-            SpecIdValueEnum::AMSTERDAM => Self::AMSTERDAM,
-            SpecIdValueEnum::LATEST => Self::OSAKA,
-        }
+fn parse_spec_id(name: &str) -> Result<SpecId, String> {
+    if name.eq_ignore_ascii_case("latest") {
+        return Ok(SpecId::NEXT);
     }
+    name.parse().map_err(|_| format!("unknown spec id {name:?}"))
 }
 
 #[derive(Clone, Debug)]
@@ -906,7 +857,7 @@ fn read_code_string(contents: &[u8], ext: Option<&str>) -> eyre::Result<Vec<u8>>
 
 #[cfg(test)]
 mod tests {
-    use super::{SpecId, SpecIdValueEnum, read_code_string};
+    use super::{SpecId, parse_spec_id, read_code_string};
     use crate::args::{Args, Command};
     use clap::Parser;
 
@@ -916,8 +867,10 @@ mod tests {
     }
 
     #[test]
-    fn latest_spec_matches_default_run_spec() {
-        assert_eq!(SpecId::from(SpecIdValueEnum::LATEST), SpecId::OSAKA);
+    fn spec_id_parser_accepts_names_and_latest() {
+        assert_eq!(parse_spec_id("osaka"), Ok(SpecId::OSAKA));
+        assert_eq!(parse_spec_id("LATEST"), Ok(SpecId::NEXT));
+        assert!(parse_spec_id("constantinople").is_err());
     }
 
     #[test]

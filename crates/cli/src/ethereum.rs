@@ -1,16 +1,19 @@
+use crate::capture::CaptureError;
 use alloy_consensus::Header;
 use alloy_hardforks::EthereumHardfork;
 use evm2::SpecId;
 
-pub(crate) fn mainnet_spec_for_header(header: &Header) -> SpecId {
-    spec_for_hardfork(EthereumHardfork::from_chain_and_timestamp(
+pub(crate) fn mainnet_spec_for_header(header: &Header) -> Result<SpecId, CaptureError> {
+    let hardfork = EthereumHardfork::from_chain_and_timestamp(
         alloy_chains::Chain::mainnet(),
         header.timestamp,
-    ))
+    );
+    spec_for_hardfork(hardfork)
+        .ok_or(CaptureError::UnsupportedHardfork { timestamp: header.timestamp })
 }
 
-const fn spec_for_hardfork(hardfork: Option<EthereumHardfork>) -> SpecId {
-    match hardfork {
+const fn spec_for_hardfork(hardfork: Option<EthereumHardfork>) -> Option<SpecId> {
+    Some(match hardfork {
         Some(EthereumHardfork::Frontier) => SpecId::FRONTIER,
         Some(EthereumHardfork::Homestead | EthereumHardfork::Dao) => SpecId::HOMESTEAD,
         Some(EthereumHardfork::Tangerine) => SpecId::TANGERINE,
@@ -37,7 +40,6 @@ const fn spec_for_hardfork(hardfork: Option<EthereumHardfork>) -> SpecId {
             | EthereumHardfork::Bpo5,
         ) => SpecId::OSAKA,
         Some(EthereumHardfork::Amsterdam) => SpecId::AMSTERDAM,
-        Some(_) => SpecId::AMSTERDAM,
-        None => SpecId::FRONTIER,
-    }
+        Some(_) | None => return None,
+    })
 }
