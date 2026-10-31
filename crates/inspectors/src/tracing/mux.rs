@@ -177,9 +177,6 @@ impl MuxInspector {
     }
 
     /// Try converting this [MuxInspector] into a [MuxFrame].
-    ///
-    /// Call traces recover the transaction root when runtime gas charging halts before evm2
-    /// invokes the call/create hooks. Recovered roots report `out of gas`.
     pub fn try_into_mux_frame<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         result: &TxResultWithState<T>,
@@ -189,7 +186,6 @@ impl MuxInspector {
         db: &mut dyn DynDatabase,
     ) -> Result<MuxFrame, Error> {
         if let Some(inspector) = &mut self.tracing {
-            inspector.recover_runtime_oog_root(tx, &result.result);
             inspector.set_transaction_gas_limit(tx.gas_limit());
             inspector.set_transaction_caller(tx.signer());
         }

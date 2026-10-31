@@ -1381,14 +1381,21 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ///
     /// This is invoked for every message when an inspector is installed; hook overrides skip
     /// execution entirely, including the call depth check.
+    ///
+    /// A `halted` result stands in for the execution: the hooks fire around it, and a hook
+    /// override does not replace it.
     #[inline(never)]
     fn execute_message_inspected<'frame>(
         &mut self,
         message: &'frame mut Message<T>,
+        halted: Option<MessageResult<T>>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let guard = self.enter_execution();
         let Some(inspector) = guard.evm.active_inspector() else {
-            return guard.evm.execute_message_impl(message);
+            return match halted {
+                Some(result) => Ok(result),
+                None => guard.evm.execute_message_impl(message),
+            };
         };
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
         // replacement while the hooks are running.
@@ -1435,6 +1442,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
         let mut result = if let Some(error) = frame.take_error() {
             Err(error)
+        } else if let Some(halted) = halted {
+            Ok(halted)
         } else {
             inspected.map(Ok).unwrap_or_else(|| guard.evm.execute_message_impl(message))
         };
@@ -1810,6 +1819,23 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             inspector.initialize_interp(interp);
         }
     }
+
+    /// Reports a message that halts without executing, such as a transaction's first frame whose
+    /// runtime gas phase ran out of gas.
+    ///
+    /// With an inspector installed, the call or create hook fires and the matching end hook
+    /// receives `result`, as for an executed frame; the hook cannot replace `result`. `result`
+    /// must already have its gas settled for its stop reason.
+    pub fn execute_halted_message(
+        &mut self,
+        message: &mut Message<T>,
+        result: MessageResult<T>,
+    ) -> Result<MessageResult<T>, ExecutionError> {
+        if self.inspector.is_some() {
+            return self.execute_message_inspected(message, Some(result));
+        }
+        Ok(result)
+    }
 }
 
 impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
@@ -1951,7 +1977,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     ) -> Result<MessageResult<T>, ExecutionError> {
         let checkpoint = self.state.checkpoint();
         let result = if self.inspector.is_some() {
-            self.execute_message_inspected(message)
+            self.execute_message_inspected(message, None)
         } else {
             self.execute_message_impl(message)
         };
