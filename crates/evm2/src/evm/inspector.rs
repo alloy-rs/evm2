@@ -25,6 +25,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     }
 
     /// Called after each instruction executes.
+    ///
+    /// If the instruction ran out of gas, the interpreter's remaining gas reads 0.
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
