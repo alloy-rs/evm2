@@ -178,6 +178,12 @@ impl From<HandlerError> for FuzzError {
             HandlerError::TxGasLimitGreaterThanCap { gas_limit, cap } => {
                 Self::Transaction(InvalidTransaction::TxGasLimitGreaterThanCap { gas_limit, cap })
             }
+            HandlerError::IntrinsicGasGreaterThanCap { required, cap } => {
+                Self::Transaction(InvalidTransaction::TxGasLimitGreaterThanCap {
+                    gas_limit: required,
+                    cap,
+                })
+            }
             error @ (HandlerError::Database(_)
             | HandlerError::Fatal(_)
             | HandlerError::External(_)
@@ -370,6 +376,13 @@ mod tests {
             ),
             (HandlerError::NonceOverflow, InvalidTransaction::NonceOverflowInTransaction),
             (HandlerError::UnsupportedTransactionType(4), InvalidTransaction::Eip7702NotSupported),
+            (
+                HandlerError::IntrinsicGasGreaterThanCap { required: 17_000_000, cap: 16_777_216 },
+                InvalidTransaction::TxGasLimitGreaterThanCap {
+                    gas_limit: 17_000_000,
+                    cap: 16_777_216,
+                },
+            ),
             (HandlerError::EmptyBlobs, InvalidTransaction::EmptyBlobs),
             (
                 HandlerError::TooManyBlobs { have: 10, max: 6 },
