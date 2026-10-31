@@ -1038,12 +1038,13 @@ RUNTIME_SAMPLES = 3
 RUNTIME_PROBE = 1e8
 
 
-def total_iters(n: int) -> int:
-    """`evm2 run <bench> N` runs `max(N / 10, 10)` warmup iterations before the timed ones.
+def counted_iters(n: int, counted: int | None) -> int:
+    """Return the iterations a run of `N` counted: what the CLI reports, else what it did before.
 
-    Keep in sync with `bench` in `crates/cli/src/run.rs`.
+    A binary that predates the report enabled the counters before its `max(N / 10, 10)`
+    warmup iterations.
     """
-    return n + max(n // 10, 10)
+    return n + max(n // 10, 10) if counted is None else counted
 
 
 def runtime_args(bench: str, n: int) -> list[str]:
@@ -1053,13 +1054,13 @@ def runtime_args(bench: str, n: int) -> list[str]:
 def sample_iters(side: Side, bench: str) -> int:
     """Return the `N` whose run executes about `RUNTIME_TARGET / RUNTIME_SAMPLES` instructions."""
     n = 10
-    while (
-        instructions := perf_counts(side.binary, runtime_args(bench, n))[0]
-    ) < RUNTIME_PROBE and n < 10**7:
+    while True:
+        instructions, _, counted = perf_counts(side.binary, runtime_args(bench, n))
+        if instructions >= RUNTIME_PROBE or n >= 10**7:
+            break
         n *= 10
-    iters = int(RUNTIME_TARGET / RUNTIME_SAMPLES / (instructions / total_iters(n)))
-    # Invert `total_iters`.
-    return max(10, iters - 10 if iters < 110 else int(iters / 1.1))
+    per_iter = instructions / counted_iters(n, counted)
+    return max(10, int(RUNTIME_TARGET / RUNTIME_SAMPLES / per_iter))
 
 
 def measure_runtime_bench(sides: list[Side], bench: str, skipped: set[str]):
@@ -1097,8 +1098,8 @@ def measure_runtime_bench(sides: list[Side], bench: str, skipped: set[str]):
                 side.failures[bench] = last_line(e.stderr)
                 live.remove(side)
     for side in live:
-        total = total_iters(iters[side.label])
         counts = samples[side.label]
+        total = counted_iters(iters[side.label], counts[0][2])
         side.runtime[bench] = statistics.median(c[0] for c in counts) / total
         side.runtime_cycles[bench] = min(c[1] for c in counts) / total
 

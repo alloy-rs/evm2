@@ -370,17 +370,20 @@ impl DotFormat {
 
 fn bench<T>(n_iters: u64, name: &str, mut f: impl FnMut() -> eyre::Result<T>) {
     let warmup = (n_iters / 10).max(10);
-    perf_control("enable");
     for _ in 0..warmup {
         black_box(f().expect("warmup execution failed"));
     }
 
+    let counting = perf_control("enable");
     let t = std::time::Instant::now();
     for _ in 0..n_iters {
         black_box(f().expect("benchmark execution failed"));
     }
     let d = t.elapsed();
     perf_control("disable");
+    if counting {
+        perf_report(n_iters);
+    }
     eprintln!("{name}: {:>9?} ({d:>12?} / {n_iters})", d / n_iters as u32);
 }
 
@@ -389,8 +392,10 @@ fn bench<T>(n_iters: u64, name: &str, mut f: impl FnMut() -> eyre::Result<T>) {
 ///
 /// The variable holds the file descriptors of the control pipe to write and of the pipe that
 /// acknowledges commands, separated by a comma.
-fn perf_control(command: &str) {
-    let Ok(fds) = std::env::var("EVM2_PERF_CONTROL") else { return };
+///
+/// Returns whether a wrapper received the command.
+fn perf_control(command: &str) -> bool {
+    let Ok(fds) = std::env::var("EVM2_PERF_CONTROL") else { return false };
     let (ctl, ack) = fds.split_once(',').expect("invalid EVM2_PERF_CONTROL");
     let mut ctl = std::fs::File::options()
         .write(true)
@@ -401,6 +406,21 @@ fn perf_control(command: &str) {
     ctl.write_all(format!("{command}\n").as_bytes()).expect("failed to write to perf");
     // `perf` answers `ack\n` and a NUL.
     ack.read_exact(&mut [0; 5]).expect("failed to read the perf acknowledgement");
+    true
+}
+
+/// Tells the `perf stat` wrapper's owner how many iterations its counters covered, by writing
+/// the count to the pipe whose file descriptor `EVM2_PERF_REPORT` holds, if any.
+///
+/// The pipe carries nothing else, so the report cannot be forged by text the CLI prints, such as a
+/// benchmark name.
+fn perf_report(n_iters: u64) {
+    let Ok(fd) = std::env::var("EVM2_PERF_REPORT") else { return };
+    let mut report = std::fs::File::options()
+        .write(true)
+        .open(format!("/proc/self/fd/{fd}"))
+        .expect("failed to open the perf report pipe");
+    writeln!(report, "{n_iters}").expect("failed to write the perf report");
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

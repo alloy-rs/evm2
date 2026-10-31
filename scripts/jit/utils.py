@@ -203,8 +203,12 @@ class NoBenchCounts(Exception):
     """The binary ran without counting a benchmark loop: it predates ``EVM2_PERF_CONTROL``."""
 
 
-def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
-    """Run ``evm2 run`` under ``perf stat``; return ``(instructions, cycles)`` of its bench loop.
+def perf_counts(binary: str, args: list[str]) -> tuple[int, int, int | None]:
+    """Run ``evm2 run`` under ``perf stat``; return ``(instructions, cycles, iterations)``.
+
+    The counts cover its bench loop, and ``iterations`` is the number of iterations the CLI
+    reports having counted on a pipe of its own (``EVM2_PERF_REPORT``), or ``None`` when the
+    binary predates that report. The pipe carries nothing a benchmark name can write.
 
     The counters start disabled and the CLI enables them around the loop through
     ``EVM2_PERF_CONTROL``, so the compile cost, which is large and noisy, is not counted.
@@ -214,7 +218,8 @@ def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
     """
     ctl_read, ctl_write = os.pipe()
     ack_read, ack_write = os.pipe()
-    fds = [ctl_read, ctl_write, ack_read, ack_write]
+    report_read, report_write = os.pipe()
+    fds = [ctl_read, ctl_write, ack_read, ack_write, report_read, report_write]
     try:
         with tempfile.NamedTemporaryFile("r") as out:
             subprocess.run(
@@ -238,9 +243,21 @@ def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
                 stderr=subprocess.PIPE,
                 text=True,
                 check=True,
-                env=fixed_stack_env(binary, args, {"EVM2_PERF_CONTROL": f"{ctl_write},{ack_read}"}),
+                env=fixed_stack_env(
+                    binary,
+                    args,
+                    {
+                        "EVM2_PERF_CONTROL": f"{ctl_write},{ack_read}",
+                        "EVM2_PERF_REPORT": str(report_write),
+                    },
+                ),
                 pass_fds=fds,
             )
+            # The run is over, so the report is in the pipe once the write end closes.
+            os.close(report_write)
+            fds.remove(report_write)
+            with os.fdopen(report_read, closefd=False) as report:
+                counted = report.read().split()
             stats = {}
             for line in out:
                 parts = line.strip().split(",")
@@ -254,4 +271,4 @@ def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
             os.close(fd)
     if not stats.get("instructions:u"):
         raise NoBenchCounts(binary)
-    return int(stats["instructions:u"]), int(stats["cycles:u"])
+    return int(stats["instructions:u"]), int(stats["cycles:u"]), sum(map(int, counted)) or None
