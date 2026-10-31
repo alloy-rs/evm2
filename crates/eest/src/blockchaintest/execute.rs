@@ -806,9 +806,7 @@ fn execute_block<'a>(
             return Err(TestError::case(path, name, err));
         }
 
-        // A captured case has no system contracts, so its requests omit the system call outputs.
-        if !captured
-            && spec.enables(SpecId::PRAGUE)
+        if spec.enables(SpecId::PRAGUE)
             && let Some(header) = block_header(block)
         {
             let computed = requests.requests_hash();
