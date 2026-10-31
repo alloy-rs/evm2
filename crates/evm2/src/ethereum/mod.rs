@@ -353,8 +353,8 @@ pub const fn validate_execution_gas_limit_cap(
     if tx_gas_limit > cap {
         let required_execution_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
         if required_execution_gas > cap {
-            return Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: required_execution_gas,
+            return Err(HandlerError::IntrinsicGasGreaterThanCap {
+                required: required_execution_gas,
                 cap,
             });
         }
@@ -419,7 +419,7 @@ pub const fn validate_intrinsic_gas(
 /// Validates that the gas limit covers the calldata floor gas.
 pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult<()> {
     if gas_limit < floor_gas {
-        return Err(HandlerError::IntrinsicGasTooLow { required: floor_gas, got: gas_limit });
+        return Err(HandlerError::GasLimitBelowFloor { required: floor_gas, got: gas_limit });
     }
     Ok(())
 }
@@ -993,7 +993,7 @@ mod tests {
         if gas_limit < 31_050 {
             assert_eq!(
                 result,
-                Err(HandlerError::IntrinsicGasTooLow { required: 31_050, got: gas_limit })
+                Err(HandlerError::GasLimitBelowFloor { required: 31_050, got: gas_limit })
             );
         } else {
             let result = result.unwrap();
@@ -1090,6 +1090,19 @@ mod tests {
             evm.transact(&tx).map(|executed| executed.discard()),
             Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
         );
+    }
+
+    #[test]
+    fn gas_limit_below_floor_is_not_an_intrinsic_gas_error() {
+        assert_eq!(
+            validate_intrinsic_gas(20_999, 21_000, 0),
+            Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
+        );
+        assert_eq!(
+            validate_floor_gas(21_009, 21_010),
+            Err(HandlerError::GasLimitBelowFloor { required: 21_010, got: 21_009 })
+        );
+        assert_eq!(validate_floor_gas(21_010, 21_010), Ok(()));
     }
 
     #[test]
@@ -1411,8 +1424,8 @@ mod tests {
                 amsterdam.tx_gas_limit_cap + 1,
                 floor_gas,
             ),
-            Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: amsterdam.tx_gas_limit_cap + 1,
+            Err(HandlerError::IntrinsicGasGreaterThanCap {
+                required: amsterdam.tx_gas_limit_cap + 1,
                 cap: amsterdam.tx_gas_limit_cap
             })
         );
