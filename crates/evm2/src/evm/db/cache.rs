@@ -148,17 +148,17 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// storage slots, code, and account info are then applied to the cache; the wrapped backing
     /// database is not written.
     pub fn commit_pending(&mut self, pending: &PendingState) {
-        self.commit(&pending.accounts, &pending.selfdestructs);
+        self.commit(&pending.accounts);
     }
 
     /// Accepts a committed transaction's pending accounts and storage overlays into this cache.
     ///
     /// Same as [`Self::commit_pending`], operating on the transaction layers directly so the
     /// overlay need not be detached.
-    pub(crate) fn commit(&mut self, accounts: &AddressMap<Account>, selfdestructs: &AddressSet) {
+    pub(crate) fn commit(&mut self, accounts: &AddressMap<Account>) {
         // When BAL construction is enabled, fold the transaction's pending post-state into the
         // builder before applying the changes to the cache.
-        self.bal_context.commit(TxStateChanges::new(accounts, selfdestructs));
+        self.bal_context.commit(TxStateChanges::new(accounts));
 
         for (&address, entry) in accounts {
             let overlay = &entry.storage;

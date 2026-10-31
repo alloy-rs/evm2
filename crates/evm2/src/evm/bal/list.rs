@@ -558,10 +558,7 @@ mod tests {
             storage: overlay,
             ..Default::default()
         };
-        let pending = PendingState {
-            accounts: AddressMap::from_iter([(address, account)]),
-            selfdestructs: Default::default(),
-        };
+        let pending = PendingState { accounts: AddressMap::from_iter([(address, account)]) };
 
         let mut bal = Bal::new();
         bal.commit(idx(1), pending);
