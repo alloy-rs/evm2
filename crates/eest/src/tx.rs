@@ -268,14 +268,19 @@ fn malformed_exception(bytes: &[u8], spec: SpecId) -> Option<Exception> {
         items.push((header.list, payload));
     }
 
-    // The positions of the fee, recipient, and value fields. The signature is the last three.
-    let (fees, to, value): (&[usize], usize, usize) = match tx_type {
-        0 => (&[1], 3, 4),
-        1 => (&[2], 4, 5),
-        2 | 4 => (&[2, 3], 5, 6),
-        3 => (&[2, 3, 9], 5, 6),
+    // The field count and the positions of the fee, recipient, and value fields. The signature is
+    // the last three fields. A list of another length breaks the encoding elsewhere.
+    let (len, fees, to, value): (usize, &[usize], usize, usize) = match tx_type {
+        0 => (9, &[1], 3, 4),
+        1 => (11, &[2], 4, 5),
+        2 => (12, &[2, 3], 5, 6),
+        3 => (14, &[2, 3, 9], 5, 6),
+        4 => (13, &[2, 3], 5, 6),
         _ => return None,
     };
+    if items.len() != len {
+        return None;
+    }
     let string =
         |index: usize| items.get(index).filter(|(list, _)| !list).map(|(_, payload)| *payload);
 
@@ -290,7 +295,7 @@ fn malformed_exception(bytes: &[u8], spec: SpecId) -> Option<Exception> {
     if string(value).is_some_and(|value| value.len() > 32) {
         return Some(Exception::RlpInvalidValue);
     }
-    let signature = items.len().checked_sub(3)?;
+    let signature = len - 3;
     let invalid_v = string(signature).is_some_and(|v| {
         let v = U256::try_from_be_slice(v).unwrap_or(U256::MAX);
         signature_from_vrs(U256::ONE, U256::ONE, v, tx_type == 0, spec).is_err()

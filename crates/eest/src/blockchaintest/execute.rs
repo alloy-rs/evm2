@@ -553,22 +553,23 @@ fn execute_block<'a>(
                 transaction_index,
                 total_transactions,
             });
+            let mut reject_tx = |kind| {
+                let resolution = reject(kind);
+                if let Err(err) = &resolution {
+                    hook.transaction_failed(TransactionFailed {
+                        block_index,
+                        total_blocks,
+                        block_number,
+                        transaction_index,
+                        total_transactions,
+                        error: &err.kind,
+                    });
+                }
+                resolution
+            };
             let tx = match build_tx(raw_tx, spec, validate) {
                 Ok(tx) => tx,
-                Err(err) => {
-                    let resolution = reject(err);
-                    if let Err(err) = &resolution {
-                        hook.transaction_failed(TransactionFailed {
-                            block_index,
-                            total_blocks,
-                            block_number,
-                            transaction_index,
-                            total_transactions,
-                            error: &err.kind,
-                        });
-                    }
-                    return resolution;
-                }
+                Err(err) => return reject_tx(err),
             };
 
             // Block-level inclusion check (execution-specs `check_transaction`): the transaction's
@@ -668,20 +669,7 @@ fn execute_block<'a>(
                         receipts.push(ReceiptEnvelope::from_typed(tx_type, receipt));
                     }
                 }
-                Err(err) => {
-                    let resolution = reject(err.into());
-                    if let Err(err) = &resolution {
-                        hook.transaction_failed(TransactionFailed {
-                            block_index,
-                            total_blocks,
-                            block_number,
-                            transaction_index,
-                            total_transactions,
-                            error: &err.kind,
-                        });
-                    }
-                    return resolution;
-                }
+                Err(err) => return reject_tx(err.into()),
             }
         }
 

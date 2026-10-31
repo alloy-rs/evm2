@@ -43,8 +43,8 @@ exceptions! {
     // The runner cannot build a fee above `u128`, so it reports one as this rule: a fee that large
     // exceeds any balance or overflows the gas limit product.
     GasPriceExceedsU128 => [
-        "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS",
         "TransactionException.GASLIMIT_PRICE_PRODUCT_OVERFLOW",
+        "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS",
         "TR_NoFundsX"
     ],
     InitcodeSizeExceeded => [
@@ -66,7 +66,15 @@ exceptions! {
     ],
     IntrinsicGasTooLow => [
         "TransactionException.INTRINSIC_GAS_TOO_LOW",
+        "TR_IntrinsicGas",
+        "IntrinsicGas",
+        "TR_NoFundsOrGas"
+    ],
+    // Execution-specs checks the gas limit against the larger of the intrinsic and floor gas as
+    // one rule, and some fixtures name a limit between the two an intrinsic gas failure.
+    GasLimitBelowFloor => [
         "TransactionException.INTRINSIC_GAS_BELOW_FLOOR_GAS_COST",
+        "TransactionException.INTRINSIC_GAS_TOO_LOW",
         "TR_IntrinsicGas",
         "IntrinsicGas",
         "TR_NoFundsOrGas"
@@ -150,6 +158,7 @@ impl Exception {
             HandlerError::InvalidNonce { .. } => Self::NonceMismatchTooLow,
             HandlerError::InvalidChainId { .. } => Self::InvalidChainid,
             HandlerError::IntrinsicGasTooLow { .. } => Self::IntrinsicGasTooLow,
+            HandlerError::GasLimitBelowFloor { .. } => Self::GasLimitBelowFloor,
             HandlerError::InsufficientFunds { .. } => Self::InsufficientAccountFunds,
             HandlerError::RejectCallerWithCode => Self::SenderNotEoa,
             HandlerError::NonceOverflow => Self::NonceIsMax,
