@@ -513,11 +513,6 @@ impl Inst {
     pub(crate) fn set_call_conv(self, call_conv: u32) {
         unsafe { LLVMSetInstructionCallConv(self.0, call_conv) }
     }
-
-    /// Adds an attribute to a call.
-    pub(crate) fn add_call_site_attribute(self, loc: AttributeLoc, attribute: Attribute) {
-        unsafe { LLVMAddCallSiteAttribute(self.0, loc.index(), attribute.0) }
-    }
 }
 
 impl fmt::Debug for Inst {

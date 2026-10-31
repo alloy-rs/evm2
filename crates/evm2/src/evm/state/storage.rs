@@ -23,24 +23,6 @@ pub struct StorageOverlay {
 }
 
 impl StorageOverlay {
-    /// Applies an isolated execution's slots, retaining parent originals and combining warmth.
-    #[cfg(test)]
-    pub(crate) fn merge_isolated(&mut self, child: Self) {
-        self.wiped |= child.wiped;
-        for (key, slot) in child.slots {
-            match self.slots.entry(key) {
-                hash_map::Entry::Vacant(entry) => {
-                    entry.insert(slot);
-                }
-                hash_map::Entry::Occupied(mut entry) => {
-                    let parent = entry.get_mut();
-                    parent.value.current = slot.value.current;
-                    parent.is_warm |= slot.is_warm;
-                }
-            }
-        }
-    }
-
     /// Returns the changed storage slots.
     ///
     /// A slot is changed when its current value differs from its transaction-boundary original,
@@ -256,10 +238,11 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     ///
     /// Only called during transaction finalization (selfdestruct and EIP-161 dead-account
     /// deletion), after the last revertible scope, so the wipe is not journaled. Loaded slot
-    /// entries are kept with their values reset to zero: wiped slots resolve to zero on re-load,
-    /// and resetting `original` alongside `current` turns the transaction's prior writes into
-    /// unchanged reads, which keeps a destroyed account's storage accesses visible to the EIP-7928
-    /// block access list (execution-specs `destroy_storage` converts writes to reads).
+    /// entries are kept with their `current` value reset to zero and their `original` value kept:
+    /// wiped slots resolve to zero on re-load, and the reset turns the transaction's prior writes
+    /// into unchanged reads of the slot's original value, which keeps a destroyed account's storage
+    /// accesses visible to the EIP-7928 block access list (execution-specs `destroy_storage`
+    /// converts writes to reads).
     #[inline]
     pub fn wipe(&mut self) {
         self.storage.wiped = true;

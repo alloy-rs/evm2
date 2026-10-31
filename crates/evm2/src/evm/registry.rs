@@ -422,7 +422,7 @@ impl<T: EvmTypesHost, Output> TxRegistry<T, Output> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
+        BaseEvmConfigSelector, EvmTypesHost, ExecutionConfig, SpecId,
         env::{BlockEnv, BlockEnvExt, TxEnv},
         evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
         interpreter::{Host, Message, MessageResult, Word},
@@ -499,14 +499,6 @@ mod tests {
             _load_code: bool,
             _skip_cold_load: bool,
         ) -> Result<AccountLoad, crate::HostError> {
-            unimplemented!()
-        }
-
-        fn target_is_empty_for_new_account_gas(
-            &mut self,
-            _address: &Address,
-            _features: EvmFeatures,
-        ) -> Result<bool, DatabaseError> {
             unimplemented!()
         }
 

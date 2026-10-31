@@ -1,8 +1,7 @@
 //! Geth trace builder
 use crate::tracing::{
-    final_refunded,
     tx_state::TxState,
-    types::{CallKind, CallTraceNode, CallTraceStepStackItem},
+    types::{CallKind, CallTraceNode, CallTraceStepStackItem, StorageChange},
     utils::load_account_code,
 };
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, format, vec, vec::Vec};
@@ -184,7 +183,8 @@ impl<'a> GethTraceBuilder<'a> {
             // SLOADs and SSTOREs, unless the opcode fails before it runs.
             if opts.is_storage_enabled()
                 && !step.is_error()
-                && let Some((key, value)) = step.storage_slot.as_deref().copied()
+                && let Some(StorageChange { key, value, .. }) =
+                    step.storage_change.as_deref().copied()
             {
                 let contract_storage = storage.entry(trace_node.execution_address()).or_default();
                 contract_storage.insert(key.into(), value.into());
@@ -230,7 +230,7 @@ impl<'a> GethTraceBuilder<'a> {
     ) -> DefaultFrame {
         self.geth_traces_inner(
             gas.tx_gas_used(),
-            Some((gas.execution_gas_spent(), gas.state_gas_spent(), final_refunded(gas))),
+            Some((gas.execution_gas_spent(), gas.state_gas_spent(), gas.final_refunded())),
             return_value,
             opts,
             None,
@@ -301,7 +301,7 @@ impl<'a> GethTraceBuilder<'a> {
         self.geth_call_traces_inner(
             opts,
             gas.tx_gas_used(),
-            Some((gas.execution_gas_spent(), gas.state_gas_spent(), final_refunded(gas))),
+            Some((gas.execution_gas_spent(), gas.state_gas_spent(), gas.final_refunded())),
         )
     }
 
@@ -437,14 +437,7 @@ impl<'a> GethTraceBuilder<'a> {
             // insert the original value of all loaded storage slots
             if storage_enabled {
                 for (key, slot) in loaded_acc.storage.iter() {
-                    // The state stream reports the slots of a selfdestructed account after the
-                    // wipe, as zero. geth reads a slot when the opcode runs, so use the database.
-                    let original = if loaded_acc.selfdestructed {
-                        db.get_storage(&addr, key)?
-                    } else {
-                        slot.original
-                    };
-                    acc_state.storage.insert((*key).into(), original.into());
+                    acc_state.storage.insert((*key).into(), slot.original.into());
                 }
             }
 
@@ -500,8 +493,8 @@ impl<'a> GethTraceBuilder<'a> {
                 // Geth keeps the pre state of a selfdestructed account as it looked it up, with
                 // every slot the transaction touched, unchanged and zero ones included.
                 if changed_acc.selfdestructed {
-                    for key in changed_acc.storage.keys() {
-                        pre_state.storage.insert((*key).into(), db.get_storage(&addr, key)?.into());
+                    for (key, slot) in changed_acc.storage.iter() {
+                        pre_state.storage.insert((*key).into(), slot.original.into());
                     }
                 } else {
                     for (key, slot) in changed_acc.changed_storage() {
@@ -605,19 +598,15 @@ impl<'a> GethTraceBuilder<'a> {
                 // Accessed storage slots
                 match op {
                     op::SLOAD => {
-                        if let Some(stack) = &step.stack
-                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
+                        // geth records the first read of each slot, unless the opcode fails before
+                        // it runs.
+                        if !step.is_error()
+                            && let Some(change) = &step.storage_change
+                            && let slot = B256::from(change.key)
+                            && !accessed_slots.reads.contains_key(&slot)
+                            && !accessed_slots.writes.contains_key(&slot)
                         {
-                            let slot: B256 = (*slot).into();
-                            let already_read = accessed_slots.reads.contains_key(&slot);
-                            let already_written = accessed_slots.writes.contains_key(&slot);
-                            if !already_read
-                                && !already_written
-                                && let Some(change) = &step.storage_change
-                            {
-                                let value: B256 = change.value.into();
-                                accessed_slots.reads.entry(slot).or_default().push(value);
-                            }
+                            accessed_slots.reads.entry(slot).or_default().push(change.value.into());
                         }
                     }
                     op::SSTORE => {

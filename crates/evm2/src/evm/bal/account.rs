@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     bytecode::{Bytecode, BytecodeDecodeError},
-    evm::state::{AccountInfo, StorageSlot},
+    evm::state::AccountInfo,
 };
 use alloc::vec::Vec;
 use alloy_eip7928::{
@@ -317,20 +317,6 @@ impl StorageBal {
                     entry.insert(value);
                 }
             }
-        }
-    }
-
-    /// Update storage from an account's pending [`StorageSlot`] overlay: a changed slot records a
-    /// write at `bal_index`, a loaded-but-unchanged slot records a read.
-    #[inline]
-    pub fn update_pending(&mut self, bal_index: BlockAccessIndex, slots: &U256Map<StorageSlot>) {
-        self.storage.reserve(slots.len());
-        for (key, slot) in slots {
-            self.storage.entry(*key).or_default().update(
-                bal_index,
-                &slot.value.original,
-                slot.value.current,
-            );
         }
     }
 
