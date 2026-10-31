@@ -11,7 +11,7 @@ use evm2::{
 };
 use evm2_cli::evm_bench;
 use evm2_eest::{StateTestPost, StateTestSuite, StateTestUnit};
-use evm2_jit_context::EvmCompilerFn;
+use evm2_jit_context::{EvmCompilerFn, can_run_compiled};
 use evm2_jit_llvm::EvmLlvmBackend;
 use evm2_jit_runtime::{
     EvmCompiler, Linker, OptimizationLevel, eyre, parse_asm, shared_library_path,
@@ -687,8 +687,7 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
-        // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
-        if interpreter.gas().remaining() > i64::MAX as u64 {
+        if !can_run_compiled(interpreter) {
             return None;
         }
         let func = *self.functions.get(&interpreter.original_bytecode_hash())?;

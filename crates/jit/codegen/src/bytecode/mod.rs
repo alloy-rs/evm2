@@ -463,7 +463,7 @@ impl<'a> Bytecode<'a> {
             self.dead_store_elim();
         }
 
-        self.construct_sections();
+        self.construct_sections()?;
         self.construct_memory_sections();
 
         debug!(
@@ -595,7 +595,7 @@ impl<'a> Bytecode<'a> {
     /// Constructs the sections in the bytecode.
     #[instrument(name = "sections", level = "debug", skip_all)]
     #[inline(never)]
-    fn construct_sections(&mut self) {
+    fn construct_sections(&mut self) -> Result<()> {
         let mut analysis = SectionsAnalysis::default();
         for inst in self.insts.indices() {
             if !self.inst(inst).is_dead_code() {
@@ -603,6 +603,20 @@ impl<'a> Bytecode<'a> {
             }
         }
         analysis.finish(self);
+
+        if let Some((inst, _)) = self
+            .insts
+            .iter_enumerated()
+            .find(|(_, data)| data.gas_section.gas_cost == GasSection::SATURATED)
+        {
+            bail!(
+                "the gas section at instruction {} costs at least {} gas, which compiled code \
+                 cannot charge ahead of its instructions",
+                inst.index(),
+                GasSection::SATURATED,
+            );
+        }
+        Ok(())
     }
 
     /// Constructs the memory sections in the bytecode.
@@ -724,13 +738,24 @@ impl<'a> Bytecode<'a> {
     /// Returns the known output of the given instruction if translation can store it instead of
     /// executing the instruction.
     ///
-    /// EXP's dynamic gas is only charged statically when its exponent is known, and a constant
-    /// output joined across call contexts does not imply a constant exponent.
+    /// A constant output joined across call contexts does not imply that EXP's exponent is
+    /// constant, so EXP's dynamic gas must also be static.
     pub(crate) fn foldable_output(&self, inst: Inst) -> Option<U256> {
-        if self.insts[inst].opcode == op::EXP && self.const_operand(inst, 1).is_none() {
+        if self.insts[inst].opcode == op::EXP && self.exp_static_exponent(inst).is_none() {
             return None;
         }
         self.const_output(inst)
+    }
+
+    /// Returns the exponent of the EXP instruction if its dynamic gas is charged statically with
+    /// the section.
+    ///
+    /// This holds exactly when the exponent is a known constant. Translation then never charges
+    /// the dynamic gas itself, whether it folds, inlines or calls the gas-free builtin; otherwise
+    /// it charges the gas at run time.
+    pub(crate) fn exp_static_exponent(&self, inst: Inst) -> Option<U256> {
+        debug_assert_eq!(self.insts[inst].opcode, op::EXP);
+        self.const_operand(inst, 1)
     }
 
     /// Returns the first constant EVM memory access `(offset, len)` for the given instruction.

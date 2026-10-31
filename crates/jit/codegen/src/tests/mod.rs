@@ -54,6 +54,8 @@ mod fibonacci;
 
 mod entry_stack;
 
+mod large_section_gas;
+
 mod runner;
 pub use runner::*;
 
@@ -1842,6 +1844,13 @@ tests! {
             bytecode: &[op::GAS, op::PUSH2, 1, 0, op::PUSH1, 2, op::EXP, op::POP, op::GAS],
             expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, DEF_GAS_LIMIT_U256 - 122_U256],
             expected_gas: 2 + 3 + 3 + 110 + 2 + 2,
+        }),
+        // A constant exponent above 2 lowers to a gas-free builtin: its dynamic gas (10 + 50 * 2)
+        // is charged up front with the section, once.
+        gas_around_const_exponent_pow(@raw {
+            bytecode: &[op::GAS, op::PUSH2, 1, 0, op::ADDRESS, op::EXP, op::POP, op::GAS],
+            expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, DEF_GAS_LIMIT_U256 - 121_U256],
+            expected_gas: 2 + 3 + 2 + 110 + 2 + 2,
         }),
         // `SLOAD` ends the gas section, so only its base gas is owed by the first `GAS`.
         gas_around_sload(@raw {
