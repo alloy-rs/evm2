@@ -1,6 +1,6 @@
 use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv};
 use alloy_consensus::{TxEip7702, transaction::Recovered};
-use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
+use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, Bytes, U256, hex, map::HashSet};
 use alloy_rpc_types_trace::parity::{TraceResults, TraceType};
 use evm2::{
@@ -111,12 +111,19 @@ fn authorization_resolves_executed_bytecode() {
                             chain_id: 1,
                             to: authority,
                             gas_limit: 100_000,
+                            authorization_list: vec![SignedAuthorization::new_unchecked(
+                                Authorization {
+                                    chain_id: U256::from(1),
+                                    address: delegate,
+                                    nonce: 0,
+                                },
+                                0,
+                                U256::ZERO,
+                                U256::ZERO,
+                            )],
                             ..Default::default()
                         },
-                        vec![RecoveredAuthorization::new_unchecked(
-                            Authorization { chain_id: U256::from(1), address: delegate, nonce: 0 },
-                            RecoveredAuthority::Valid(authority),
-                        )],
+                        vec![Some(authority)],
                     )),
                     Address::ZERO,
                 ),

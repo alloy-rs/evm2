@@ -35,6 +35,18 @@ extern "C" LLVMAttributeRef evm2_jit_llvm_create_initializes_attr(LLVMContextRef
   return wrap(Attribute::get(Ctx, Attribute::Initializes, ArrayRef(CR)));
 }
 
+extern "C" LLVMAttributeRef evm2_jit_llvm_create_arg_mem_only_attr(LLVMContextRef C) {
+  return wrap(Attribute::getWithMemoryEffects(*unwrap(C), MemoryEffects::argMemOnly()));
+}
+
+extern "C" LLVMAttributeRef evm2_jit_llvm_create_async_uwtable_attr(LLVMContextRef C) {
+  return wrap(Attribute::getWithUWTableKind(*unwrap(C), UWTableKind::Async));
+}
+
+extern "C" LLVMAttributeRef evm2_jit_llvm_create_no_captures_attr(LLVMContextRef C) {
+  return wrap(Attribute::getWithCaptureInfo(*unwrap(C), CaptureInfo::none()));
+}
+
 /// Remove a JITDylib from the ExecutionSession.
 extern "C" LLVMErrorRef
 evm2_jit_llvm_execution_session_remove_jit_dylib(LLVMOrcExecutionSessionRef ES,
@@ -378,7 +390,7 @@ extern "C" void evm2_jit_llvm_set_dso_local(LLVMValueRef Val, bool Local) {
 /// The registration is leaked so that no destructor edits LLVM's global
 /// callback list at process exit while a compile thread may still read it.
 extern "C" void evm2_jit_llvm_expand_ir_insts_after_lsr() {
-  static auto *Callback = new RegisterTargetPassConfigCallback(
+  [[maybe_unused]] static auto *Callback = new RegisterTargetPassConfigCallback(
       [](TargetMachine &, legacy::PassManagerBase &, TargetPassConfig *PC) {
         // Only the IDs matter: the pipeline builds the inserted pass with its default
         // constructor, which uses `CodeGenOptLevel::None`.
