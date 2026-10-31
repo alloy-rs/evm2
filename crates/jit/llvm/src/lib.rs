@@ -44,6 +44,12 @@ pub use wrap::{Block, Context, Function, Inst, LLVMString, Module, TargetMachine
 /// Branch weight for non-cold branches.
 const DEFAULT_WEIGHT: u32 = 20000;
 
+/// Largest function, in basic blocks, that [`EvmLlvmBackend::optimize_module`] runs LICM on.
+///
+/// LICM only pays off on hot loops in small functions. The cutoff comes from the sweep in
+/// `EXPERIMENTS.md`.
+const LICM_MAX_BLOCKS: u32 = 1000;
+
 /// Current JIT memory usage counters.
 ///
 /// Counters reflect live memory: bytes are added on compilation and
@@ -957,13 +963,11 @@ impl Backend for EvmLlvmBackend {
         //
         // The standard `default<O1>` is also slow (~730ms on snailtracer) because the loop
         // analysis infrastructure (LoopInfo, DominatorTree, MemorySSA, LCSSA) is expensive to
-        // compute on functions with thousands of basic blocks, even though the loop passes
-        // themselves do nothing useful — EVM has no natural loops to optimize.
+        // compute on functions with thousands of basic blocks.
         //
         // LICM (Loop Invariant Code Motion) helps tight EVM loops by hoisting gas counter and
-        // stack slot loads/stores into registers. However, the loop analysis infrastructure is
-        // quadratic on large functions — e.g. +430ms on snailtracer (7770 BBs) vs +0ms on
-        // fibonacci (45 BBs). We skip it for functions with >4000 basic blocks.
+        // stack slot loads/stores into registers. It only pays off on small functions, and its
+        // compile cost grows faster than the function: see `LICM_MAX_BLOCKS`.
         //
         // Can be overridden with `EVM2_JIT_PASSES` env var for experimentation.
         // From `opt --help`, `-passes`.
@@ -978,9 +982,9 @@ impl Backend for EvmLlvmBackend {
             OptimizationLevel::Less
             | OptimizationLevel::Default
             | OptimizationLevel::Aggressive => {
-                let total_bbs: u32 =
-                    self.module.get_functions().map(|f| f.count_basic_blocks()).sum();
-                let with_licm = total_bbs <= 4000;
+                let max_blocks =
+                    self.module.get_functions().map(|f| f.count_basic_blocks()).max().unwrap_or(0);
+                let with_licm = max_blocks <= LICM_MAX_BLOCKS;
                 let passes = if with_licm { &PASSES_WITH_LICM } else { &PASSES };
                 passes.get_or_init(|| build_pass_pipeline(with_licm))
             }

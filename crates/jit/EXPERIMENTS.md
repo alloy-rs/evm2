@@ -56,6 +56,47 @@ ones here with the numbers that rejected them.
 - LICM at every function size: opt instructions +75% on the mainnet corpus,
   JIT size +0.4%, reloads +12%. No LICM at all: JIT size -0.1%, but hash_10k
   runtime +1.2%.
+- LICM at every size, and the old gate of 4000 blocks summed over the module (the
+  largest function's block count plus two, on every benchmark). The gate is now
+  `LICM_MAX_BLOCKS` in `optimize_module`: 1000 blocks in the largest function.
+  Sweep: the pipeline with and without the LICM group (`EVM2_JIT_PASSES`) on the 31
+  benchmarks and on the 1371 distinct contract codes of 32 bytes or more in the
+  pre-state of `data/mainnet-25347446-25347455.bin.zst`, with compile instructions
+  (`perf stat`, median of 3) and JIT size per contract, binned by the largest
+  function's block count in `unopt.ll`. The last column is the mean per contract:
+
+  | Largest function (blocks) | Contracts | Compile instructions | JIT size | Extra instructions |
+  | --- | ---: | ---: | ---: | ---: |
+  | ≤250 | 111 | +0.8% | +3.2% | 0M |
+  | 251–500 | 33 | +3.5% | -0.0% | 4M |
+  | 501–1000 | 91 | +5.2% | +0.5% | 12M |
+  | 1001–2000 | 164 | +8.0% | +0.9% | 37M |
+  | 2001–4000 | 217 | +8.8% | +1.0% | 87M |
+  | 4001–8000 | 298 | +10.3% | +1.1% | 216M |
+  | >8000 | 457 | +20.2% | +0.7% | 1170M |
+
+  The extra cost per block rises from about 15k instructions at 500–1000 blocks to
+  30–36k at 2000–8000 and 80k above 8000, so it is mildly super-linear and steepest
+  in the largest functions. It is not a cliff: snailtracer (8007 blocks) pays +37%
+  compile instructions, seaport (17620) +32%, balancer_vault (20019) +82%.
+
+  Runtime instructions per execution with LICM, on the benchmarks: fibonacci -8.3%
+  and factorial -7.8% (43 blocks), hash_10k -1.0% (133), bswap64 +0.9% and
+  bswap64_opt +1.2% (about 250), every other function of at most 261 blocks within
+  ±1%. From 897 blocks up (22 benchmarks) the median is +0.02% and the range -1.7%
+  (balancer_vault) to +1.2% (curve_stableswap); burntpix (1248 blocks) and
+  snailtracer (8007), the two compute loops in that range, change by +0.2% and
+  +0.04%. JIT size is 0.5–1.1% larger with LICM above 500 blocks.
+
+  So LICM pays only on loops in small functions. Above 1000 blocks it costs 8% or
+  more compile instructions and about 1% more code for no measured runtime gain.
+  Up to 1000 blocks it costs 3.5–5.2% (at most 12M instructions per contract) and
+  stays: the benchmarks have no function between 262 and 896 blocks, so the
+  runtime effect there is unmeasured, and a cutoff of 500 would save at most that
+  5.2% on 91 contracts. Across the corpus the new gate saves almost no total
+  compile cost against the old one (+0.0% over no LICM at all, against +0.7%,
+  since the largest functions dominate the total) but removes the 8–9% cost from
+  the 381 contracts with 1001–4000 blocks.
 - `bdce`, `aggressive-instcombine`, `mldst-motion`, `dfa-jump-threading`, and
   `simplifycfg` with `switch-range-to-icmp`, `switch-to-arithmetic`,
   `forward-switch-cond` or `no-keep-loops` change at most one benchmark.
