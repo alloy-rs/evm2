@@ -18,6 +18,7 @@ pub mod bls12_381_const;
 pub mod bls12_381_utils;
 pub mod bn254;
 mod crypto;
+pub(crate) use crypto::installed_crypto;
 pub use crypto::{Crypto, DefaultCrypto, crypto, install_crypto};
 
 pub mod hash;

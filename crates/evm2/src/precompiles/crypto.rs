@@ -165,3 +165,10 @@ pub fn install_crypto<C: Crypto + 'static>(crypto: C) -> bool {
 pub fn crypto() -> &'static dyn Crypto {
     CRYPTO.get_or_init(|| Box::new(DefaultCrypto::new())).as_ref()
 }
+
+/// Get the installed crypto provider, or `None` if none is installed.
+///
+/// Unlike [`crypto`], this does not initialize the provider with the default.
+pub(crate) fn installed_crypto() -> Option<&'static dyn Crypto> {
+    CRYPTO.get().map(Box::as_ref)
+}
