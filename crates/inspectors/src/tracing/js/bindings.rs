@@ -727,6 +727,9 @@ impl OpcodeNames {
 /// An opcode only touches its top `inputs` items, so the pre-execution stack is the post-execution
 /// stack below those items followed by the saved inputs. This holds for halted opcodes too, which
 /// pop at most `inputs` items.
+///
+/// SWAPN and EXCHANGE declare no inputs but swap items at a depth taken from their immediate, so
+/// they save the whole stack.
 #[derive(Debug, Default)]
 struct StackView {
     /// Pre-execution length.
@@ -740,7 +743,10 @@ struct StackView {
 impl StackView {
     fn record(&mut self, op: u8, stack: &[U256]) {
         self.len = stack.len();
-        let inputs = OpCode::new(op).map_or(0, |op| op.inputs() as usize).min(stack.len());
+        let inputs = match op {
+            opcode::SWAPN | opcode::EXCHANGE => stack.len(),
+            _ => OpCode::new(op).map_or(0, |op| op.inputs() as usize).min(stack.len()),
+        };
         self.saved.clear();
         self.saved.extend_from_slice(&stack[stack.len() - inputs..]);
     }
