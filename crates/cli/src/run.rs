@@ -382,7 +382,7 @@ fn bench<T>(n_iters: u64, name: &str, mut f: impl FnMut() -> eyre::Result<T>) {
     let d = t.elapsed();
     perf_control("disable");
     if counting {
-        eprintln!("perf counted {n_iters} iterations");
+        perf_report(n_iters);
     }
     eprintln!("{name}: {:>9?} ({d:>12?} / {n_iters})", d / n_iters as u32);
 }
@@ -407,6 +407,20 @@ fn perf_control(command: &str) -> bool {
     // `perf` answers `ack\n` and a NUL.
     ack.read_exact(&mut [0; 5]).expect("failed to read the perf acknowledgement");
     true
+}
+
+/// Tells the `perf stat` wrapper's owner how many iterations its counters covered, by writing
+/// the count to the pipe whose file descriptor `EVM2_PERF_REPORT` holds, if any.
+///
+/// The pipe carries nothing else, so the report cannot be forged by text the CLI prints, such as a
+/// benchmark name.
+fn perf_report(n_iters: u64) {
+    let Ok(fd) = std::env::var("EVM2_PERF_REPORT") else { return };
+    let mut report = std::fs::File::options()
+        .write(true)
+        .open(format!("/proc/self/fd/{fd}"))
+        .expect("failed to open the perf report pipe");
+    writeln!(report, "{n_iters}").expect("failed to write the perf report");
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
