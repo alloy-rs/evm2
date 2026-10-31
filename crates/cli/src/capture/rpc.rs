@@ -91,6 +91,20 @@ impl RpcEndpoint {
         Ok(RpcAccount { balance, nonce, code })
     }
 
+    /// Returns a storage slot of an account after this block.
+    pub(super) async fn storage(
+        &self,
+        address: Address,
+        slot: U256,
+        block_number: u64,
+    ) -> Result<U256, CaptureError> {
+        let block = BlockNumberOrTag::Number(block_number);
+        self.call(|| async {
+            self.provider.get_storage_at(address, slot).block_id(block.into()).await
+        })
+        .await
+    }
+
     pub(super) async fn block_hash(&self, block_number: u64) -> Result<B256, CaptureError> {
         let header = self
             .call(|| self.provider.get_header_by_number(BlockNumberOrTag::Number(block_number)))

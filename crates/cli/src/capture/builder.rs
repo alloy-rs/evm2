@@ -14,9 +14,20 @@ use evm2::evm::{
     BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS,
     WITHDRAWAL_REQUEST_ADDRESS,
 };
-use futures_util::{StreamExt, stream};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+
+/// The storage layout shared by the EIP-7002 and EIP-7251 request queue contracts.
+const QUEUE_EXCESS_SLOT: u64 = 0;
+const QUEUE_COUNT_SLOT: u64 = 1;
+const QUEUE_HEAD_SLOT: u64 = 2;
+const QUEUE_TAIL_SLOT: u64 = 3;
+const QUEUE_OFFSET_SLOT: u64 = 4;
+/// Slots per queued entry: source address, then the 48 byte pubkey and amount (EIP-7002).
+const WITHDRAWAL_ENTRY_SLOTS: u64 = 3;
+/// Slots per queued entry: source address, then the source and target pubkeys (EIP-7251).
+const CONSOLIDATION_ENTRY_SLOTS: u64 = 4;
 
 #[derive(Default)]
 pub(super) struct CaptureBuilder {
@@ -148,19 +159,26 @@ impl CaptureBuilder {
 
     /// Captures the system contracts that the blocks call after their transactions.
     ///
-    /// Block execution requires their code, but transaction traces never touch them, so the
-    /// base pre-state reads them as of the block before the first captured block. A contract
-    /// that a transaction in the range touched is already captured. Their storage is not: the
-    /// request queues start empty.
+    /// Block execution requires their code and, for the request queues, their queue storage, but
+    /// transaction traces never touch them at the state that the system calls start from. The
+    /// base pre-state therefore reads them as of the block before the first captured block and
+    /// replaces anything the traces recorded: a trace sees the contract after the system calls of
+    /// earlier blocks in the range, which replay executes itself.
     pub(super) async fn capture_system_contracts(
         &mut self,
         rpc: &RpcEndpoint,
         parent_number: u64,
         spec: evm2::SpecId,
     ) -> Result<(), CaptureError> {
-        for address in system_contracts(spec) {
-            let account = rpc.account(address, parent_number).await?;
-            self.capture_system_contract(address, account)?;
+        for contract in system_contracts(spec) {
+            let account = rpc.account(contract.address, parent_number).await?;
+            let storage = match contract.queue_entry_slots {
+                Some(entry_slots) => {
+                    read_queue_storage(rpc, contract.address, entry_slots, parent_number).await?
+                }
+                None => Vec::new(),
+            };
+            self.capture_system_contract(contract.address, account, storage)?;
         }
         Ok(())
     }
@@ -169,15 +187,14 @@ impl CaptureBuilder {
         &mut self,
         address: Address,
         account: RpcAccount,
+        storage: Vec<StorageEntry>,
     ) -> Result<(), CaptureError> {
-        if self.captured_codes.contains(&address) {
-            return Ok(());
-        }
         let code_hash = self.insert_code(account.code)?;
         let state = self.account_state(address);
         state.balance = account.balance;
         state.nonce = account.nonce;
         state.code_hash = code_hash;
+        state.storage = storage;
         self.captured_balances.insert(address);
         self.captured_nonces.insert(address);
         self.captured_codes.insert(address);
@@ -379,17 +396,93 @@ fn is_absent_account_probe(account: &Map<String, Value>) -> Result<bool, Capture
     Ok(true)
 }
 
-/// Returns the system contracts that a block of this spec calls after its transactions and
-/// requires to have code.
-fn system_contracts(spec: evm2::SpecId) -> Vec<Address> {
+/// A system contract that a block calls after its transactions and requires to have code.
+struct SystemContract {
+    address: Address,
+    /// The storage slots of one entry of its request queue, if it keeps the EIP-7002 queue layout.
+    queue_entry_slots: Option<u64>,
+}
+
+/// Returns the system contracts that a block of this spec calls after its transactions.
+fn system_contracts(spec: evm2::SpecId) -> Vec<SystemContract> {
     let mut contracts = Vec::new();
     if spec.enables(evm2::SpecId::PRAGUE) {
-        contracts.extend([WITHDRAWAL_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS]);
+        contracts.push(SystemContract {
+            address: WITHDRAWAL_REQUEST_ADDRESS,
+            queue_entry_slots: Some(WITHDRAWAL_ENTRY_SLOTS),
+        });
+        contracts.push(SystemContract {
+            address: CONSOLIDATION_REQUEST_ADDRESS,
+            queue_entry_slots: Some(CONSOLIDATION_ENTRY_SLOTS),
+        });
     }
     if spec.enables(evm2::SpecId::AMSTERDAM) {
-        contracts.extend([BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS]);
+        contracts.push(SystemContract {
+            address: BUILDER_DEPOSIT_REQUEST_ADDRESS,
+            queue_entry_slots: None,
+        });
+        contracts.push(SystemContract {
+            address: BUILDER_EXIT_REQUEST_ADDRESS,
+            queue_entry_slots: None,
+        });
     }
     contracts
+}
+
+/// Reads the non-zero storage that a system call of a request queue contract starts from.
+async fn read_queue_storage(
+    rpc: &RpcEndpoint,
+    address: Address,
+    entry_slots: u64,
+    block_number: u64,
+) -> Result<Vec<StorageEntry>, CaptureError> {
+    let (head, tail) = tokio::try_join!(
+        rpc.storage(address, U256::from(QUEUE_HEAD_SLOT), block_number),
+        rpc.storage(address, U256::from(QUEUE_TAIL_SLOT), block_number),
+    )?;
+    let slots = queue_slots(address, entry_slots, head, tail)?;
+    let mut entries = stream::iter(slots)
+        .map(|slot| async move {
+            let value = rpc.storage(address, slot, block_number).await?;
+            Ok::<_, CaptureError>(StorageEntry { slot: B256::from(slot), value })
+        })
+        .buffer_unordered(rpc.max_concurrent_requests())
+        .try_collect::<Vec<_>>()
+        .await?;
+    entries.retain(|entry| !entry.value.is_zero());
+    entries.sort_by_key(|entry| entry.slot);
+    Ok(entries)
+}
+
+/// Returns every storage slot of an EIP-7002 style request queue contract that a system call
+/// can read or that a later one will: the excess, count, head and tail slots, and all slots of
+/// the entries from the head up to the tail.
+fn queue_slots(
+    address: Address,
+    entry_slots: u64,
+    head: U256,
+    tail: U256,
+) -> Result<Vec<U256>, CaptureError> {
+    let invalid = || CaptureError::InvalidQueuePointers { address, head, tail };
+    let head = u64::try_from(head).map_err(|_| invalid())?;
+    let tail = u64::try_from(tail).map_err(|_| invalid())?;
+    if head > tail {
+        return Err(invalid());
+    }
+    let mut slots = vec![
+        U256::from(QUEUE_EXCESS_SLOT),
+        U256::from(QUEUE_COUNT_SLOT),
+        U256::from(QUEUE_HEAD_SLOT),
+        U256::from(QUEUE_TAIL_SLOT),
+    ];
+    for index in head..tail {
+        let first = index
+            .checked_mul(entry_slots)
+            .and_then(|offset| offset.checked_add(QUEUE_OFFSET_SLOT))
+            .ok_or_else(invalid)?;
+        slots.extend((first..first + entry_slots).map(U256::from));
+    }
+    Ok(slots)
 }
 
 #[cfg(test)]
@@ -433,20 +526,31 @@ mod tests {
     }
 
     #[test]
-    fn system_contract_capture_keeps_code_a_transaction_touched() {
+    fn system_contract_capture_replaces_what_a_trace_recorded() {
         let address = WITHDRAWAL_REQUEST_ADDRESS;
         let mut builder = CaptureBuilder::mainnet();
-        let pre = account_trace(address, json!({ "balance": "0x1", "nonce": 1, "code": "0x60" }));
+        let pre = account_trace(
+            address,
+            json!({
+                "balance": "0x1",
+                "nonce": 1,
+                "code": "0x60",
+                "storage": { B256::with_last_byte(1).to_string(): "0x5" },
+            }),
+        );
         builder.capture_base_requirements(1, 0, &pre, &Overlay::default()).unwrap();
 
         let account =
             RpcAccount { balance: U256::from(9), nonce: 2, code: Bytes::from_static(&[1]) };
-        builder.capture_system_contract(address, account).unwrap();
+        let storage = vec![StorageEntry { slot: B256::with_last_byte(2), value: U256::from(3) }];
+        builder.capture_system_contract(address, account, storage).unwrap();
 
         let account = builder.accounts.get(&address).unwrap();
-        assert_eq!(account.balance, U256::from(1));
-        assert_eq!(account.nonce, 1);
-        assert_eq!(builder.codes.get(&account.code_hash).unwrap().as_ref(), &[0x60]);
+        assert_eq!(account.balance, U256::from(9));
+        assert_eq!(account.nonce, 2);
+        assert_eq!(builder.codes.get(&account.code_hash).unwrap().as_ref(), &[1]);
+        assert_eq!(account.storage.len(), 1);
+        assert_eq!(account.storage[0].slot, B256::with_last_byte(2));
     }
 
     #[test]
@@ -456,7 +560,7 @@ mod tests {
 
         let account =
             RpcAccount { balance: U256::from(9), nonce: 1, code: Bytes::from_static(&[1]) };
-        builder.capture_system_contract(address, account).unwrap();
+        builder.capture_system_contract(address, account, Vec::new()).unwrap();
 
         let account = builder.accounts.get(&address).unwrap();
         assert_eq!(account.balance, U256::from(9));
@@ -469,6 +573,31 @@ mod tests {
         assert!(system_contracts(evm2::SpecId::CANCUN).is_empty());
         assert_eq!(system_contracts(evm2::SpecId::OSAKA).len(), 2);
         assert_eq!(system_contracts(evm2::SpecId::AMSTERDAM).len(), 4);
+    }
+
+    #[test]
+    fn queue_slots_cover_every_entry_between_head_and_tail() {
+        let address = WITHDRAWAL_REQUEST_ADDRESS;
+        let slots = |entry_slots, head, tail| {
+            queue_slots(address, entry_slots, U256::from(head), U256::from(tail))
+                .unwrap()
+                .into_iter()
+                .map(|slot| slot.to::<u64>())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(slots(3, 0, 0), [0, 1, 2, 3]);
+        // Entries 2 and 3 of three slots each start at slots 10 and 13.
+        assert_eq!(slots(3, 2, 4), [0, 1, 2, 3, 10, 11, 12, 13, 14, 15]);
+        // Entry 1 of four slots starts at slot 8.
+        assert_eq!(slots(4, 1, 2), [0, 1, 2, 3, 8, 9, 10, 11]);
+    }
+
+    #[test]
+    fn queue_slots_reject_a_head_past_the_tail() {
+        let err = queue_slots(WITHDRAWAL_REQUEST_ADDRESS, 3, U256::from(2), U256::from(1));
+
+        assert!(matches!(err, Err(CaptureError::InvalidQueuePointers { .. })));
     }
 
     #[test]

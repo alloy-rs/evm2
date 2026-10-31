@@ -35,6 +35,8 @@ pub(crate) enum CaptureError {
     },
     #[error("invalid trace result: {0}")]
     InvalidTraceResult(&'static str),
+    #[error("system contract {address} has invalid queue pointers: head {head}, tail {tail}")]
+    InvalidQueuePointers { address: Address, head: U256, tail: U256 },
     #[error("invalid hex value {0}")]
     InvalidHex(String),
     #[error("invalid integer value {0}")]
