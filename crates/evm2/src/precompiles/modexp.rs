@@ -154,19 +154,19 @@ fn modexp_big(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
 /// See: <https://eips.ethereum.org/EIPS/eip-198>
 /// See: <https://etherscan.io/address/0000000000000000000000000000000000000005>
 pub fn run_byzantium(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    run_inner(input, gas, 0, false, byzantium_gas_calc)
+    run_inner(input, gas, false, byzantium_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-2565>
 /// Gas cost of berlin is modified from byzantium.
 pub fn run_berlin(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    run_inner(input, gas, 200, false, berlin_gas_calc)
+    run_inner(input, gas, false, berlin_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-7823>
-/// Gas cost of berlin is modified from byzantium.
+/// See: <https://eips.ethereum.org/EIPS/eip-7883>
 pub fn run_osaka(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    run_inner(input, gas, 500, true, osaka_gas_calc)
+    run_inner(input, gas, true, osaka_gas_calc)
 }
 
 /// Calculate the iteration count for the modexp precompile.
@@ -189,12 +189,9 @@ pub(crate) fn calculate_iteration_count(exp_length: u64, exp_highp: &U256, multi
 pub fn run_inner(
     input: &[u8],
     gas: &mut GasTracker,
-    min_gas: u64,
     osaka: bool,
     calc_gas: fn(u64, u64, u64, &U256) -> u64,
 ) -> PrecompileResult {
-    gas.spend(min_gas)?;
-
     // The format of input is:
     // <length_of_BASE> <length_of_EXPONENT> <length_of_MODULUS> <BASE> <EXPONENT> <MODULUS>
     // Where every length is a 32-byte left-padded integer representing the number of bytes
@@ -229,7 +226,7 @@ pub fn run_inner(
 
     // Check if we have enough gas.
     let gas_cost = calc_gas(base_len64, exp_len64, mod_len64, &exp_highp);
-    gas.spend(gas_cost.saturating_sub(min_gas))?;
+    gas.spend(gas_cost)?;
 
     // EIP-7823 limits the size of the inputs, after the gas is charged.
     if osaka
