@@ -417,11 +417,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     #[inline]
-    fn assert_precompiles_downcast_mutable(&self) {
-        self.assert_precompiles_mutable();
-    }
-
-    #[inline]
     fn assert_inspector_mutable(&self) {
         assert!(!self.running, "inspector cannot be modified during EVM execution");
     }
@@ -914,7 +909,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     where
         'a: 'static,
     {
-        self.assert_precompiles_downcast_mutable();
+        self.assert_precompiles_mutable();
         self.precompiles.as_mut().downcast_mut()
     }
 
@@ -986,7 +981,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Err(error.into());
         }
         result.logs = self.state.take_logs();
-        Ok(ExecutedTx::from_result(self, result, true))
+        Ok(ExecutedTx::from_result(self, result))
     }
 
     #[inline(never)]
@@ -2744,7 +2739,7 @@ mod tests {
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
                 PrecompileAccess::AsMut => |evm, _, _| {
-                    evm.assert_precompiles_downcast_mutable();
+                    evm.assert_precompiles_mutable();
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
                 PrecompileAccess::Set => |evm, _, _| {

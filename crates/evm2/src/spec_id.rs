@@ -110,13 +110,6 @@ impl SpecId {
     pub const fn enables(self, other: Self) -> bool {
         self as u32 >= other as u32
     }
-
-    /// Returns `true` if `other` is enabled in this specification.
-    #[deprecated(note = "use SpecId::enables instead")]
-    #[inline]
-    pub const fn is_enabled_in(self, other: Self) -> bool {
-        self.enables(other)
-    }
 }
 
 impl From<SpecId> for u32 {
