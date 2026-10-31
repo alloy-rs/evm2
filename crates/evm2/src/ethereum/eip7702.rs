@@ -518,7 +518,41 @@ impl Eip7702Authorization for LazyAuthorization<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SpecId;
+    use crate::{
+        BaseEvmTypes, Evm, Precompiles, SpecId, env::BlockEnvExt, ethereum::ethereum_tx_registry,
+        evm::InMemoryDB,
+    };
+    use alloy_consensus::{TxEip7702, transaction::Recovered};
+    use alloy_primitives::Address;
+
+    #[test]
+    fn chain_id_is_checked_before_the_authorization_list() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::PRAGUE),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::PRAGUE),
+        );
+        let tx = |chain_id| {
+            Recovered::new_unchecked(
+                TxEip7702 {
+                    chain_id,
+                    gas_limit: 100_000,
+                    to: Address::with_last_byte(0xbb),
+                    ..Default::default()
+                }
+                .into(),
+                Address::with_last_byte(0xaa),
+            )
+        };
+
+        assert_eq!(
+            evm.validate_tx(&tx(2)),
+            Err(HandlerError::InvalidChainId { expected: 1, got: 2 })
+        );
+        assert_eq!(evm.validate_tx(&tx(1)), Err(HandlerError::EmptyAuthorizationList));
+    }
 
     #[test]
     fn authorization_gas_charges_per_authorization() {
