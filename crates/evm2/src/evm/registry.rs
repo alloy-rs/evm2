@@ -103,6 +103,19 @@ pub enum HandlerError {
         /// Active transaction gas limit cap.
         cap: u64,
     },
+    /// Intrinsic execution gas, or the calldata floor gas if larger, exceeds the active execution
+    /// gas cap (EIP-8037).
+    ///
+    /// Unlike [`TxGasLimitGreaterThanCap`](Self::TxGasLimitGreaterThanCap), the transaction's own
+    /// gas limit is not what exceeds a cap: it may exceed the execution cap, but the gas it must
+    /// spend before execution cannot.
+    #[error("intrinsic gas exceeds cap: required {required}, cap {cap}")]
+    IntrinsicGasGreaterThanCap {
+        /// Required execution gas: the larger of the intrinsic and floor gas.
+        required: u64,
+        /// Active execution gas cap.
+        cap: u64,
+    },
     /// Create transaction initcode exceeds the active size limit.
     #[error("create initcode size limit exceeded: limit {limit}, got {got}")]
     CreateInitCodeSizeLimit {

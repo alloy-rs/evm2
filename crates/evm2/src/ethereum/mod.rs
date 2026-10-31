@@ -353,8 +353,8 @@ pub const fn validate_execution_gas_limit_cap(
     if tx_gas_limit > cap {
         let required_execution_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
         if required_execution_gas > cap {
-            return Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: required_execution_gas,
+            return Err(HandlerError::IntrinsicGasGreaterThanCap {
+                required: required_execution_gas,
                 cap,
             });
         }
@@ -1093,6 +1093,19 @@ mod tests {
     }
 
     #[test]
+    fn gas_limit_below_floor_is_not_an_intrinsic_gas_error() {
+        assert_eq!(
+            validate_intrinsic_gas(20_999, 21_000, 0),
+            Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
+        );
+        assert_eq!(
+            validate_floor_gas(21_009, 21_010),
+            Err(HandlerError::GasLimitBelowFloor { required: 21_010, got: 21_009 })
+        );
+        assert_eq!(validate_floor_gas(21_010, 21_010), Ok(()));
+    }
+
+    #[test]
     fn floor_gas_charges_prague_calldata_tokens() {
         let input = Bytes::from_static(&[0, 1, 2]);
         let sender = Address::with_last_byte(0xaa);
@@ -1411,8 +1424,8 @@ mod tests {
                 amsterdam.tx_gas_limit_cap + 1,
                 floor_gas,
             ),
-            Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: amsterdam.tx_gas_limit_cap + 1,
+            Err(HandlerError::IntrinsicGasGreaterThanCap {
+                required: amsterdam.tx_gas_limit_cap + 1,
                 cap: amsterdam.tx_gas_limit_cap
             })
         );
