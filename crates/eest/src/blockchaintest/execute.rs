@@ -1809,16 +1809,17 @@ mod tests {
         super::types::{ChainConfig, SealEngine, State},
         *,
     };
+    use alloy_eips::eip7840::BLOB_BASE_COST;
+    use std::collections::BTreeMap;
+
     #[cfg(feature = "jit")]
     use crate::tx::recover_address;
     #[cfg(feature = "jit")]
     use alloy_consensus::{SignableTransaction, TxLegacy, crypto::secp256k1};
-    use alloy_eips::eip7840::BLOB_BASE_COST;
     #[cfg(feature = "jit")]
     use alloy_primitives::{TxKind, to_eip155_v};
     #[cfg(feature = "jit")]
     use evm2::interpreter::op;
-    use std::collections::BTreeMap;
 
     #[cfg(feature = "jit")]
     const BYTECODE_STORE42: &[u8] = &[op::PUSH1, 0x42, op::PUSH0, op::SSTORE, op::STOP];
