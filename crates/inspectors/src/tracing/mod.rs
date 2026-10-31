@@ -36,6 +36,9 @@ pub use builder::{
 mod config;
 pub use config::{OpcodeFilter, StackSnapshotType, TracingInspectorConfig};
 
+mod erc7562;
+pub use erc7562::{Erc7562Inspector, Error as Erc7562Error};
+
 mod fourbyte;
 pub use fourbyte::FourByteInspector;
 
