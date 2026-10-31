@@ -1,16 +1,21 @@
 //! The top-level Block Access List structure.
 
-use super::{AccountBal, BalError, BlockAccessIndex};
+use super::{AccountBal, BlockAccessIndex};
 use crate::{
     bytecode::BytecodeDecodeError,
-    evm::state::{Account, AccountInfo, PendingState},
+    evm::state::{
+        AccountChangeRef, AccountInfo, PendingState, StateChangeSink, StateChangeSource,
+        StorageChange,
+    },
+    interpreter::Word,
 };
 use alloc::vec::Vec;
 use alloy_eip7928::{
     AccountChanges as AlloyAccountChanges, BlockAccessList as AlloyBal,
     CodeChange as AlloyCodeChange, SlotChanges as AlloySlotChanges,
 };
-use alloy_primitives::{Address, U256, map::AddressMap};
+use alloy_primitives::{Address, map::AddressMap};
+use core::convert::Infallible;
 
 /// BAL structure.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -80,56 +85,84 @@ impl Bal {
     /// This is the fold [`Evm`](crate::Evm) applies on transaction commit when its BAL builder is
     /// enabled: loaded-but-unchanged accounts and storage slots are recorded as reads, changed
     /// ones as writes at `bal_index`. Apply pending states in transaction order, since writes
-    /// must be appended with ascending indices.
-    pub fn commit(&mut self, bal_index: BlockAccessIndex, pending: PendingState) {
-        for (&address, account) in &pending.accounts {
-            self.update_account(bal_index, address, account);
-        }
-    }
-
-    /// Extend BAL with one pending account overlay entry: its transaction-boundary original info
-    /// against its present info, and its loaded storage slots. An absent side is the non-existent
-    /// (default) account, so an account removed by the transaction records zeroed writes.
+    /// must be appended with ascending indices. Commit each transaction once, at its own index: a
+    /// wiped slot is recorded as a read, which does not retract a write an earlier commit made at
+    /// the same index.
     ///
     /// A selfdestructed account needs no special-casing: transaction finalization already resolved
     /// its present info to the EIP-8246 balance-only remnant or to a removed account, and its
     /// destroyed storage writes surface as reads (execution-specs `destroy_storage`).
+    pub fn commit(&mut self, bal_index: BlockAccessIndex, pending: PendingState) {
+        let Ok(()) = pending.visit(&mut BalWriter::new(self, bal_index));
+    }
+}
+
+/// Folds streamed state changes into a [`Bal`] at one block access index.
+///
+/// Changed accounts and storage slots are recorded as writes, loaded-but-unchanged ones -- the
+/// read callbacks -- as reads. An absent account side is the non-existent (default) account, so an
+/// account removed by the transaction records zeroed writes. The bytecode and storage-wipe
+/// callbacks need no BAL action: code changes surface through [`StateChangeSink::account`], and a
+/// wiped account's storage surfaces through the storage callbacks.
+#[derive(Debug)]
+pub(super) struct BalWriter<'a> {
+    bal: &'a mut Bal,
+    index: BlockAccessIndex,
+}
+
+impl<'a> BalWriter<'a> {
     #[inline]
-    pub(crate) fn update_account(
-        &mut self,
-        bal_index: BlockAccessIndex,
-        address: Address,
-        account: &Account,
-    ) {
-        let bal_account = self.accounts.entry(address).or_default();
+    pub(super) const fn new(bal: &'a mut Bal, index: BlockAccessIndex) -> Self {
+        Self { bal, index }
+    }
+}
+
+impl StateChangeSink for BalWriter<'_> {
+    type Error = Infallible;
+
+    #[inline]
+    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
         let absent = AccountInfo::default();
-        bal_account.account_info.update(
-            bal_index,
-            account.original.as_ref().unwrap_or(&absent),
-            account.present.as_ref().unwrap_or(&absent),
+        self.bal.accounts.entry(change.address).or_default().account_info.update(
+            self.index,
+            change.original.unwrap_or(&absent),
+            change.current.unwrap_or(&absent),
         );
-        bal_account.storage.update_pending(bal_index, &account.storage.slots);
+        Ok(())
     }
 
-    /// Populate storage slot from BAL by account address.
-    ///
-    /// If the account is not found in the BAL, or the slot is not listed under it, an error is
-    /// returned.
     #[inline]
-    pub fn populate_storage_slot(
-        &self,
-        account_address: Address,
-        bal_index: BlockAccessIndex,
-        key: U256,
-        value: &mut U256,
-    ) -> Result<(), BalError> {
-        let Some(bal_account) = self.accounts.get(&account_address) else {
-            return Err(BalError::AccountNotFound { address: account_address });
-        };
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+        self.bal
+            .accounts
+            .entry(change.address)
+            .or_default()
+            .storage
+            .storage
+            .entry(change.key)
+            .or_default()
+            .update(self.index, &change.original, change.current);
+        Ok(())
+    }
 
-        if let Some(bal_value) = bal_account.storage.get(&account_address, key, bal_index)? {
-            *value = bal_value;
-        };
+    #[inline]
+    fn account_read(
+        &mut self,
+        address: Address,
+        _info: Option<&AccountInfo>,
+    ) -> Result<(), Self::Error> {
+        self.bal.accounts.entry(address).or_default();
+        Ok(())
+    }
+
+    #[inline]
+    fn storage_read(
+        &mut self,
+        address: Address,
+        key: Word,
+        _value: Word,
+    ) -> Result<(), Self::Error> {
+        self.bal.accounts.entry(address).or_default().storage.storage.entry(key).or_default();
         Ok(())
     }
 }
@@ -507,6 +540,38 @@ mod tests {
         );
         // The loaded-but-unchanged slot stays a read (empty writes).
         assert!(account.storage.storage.get(&U256::from(5)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn commit_records_wiped_slot_zeroing_as_read() {
+        let address = Address::with_last_byte(1);
+
+        // A wiped account whose slot started nonzero and ended zero: the wipe is not a write.
+        // Only the slot that is nonzero after the wipe is recorded as one.
+        let info = AccountInfo::default().with_balance(U256::from(100));
+        let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
+        overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::ZERO));
+        overlay.slots.insert(U256::from(6), slot(U256::from(7), U256::from(8)));
+        let account = Account {
+            original: Some(info.clone()),
+            present: Some(info),
+            storage: overlay,
+            ..Default::default()
+        };
+        let pending = PendingState {
+            accounts: AddressMap::from_iter([(address, account)]),
+            selfdestructs: Default::default(),
+        };
+
+        let mut bal = Bal::new();
+        bal.commit(idx(1), pending);
+
+        let storage = &bal.accounts.get(&address).unwrap().storage.storage;
+        assert!(storage.get(&U256::from(5)).unwrap().is_empty());
+        assert_eq!(
+            storage.get(&U256::from(6)).unwrap().changes,
+            vec![AlloyStorageChange::new(idx(1), U256::from(8))]
+        );
     }
 
     #[test]

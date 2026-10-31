@@ -1,15 +1,16 @@
 //! EIP-7928 Block Access List state carried alongside the accepted-overlay database.
 
-use super::{AccountBal, Bal, BalError, BlockAccessIndex};
+use super::{AccountBal, Bal, BalError, BlockAccessIndex, list::BalWriter};
 use crate::{
     evm::state::{
-        Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSink, StorageChange,
+        AccountChangeRef, AccountInfo, PendingState, StateChangeSink, StateChangeSource,
+        StorageChange, TxStateChanges,
     },
     interpreter::Word,
 };
 use alloc::sync::Arc;
 use alloy_eip7928::{BalAccountInfo, BlockAccessList};
-use alloy_primitives::{Address, map::AddressMap};
+use alloy_primitives::Address;
 use core::convert::Infallible;
 
 /// Result of an EIP-7928 BAL lookup during a read.
@@ -169,23 +170,26 @@ impl BalContext {
     /// are recorded as BAL reads; changed ones as writes.
     #[inline]
     pub fn commit_pending(&mut self, pending: &PendingState) {
-        self.commit(&pending.accounts);
+        self.commit(pending.changes());
     }
 
-    /// Folds a committed transaction's pending accounts and storage overlays into the BAL builder
-    /// at the current [`Self::bal_index`].
+    /// Folds a committed transaction's changes into the BAL builder at the current
+    /// [`Self::bal_index`].
     ///
     /// Same as [`Self::commit_pending`], operating on the transaction layers directly so the
     /// overlay need not be detached. No-op when BAL construction is disabled.
     #[inline]
-    pub(crate) fn commit(&mut self, accounts: &AddressMap<Account>) {
-        let index = self.bal_index;
-        let Some(bal) = self.bal_builder.as_mut() else {
+    pub(crate) fn commit(&mut self, changes: TxStateChanges<'_>) {
+        let Some(mut writer) = self.writer() else {
             return;
         };
-        for (&address, account) in accounts {
-            bal.update_account(index, address, account);
-        }
+        let Ok(()) = changes.visit(&mut writer);
+    }
+
+    #[inline]
+    fn writer(&mut self) -> Option<BalWriter<'_>> {
+        let index = self.bal_index;
+        self.bal_builder.as_mut().map(|bal| BalWriter::new(bal, index))
     }
 
     /// Takes the built BAL, resetting the block access index. Returns `None` when BAL construction
@@ -321,58 +325,28 @@ pub enum BalAccountLookup {
     NotCovered,
 }
 
-/// Folds streamed state changes into the BAL builder at the current [`BalContext::bal_index`].
-///
-/// This is the sink shape of the [`Self::commit_pending`] fold: changed accounts and storage
-/// slots are
-/// recorded as writes, loaded-but-unchanged ones -- the read callbacks -- as reads. The bytecode
-/// and storage-wipe callbacks need no BAL action: code changes surface through
-/// [`StateChangeSink::account`], and a wiped account's storage surfaces through the storage
-/// callbacks. Every callback is a no-op when BAL construction is disabled.
+/// Folds streamed state changes into the BAL builder at the current [`BalContext::bal_index`], as
+/// [`Bal::commit`] does. Every callback is a no-op when BAL construction is disabled.
 impl StateChangeSink for BalContext {
     type Error = Infallible;
 
     #[inline]
     fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
-        let index = self.bal_index;
-        if let Some(bal) = self.bal_builder.as_mut() {
-            let original = change.original.cloned().unwrap_or_default();
-            let current = change.current.cloned().unwrap_or_default();
-            bal.accounts
-                .entry(change.address)
-                .or_default()
-                .account_info
-                .update(index, &original, &current);
-        }
-        Ok(())
+        self.writer().map_or(Ok(()), |mut writer| writer.account(change))
     }
 
     #[inline]
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-        let index = self.bal_index;
-        if let Some(bal) = self.bal_builder.as_mut() {
-            bal.accounts
-                .entry(change.address)
-                .or_default()
-                .storage
-                .storage
-                .entry(change.key)
-                .or_default()
-                .update(index, &change.original, change.current);
-        }
-        Ok(())
+        self.writer().map_or(Ok(()), |mut writer| writer.storage(change))
     }
 
     #[inline]
     fn account_read(
         &mut self,
         address: Address,
-        _info: Option<&AccountInfo>,
+        info: Option<&AccountInfo>,
     ) -> Result<(), Self::Error> {
-        if let Some(bal) = self.bal_builder.as_mut() {
-            bal.accounts.entry(address).or_default();
-        }
-        Ok(())
+        self.writer().map_or(Ok(()), |mut writer| writer.account_read(address, info))
     }
 
     #[inline]
@@ -380,12 +354,9 @@ impl StateChangeSink for BalContext {
         &mut self,
         address: Address,
         key: Word,
-        _value: Word,
+        value: Word,
     ) -> Result<(), Self::Error> {
-        if let Some(bal) = self.bal_builder.as_mut() {
-            bal.accounts.entry(address).or_default().storage.storage.entry(key).or_default();
-        }
-        Ok(())
+        self.writer().map_or(Ok(()), |mut writer| writer.storage_read(address, key, value))
     }
 }
 
