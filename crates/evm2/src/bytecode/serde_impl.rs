@@ -44,7 +44,7 @@ impl<'de> Deserialize<'de> for Bytecode {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
             match BytecodeSerde::deserialize(deserializer)? {
-                BytecodeSerde::New(bytes) => Ok(from_original_bytes(bytes)),
+                BytecodeSerde::New(bytes) => Ok(Self::from_stored(bytes)),
                 BytecodeSerde::Old(bytecode_serde_old) => from_old(bytecode_serde_old),
             }
         } else {
@@ -63,7 +63,7 @@ impl<'de> Visitor<'de> for BytecodeVisitor {
     }
 
     fn visit_bytes<E: Error>(self, value: &[u8]) -> Result<Self::Value, E> {
-        Ok(from_original_bytes(Bytes::copy_from_slice(value)))
+        Ok(Bytecode::from_stored(Bytes::copy_from_slice(value)))
     }
 
     // Self-describing binary formats such as MessagePack may hold revm's enum encoding.
@@ -84,14 +84,6 @@ fn from_old<E: Error>(old: BytecodeSerdeOld) -> Result<Bytecode, E> {
             Ok(Bytecode::new_eip7702(delegated_address))
         }
     }
-}
-
-/// Decodes bytecode from its serialized original bytes.
-///
-/// Legacy code may start with the EIP-7702 magic without being a valid delegation (e.g. code
-/// deployed before EIP-3541), so it falls back to legacy instead of failing to round-trip.
-fn from_original_bytes(bytes: Bytes) -> Bytecode {
-    Bytecode::new_raw_checked(bytes.clone()).unwrap_or_else(|_| Bytecode::new_legacy(bytes))
 }
 
 #[cfg(test)]
