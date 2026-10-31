@@ -4,6 +4,8 @@ use alloy_primitives::{Address, B256, U256};
 pub(crate) enum CaptureError {
     #[error("invalid block range: from {from} is greater than to {to}")]
     InvalidRange { from: u64, to: u64 },
+    #[error("capture output {} must be a binary fixture (.bin or .bin.zst)", .0.display())]
+    OutputNotBinary(std::path::PathBuf),
     #[error("invalid RPC URL: {0}")]
     InvalidRpcUrl(String),
     #[error("RPC transport request failed")]

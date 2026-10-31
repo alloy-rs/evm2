@@ -8,7 +8,7 @@ mod rpc;
 
 pub(crate) use error::CaptureError;
 
-use crate::{args::Capture, error::Result, ethereum, style};
+use crate::{args::Capture, error::Result, ethereum, fixture, style};
 use alloy_consensus::{
     Block as ConsensusBlock, EthereumTxEnvelope, TxEip4844, transaction::SignerRecoverable,
 };
@@ -60,6 +60,9 @@ async fn capture(
 ) -> std::result::Result<CaptureSummary, CaptureError> {
     if from > to {
         return Err(CaptureError::InvalidRange { from, to });
+    }
+    if !fixture::is_binary_path(&command.output) {
+        return Err(CaptureError::OutputNotBinary(command.output.clone()));
     }
 
     let started_at = Instant::now();

@@ -33,7 +33,7 @@ pub(crate) struct Capture {
     /// Inclusive block range, for example 24855016-24856015.
     #[arg(long, value_parser = parse_block_range)]
     pub(crate) range: RangeInclusive<u64>,
-    /// EEST JSON file to write.
+    /// Binary EEST fixture to write (`.bin` or `.bin.zst`).
     #[arg(long, value_name = "PATH")]
     pub(crate) output: PathBuf,
     /// Maximum number of in-flight JSON-RPC requests.
