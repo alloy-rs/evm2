@@ -76,7 +76,6 @@ impl PendingState {
                 StorageSlot {
                     value: Tracked::from_parts(original, current),
                     is_warm: false,
-                    created_zero: false,
                     _non_exhaustive: (),
                 },
             );
