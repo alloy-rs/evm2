@@ -1,7 +1,6 @@
 use super::{
     Bytecode, Inst, InstData, InstFlags,
     asm::{TokenKind, Tokenizer},
-    bitvec_as_bytes,
     passes::block_analysis::Block,
 };
 use alloy_primitives::hex;
@@ -288,7 +287,7 @@ impl fmt::Debug for Bytecode<'_> {
         f.debug_struct("Bytecode")
             .field("code", &hex::encode(&*self.code))
             .field("insts", &self.insts)
-            .field("jumpdests", &hex::encode(bitvec_as_bytes(&self.jumpdests)))
+            .field("jumpdests", &hex::encode(self.jumpdests.as_slice()))
             .field("spec_id", &self.spec_id)
             .field("has_dynamic_jumps", &self.has_dynamic_jumps)
             .finish()
