@@ -329,7 +329,15 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             }
         }
     });
-    let dynamic_gas = instruction_attrs.dynamic_gas;
+    let flags = {
+        let mut flags = quote! { evm2::interpreter::private::InstructionFlags::empty() };
+        if instruction_attrs.dynamic_gas {
+            flags = quote! {
+                #flags.union(evm2::interpreter::private::InstructionFlags::DYNAMIC_GAS)
+            };
+        }
+        flags
+    };
     quote! {
         #(#fn_attrs)*
         #[allow(non_camel_case_types)]
@@ -340,7 +348,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         impl #struct_generics evm2::interpreter::private::Instruction<#evm_types> for #ident #type_generics
         #where_clause
         {
-            const DYNAMIC_GAS: bool = #dynamic_gas;
+            const FLAGS: evm2::interpreter::private::InstructionFlags = #flags;
 
             #[inline]
             fn execute(

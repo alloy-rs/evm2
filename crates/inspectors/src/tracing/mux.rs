@@ -11,7 +11,7 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    DatabaseError, EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
+    DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, TxResultWithState,
     env::BlockEnv,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
@@ -262,25 +262,51 @@ impl MuxInspector {
     }
 }
 
-/// Calls a hook on every inspector of the mux.
-macro_rules! fan_out {
-    ($mux:ident.$hook:ident($($arg:expr),*)) => {{
-        for (_, child) in &mut $mux.children {
-            Inspector::<T>::$hook(child, $($arg),*);
+/// Runs `$body` with `$member` bound to each inspector of the mux, borrowed as the pattern says.
+macro_rules! each_member {
+    (&mut $mux:ident, | $member:ident | $body:expr) => {{
+        for (_, $member) in &mut $mux.children {
+            $body;
         }
-        if let Some(inspector) = &mut $mux.four_byte {
-            Inspector::<T>::$hook(inspector, $($arg),*);
+        if let Some($member) = &mut $mux.four_byte {
+            $body;
         }
-        if let Some(inspector) = &mut $mux.tracing {
-            Inspector::<T>::$hook(inspector, $($arg),*);
+        if let Some($member) = &mut $mux.tracing {
+            $body;
         }
     }};
+    (& $mux:ident, | $member:ident | $body:expr) => {{
+        for (_, $member) in &$mux.children {
+            $body;
+        }
+        if let Some($member) = &$mux.four_byte {
+            $body;
+        }
+        if let Some($member) = &$mux.tracing {
+            $body;
+        }
+    }};
+}
+
+/// Calls a hook on every inspector of the mux.
+macro_rules! fan_out {
+    ($mux:ident.$hook:ident($($arg:expr),*)) => {
+        each_member!(&mut $mux, |member| Inspector::<T>::$hook(member, $($arg),*))
+    };
 }
 
 impl<T: EvmTypes> Inspector<T> for MuxInspector {
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         fan_out!(self.initialize_interp(interp));
+    }
+
+    #[inline]
+    fn inspector_config(&self) -> InspectorConfig {
+        let mut config = InspectorConfig::without_steps();
+        each_member!(&self, |member| config =
+            config.union(Inspector::<T>::inspector_config(member)));
+        config
     }
 
     #[inline]

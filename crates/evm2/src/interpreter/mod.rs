@@ -113,6 +113,11 @@ pub enum InstrStop {
     FatalExternalError,
     /// Invalid encoding of an instruction's immediate operand.
     InvalidImmediateEncoding,
+    /// The inspector's config changed while a child message ran. The frame leaves the dispatch,
+    /// continues after the instruction on the table for the new config, and never reports this
+    /// stop.
+    #[doc(hidden)]
+    Reload,
 }
 
 impl InstrStop {

@@ -2,8 +2,9 @@ use super::{InspectMode, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
-        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, gas::RemainingGas,
-        private::InstructionImplFn,
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result,
+        gas::RemainingGas,
+        private::{InstructionFlags, InstructionImplFn},
     },
 };
 use core::hint::cold_path;
@@ -54,8 +55,10 @@ extern_table! {
     ) {
         let instruction = C::OPCODE_CONFIG.instruction(OP);
         let instr: InstructionImplFn<T> = instruction.instr;
-        let dynamic_gas = instruction.dynamic_gas;
+        let dynamic_gas = instruction.flags.contains(InstructionFlags::DYNAMIC_GAS);
         if M::INSPECT {
+            // Handlers that skip the hooks keep the gas in a register.
+            state.gas_mut().set_remaining(remaining_gas.get());
             M::step(state, pc, stack.len());
             remaining_gas.set(state.gas_mut().remaining());
             if state.result().is_err() {
