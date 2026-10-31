@@ -1,6 +1,7 @@
 use crate::tracing::{
     Erc7562Inspector, FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
-    MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext, utils::transaction_info,
+    MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
+    utils::transaction_info,
 };
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, transaction::Recovered};
