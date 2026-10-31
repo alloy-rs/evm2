@@ -37,8 +37,8 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let tx = req.tx.inner();
     let gas_price = U256::from(tx.gas_price);
 
-    validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
     validate_chain_id(req.host.version(), Some(tx.chain_id), false)?;
+    validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
     validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
     validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(req.host.version(), tx.to, &tx.input)?;
