@@ -1,0 +1,9 @@
+{
+  "description": "Transactions that are not valid: wrong nonce, no funds, gas below intrinsic, gas above the block limit.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

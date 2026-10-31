@@ -42,8 +42,9 @@ pub use blockchaintest::{
 pub use error::TestError as StateTestError;
 pub use execute::{
     ExecuteConfig as StateTestExecuteConfig, ExecuteSummary as StateTestExecuteSummary,
-    ExecutionMode as StateTestExecutionMode, execute_str_with_config as execute_state_tests_str,
-    execute_str_with_filter as execute_state_tests_str_with_filter,
+    ExecutionMode as StateTestExecutionMode, blob_basefee,
+    execute_str_with_config as execute_state_tests_str,
+    execute_str_with_filter as execute_state_tests_str_with_filter, state_root_from_database,
 };
 pub use filter::NameFilter;
 pub use fixture_io::{
@@ -51,8 +52,15 @@ pub use fixture_io::{
     read_blockchain as read_blockchain_fixture, read_to_string as read_fixture_text,
     write_blockchain as write_blockchain_fixture,
 };
+pub use forks::parse_fork;
 pub use runner::run as run_statetests;
-pub use tx::{AccessListItem, TestAuthorization};
+pub use state::{
+    insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
+};
+pub use tx::{
+    AccessListItem, TestAuthorization, TxBuildError, TxFields, build_typed_tx, recover_address,
+    recovered_envelope, signed_authorizations,
+};
 pub use types::{
     AccountInfo as StateTestAccountInfo, Env as StateTestEnv, SpecName as StateTestSpecName,
     Test as StateTestPost, TestSuite as StateTestSuite, TestUnit as StateTestUnit,

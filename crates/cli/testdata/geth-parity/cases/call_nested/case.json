@@ -1,0 +1,9 @@
+{
+  "description": "Three nested calls, a revert in the middle frame and logs at every depth.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

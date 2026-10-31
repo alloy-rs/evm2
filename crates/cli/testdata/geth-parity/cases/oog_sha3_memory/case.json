@@ -1,0 +1,9 @@
+{
+  "description": "Out of gas at KECCAK256 over fresh memory.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

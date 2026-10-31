@@ -1,0 +1,9 @@
+{
+  "description": "A callee reverts with an Error(string) reason; the caller copies the return data.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "LOG0 and LOG2 with data inside a STATICCALL fail after growing the memory.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

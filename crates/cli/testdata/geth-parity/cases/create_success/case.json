@@ -1,0 +1,9 @@
+{
+  "description": "CREATE and CREATE2 deploy a contract; the factory also keeps the value.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

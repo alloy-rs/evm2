@@ -1,0 +1,10 @@
+{
+  "description": "Account and block environment opcodes.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ],
+  "node": false
+}

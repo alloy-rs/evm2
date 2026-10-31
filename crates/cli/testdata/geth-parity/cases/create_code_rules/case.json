@@ -1,0 +1,9 @@
+{
+  "description": "Deployed code that starts with 0xef or exceeds the code size limit.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

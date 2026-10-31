@@ -1,0 +1,9 @@
+{
+  "description": "SELFDESTRUCT with the contract itself as the beneficiary.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}
