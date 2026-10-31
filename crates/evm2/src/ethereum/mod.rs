@@ -1505,37 +1505,37 @@ mod tests {
     }
 
     #[rstest::rstest]
-fn amsterdam_handler_rejects_gas_limit_above_total_cap(
-    #[values(MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1)]
+    fn amsterdam_handler_rejects_gas_limit_above_total_cap(
+        #[values(MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1)]
     gas_limit: u64,
-) {
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        SpecId::AMSTERDAM,
-        BlockEnvExt::default(),
-        ethereum_tx_registry(SpecId::AMSTERDAM),
-        InMemoryDB::default(),
-        Precompiles::base(SpecId::AMSTERDAM),
-    );
-    let tx = Recovered::new_unchecked(
-        TxEnvelope::Eip2930(TxEip2930 {
-            chain_id: 1,
-            gas_limit,
-            to: TxKind::Call(Address::with_last_byte(0xbb)),
-            ..Default::default()
-        }),
-        Address::with_last_byte(0xaa),
-    );
+    ) {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Eip2930(TxEip2930 {
+                chain_id: 1,
+                gas_limit,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                ..Default::default()
+            }),
+            Address::with_last_byte(0xaa),
+        );
 
-    let expected = if gas_limit > MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM {
-        Err(HandlerError::TxGasLimitGreaterThanCap {
-            gas_limit,
-            cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
-        })
-    } else {
-        Ok(())
-    };
-    assert_eq!(evm.validate_tx(&tx), expected);
-}
+        let expected = if gas_limit > MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM {
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit,
+                cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
+            })
+        } else {
+            Ok(())
+        };
+        assert_eq!(evm.validate_tx(&tx), expected);
+    }
 
     #[rstest::rstest]
     #[case::call_zero_value(TxKind::Call(Address::ZERO), U256::ZERO, 15_000, 12_700)]
