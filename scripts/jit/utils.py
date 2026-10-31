@@ -11,7 +11,7 @@ import tempfile
 import time
 
 # `utils` names this module when a jit script runs, so the shared helpers live in `common`.
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common import cargo_env as base_cargo_env, repo_root  # noqa: E402
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
