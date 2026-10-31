@@ -180,8 +180,8 @@ bitflags! {
         const DESTROYED = 1 << 3;
         /// The present overlay account was created in the current transaction.
         const CREATED = 1 << 4;
-        /// The present overlay account's creation discarded its old storage, so unloaded slots
-        /// read as zero.
+        /// The present overlay account's storage is empty because it was created in the current
+        /// transaction, so unloaded slots read as zero without a database read.
         const DISCARDS_STORAGE = 1 << 5;
     }
 }
@@ -196,8 +196,8 @@ bitflags! {
 ///
 /// [`AccountFlags::CREATED`] tracks creation in the current transaction and drives
 /// transaction-finalization rules. It survives selfdestruct finalization, so it can stay set while
-/// `present` is `None`. [`AccountFlags::DISCARDS_STORAGE`] marks a creation that discarded the
-/// account's old storage.
+/// `present` is `None`. [`AccountFlags::DISCARDS_STORAGE`] marks a creation with empty
+/// storage.
 ///
 /// Detached from the EVM as part of a [`PendingState`](super::PendingState), the entry describes
 /// the account's transaction transition: `original` against `present`, with
@@ -227,7 +227,7 @@ impl Account {
         self.flags = self.flags.union(AccountFlags::CREATED);
     }
 
-    /// Marks the account as created and discards its old storage.
+    /// Marks the account as created with empty storage.
     #[inline]
     pub(crate) const fn mark_created_discarding_storage(&mut self) {
         self.mark_created();
@@ -243,8 +243,14 @@ impl Account {
         self.flags.contains(AccountFlags::CREATED)
     }
 
-    /// Returns whether the account's creation discarded its storage baseline, so its unloaded
-    /// slots read as zero and committing it drops cached slots.
+    /// Returns whether the account was created with empty storage, so its unloaded slots read as
+    /// zero without a database read.
+    ///
+    /// A creation only reaches an address with zero nonce and empty code, and evm2 assumes such an
+    /// account holds no storage: execution-specs checks only nonce and code for a deployable
+    /// address, and EIP-8253 gives the mainnet accounts with storage and no code a nonce of one, so
+    /// EIP-684 rejects a creation there. The database is therefore never read for a created
+    /// account, though a strict BAL must still cover the slots.
     #[inline]
     pub(crate) const fn discards_storage(&self) -> bool {
         self.flags.contains(AccountFlags::DISCARDS_STORAGE)
@@ -644,13 +650,12 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// [`JournalEntry::AccountChange`] snapshot recorded for this handle.
     ///
     /// Created accounts follow the EIP-6780 rules for `SELFDESTRUCT` and are emitted as created by
-    /// [`PendingState`](super::PendingState). The mark does not discard the account's old storage:
-    /// unloaded slots still read from the database and committing the account keeps its cached
-    /// slots. This suits an embedder that continues a transaction on a fresh overlay whose database
-    /// already holds the account's creation and storage writes, such as after suspending the
-    /// transaction. Slots then load with the database values as their transaction originals, so
-    /// `SSTORE` gas and refunds can differ from an uninterrupted run, where a created account's
-    /// originals are zero.
+    /// [`PendingState`](super::PendingState). The mark does not assume the account's storage is
+    /// empty: unloaded slots still read from the database. This suits an embedder that continues a
+    /// transaction on a fresh overlay whose database already holds the account's creation and
+    /// storage writes, such as after suspending the transaction. Slots then load with the database
+    /// values as their transaction originals, so `SSTORE` gas and refunds can differ from an
+    /// uninterrupted run, where a created account's originals are zero.
     ///
     /// The account must be present, for example through [`Self::get_or_insert`].
     #[inline]
@@ -659,8 +664,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.tracked.mark_created();
     }
 
-    /// Marks the account as created like [`Self::mark_created`] and discards its old storage, so
-    /// unloaded slots read as zero.
+    /// Marks the account as created like [`Self::mark_created`] with empty storage, so unloaded
+    /// slots read as zero.
     #[inline]
     pub(super) fn mark_created_discarding_storage(&mut self) {
         self.record_change();
