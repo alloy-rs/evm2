@@ -17,7 +17,6 @@ use alloy_rpc_types_trace::parity::StorageDelta;
 use core::{mem, ops::Range};
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Inspector, SpecId, TxResultExt,
-    evm::JournalEntry,
     interpreter::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
@@ -102,8 +101,6 @@ pub struct TracingInspector {
     step_stack: Vec<(usize, usize)>,
     /// Number of opcode steps captured across all calls since the last reset.
     recorded_steps: u64,
-    /// Tracks the journal len in the step, used in step_end to check if the journal has changed
-    last_journal_len: usize,
     /// The spec id of the EVM.
     ///
     /// This is filled during execution.
@@ -152,7 +149,6 @@ impl TracingInspector {
             log_count,
             step_stack,
             recorded_steps,
-            last_journal_len,
             spec_id,
             features,
             // kept
@@ -179,7 +175,6 @@ impl TracingInspector {
         *recorded_steps = 0;
         spec_id.take();
         *features = EvmFeatures::empty();
-        *last_journal_len = 0;
         budget.recorded = 0;
         budget.exceeded = false;
     }
@@ -516,10 +511,9 @@ impl TracingInspector {
             }
         }
 
-        self.last_journal_len = interp.host().state().journal().len();
-
-        let storage_slot = if self.config.record_state_diff {
-            storage_slot(interp.stack().as_slice(), op.get())
+        // A step that halts on the budget never runs, so it records no access.
+        let storage_change = if self.config.record_state_diff && !self.budget.halts() {
+            storage_change(interp, op.get())
         } else {
             None
         };
@@ -544,8 +538,7 @@ impl TracingInspector {
                 .feature(EvmFeatures::EIP8037)
                 .then_some(interp.gas().reservoir()),
             state_gas_spent: interp.gas().state_gas_spent(),
-            storage_change: None,
-            storage_slot,
+            storage_change,
             status: None,
 
             // This is never populated in `TracingInspector`.
@@ -557,7 +550,9 @@ impl TracingInspector {
 
         if self.config.record_step_deltas {
             let write_range = memory_write_range(op.get(), interp.stack().as_slice());
-            let store = storage_write(op.get(), interp.stack().as_slice());
+            let store = (!self.budget.halts())
+                .then(|| storage_write(op.get(), interp.stack().as_slice()))
+                .flatten();
             if write_range.is_some()
                 || store.is_some()
                 || node.trace.steps[step_idx].is_call_like_op()
@@ -590,7 +585,6 @@ impl TracingInspector {
         debug_assert!(
             step.push_stack.is_none()
                 && step.gas_cost == 0
-                && step.storage_change.is_none()
                 && step.status.is_none()
                 && step.decoded.is_none(),
             "step in step_end is already filled: {trace_idx} -> {step:#?}",
@@ -608,49 +602,6 @@ impl TracingInspector {
                     .unwrap_or_default()
                     .into(),
             );
-        }
-
-        let address = interp.message().destination;
-        let host = interp.host();
-        let journal = host.state().journal();
-
-        // If journal has not changed, there is no state change to be recorded.
-        if self.config.record_state_diff && journal.len() != self.last_journal_len {
-            let op = step.op.get();
-
-            step.storage_change = if matches!(op, op::SLOAD | op::SSTORE) {
-                let reason = match op {
-                    op::SLOAD => StorageChangeReason::SLOAD,
-                    op::SSTORE => StorageChangeReason::SSTORE,
-                    _ => unreachable!(),
-                };
-
-                match journal.last() {
-                    Some(JournalEntry::StorageChange { address, key, previous }) => {
-                        // SAFETY: (Address,key) exists if part if StorageChange
-                        let value = host.state().get_storage(address, key).unwrap_or_default();
-                        let change =
-                            StorageChange { key: *key, value, had_value: Some(*previous), reason };
-                        Some(Box::new(change))
-                    }
-                    Some(JournalEntry::StorageWarmed { key, address }) => {
-                        // SAFETY: (Address,key) exists if part if StorageChange
-                        let value = host.state().get_storage(address, key).unwrap_or_default();
-                        let change = StorageChange { key: *key, value, had_value: None, reason };
-                        Some(Box::new(change))
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
-        }
-
-        // The slot an SLOAD read is loaded now, and the SLOAD did not change it.
-        if let Some(slot) = &mut step.storage_slot
-            && step.op.get() == op::SLOAD
-        {
-            slot.1 = host.state().get_storage(&address, &slot.0).unwrap_or_default();
         }
 
         // An out-of-gas step consumes the whole remainder, except the reentrancy sentry, which
@@ -934,17 +885,23 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
     }
 }
 
-/// Returns the key and value of the storage slot an SSTORE is about to write, or the key of the
-/// slot an SLOAD is about to read, with a zero value that `step_end` replaces.
-fn storage_slot(stack: &[U256], op: u8) -> Option<Box<(U256, U256)>> {
-    match op {
-        op::SLOAD => Some(Box::new((*stack.last()?, U256::ZERO))),
-        op::SSTORE => {
-            let [.., value, key] = stack else { return None };
-            Some(Box::new((*key, *value)))
-        }
-        _ => None,
-    }
+/// Returns the storage access an SLOAD or SSTORE is about to make, read before the opcode runs.
+fn storage_change<T: EvmTypes>(
+    interp: &mut Interpreter<'_, '_, T>,
+    op: u8,
+) -> Option<Box<StorageChange>> {
+    let (key, value, reason) = match (op, interp.stack().as_slice()) {
+        (op::SLOAD, [.., key]) => (*key, None, StorageChangeReason::SLOAD),
+        (op::SSTORE, [.., value, key]) => (*key, Some(*value), StorageChangeReason::SSTORE),
+        _ => return None,
+    };
+    let address = interp.message().destination;
+    // A database error leaves the record empty: an opcode that reads the slot fails on it too.
+    let current = interp.host().state_mut().storage_slot_untracked(&address, &key).ok()?;
+    Some(Box::new(match value {
+        Some(value) => StorageChange { key, value, had_value: Some(current), reason },
+        None => StorageChange { key, value: current, had_value: None, reason },
+    }))
 }
 
 /// Returns the memory range whose contents after execution the opcode reports, derived from its

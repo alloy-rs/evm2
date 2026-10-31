@@ -404,6 +404,58 @@ fn test_geth_erc7562_tracer() {
     }
 }
 
+/// geth reads each slot in `OnOpcode`, so a frame records its first read of a slot that an earlier
+/// frame already warmed.
+#[test]
+fn test_geth_erc7562_records_warm_first_reads() {
+    let outer = address!("1000000000000000000000000000000000000001");
+    let inner = address!("1000000000000000000000000000000000000003");
+    let caller = address!("1000000000000000000000000000000000000002");
+
+    // SLOAD 1, then DELEGATECALL the inner code, which SLOADs the same, now warm, slot.
+    let outer_code =
+        hex!("6001545060006000600060007310000000000000000000000000000000000000035af45000").to_vec();
+    let inner_code = hex!("6001545000").to_vec();
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            for (address, code) in [(outer, outer_code), (inner, inner_code)] {
+                db.insert_account_info(
+                    &address,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(code.into())),
+                        ..Default::default()
+                    },
+                );
+            }
+            db.insert_account_storage(&outer, &U256::from(1), &U256::from(0x2a));
+        });
+
+    let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default());
+    let mut inspector = DebugInspector::new(opts).unwrap();
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller,
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(outer),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+
+    let slot = B256::from(U256::from(1));
+    let value = B256::from(U256::from(0x2a));
+    assert_eq!(frame.accessed_slots.reads[&slot], vec![value]);
+    assert_eq!(frame.calls.len(), 1);
+    assert_eq!(frame.calls[0].accessed_slots.reads[&slot], vec![value]);
+}
+
 fn trace_contract(
     spec: SpecId,
     opts: GethDebugTracingOptions,

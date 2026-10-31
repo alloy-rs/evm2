@@ -506,15 +506,16 @@ impl<W: Write> TraceWriter<W> {
         // of their last write.
         let mut change_id = 0;
         for step in &node.trace.steps {
-            if let Some(change) = &step.storage_change {
-                // Only handle storage changes, signalled by `had_value` being `Some`.
-                if change.had_value.is_some() {
-                    let (_first, last, last_change_id) =
-                        changes_map.entry(&change.key).or_insert((change, change, change_id));
-                    *last = change;
-                    *last_change_id = change_id;
-                    change_id += 1;
-                }
+            // Only handle storage changes, signalled by `had_value` differing from `value`.
+            if !step.is_error()
+                && let Some(change) = &step.storage_change
+                && change.had_value.is_some_and(|had| had != change.value)
+            {
+                let (_first, last, last_change_id) =
+                    changes_map.entry(&change.key).or_insert((change, change, change_id));
+                *last = change;
+                *last_change_id = change_id;
+                change_id += 1;
             }
         }
 
