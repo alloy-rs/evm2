@@ -13,6 +13,7 @@ use super::{
 use crate::compiled::{self, FileSummary};
 use crate::{
     dump,
+    exception::{self, Exception},
     execute::state_root_from_database,
     execution::ExecutionResources,
     filter::NameFilter,
@@ -415,19 +416,17 @@ fn execute_block<'a>(
     db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<(), TestError> {
     let db_stats = db_stats_counts.is_some();
-    let should_fail = block.expect_exception.is_some();
+    let expect_exception = block.expect_exception.as_deref();
+    let reject = |kind| reject_block(expect_exception, path, name, kind);
 
     if let Some(expected_bal) = block_access_list(block)
         && let Err(err) = validate_block_access_list(expected_bal, total_transactions)
     {
-        if should_fail {
-            return Ok(());
-        }
-        return Err(TestError::case(
-            path,
-            name,
-            TestErrorKind::UnexpectedFailure(format!("invalid expected block access list: {err}")),
-        ));
+        let kind = TestErrorKind::InvalidBlock {
+            exception: Exception::MalformedBlockAccessList,
+            reason: format!("invalid expected block access list: {err}"),
+        };
+        return reject(kind).map(|_| ());
     }
 
     let mut block_hash = None;
@@ -513,23 +512,19 @@ fn execute_block<'a>(
             && let Some(expected) = *parent_block_hash
             && header.parent_hash != expected
         {
-            if should_fail {
-                return Ok(BlockResolution::Discard);
-            }
-            return Err(TestError::case(
-                path,
-                name,
-                TestErrorKind::ParentBlockHashMismatch { got: header.parent_hash, expected },
-            ));
+            return reject(TestErrorKind::ParentBlockHashMismatch {
+                got: header.parent_hash,
+                expected,
+            });
         }
 
         // A captured case's genesis header is the first block's own header, not its parent's.
         let parent = (!(captured && block_index == 0)).then_some(*parent_header);
         if let Some(header) = block_header(block)
-            && let Err(reason) =
+            && let Err(kind) =
                 validate_block_header(block, header, parent, blob_params.as_ref(), spec)
         {
-            return reject_block(should_fail, path, name, reason);
+            return reject(kind);
         }
 
         if let Err(err) = pre_block_system_calls(
@@ -540,12 +535,7 @@ fn execute_block<'a>(
             *parent_block_hash,
             beacon_root,
         ) {
-            // A failed pre-block system call invalidates the block only when the fixture expects
-            // an exception; otherwise it is a test failure.
-            if should_fail {
-                return Ok(BlockResolution::Discard);
-            }
-            return Err(TestError::case(path, name, err));
+            return reject(err);
         }
 
         let transactions = block_transactions(block);
@@ -563,22 +553,23 @@ fn execute_block<'a>(
                 transaction_index,
                 total_transactions,
             });
-            let tx = match build_tx(raw_tx, spec, validate) {
-                Ok(tx) => tx,
-                Err(_err) if should_fail => {
-                    return Ok(BlockResolution::Discard);
-                }
-                Err(err) => {
+            let mut reject_tx = |kind| {
+                let resolution = reject(kind);
+                if let Err(err) = &resolution {
                     hook.transaction_failed(TransactionFailed {
                         block_index,
                         total_blocks,
                         block_number,
                         transaction_index,
                         total_transactions,
-                        error: &err,
+                        error: &err.kind,
                     });
-                    return Err(TestError::case(path, name, err));
                 }
+                resolution
+            };
+            let tx = match build_tx(raw_tx, spec, validate) {
+                Ok(tx) => tx,
+                Err(err) => return reject_tx(err),
             };
 
             // Block-level inclusion check (execution-specs `check_transaction`): the transaction's
@@ -604,15 +595,14 @@ fn execute_block<'a>(
                 if execution_gas_limit > execution_gas_available
                     || tx_gas_limit > state_gas_available
                 {
-                    return reject_block(
-                        should_fail,
-                        path,
-                        name,
-                        format!(
+                    let kind = TestErrorKind::InvalidBlock {
+                        exception: Exception::GasAllowanceExceeded,
+                        reason: format!(
                             "transaction gas limit {tx_gas_limit} exceeds available block gas \
                              (execution {execution_gas_available}, state {state_gas_available})"
                         ),
-                    );
+                    };
+                    return reject(kind);
                 }
 
                 if let Some(blob_params) = &blob_params {
@@ -620,15 +610,14 @@ fn execute_block<'a>(
                     let blob_gas_available =
                         blob_params.max_blob_gas_per_block().saturating_sub(block_blob_gas_used);
                     if blob_gas > blob_gas_available {
-                        return reject_block(
-                            should_fail,
-                            path,
-                            name,
-                            format!(
+                        let kind = TestErrorKind::InvalidBlock {
+                            exception: Exception::Type3TxMaxBlobGasAllowanceExceeded,
+                            reason: format!(
                                 "transaction blob gas {blob_gas} exceeds available block blob \
                                  gas {blob_gas_available}"
                             ),
-                        );
+                        };
+                        return reject(kind);
                     }
                     block_blob_gas_used += blob_gas;
                 }
@@ -680,29 +669,13 @@ fn execute_block<'a>(
                         receipts.push(ReceiptEnvelope::from_typed(tx_type, receipt));
                     }
                 }
-                Err(err) if should_fail => {
-                    let _ = err;
-                    return Ok(BlockResolution::Discard);
-                }
-                Err(err) => {
-                    hook.transaction_failed(TransactionFailed {
-                        block_index,
-                        total_blocks,
-                        block_number,
-                        transaction_index,
-                        total_transactions,
-                        error: &err,
-                    });
-                    return Err(TestError::case(path, name, err.into()));
-                }
+                Err(err) => return reject_tx(err.into()),
             }
         }
 
         // Validate the block header's gas used against the executed transactions. Under EIP-8037
         // (Amsterdam+) execution and state gas are tracked separately and the header records their
         // max; earlier forks record the cumulative per-transaction gas used (refunds included).
-        // Block-validation failures on a block that expects an exception resolve to a discard,
-        // mirroring execution-specs raising `InvalidBlock`.
         if let Some(expected) = block_gas_used(block) {
             let expected = expected.saturating_to::<u64>();
             let actual = if spec.enables(SpecId::AMSTERDAM) {
@@ -711,14 +684,7 @@ fn execute_block<'a>(
                 cumulative_tx_gas_used
             };
             if actual != expected {
-                if should_fail {
-                    return Ok(BlockResolution::Discard);
-                }
-                return Err(TestError::case(
-                    path,
-                    name,
-                    TestErrorKind::BlockGasUsedMismatch { expected, actual },
-                ));
+                return reject(TestErrorKind::BlockGasUsedMismatch { expected, actual });
             }
         }
 
@@ -726,28 +692,22 @@ fn execute_block<'a>(
             && let Some(header) = block_header(block)
             && header.blob_gas_used != Some(U256::from(block_blob_gas_used))
         {
-            return reject_block(
-                should_fail,
-                path,
-                name,
-                format!(
+            let kind = TestErrorKind::InvalidBlock {
+                exception: Exception::IncorrectBlobGasUsed,
+                reason: format!(
                     "block blob gas used mismatch: header {:?}, computed {block_blob_gas_used}",
                     header.blob_gas_used
                 ),
-            );
+            };
+            return reject(kind);
         }
 
         if compare_receipt_root && let Some(header) = block_header(block) {
             let got = alloy_consensus::proofs::calculate_receipt_root(&receipts);
             if got != header.receipt_trie {
-                if should_fail {
-                    return Ok(BlockResolution::Discard);
-                }
-                return Err(TestError::case(
-                    path,
-                    name,
-                    TestErrorKind::ReceiptRootMismatch { got, expected: header.receipt_trie },
-                ));
+                let kind =
+                    TestErrorKind::ReceiptRootMismatch { got, expected: header.receipt_trie };
+                return reject(kind);
             }
         }
 
@@ -765,12 +725,7 @@ fn execute_block<'a>(
             block_withdrawals(block),
             captured,
         ) {
-            // A failed post-block system call (e.g. SYSTEM_CONTRACT_CALL_FAILED) invalidates the
-            // block, mirroring execution-specs raising `InvalidBlock`.
-            if should_fail {
-                return Ok(BlockResolution::Discard);
-            }
-            return Err(TestError::case(path, name, err));
+            return reject(err);
         }
 
         if let Some(expected_bal) = block_access_list(block) {
@@ -778,16 +733,16 @@ fn execute_block<'a>(
             if let Err(kind) =
                 check_block_access_list(block_index, built, expected_bal, block_header(block))
             {
-                if should_fail {
-                    return Ok(BlockResolution::Discard);
-                }
-                return Err(TestError::case(path, name, kind));
+                return reject(kind);
             }
         }
 
-        if should_fail {
-            let expected = block.expect_exception.clone().unwrap_or_default();
-            return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
+        if let Some(expected) = expect_exception {
+            return Err(TestError::case(
+                path,
+                name,
+                TestErrorKind::UnexpectedSuccess(expected.to_owned()),
+            ));
         }
 
         Ok(BlockResolution::Commit)
@@ -936,42 +891,54 @@ fn validate_block_header(
     parent: Option<&BlockHeader>,
     blob_params: Option<&BlobParams>,
     spec: SpecId,
-) -> Result<(), String> {
+) -> Result<(), TestErrorKind> {
     if spec.enables(SpecId::OSAKA) && block.rlp.len() > MAX_RLP_BLOCK_SIZE {
-        return Err(format!(
-            "block RLP size {} exceeds the limit {MAX_RLP_BLOCK_SIZE}",
-            block.rlp.len()
-        ));
+        return Err(TestErrorKind::InvalidBlock {
+            exception: Exception::RlpBlockLimitExceeded,
+            reason: format!(
+                "block RLP size {} exceeds the limit {MAX_RLP_BLOCK_SIZE}",
+                block.rlp.len()
+            ),
+        });
     }
 
     // The blob parameters are `None` before Cancun.
     let Some(blob_params) = blob_params else {
         if header.excess_blob_gas.is_some() || header.blob_gas_used.is_some() {
-            return Err("pre-Cancun block header carries blob gas fields".to_string());
+            return Err(TestErrorKind::InvalidBlock {
+                exception: Exception::IncorrectBlockFormat,
+                reason: "pre-Cancun block header carries blob gas fields".to_string(),
+            });
         }
         return Ok(());
     };
 
-    if header.blob_gas_used.is_none() {
-        return Err("block header is missing blobGasUsed".to_string());
+    if header.blob_gas_used.is_none() || header.excess_blob_gas.is_none() {
+        return Err(TestErrorKind::InvalidBlock {
+            exception: Exception::IncorrectBlockFormat,
+            reason: "block header is missing blobGasUsed or excessBlobGas".to_string(),
+        });
     }
     let Some(parent) = parent else { return Ok(()) };
     let parent_excess = parent.excess_blob_gas.unwrap_or_default();
     let parent_used = parent.blob_gas_used.unwrap_or_default();
     // Reject parent values whose sum the excess blob gas formula cannot add without overflow.
     if parent_excess.saturating_add(parent_used) > U256::from(u64::MAX) {
-        return Err(format!(
+        return Err(TestErrorKind::UnexpectedFailure(format!(
             "parent blob gas fields out of range: excess {parent_excess}, used {parent_used}"
-        ));
+        )));
     }
     let parent_base_fee = parent.base_fee_per_gas.unwrap_or_default();
     let expected_excess_blob_gas =
         next_excess_blob_gas(blob_params, parent_excess.to(), parent_used.to(), parent_base_fee);
     if header.excess_blob_gas != Some(U256::from(expected_excess_blob_gas)) {
-        return Err(format!(
-            "excess blob gas mismatch: header {:?}, expected {expected_excess_blob_gas}",
-            header.excess_blob_gas
-        ));
+        return Err(TestErrorKind::InvalidBlock {
+            exception: Exception::IncorrectExcessBlobGas,
+            reason: format!(
+                "excess blob gas mismatch: header {:?}, expected {expected_excess_blob_gas}",
+                header.excess_blob_gas
+            ),
+        });
     }
     Ok(())
 }
@@ -1029,18 +996,24 @@ fn reserve_price_exceeds_blob_price(
     reserve_price > gas_per_blob * (sum / denominator)
 }
 
-/// Resolves an invalid block: it is discarded when the fixture expects an exception, and a test
-/// failure otherwise.
+/// Resolves a block that failed with `kind`: it is discarded when the fixture expects the
+/// exception `kind` maps to, and a test failure otherwise.
 fn reject_block(
-    should_fail: bool,
+    expected: Option<&str>,
     path: &Path,
     name: &str,
-    reason: String,
+    kind: TestErrorKind,
 ) -> Result<BlockResolution, TestError> {
-    if should_fail {
-        Ok(BlockResolution::Discard)
-    } else {
-        Err(TestError::case(path, name, TestErrorKind::UnexpectedFailure(reason)))
+    let Some(expected) = expected else {
+        return Err(TestError::case(path, name, kind));
+    };
+    match exception::check(expected, kind.exception(), &kind) {
+        Ok(()) => Ok(BlockResolution::Discard),
+        Err(got) => Err(TestError::case(
+            path,
+            name,
+            TestErrorKind::UnexpectedException { expected: expected.to_owned(), got },
+        )),
     }
 }
 
@@ -1200,9 +1173,7 @@ fn run_system_call(
             .read_account_info(&address)
             .map_err(|code| TestErrorKind::UnexpectedFailure(code.to_string()))?;
         if info.is_none_or(|info| info.is_empty_code_hash()) {
-            return Err(TestErrorKind::UnexpectedFailure(format!(
-                "{label} system contract has no code"
-            )));
+            return Err(TestErrorKind::SystemContractEmpty(label));
         }
     }
     let executed = evm.system_call(SystemTx::new(address, data))?;
@@ -1481,8 +1452,8 @@ fn validate_post_state(
     Ok(())
 }
 
-/// Validates the block access list built during execution: the EIP-7928 item-count bound, the
-/// header's block access list hash, and a comparison against the fixture's expected list.
+/// Validates the block access list built during execution: the EIP-7928 item-count bound, a
+/// comparison against the fixture's expected list, and the header's block access list hash.
 ///
 /// The built list is canonicalized into EIP-7928 order (`From<Bal> for BlockAccessList`) before
 /// comparison. The fixture-provided list must already be canonical.
@@ -1505,10 +1476,20 @@ fn check_block_access_list(
             .sum();
         let max_items = header.gas_limit.saturating_to::<u64>() / alloy_eip7928::ITEM_COST as u64;
         if items > max_items {
-            return Err(TestErrorKind::UnexpectedFailure(format!(
-                "block access list exceeds gas limit: {items} items exceeds limit of {max_items}"
-            )));
+            return Err(TestErrorKind::InvalidBlock {
+                exception: Exception::BlockAccessListGasLimitExceeded,
+                reason: format!(
+                    "block access list exceeds gas limit: {items} items exceeds limit of {max_items}"
+                ),
+            });
         }
+    }
+
+    if built.as_slice() != expected.as_slice() {
+        return Err(TestErrorKind::BlockAccessListMismatch {
+            block_index,
+            details: format_bal_diff(&built, expected),
+        });
     }
 
     // The header commits to the computed list by hash (execution-specs compares
@@ -1516,19 +1497,16 @@ fn check_block_access_list(
     if let Some(expected_hash) = header.and_then(|header| header.block_access_list_hash) {
         let computed_hash = alloy_eip7928::compute_block_access_list_hash(&built);
         if computed_hash != expected_hash {
-            return Err(TestErrorKind::UnexpectedFailure(format!(
-                "block access list hash mismatch: computed {computed_hash}, header {expected_hash}"
-            )));
+            return Err(TestErrorKind::InvalidBlock {
+                exception: Exception::InvalidBalHash,
+                reason: format!(
+                    "block access list hash mismatch: computed {computed_hash}, header {expected_hash}"
+                ),
+            });
         }
     }
 
-    if built.as_slice() == expected.as_slice() {
-        return Ok(());
-    }
-    Err(TestErrorKind::BlockAccessListMismatch {
-        block_index,
-        details: format_bal_diff(&built, expected),
-    })
+    Ok(())
 }
 
 /// Renders a compact per-account summary of how the built and expected block access lists differ.
@@ -2285,8 +2263,7 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn discards_expected_block_with_wrong_parent_hash() {
+    fn execute_wrong_parent_hash_case(expect_exception: &str) -> Result<(), TestError> {
         use super::{
             super::types::{
                 Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
@@ -2314,7 +2291,7 @@ mod tests {
                         gas_limit: U256::from(30_000_000),
                         ..Default::default()
                     }),
-                    expect_exception: Some("invalid parent hash".to_string()),
+                    expect_exception: Some(expect_exception.to_string()),
                     ..Default::default()
                 }],
                 post_state: None,
@@ -2336,7 +2313,29 @@ mod tests {
             &NameFilter::default(),
             &mut NoopHook,
         )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn discards_expected_block_with_wrong_parent_hash() {
+        execute_wrong_parent_hash_case(
+            "BlockException.INVALID_STATE_ROOT|BlockException.UNKNOWN_PARENT",
+        )
         .unwrap();
+    }
+
+    #[test]
+    fn rejects_expected_block_with_other_exception() {
+        let err = execute_wrong_parent_hash_case("BlockException.INVALID_STATE_ROOT").unwrap_err();
+        assert!(matches!(err.kind, TestErrorKind::UnexpectedException { .. }));
+        assert_eq!(
+            err.kind.to_string(),
+            format!(
+                "unexpected exception: got BlockException.UNKNOWN_PARENT (parent block hash mismatch: header {}, expected {}), expected BlockException.INVALID_STATE_ROOT",
+                B256::with_last_byte(3),
+                B256::with_last_byte(1),
+            )
+        );
     }
 
     #[test]

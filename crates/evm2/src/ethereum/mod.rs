@@ -353,8 +353,8 @@ pub const fn validate_execution_gas_limit_cap(
     if tx_gas_limit > cap {
         let required_execution_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
         if required_execution_gas > cap {
-            return Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: required_execution_gas,
+            return Err(HandlerError::IntrinsicGasGreaterThanCap {
+                required: required_execution_gas,
                 cap,
             });
         }
@@ -419,7 +419,7 @@ pub const fn validate_intrinsic_gas(
 /// Validates that the gas limit covers the calldata floor gas.
 pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult<()> {
     if gas_limit < floor_gas {
-        return Err(HandlerError::IntrinsicGasTooLow { required: floor_gas, got: gas_limit });
+        return Err(HandlerError::GasLimitBelowFloor { required: floor_gas, got: gas_limit });
     }
     Ok(())
 }
@@ -993,7 +993,7 @@ mod tests {
         if gas_limit < 31_050 {
             assert_eq!(
                 result,
-                Err(HandlerError::IntrinsicGasTooLow { required: 31_050, got: gas_limit })
+                Err(HandlerError::GasLimitBelowFloor { required: 31_050, got: gas_limit })
             );
         } else {
             let result = result.unwrap();
@@ -1090,6 +1090,19 @@ mod tests {
             evm.transact(&tx).map(|executed| executed.discard()),
             Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
         );
+    }
+
+    #[test]
+    fn gas_limit_below_floor_is_not_an_intrinsic_gas_error() {
+        assert_eq!(
+            validate_intrinsic_gas(20_999, 21_000, 0),
+            Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
+        );
+        assert_eq!(
+            validate_floor_gas(21_009, 21_010),
+            Err(HandlerError::GasLimitBelowFloor { required: 21_010, got: 21_009 })
+        );
+        assert_eq!(validate_floor_gas(21_010, 21_010), Ok(()));
     }
 
     #[test]
@@ -1411,8 +1424,8 @@ mod tests {
                 amsterdam.tx_gas_limit_cap + 1,
                 floor_gas,
             ),
-            Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: amsterdam.tx_gas_limit_cap + 1,
+            Err(HandlerError::IntrinsicGasGreaterThanCap {
+                required: amsterdam.tx_gas_limit_cap + 1,
                 cap: amsterdam.tx_gas_limit_cap
             })
         );
@@ -1428,10 +1441,73 @@ mod tests {
         );
     }
 
+    #[test]
+    fn chain_id_is_checked_before_the_fee_cap() {
+        let block = BlockEnvExt { basefee: U256::from(10), ..Default::default() };
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            block,
+            ethereum_tx_registry(SpecId::PRAGUE),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::PRAGUE),
+        );
+        let to = TxKind::Call(Address::with_last_byte(0xbb));
+        let legacy = |chain_id| {
+            TxEnvelope::Legacy(TxLegacy {
+                chain_id: Some(chain_id),
+                gas_price: 1,
+                gas_limit: 100_000,
+                to,
+                ..Default::default()
+            })
+        };
+        let eip2930 = |chain_id| {
+            TxEnvelope::Eip2930(TxEip2930 {
+                chain_id,
+                gas_price: 1,
+                gas_limit: 100_000,
+                to,
+                ..Default::default()
+            })
+        };
+        let eip1559 = |chain_id| {
+            TxEnvelope::Eip1559(TxEip1559 {
+                chain_id,
+                max_fee_per_gas: 1,
+                gas_limit: 100_000,
+                to,
+                ..Default::default()
+            })
+        };
+        let eip4844 = |chain_id| {
+            TxEnvelope::Eip4844(TxEip4844Variant::TxEip4844(TxEip4844 {
+                chain_id,
+                max_fee_per_gas: 1,
+                gas_limit: 100_000,
+                ..Default::default()
+            }))
+        };
+        let recover = |tx| Recovered::new_unchecked(tx, Address::with_last_byte(0xaa));
+
+        for tx in [legacy(2), eip2930(2), eip1559(2), eip4844(2)] {
+            assert_eq!(
+                evm.validate_tx(&recover(tx)),
+                Err(HandlerError::InvalidChainId { expected: 1, got: 2 })
+            );
+        }
+        // With the right chain id, the fee cap is what fails.
+        for tx in [legacy(1), eip2930(1), eip1559(1), eip4844(1)] {
+            assert!(matches!(
+                evm.validate_tx(&recover(tx)),
+                Err(HandlerError::FeeCapLessThanBaseFee { .. })
+            ));
+        }
+    }
+
     #[rstest::rstest]
     fn amsterdam_handler_rejects_gas_limit_above_total_cap(
         #[values(MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1)]
-        gas_limit: u64,
+    gas_limit: u64,
     ) {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::AMSTERDAM,
