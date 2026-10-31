@@ -34,6 +34,8 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
+    /// Whether the inspector's step hooks run for this frame ([`Inspector::inspect_steps`]).
+    inspect_steps: bool,
     pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
     pub(in crate::interpreter) stack: Box<StackBacking>,
@@ -94,6 +96,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             return_data: Bytes::new(),
             host: None,
             inspector: None,
+            inspect_steps: false,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
@@ -130,6 +133,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.message = None;
         self.host = None;
         self.inspector = None;
+        self.inspect_steps = false;
     }
 
     #[cfg(test)]
@@ -400,6 +404,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     pub(crate) fn finish_run(&mut self, stop: InstrStop) -> Result<InstrStop, ExecutionError> {
         self.host = None;
         self.inspector = None;
+        self.inspect_steps = false;
         if let Some(error) = self.take_error() {
             return Err(error);
         }
@@ -414,17 +419,21 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, host: &mut T::Host<'host>) -> Result<InstrStop, ExecutionError> {
-        self.run_inner(host, None)
+        self.run_inner(host, None, false)
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
+    ///
+    /// The inspector's step hooks run only if [`Inspector::inspect_steps`] returns `true` for this
+    /// frame.
     #[inline]
     pub fn run_inspect(
         &mut self,
         host: &mut T::Host<'host>,
         inspector: &mut (dyn Inspector<T> + 'host),
     ) -> Result<InstrStop, ExecutionError> {
-        self.run_inner(host, Some(NonNull::from(inspector)))
+        let inspect_steps = inspector.inspect_steps(self);
+        self.run_inner(host, Some(NonNull::from(inspector)), inspect_steps)
     }
 
     /// Prepares this interpreter for external execution.
@@ -446,6 +455,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.features = version.features;
         self.host = Some(NonNull::from(host));
         self.inspector = None;
+        self.inspect_steps = false;
     }
 
     /// Runs the host's instruction implementation for the opcode at `pc` on the interpreter
@@ -523,9 +533,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         &mut self,
         host: &mut T::Host<'host>,
         inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
+        inspect_steps: bool,
     ) -> Result<InstrStop, ExecutionError> {
         self.prepare_run(host);
         self.inspector = inspector;
+        self.inspect_steps = inspect_steps && inspector.is_some();
 
         let stop = if self.error.is_some() {
             InstrStop::FatalExternalError
@@ -535,7 +547,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             // SAFETY: `prepare_run` initialized the host, and the config is only read here.
             let config = unsafe { self.execution_config_detached() };
             let instructions =
-                if inspector.is_some() { config.inspect_instructions } else { config.instructions };
+                if self.inspect_steps { config.inspect_instructions } else { config.instructions };
             dispatch::run(self, instructions)
         };
         self.finish_run(stop)
@@ -599,7 +611,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     #[cfg(not(tco))]
     pub(crate) const fn is_inspecting(&self) -> bool {
-        self.0.inspector.is_some()
+        self.0.inspect_steps
     }
 
     #[inline]
