@@ -331,15 +331,6 @@ impl TracingInspector {
         false
     }
 
-    /// Returns the currently active call trace.
-    ///
-    /// This will be the last call trace pushed to the stack: the call we entered most recently.
-    #[track_caller]
-    #[inline]
-    fn active_trace(&self) -> Option<&CallTraceNode> {
-        self.trace_stack.last().map(|entry| &self.traces.arena[entry.trace_idx])
-    }
-
     /// Returns the last trace [CallTrace] index from the stack.
     ///
     /// This will be the currently active call trace.
@@ -442,8 +433,9 @@ impl TracingInspector {
             self.log_count = log_count;
         }
 
+        // The result is the frame's outcome as the parent sees it; another inspector may have
+        // overridden it, so it wins over the address recorded when the create started.
         if let Some(address) = result.created_address {
-            // A new contract was created via CREATE
             trace.address = address;
         }
     }
@@ -802,18 +794,11 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             _ => (message.caller, message.destination),
         };
 
-        let value = if matches!(message.kind, MessageKind::DelegateCall) {
-            // for delegate calls we need to use the value of the top trace
-            if let Some(parent) = self.active_trace() { parent.trace.value } else { message.value }
-        } else {
-            message.value
-        };
-
         // if calls to precompiles should be excluded, check whether this is a call to a precompile
         let maybe_precompile = self
             .config
             .exclude_precompile_calls
-            .then(|| self.is_precompile_call(interp.host(), &to, &value));
+            .then(|| self.is_precompile_call(interp.host(), &to, &message.value));
 
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
@@ -826,7 +811,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             usize::from(message.depth),
             to,
             input,
-            value,
+            message.value,
             message.kind.into(),
             from,
             message.gas_limit,

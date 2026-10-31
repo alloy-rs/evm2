@@ -454,11 +454,6 @@ impl CallTraceNode {
                 call_frame.to = None;
             }
 
-            if !self.status().is_some_and(InstrStop::is_frame_revert) {
-                call_frame.gas_used = U256::from(self.trace.gas_limit);
-                call_frame.output = None;
-            }
-
             call_frame.revert_reason = utils::maybe_revert_reason(self.trace.output.as_ref());
 
             // Note: regular calltracer uses geth errors, only flatCallTracer uses parity errors: <https://github.com/ethereum/go-ethereum/blob/a9523b6428238a762e1a1e55e46ead47630c3a23/eth/tracers/native/call_flat.go#L226>
