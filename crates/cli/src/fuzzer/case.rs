@@ -12,7 +12,7 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::HashMap};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::IndexMap};
 use evm2::{
     SpecId,
     env::{BlockEnv, BlockEnvExt},
@@ -24,7 +24,7 @@ use revm::{
     primitives::TxKind as RevmTxKind,
 };
 use secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::{fmt, sync::OnceLock};
 
 pub(crate) const CALLER: Address = Address::new([0x10; 20]);
@@ -449,7 +449,7 @@ fn add_eip7702_accounts<'a>(
             balance: U256::from(1_000),
             nonce: 0,
             code: tiny_callee_code(rng, SpecId::PRAGUE),
-            storage: HashMap::default(),
+            storage: IndexMap::default(),
         },
     );
 
@@ -492,7 +492,7 @@ fn upsert_account(accounts: &mut Vec<CaseAccount>, account: CaseAccount) {
 }
 
 fn eip7702_authority_account(address: Address, nonce: u64, code: Bytes) -> CaseAccount {
-    CaseAccount { address, balance: U256::ZERO, nonce, code, storage: HashMap::default() }
+    CaseAccount { address, balance: U256::ZERO, nonce, code, storage: IndexMap::default() }
 }
 
 fn eip7702_designation(address: Address) -> Bytes {
@@ -739,17 +739,7 @@ pub(crate) struct CaseAccount {
     pub(crate) balance: U256,
     pub(crate) nonce: u64,
     pub(crate) code: Bytes,
-    #[serde(serialize_with = "serialize_storage")]
-    pub(crate) storage: HashMap<U256, U256>,
-}
-
-fn serialize_storage<S: Serializer>(
-    storage: &HashMap<U256, U256>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    let mut entries = storage.iter().collect::<Vec<_>>();
-    entries.sort_unstable_by_key(|&(key, _)| key);
-    serializer.collect_map(entries)
+    pub(crate) storage: IndexMap<U256, U256>,
 }
 
 mod spec_serde {
@@ -824,30 +814,23 @@ mod tests {
         for seed in 0..512 {
             let mut rng = Gen::new(seed);
             let mut fresh_rng = Gen::new(seed);
-            let mut reused = generator.generate(&mut rng).clone();
-            let mut fresh = CaseGenerator::default().generate(&mut fresh_rng).clone();
+            let reused = generator.generate(&mut rng).clone();
+            let fresh = CaseGenerator::default().generate(&mut fresh_rng).clone();
             assert_eq!(rng.bytes(32), fresh_rng.bytes(32), "RNG state at seed {seed}");
-            // HashMap iteration can select different storage keys, but not different counts.
-            for case in [&mut reused, &mut fresh] {
-                for tx in core::iter::once(&mut case.tx).chain(&mut case.extra_txs) {
-                    for item in &mut tx.access_list.0 {
-                        item.storage_keys.fill(B256::ZERO);
-                    }
-                }
-            }
             assert_eq!(reused, fresh, "seed {seed}");
         }
     }
 
     #[test]
-    fn storage_serialization_is_canonical() {
-        let mut case = CaseGenerator::default().generate(&mut Gen::new(1)).clone();
-        case.accounts[0].storage = (0..32).map(|key| (U256::from(key), U256::ONE)).collect();
-        let json = serde_json::to_vec(&case).unwrap();
-        case.accounts[0].storage = (0..32).rev().map(|key| (U256::from(key), U256::ONE)).collect();
-        assert_eq!(serde_json::to_vec(&case).unwrap(), json);
-        let decoded = serde_json::from_slice::<EvmCase>(&json).unwrap();
-        assert_eq!(decoded, case);
-        assert_eq!(serde_json::to_vec(&decoded).unwrap(), json);
+    fn serialized_case_is_reproducible_and_round_trips() {
+        for seed in 0..64 {
+            let case = CaseGenerator::default().generate(&mut Gen::new(seed)).clone();
+            let json = serde_json::to_vec(&case).unwrap();
+            let fresh = CaseGenerator::default().generate(&mut Gen::new(seed)).clone();
+            assert_eq!(serde_json::to_vec(&fresh).unwrap(), json, "seed {seed}");
+            let decoded = serde_json::from_slice::<EvmCase>(&json).unwrap();
+            assert_eq!(decoded, case, "seed {seed}");
+            assert_eq!(serde_json::to_vec(&decoded).unwrap(), json, "seed {seed}");
+        }
     }
 }

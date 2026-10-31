@@ -90,7 +90,6 @@ pub struct TestCase<'a> {
     /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
     pub inspect_stack: Option<bool>,
     pub modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
-    pub modify_ecx: Option<fn(&mut EvmContext<'_, '_, '_>)>,
 
     pub expected_return: InstrStop,
     pub expected_stack: &'a [U256],
@@ -110,7 +109,6 @@ impl Default for TestCase<'_> {
             gas_limit: DEF_GAS_LIMIT,
             inspect_stack: None,
             modify_message: None,
-            modify_ecx: None,
             expected_return: InstrStop::Stop,
             expected_stack: &[],
             expected_memory: &[],
@@ -129,7 +127,6 @@ impl fmt::Debug for TestCase<'_> {
             .field("spec_id", &self.spec_id)
             .field("inspect_stack", &self.inspect_stack)
             .field("modify_message", &self.modify_message.is_some())
-            .field("modify_ecx", &self.modify_ecx.is_some())
             .field("expected_return", &self.expected_return)
             .field("expected_stack", &self.expected_stack)
             .field("expected_memory", &MemDisplay(self.expected_memory))
@@ -150,7 +147,6 @@ impl<'a> TestCase<'a> {
             gas_limit: DEF_GAS_LIMIT,
             inspect_stack: None,
             modify_message: None,
-            modify_ecx: None,
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -490,7 +486,6 @@ fn run_compiled_test_case_with_context(
         gas_limit,
         inspect_stack: _,
         modify_message,
-        modify_ecx,
         expected_return,
         expected_stack,
         expected_memory,
@@ -506,10 +501,6 @@ fn run_compiled_test_case_with_context(
     if gas_limit != DEF_GAS_LIMIT {
         ecx.gas = Gas::new(gas_limit);
     }
-    if let Some(modify_ecx) = modify_ecx {
-        modify_ecx(ecx);
-        ecx.refresh_memory_cache();
-    }
 
     // Interpreter - run evm2 as the oracle
     let mut message = def_message(gas_limit);
@@ -523,85 +514,36 @@ fn run_compiled_test_case_with_context(
     };
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
     let mut int_host = prepare_host(spec_id);
-    let int_stop = interpreter.run(&mut int_host).unwrap();
-    let int_result = int_stop;
+    let int_result = interpreter.run(&mut int_host).unwrap();
     let interpreter_output = interpreter.output();
 
-    let mut expected_return = expected_return;
-    if expected_return == RETURN_WHAT_INTERPRETER_SAYS {
-        expected_return = int_result;
-    } else if modify_ecx.is_none() {
-        // Only check interpreter return if modify_ecx is not set.
-        // When modify_ecx is used, it only modifies the JIT context, not the interpreter's
-        // input, so the interpreter may return a different result.
+    let expected_return = if expected_return == RETURN_WHAT_INTERPRETER_SAYS {
+        int_result
+    } else {
+        assert_eq!(int_result, expected_return, "interpreter return value mismatch");
+        expected_return
+    };
+
+    // On EVM halt all available gas is consumed, so the resulting stack, memory, and gas are
+    // unspecified and nothing compares them. A halting case must not set expectations for them.
+    let halts = expected_return.is_halt();
+    if halts {
         assert!(
-            instruction_results_match_for_oracle(int_result, expected_return),
-            "interpreter return value mismatch: {int_result:?} != {expected_return:?}"
+            matches!(expected_stack, &[] | STACK_WHAT_INTERPRETER_SAYS)
+                && matches!(expected_memory, &[] | MEMORY_WHAT_INTERPRETER_SAYS)
+                && matches!(expected_gas, 0 | GAS_WHAT_INTERPRETER_SAYS),
+            "halting test case sets an unchecked stack, memory, or gas expectation"
         );
-    }
-
-    // When modify_ecx is set, the interpreter runs with different inputs than the JIT,
-    // so we cannot use interpreter results as expected values or compare against them.
-    let skip_interpreter_checks = modify_ecx.is_some() || expected_return.is_halt();
-    let interpreter_stack_ref = (!skip_interpreter_checks).then(|| interpreter.stack());
-    let interpreter_stack = interpreter_stack_ref.as_ref().map(|stack| stack.as_slice());
-
-    let mut expected_stack = expected_stack;
-    if expected_stack == STACK_WHAT_INTERPRETER_SAYS {
-        if skip_interpreter_checks {
-            expected_stack = &[]; // Will skip comparison below
-        } else {
-            expected_stack = interpreter_stack.unwrap();
-        }
-    } else if !skip_interpreter_checks {
-        assert_eq!(interpreter_stack.unwrap(), expected_stack, "interpreter stack mismatch");
-    }
-
-    let interpreter_memory = interpreter.memory().as_slice();
-    let mut expected_memory = expected_memory;
-    if expected_memory == MEMORY_WHAT_INTERPRETER_SAYS {
-        if skip_interpreter_checks {
-            expected_memory = &[]; // Will skip comparison below
-        } else {
-            expected_memory = interpreter_memory;
-        }
-    } else if !skip_interpreter_checks {
-        assert_eq!(
-            MemDisplay(interpreter_memory),
-            MemDisplay(expected_memory),
-            "interpreter memory mismatch"
-        );
-    }
-
-    let mut expected_gas = expected_gas;
-    if expected_gas == GAS_WHAT_INTERPRETER_SAYS {
-        if skip_interpreter_checks {
-            expected_gas = 0; // Will skip comparison below
-        } else {
-            expected_gas = interpreter.gas().spent();
-        }
-    } else if !skip_interpreter_checks {
-        assert_eq!(interpreter.gas().spent(), expected_gas, "interpreter gas mismatch");
     }
 
     let expected_output = if let Some(expected_output) = expected_output {
-        if !skip_interpreter_checks {
-            assert_eq!(interpreter_output, expected_output, "interpreter output mismatch");
-        }
+        assert_eq!(interpreter_output, expected_output, "interpreter output mismatch");
         Some(expected_output)
-    } else if skip_interpreter_checks {
+    } else if halts {
         None
     } else {
         Some(interpreter_output)
     };
-
-    // Track whether we should skip JIT stack/gas/memory comparisons
-    let skip_jit_stack =
-        skip_interpreter_checks && test_case.expected_stack == STACK_WHAT_INTERPRETER_SAYS;
-    let skip_jit_memory =
-        skip_interpreter_checks && test_case.expected_memory == MEMORY_WHAT_INTERPRETER_SAYS;
-    let skip_jit_gas =
-        skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
 
     let actual_return = unsafe { f.call(ecx, stack, stack_len) };
 
@@ -624,27 +566,41 @@ fn run_compiled_test_case_with_context(
         assert_eq!(actual_return, expected_return, "return value mismatch");
     }
 
-    let actual_stack =
-        unsafe { stack.as_slice(*stack_len).iter().map(|x| x.to_u256()).collect::<Vec<_>>() };
-
-    // On EVM halt all available gas is consumed, so resulting stack, memory, and gas do not
-    // matter. We do less work than the interpreter by bailing out earlier due to sections.
-    if !actual_return.is_halt() {
-        if !skip_jit_stack {
-            assert_eq!(actual_stack, *expected_stack, "stack mismatch");
-        }
-
-        if !skip_jit_memory {
+    if !halts {
+        let interpreter_stack = interpreter.stack();
+        let expected_stack = if expected_stack == STACK_WHAT_INTERPRETER_SAYS {
+            interpreter_stack.as_slice()
+        } else {
+            assert_eq!(interpreter_stack.as_slice(), expected_stack, "interpreter stack mismatch");
+            expected_stack
+        };
+        let interpreter_memory = interpreter.memory().as_slice();
+        let expected_memory = if expected_memory == MEMORY_WHAT_INTERPRETER_SAYS {
+            interpreter_memory
+        } else {
             assert_eq!(
-                MemDisplay(ecx.memory().as_slice()),
+                MemDisplay(interpreter_memory),
                 MemDisplay(expected_memory),
-                "memory mismatch"
+                "interpreter memory mismatch"
             );
-        }
+            expected_memory
+        };
+        let expected_gas = if expected_gas == GAS_WHAT_INTERPRETER_SAYS {
+            interpreter.gas().spent()
+        } else {
+            assert_eq!(interpreter.gas().spent(), expected_gas, "interpreter gas mismatch");
+            expected_gas
+        };
 
-        if !skip_jit_gas {
-            assert_eq!(ecx.gas.spent(), expected_gas, "gas mismatch");
-        }
+        let actual_stack =
+            unsafe { stack.as_slice(*stack_len).iter().map(|x| x.to_u256()).collect::<Vec<_>>() };
+        assert_eq!(actual_stack, *expected_stack, "stack mismatch");
+        assert_eq!(
+            MemDisplay(ecx.memory().as_slice()),
+            MemDisplay(expected_memory),
+            "memory mismatch"
+        );
+        assert_eq!(ecx.gas.spent(), expected_gas, "gas mismatch");
     }
 
     if let Some(expected_output) = expected_output {
@@ -654,11 +610,6 @@ fn run_compiled_test_case_with_context(
     if let Some(assert_ecx) = assert_ecx {
         assert_ecx(ecx);
     }
-}
-
-fn instruction_results_match_for_oracle(actual: InstrStop, expected: InstrStop) -> bool {
-    actual == expected
-        || matches!((actual, expected), (InstrStop::StackUnderflow, InstrStop::StackOverflow))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

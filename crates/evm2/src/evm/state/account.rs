@@ -172,11 +172,11 @@ bitflags! {
     pub struct AccountFlags: u8 {
         /// The account is warm in the current transaction.
         const WARM = 1 << 0;
-        /// The account is touched for transaction-finalization account-lifetime rules.
+        /// The account is touched for transaction-finalization account-lifetime rules. Kept
+        /// through finalization.
         const TOUCHED = 1 << 1;
-        /// Touch metadata retained after finalization consumes [`Self::TOUCHED`].
-        const FINALIZED_TOUCHED = 1 << 2;
-        /// The account has been self-destructed in the current transaction.
+        /// The account has been self-destructed in the current transaction. Kept through
+        /// finalization, also on an EIP-8246 survivor.
         const DESTROYED = 1 << 3;
         /// The present overlay account was created in the current transaction.
         const CREATED = 1 << 4;
@@ -210,8 +210,7 @@ pub(crate) struct Account {
     pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
     pub(crate) present: Option<AccountInfo>,
-    /// Lifecycle flags: warm, touched, finalized-touched, destroyed, created, keeps-storage, and
-    /// code changed.
+    /// Lifecycle flags: warm, touched, destroyed, created, keeps-storage, and code changed.
     pub(crate) flags: AccountFlags,
     /// Persistent transaction storage owned by this account.
     pub(crate) storage: StorageOverlay,
@@ -222,14 +221,6 @@ impl Account {
     #[cfg(test)]
     pub(crate) fn new(original: Option<AccountInfo>, present: Option<AccountInfo>) -> Self {
         Self { original, present, ..Self::default() }
-    }
-
-    /// Applies isolated execution changes, retaining parent originals and account warmth.
-    #[cfg(test)]
-    pub(crate) fn merge_isolated(&mut self, child: Self) {
-        self.present = child.present;
-        self.flags |= child.flags - AccountFlags::WARM - AccountFlags::FINALIZED_TOUCHED;
-        self.storage.merge_isolated(child.storage);
     }
 
     /// Marks the account as created during the transaction, which also flags its code as changed.
@@ -273,7 +264,6 @@ impl Account {
     #[inline]
     pub(crate) fn is_existing_dead(&self) -> bool {
         self.present.as_ref().is_some_and(AccountInfo::is_empty)
-            || (self.present.is_none() && self.original.is_some())
     }
 
     /// Returns the account's new bytecode keyed by code hash when its code changed during the
@@ -292,14 +282,14 @@ impl Account {
     }
 
     /// Returns this account's transaction changes.
-    pub(super) fn changes(&self, address: Address, selfdestructed: bool) -> AccountChanges<'_> {
+    pub(super) fn changes(&self, address: Address) -> AccountChanges<'_> {
         AccountChanges {
             address,
             original: self.original.as_ref(),
             current: self.present.as_ref(),
             created: self.is_created(),
-            selfdestructed,
-            touched: self.flags.contains(AccountFlags::FINALIZED_TOUCHED),
+            selfdestructed: self.flags.contains(AccountFlags::DESTROYED),
+            touched: self.flags.contains(AccountFlags::TOUCHED),
             code: self.changed_code(),
             storage: &self.storage,
         }
@@ -447,8 +437,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Returns whether the account has been marked self-destructed in the current transaction.
     #[inline]
-    pub fn is_destructed(&self) -> bool {
-        self.inner.selfdestructs.contains(&self.address)
+    pub const fn is_destructed(&self) -> bool {
+        self.tracked.flags.contains(AccountFlags::DESTROYED)
     }
 
     /// Returns whether the account is touched for transaction-finalization account-lifetime rules.
@@ -465,9 +455,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Returns whether the account is dead by the EIP-161 definition while existing in the overlay.
     ///
-    /// An account is existing-dead when it has zero nonce, zero balance, and empty code, or when it
-    /// was deleted in this transaction but existed at the transaction boundary. Spurious Dragon
-    /// deletes such touched accounts during transaction finalization.
+    /// An account is existing-dead when it has zero nonce, zero balance, and empty code. Spurious
+    /// Dragon deletes such touched accounts during transaction finalization.
     #[inline]
     pub fn is_existing_dead(&self) -> bool {
         self.tracked.is_existing_dead()
@@ -544,14 +533,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Marks the account self-destructed in the current transaction, recording a revert snapshot
     /// the first time and touching the account.
     ///
-    /// Touching makes the account participate in EIP-158/161 cleanup, and the self-destruct set
-    /// membership is undone by [`State::rollback`](super::State::rollback).
+    /// Touching makes the account participate in EIP-158/161 cleanup, and
+    /// [`State::rollback`](super::State::rollback) restores the destroyed flag.
     #[inline]
     pub fn mark_destructed(&mut self) {
         if !self.tracked.flags.contains(AccountFlags::DESTROYED) {
             self.record_change();
             self.tracked.flags.insert(AccountFlags::DESTROYED);
-            self.inner.selfdestructs.insert(self.address);
         }
         self.touch();
     }
@@ -727,7 +715,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub(crate) fn reset_selfdestructed_for_finalization(&mut self) {
         let balance = self.balance();
-        self.tracked.flags.remove(AccountFlags::DESTROYED);
         self.tracked.present = Some(AccountInfo::default().with_balance(balance));
     }
 

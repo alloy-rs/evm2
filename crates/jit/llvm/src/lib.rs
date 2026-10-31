@@ -26,7 +26,7 @@ use std::{
     mem::ManuallyDrop,
     path::Path,
     sync::{
-        Arc, Once, OnceLock,
+        Arc, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -43,6 +43,12 @@ pub use wrap::{Block, Context, Function, Inst, LLVMString, Module, TargetMachine
 
 /// Branch weight for non-cold branches.
 const DEFAULT_WEIGHT: u32 = 20000;
+
+/// Largest function, in basic blocks, that [`EvmLlvmBackend::optimize_module`] runs LICM on.
+///
+/// LICM only pays off on hot loops in small functions. The cutoff comes from the sweep in
+/// `EXPERIMENTS.md`.
+const LICM_MAX_BLOCKS: u32 = 1000;
 
 /// Current JIT memory usage counters.
 ///
@@ -114,7 +120,7 @@ type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, FxBuildHasher>;
 #[must_use]
 pub struct EvmLlvmBackend {
     cx: &'static Context,
-    _dh: dh::DiagnosticHandlerGuard,
+    dh: dh::DiagnosticHandlerGuard,
     /// LLVM debug info builder and compile unit, created lazily when `debug_file` is set.
     /// Dropped before `module`, which its builder refers to.
     di_state: Option<DiState>,
@@ -272,20 +278,20 @@ impl GlobalOrcJit {
     }
 
     /// Creates a fresh JITDylib for a compiler.
-    fn create_jit_dylib(&self) -> orc::JITDylibRef {
+    fn create_jit_dylib(&self) -> Result<orc::JITDylibRef> {
+        // Create the process symbol generator first, so a failure leaves no dylib behind.
+        // It lets the JITDylib resolve libc and other process-level symbols (e.g. printf,
+        // memcpy) that JIT-compiled code may reference.
+        let prefix = self.jit.get_global_prefix();
+        let generator = orc::DefinitionGenerator::for_current_process(prefix).map_err(error_msg)?;
         let id = self.next_dylib_id.fetch_add(1, Ordering::Relaxed);
         let name = CString::new(format!("evm2_jit.compiler.{id}")).unwrap();
         let es = self.jit.get_execution_session();
         let jd = es.create_bare_jit_dylib(&name);
         // Link against the builtins JD so compiled code can resolve builtin symbols.
         jd.add_to_link_order(self.builtins_jd);
-        // Attach a process symbol generator so the JITDylib can resolve libc and other
-        // process-level symbols (e.g. printf, memcpy) that JIT-compiled code may reference.
-        let prefix = self.jit.get_global_prefix();
-        if let Ok(generator) = orc::DefinitionGenerator::for_current_process(prefix) {
-            jd.add_generator(generator);
-        }
-        jd
+        jd.add_generator(generator);
+        Ok(jd)
     }
 
     /// Removes a JITDylib from the ExecutionSession, freeing all its resources.
@@ -393,7 +399,7 @@ impl fmt::Debug for OrcJitState {
 impl OrcJitState {
     fn new(debug_support: bool, profiling_support: bool, simple_perf: bool) -> Result<Self> {
         let global = GlobalOrcJit::get(debug_support, profiling_support, simple_perf)?;
-        let jd = global.create_jit_dylib();
+        let jd = global.create_jit_dylib()?;
         let jd_guard = Arc::new(JitDylibGuard { global, jd });
         Ok(Self {
             global,
@@ -494,7 +500,7 @@ impl EvmLlvmBackend {
         let config = BackendConfig::default();
         init()?;
 
-        let target_info = TargetInfo::new();
+        let target_info = TargetInfo::new()?;
         let target = &target_info.target;
         let machine = target
             .create_target_machine(
@@ -544,7 +550,7 @@ impl EvmLlvmBackend {
         let ty_ptr = cx.ptr_type();
         Ok(Self {
             cx,
-            _dh: dh::DiagnosticHandlerGuard::new(cx),
+            dh: dh::DiagnosticHandlerGuard::new(cx),
             bcx,
             module,
             machine,
@@ -705,6 +711,14 @@ impl EvmLlvmBackend {
         Ok(())
     }
 
+    /// Removes the committed module that contains `id`, with the code of all its functions.
+    fn remove_committed_module(&mut self, id: u32) -> Result<()> {
+        let Some(orc) = &mut self.orc else { return Ok(()) };
+        let Some(tracker_idx) = orc.committed_functions.remove(&id) else { return Ok(()) };
+        orc.committed_functions.retain(|_, idx| *idx != tracker_idx);
+        orc.loaded_trackers[tracker_idx].remove().map_err(error_msg)
+    }
+
     /// Returns pending absolute symbols collected while translating the current JIT module.
     pub fn pending_symbol_names(&self) -> Vec<CString> {
         self.orc
@@ -737,7 +751,7 @@ impl EvmLlvmBackend {
         symbols: &[(CString, usize)],
     ) -> Result<(usize, orc::ResourceTracker, Arc<JitDylibGuard>)> {
         let orc = self.ensure_orc()?;
-        let jd = orc.global.create_jit_dylib();
+        let jd = orc.global.create_jit_dylib()?;
         let jd_guard = Arc::new(JitDylibGuard { global: orc.global, jd });
         let (addr, tracker) = link_jit_object_in_dylib(orc, jd, symbol_name, object, symbols)?;
         Ok((addr, tracker, jd_guard))
@@ -869,9 +883,11 @@ impl Backend for EvmLlvmBackend {
     }
 
     fn dump_disasm(&mut self, path: &Path) -> Result<()> {
-        self.machine
+        let result = self
+            .machine
             .write_to_file(self.module(), LLVMCodeGenFileType::LLVMAssemblyFile, path)
-            .map_err(error_msg)
+            .map_err(error_msg);
+        self.dh.check(result)
     }
 
     fn build_function(
@@ -947,13 +963,11 @@ impl Backend for EvmLlvmBackend {
         //
         // The standard `default<O1>` is also slow (~730ms on snailtracer) because the loop
         // analysis infrastructure (LoopInfo, DominatorTree, MemorySSA, LCSSA) is expensive to
-        // compute on functions with thousands of basic blocks, even though the loop passes
-        // themselves do nothing useful — EVM has no natural loops to optimize.
+        // compute on functions with thousands of basic blocks.
         //
         // LICM (Loop Invariant Code Motion) helps tight EVM loops by hoisting gas counter and
-        // stack slot loads/stores into registers. However, the loop analysis infrastructure is
-        // quadratic on large functions — e.g. +430ms on snailtracer (7770 BBs) vs +0ms on
-        // fibonacci (45 BBs). We skip it for functions with >4000 basic blocks.
+        // stack slot loads/stores into registers. It only pays off on small functions, and its
+        // compile cost grows faster than the function: see `LICM_MAX_BLOCKS`.
         //
         // Can be overridden with `EVM2_JIT_PASSES` env var for experimentation.
         // From `opt --help`, `-passes`.
@@ -968,22 +982,24 @@ impl Backend for EvmLlvmBackend {
             OptimizationLevel::Less
             | OptimizationLevel::Default
             | OptimizationLevel::Aggressive => {
-                let total_bbs: u32 =
-                    self.module.get_functions().map(|f| f.count_basic_blocks()).sum();
-                let with_licm = total_bbs <= 4000;
+                let max_blocks =
+                    self.module.get_functions().map(|f| f.count_basic_blocks()).max().unwrap_or(0);
+                let with_licm = max_blocks <= LICM_MAX_BLOCKS;
                 let passes = if with_licm { &PASSES_WITH_LICM } else { &PASSES };
                 passes.get_or_init(|| build_pass_pipeline(with_licm))
             }
         });
         let opts = PassBuilderOptions::create();
-        self.module().run_passes(passes, &self.machine, &opts).map_err(error_msg)
+        let result = self.module().run_passes(passes, &self.machine, &opts).map_err(error_msg);
+        self.dh.check(result)
     }
 
     fn write_object<W: std::io::Write>(&mut self, mut w: W) -> Result<()> {
         let buffer = self
             .machine
             .write_to_memory_buffer(self.module(), LLVMCodeGenFileType::LLVMObjectFile)
-            .map_err(error_msg)?;
+            .map_err(error_msg);
+        let buffer = self.dh.check(buffer)?;
         w.write_all(buffer.as_slice())?;
         Ok(())
     }
@@ -999,10 +1015,23 @@ impl Backend for EvmLlvmBackend {
         // in lookup_in when the symbol is first requested.
         let mut captured = None;
         let _guard = ScopedObjCapture::install(&mut captured);
-        let addr = orc.global.jit.lookup_in(orc.jd(), &name).map_err(error_msg)?;
+        let addr = orc.global.jit.lookup_in(orc.jd(), &name).map_err(error_msg);
         drop(_guard);
+        let compiled = addr.is_ok();
+        let addr = match self.dh.check(addr) {
+            Ok(addr) => addr,
+            Err(e) => {
+                // ORC compiled the whole module and keeps it, so later lookups would return the
+                // broken code without the error. Remove the module's code but keep the function
+                // names, so a later lookup fails with an error instead of a missing name.
+                if compiled && let Err(remove_err) = self.remove_committed_module(id) {
+                    warn!("failed to remove module after an LLVM error: {remove_err}");
+                }
+                return Err(e);
+            }
+        };
         if captured.is_some() {
-            orc.last_compiled_object = captured;
+            self.orc.as_mut().unwrap().last_compiled_object = captured;
         }
         Ok(addr)
     }
@@ -1084,15 +1113,20 @@ struct TargetInfo {
 }
 
 impl TargetInfo {
-    fn new() -> &'static Self {
-        static HOST_TARGET_INFO: OnceLock<TargetInfo> = OnceLock::new();
-        HOST_TARGET_INFO.get_or_init(|| {
-            let triple = TargetMachine::get_default_triple().to_owned();
-            let target = Target::from_triple(&triple).unwrap();
-            let cpu = TargetMachine::get_host_cpu_name().to_string_lossy().into_owned();
-            let features = TargetMachine::get_host_cpu_features().to_string_lossy().into_owned();
-            Self { target, triple, cpu, features }
-        })
+    fn new() -> Result<&'static Self> {
+        static HOST_TARGET_INFO: OnceLock<Result<TargetInfo, String>> = OnceLock::new();
+        HOST_TARGET_INFO
+            .get_or_init(|| {
+                let triple = TargetMachine::get_default_triple().to_owned();
+                let target = Target::from_triple(&triple)
+                    .map_err(|e| e.to_string_lossy().trim_end().to_string())?;
+                let cpu = TargetMachine::get_host_cpu_name().to_string_lossy().into_owned();
+                let features =
+                    TargetMachine::get_host_cpu_features().to_string_lossy().into_owned();
+                Ok(Self { target, triple, cpu, features })
+            })
+            .as_ref()
+            .map_err(|e| eyre::eyre!("{e}"))
     }
 }
 
@@ -1183,12 +1217,6 @@ impl EvmLlvmBuilder<'_> {
         let kind_id = self.cx.get_kind_id("prof");
         inst.set_metadata(metadata, kind_id);
     }
-
-    fn assume_inner(&mut self, cond: Value) -> Inst {
-        let function = self
-            .get_or_add_function("llvm.assume", |this| this.ty_void.fn_type(&[this.ty_i1], false));
-        self.bcx.build_call(function, &[cond], "")
-    }
 }
 
 impl BackendTypes for EvmLlvmBuilder<'_> {
@@ -1242,13 +1270,6 @@ impl Builder for EvmLlvmBuilder<'_> {
 
     fn seal_all_blocks(&mut self) {
         // Nothing to do.
-    }
-
-    fn set_current_block_cold(&mut self) {
-        let true_ = self.bool_const(true);
-        let callsite = self.assume_inner(true_);
-        let cold = self.cx.create_enum_attribute(Attribute::get_named_enum_kind_id("cold"), 0);
-        callsite.add_call_site_attribute(AttributeLoc::Function, cold);
     }
 
     fn current_block(&mut self) -> Option<Self::BasicBlock> {
@@ -1404,7 +1425,9 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn assume(&mut self, cond: Self::Value) {
-        self.assume_inner(cond);
+        let function = self
+            .get_or_add_function("llvm.assume", |this| this.ty_void.fn_type(&[this.ty_i1], false));
+        self.bcx.build_call(function, &[cond], "");
     }
 
     fn icmp(&mut self, cond: IntCC, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
@@ -1847,17 +1870,14 @@ fn build_pass_pipeline(with_licm: bool) -> String {
 }
 
 fn init() -> Result<()> {
-    let mut init_result = Ok(());
-    static INIT: Once = Once::new();
-    INIT.call_once(|| init_result = init_());
-    init_result
+    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    match INIT.get_or_init(|| init_().map_err(|e| format!("{e:#}"))) {
+        Ok(()) => Ok(()),
+        Err(e) => Err(eyre::eyre!("{e}")),
+    }
 }
 
 fn init_() -> Result<()> {
-    // TODO: This also reports "PLEASE submit a bug report to..." when the segfault is
-    // outside of LLVM.
-    // enable_llvm_pretty_stack_trace();
-
     extern "C" fn report_fatal_error(msg: *const std::ffi::c_char) {
         let msg_cstr = unsafe { std::ffi::CStr::from_ptr(msg) };
         let msg = msg_cstr.to_string_lossy();
@@ -1998,7 +2018,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::NoSync => ("nosync", AttrValue::Enum(0)),
         OurAttr::NoUnwind => ("nounwind", AttrValue::Enum(0)),
         OurAttr::NonLazyBind => ("nonlazybind", AttrValue::Enum(0)),
-        OurAttr::UWTable => ("uwtable", AttrValue::Enum(2)),
+        OurAttr::UWTable => return cpp::create_async_uwtable_attr(bcx.cx),
         OurAttr::AllFramePointers => ("frame-pointer", AttrValue::String("all")),
         OurAttr::NativeTargetCpu => (
             "target-cpu",
@@ -2015,7 +2035,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::Speculatable => ("speculatable", AttrValue::Enum(0)),
 
         OurAttr::NoAlias => ("noalias", AttrValue::Enum(0)),
-        OurAttr::NoCapture => ("captures", AttrValue::Enum(0)), // captures(none) - no capture
+        OurAttr::NoCapture => return cpp::create_no_captures_attr(bcx.cx),
         OurAttr::NoUndef => ("noundef", AttrValue::Enum(0)),
         OurAttr::Align(n) => ("align", AttrValue::Enum(n)),
         OurAttr::NonNull => ("nonnull", AttrValue::Enum(0)),
@@ -2025,8 +2045,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::ReadOnly => ("readonly", AttrValue::Enum(0)),
         OurAttr::WriteOnly => ("writeonly", AttrValue::Enum(0)),
         OurAttr::Writable => ("writable", AttrValue::Enum(0)),
-        // memory(argmem: readwrite) = ModRef(3) << ArgMem(0) = 3.
-        OurAttr::ArgMemOnly => ("memory", AttrValue::Enum(3)),
+        OurAttr::ArgMemOnly => return cpp::create_arg_mem_only_attr(bcx.cx),
         // `u64::MAX` marks all reachable memory as dead; `0` would mark zero bytes.
         OurAttr::DeadOnReturn => ("dead_on_return", AttrValue::Enum(u64::MAX)),
         OurAttr::DeadOnUnwind => ("dead_on_unwind", AttrValue::Enum(0)),
@@ -2099,4 +2118,57 @@ fn error_msg(msg: LLVMString) -> evm2_jit_backend::Error {
 
 fn fmt_ty(ty: Type) -> impl std::fmt::Display {
     ty.print_to_string().to_str().unwrap().trim_matches('"').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llvm_sys::{LLVMInlineAsmDialect, core::*};
+
+    /// An error diagnostic LLVM raises while emitting code must fail `write_object`, and must not
+    /// leak into the next operation.
+    #[test]
+    fn diagnostic_error_fails_write_object() {
+        const ARGS: usize = 64;
+
+        let mut backend = EvmLlvmBackend::new(true).unwrap();
+        unsafe {
+            let cx = backend.cx.raw();
+            let void = LLVMVoidTypeInContext(cx);
+            let i32 = LLVMInt32TypeInContext(cx);
+            let function_ty = LLVMFunctionType(void, std::ptr::null_mut(), 0, 0);
+            let function = LLVMAddFunction(backend.module.as_mut_ptr(), c"f".as_ptr(), function_ty);
+            let entry = LLVMAppendBasicBlockInContext(cx, function, c"entry".as_ptr());
+            let builder = LLVMCreateBuilderInContext(cx);
+            LLVMPositionBuilderAtEnd(builder, entry);
+
+            // More register inputs than the target has registers.
+            let mut param_tys = [i32; ARGS];
+            let asm_ty = LLVMFunctionType(void, param_tys.as_mut_ptr(), ARGS as u32, 0);
+            let constraints = vec!["r"; ARGS].join(",");
+            let asm = LLVMGetInlineAsm(
+                asm_ty,
+                c"".as_ptr().cast_mut(),
+                0,
+                constraints.as_ptr().cast::<std::ffi::c_char>().cast_mut(),
+                constraints.len(),
+                1,
+                0,
+                LLVMInlineAsmDialect::LLVMInlineAsmDialectATT,
+                0,
+            );
+            let mut args = [LLVMConstInt(i32, 1, 0); ARGS];
+            LLVMBuildCall2(builder, asm_ty, asm, args.as_mut_ptr(), ARGS as u32, c"".as_ptr());
+            LLVMBuildRetVoid(builder);
+            LLVMDisposeBuilder(builder);
+        }
+
+        let err = backend.write_object(Vec::new()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "LLVM error: inline assembly requires more registers than available"
+        );
+
+        backend.dh.check(Ok(())).unwrap();
+    }
 }

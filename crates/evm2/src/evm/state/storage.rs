@@ -23,24 +23,6 @@ pub struct StorageOverlay {
 }
 
 impl StorageOverlay {
-    /// Applies an isolated execution's slots, retaining parent originals and combining warmth.
-    #[cfg(test)]
-    pub(crate) fn merge_isolated(&mut self, child: Self) {
-        self.wiped |= child.wiped;
-        for (key, slot) in child.slots {
-            match self.slots.entry(key) {
-                hash_map::Entry::Vacant(entry) => {
-                    entry.insert(slot);
-                }
-                hash_map::Entry::Occupied(mut entry) => {
-                    let parent = entry.get_mut();
-                    parent.value.current = slot.value.current;
-                    parent.is_warm |= slot.is_warm;
-                }
-            }
-        }
-    }
-
     /// Returns the changed storage slots.
     ///
     /// A slot is changed when its current value differs from its transaction-boundary original,

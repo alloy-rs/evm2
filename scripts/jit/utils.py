@@ -57,8 +57,8 @@ def cargo_build(root: str, target_dir: str | None = None) -> str:
 def llvm_env(root: str) -> dict[str, str]:
     """Put the LLVM version that ``root`` requires first in PATH, if it is installed.
 
-    Base and head can require different LLVM versions, and both llvm-sys and the
-    evm2-jit-llvm build script otherwise use whichever llvm-config comes first in PATH.
+    Base and head can require different LLVM versions, and llvm-sys otherwise uses
+    whichever llvm-config comes first in PATH.
     """
     with open(os.path.join(root, "crates", "jit", "llvm", "Cargo.toml")) as f:
         # Older code selects LLVM through an inkwell feature, newer code through llvm-sys.
