@@ -7,9 +7,7 @@ use crate::{
     filter::NameFilter,
     fixture_io,
     forks::is_fork_skipped,
-    state::{
-        insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
-    },
+    state::{insert_account_with_storage, parse_bytecode, storage_for_root},
     trace::{self, Eip3155Tracer},
     tx::{TxFields, build_recovered_tx, recover_address, rpc_access_list, signed_authorizations},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
@@ -468,7 +466,6 @@ fn pre_block_system_calls<T: EvmTypes>(
 
     if spec.enables(SpecId::CANCUN)
         && let Some(beacon_root) = env.current_beacon_root
-        && system_contract_has_code(post, BEACON_ROOTS_ADDRESS)
     {
         commit_system_call(
             evm,
@@ -479,7 +476,6 @@ fn pre_block_system_calls<T: EvmTypes>(
     }
     if spec.enables(SpecId::PRAGUE)
         && let Some(previous_hash) = env.previous_hash
-        && system_contract_has_code(post, HISTORY_STORAGE_ADDRESS)
     {
         commit_system_call(
             evm,
