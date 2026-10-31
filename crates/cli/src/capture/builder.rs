@@ -163,10 +163,13 @@ impl CaptureBuilder {
     ///
     /// Block execution requires their code and, for the request queues, their queue storage, but
     /// transaction traces never touch them at the state that the system calls start from. The
-    /// base pre-state therefore reads them as of the block before the first captured block and
-    /// replaces anything the traces recorded: a trace sees the contract after the system calls of
-    /// earlier blocks in the range, which replay executes itself. The builder request contracts
-    /// are captured with code only: their storage stays empty.
+    /// base pre-state therefore reads them as of the block before the first captured block. For
+    /// the slots a system call reads or writes, that replaces what the traces recorded: a trace
+    /// sees the contract after the system calls of earlier blocks in the range, which replay
+    /// executes itself. The other slots stay as the traces recorded them. Request transactions
+    /// write queue entries at the tail, and a drained queue leaves its old entries in storage,
+    /// which the gas of those writes depends on. The builder request contracts are captured with
+    /// code only.
     pub(super) async fn capture_system_contracts(
         &mut self,
         rpc: &RpcEndpoint,
@@ -197,7 +200,8 @@ impl CaptureBuilder {
         state.balance = account.balance;
         state.nonce = account.nonce;
         state.code_hash = code_hash;
-        state.storage = storage;
+        state.storage.retain(|entry| storage.iter().all(|read| read.slot != entry.slot));
+        state.storage.extend(storage.into_iter().filter(|entry| !entry.value.is_zero()));
         self.captured_balances.insert(address);
         self.captured_nonces.insert(address);
         self.captured_codes.insert(address);
@@ -432,7 +436,7 @@ fn system_contracts(spec: evm2::SpecId) -> Vec<SystemContract> {
     contracts
 }
 
-/// Reads the non-zero storage that a system call of a request queue contract starts from.
+/// Reads the storage that a system call of a request queue contract starts from.
 async fn read_queue_storage(
     rpc: &RpcEndpoint,
     address: Address,
@@ -452,7 +456,6 @@ async fn read_queue_storage(
         .buffer_unordered(rpc.max_concurrent_requests())
         .try_collect::<Vec<_>>()
         .await?;
-    entries.retain(|entry| !entry.value.is_zero());
     entries.sort_by_key(|entry| entry.slot);
     Ok(entries)
 }
@@ -530,31 +533,36 @@ mod tests {
     }
 
     #[test]
-    fn system_contract_capture_replaces_what_a_trace_recorded() {
+    fn system_contract_capture_replaces_only_the_slots_it_read() {
         let address = WITHDRAWAL_REQUEST_ADDRESS;
         let mut builder = CaptureBuilder::mainnet();
+        let slot = |byte| B256::with_last_byte(byte).to_string();
         let pre = account_trace(
             address,
             json!({
                 "balance": "0x1",
                 "nonce": 1,
                 "code": "0x60",
-                "storage": { B256::with_last_byte(1).to_string(): "0x5" },
+                "storage": { slot(1): "0x5", slot(9): "0x7" },
             }),
         );
         builder.capture_base_requirements(1, 0, &pre, &Overlay::default()).unwrap();
 
         let account =
             RpcAccount { balance: U256::from(9), nonce: 2, code: Bytes::from_static(&[1]) };
-        let storage = vec![StorageEntry { slot: B256::with_last_byte(2), value: U256::from(3) }];
+        let storage = vec![
+            StorageEntry { slot: B256::with_last_byte(1), value: U256::ZERO },
+            StorageEntry { slot: B256::with_last_byte(2), value: U256::from(3) },
+        ];
         builder.capture_system_contract(address, account, storage).unwrap();
 
         let account = builder.accounts.get(&address).unwrap();
         assert_eq!(account.balance, U256::from(9));
         assert_eq!(account.nonce, 2);
         assert_eq!(builder.codes.get(&account.code_hash).unwrap().as_ref(), &[1]);
-        assert_eq!(account.storage.len(), 1);
-        assert_eq!(account.storage[0].slot, B256::with_last_byte(2));
+        let mut slots = account.storage.iter().map(|entry| entry.slot).collect::<Vec<_>>();
+        slots.sort();
+        assert_eq!(slots, [B256::with_last_byte(2), B256::with_last_byte(9)]);
     }
 
     #[test]
