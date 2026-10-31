@@ -275,7 +275,7 @@ impl ReplayFixture {
             Path::new(&self.name),
             &self.suite,
             BlockchainTestExecuteConfig {
-                validate_post_state: false,
+                validate: false,
                 compare_receipt_root: true,
                 ..Default::default()
             },

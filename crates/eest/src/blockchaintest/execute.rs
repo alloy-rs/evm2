@@ -20,7 +20,10 @@ use crate::{
     forks::is_fork_skipped,
     state::{insert_account_with_storage, parse_bytecode},
     trace::{self, Eip3155Tracer},
-    tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
+    tx::{
+        TxFields, TxSigner, build_recovered_tx, rpc_access_list, signature_from_vrs,
+        signed_authorizations,
+    },
 };
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
@@ -51,9 +54,11 @@ const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug)]
 pub struct ExecuteConfig {
-    /// Whether to validate the full final-state allocation when fixtures contain `postState`.
-    /// Unexpected live accounts and non-zero storage are rejected.
-    pub validate_post_state: bool,
+    /// Whether to run the harness checks that are not part of execution: comparing the final
+    /// state with the fixture's `postState` (unexpected live accounts and non-zero storage are
+    /// rejected) and recovering each sender from its signature. When false, the runner trusts
+    /// the fixture's `sender`.
+    pub validate: bool,
     /// Whether to recompute each committed block's state root and compare it to
     /// the block header's `stateRoot`.
     pub compare_state_root: bool,
@@ -80,7 +85,7 @@ pub struct ExecuteConfig {
 impl Default for ExecuteConfig {
     fn default() -> Self {
         Self {
-            validate_post_state: true,
+            validate: true,
             compare_state_root: false,
             compare_receipt_root: false,
             trace: false,
@@ -307,6 +312,7 @@ fn execute_case(
             hook,
             resources,
             config.trace,
+            config.validate,
             compare_state_root,
             config.compare_receipt_root,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
@@ -344,7 +350,7 @@ fn execute_case(
         ));
     }
 
-    if config.validate_post_state
+    if config.validate
         && let Some(expected) = &test_case.post_state
     {
         validate_post_state(database, expected).map_err(|err| TestError::case(path, name, err))?;
@@ -395,6 +401,7 @@ fn execute_block(
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
     trace: bool,
+    validate: bool,
     compare_state_root: bool,
     compare_receipt_root: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
@@ -512,7 +519,7 @@ fn execute_block(
                 transaction_index,
                 total_transactions,
             });
-            let tx = match build_tx(raw_tx) {
+            let tx = match build_tx(raw_tx, spec, validate) {
                 Ok(tx) => tx,
                 Err(_err) if should_fail => {
                     return Ok(BlockResolution::Discard);
@@ -1071,28 +1078,50 @@ fn block_env_from_header(
     })
 }
 
-fn build_tx(raw: &Transaction) -> Result<RecoveredTxEnvelope, TestErrorKind> {
-    let caller = raw.sender.ok_or(TestErrorKind::MissingSender)?;
+fn build_tx(
+    raw: &Transaction,
+    spec: SpecId,
+    validate: bool,
+) -> Result<RecoveredTxEnvelope, TestErrorKind> {
     let gas_limit = raw.gas_limit.try_into().map_err(|_| TestErrorKind::Overflow("gasLimit"))?;
     let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
+    let tx_type = raw.tx_type();
+    let (signer, chain_id) = if validate {
+        let (signature, legacy_chain_id) =
+            signature_from_vrs(raw.r, raw.s, raw.v, tx_type == 0, spec)?;
+        // A legacy transaction signs its chain ID through `v`, so `v` decides it.
+        let chain_id = if tx_type == 0 { legacy_chain_id.map(U256::from) } else { raw.chain_id };
+        (TxSigner::Signature { signature, spec }, chain_id)
+    } else {
+        (TxSigner::Fixture(raw.sender.ok_or(TestErrorKind::MissingSender)?), raw.chain_id)
+    };
 
-    Ok(build_recovered_tx(TxFields {
-        tx_type: Some(raw.tx_type()),
-        caller,
-        kind: raw.kind(),
-        data: raw.data.clone(),
-        gas_limit,
-        nonce,
-        value: raw.value,
-        chain_id: raw.chain_id,
-        gas_price: raw.gas_price,
-        max_fee_per_gas: raw.max_fee_per_gas,
-        max_priority_fee_per_gas: raw.max_priority_fee_per_gas,
-        access_list: access_list(raw)?,
-        authorization_list: signed_authorizations(raw.authorization_list.as_deref())?,
-        blob_versioned_hashes: raw.blob_versioned_hashes.clone(),
-        max_fee_per_blob_gas: raw.max_fee_per_blob_gas,
-    })?)
+    let tx = build_recovered_tx(
+        TxFields {
+            tx_type: Some(tx_type),
+            kind: raw.kind(),
+            data: raw.data.clone(),
+            gas_limit,
+            nonce,
+            value: raw.value,
+            chain_id,
+            gas_price: raw.gas_price,
+            max_fee_per_gas: raw.max_fee_per_gas,
+            max_priority_fee_per_gas: raw.max_priority_fee_per_gas,
+            access_list: access_list(raw)?,
+            authorization_list: signed_authorizations(raw.authorization_list.as_deref())?,
+            blob_versioned_hashes: raw.blob_versioned_hashes.clone(),
+            max_fee_per_blob_gas: raw.max_fee_per_blob_gas,
+        },
+        signer,
+    )?;
+    if validate
+        && let Some(expected) = raw.sender
+        && expected != tx.signer()
+    {
+        return Err(TestErrorKind::SenderMismatch { recovered: tx.signer(), expected });
+    }
+    Ok(tx)
 }
 
 fn access_list(raw: &Transaction) -> Result<Option<RpcAccessList>, TestErrorKind> {
@@ -1569,6 +1598,12 @@ mod tests {
         *,
     };
     #[cfg(feature = "jit")]
+    use crate::tx::recover_address;
+    #[cfg(feature = "jit")]
+    use alloy_consensus::{SignableTransaction, TxLegacy, crypto::secp256k1};
+    #[cfg(feature = "jit")]
+    use alloy_primitives::{TxKind, to_eip155_v};
+    #[cfg(feature = "jit")]
     use evm2::interpreter::op;
     use std::collections::BTreeMap;
 
@@ -1776,9 +1811,7 @@ mod tests {
         assert!(matches!(err.kind, TestErrorKind::UnexpectedFailure(message)
             if message == format!("unexpected account in post-state: {address}")));
 
-        let summary =
-            run(&suite, ExecuteConfig { validate_post_state: false, ..Default::default() })
-                .unwrap();
+        let summary = run(&suite, ExecuteConfig { validate: false, ..Default::default() }).unwrap();
         assert_eq!(summary.executed, 1);
 
         let case = suite.0.get_mut("omitted-account").unwrap();
@@ -2118,8 +2151,18 @@ mod tests {
 
     #[cfg(feature = "jit")]
     fn execute_simple_storage_block(mode: ExecutionMode) -> ExecuteSummary {
-        let caller = Address::from([0x11; 20]);
+        let secret = B256::with_last_byte(1);
+        let caller = recover_address(secret.as_slice()).unwrap();
         let target = Address::from([0x22; 20]);
+        let unsigned = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 100_000,
+            to: TxKind::Call(target),
+            ..Default::default()
+        };
+        let signature = secp256k1::sign_message(secret, unsigned.signature_hash()).unwrap();
         let genesis_hash = B256::with_last_byte(1);
         let block_hash = B256::with_last_byte(2);
         let mut pre = BTreeMap::new();
@@ -2193,9 +2236,9 @@ mod tests {
                         gas_limit: U256::from(100_000),
                         gas_price: Some(U256::ZERO),
                         nonce: U256::ZERO,
-                        r: U256::ZERO,
-                        s: U256::ZERO,
-                        v: U256::ZERO,
+                        r: signature.r(),
+                        s: signature.s(),
+                        v: U256::from(to_eip155_v(signature.v() as u8, 1)),
                         value: U256::ZERO,
                         to: Some(target),
                         chain_id: Some(U256::ONE),
@@ -2223,7 +2266,7 @@ mod tests {
         execute_str(
             Path::new("simple-storage.json"),
             &input,
-            ExecuteConfig { validate_post_state: true, mode, ..ExecuteConfig::default() },
+            ExecuteConfig { validate: true, mode, ..ExecuteConfig::default() },
             &NameFilter::default(),
             &mut hook,
         )
