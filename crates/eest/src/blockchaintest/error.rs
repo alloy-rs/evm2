@@ -1,6 +1,6 @@
 use super::types::{BlobFork, ForkSpec};
 use crate::{exception::Exception, execution::ExecutionResourceError, tx::TxBuildError};
-use evm2::{Version, registry::HandlerError};
+use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
 use thiserror::Error;
 
@@ -165,10 +165,10 @@ pub(crate) enum TestErrorKind {
 impl TestErrorKind {
     /// Returns the exception execution-specs raises for a block with this error, if it is a
     /// block or transaction validity failure.
-    pub(crate) fn exception(&self, version: &Version) -> Option<Exception> {
+    pub(crate) fn exception(&self) -> Option<Exception> {
         match self {
             Self::Transaction(error) => error.exception(),
-            Self::Evm(error) => Exception::from_handler_error(error, version),
+            Self::Evm(error) => Exception::from_handler_error(error),
             Self::InvalidBlock { exception, .. } => Some(*exception),
             Self::SystemCall(_) => Some(Exception::SystemContractCallFailed),
             Self::SystemContractEmpty(_) => Some(Exception::SystemContractEmpty),

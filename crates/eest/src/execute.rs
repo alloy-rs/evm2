@@ -27,7 +27,7 @@ use alloy_trie::{
 };
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult, Version,
+    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
@@ -254,7 +254,7 @@ fn validate_result(
         (Some(expected), Err(failure)) => {
             let error = check_exception(
                 expected,
-                Exception::from_handler_error(&failure.error, Version::base(spec)),
+                Exception::from_handler_error(&failure.error),
                 &failure.error,
             )
             .err();
@@ -707,7 +707,7 @@ mod tests {
     #[test]
     fn check_exception_requires_a_listed_exception() {
         let error = HandlerError::NonceOverflow;
-        let exception = Exception::from_handler_error(&error, Version::base(SpecId::CANCUN));
+        let exception = Exception::from_handler_error(&error);
 
         check_exception(
             "TransactionException.INTRINSIC_GAS_TOO_LOW|TransactionException.NONCE_IS_MAX",

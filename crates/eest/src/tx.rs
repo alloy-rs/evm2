@@ -108,7 +108,11 @@ impl TxBuildError {
             Self::InvalidV(_) | Self::ProtectedLegacy | Self::Recover(_) => {
                 Some(Exception::InvalidSignatureVrs)
             }
-            Self::Overflow("gasPrice" | "maxFeePerGas") => Some(Exception::GasPriceExceedsU128),
+            // Execution-specs holds a fee in an unbounded integer, so a fee above `u128` only fails
+            // the sender's balance check. The runner cannot build such a transaction.
+            Self::Overflow("gasPrice" | "maxFeePerGas") => {
+                Some(Exception::InsufficientAccountFunds)
+            }
             Self::ContractCreation(tx_type) => Exception::contract_creation(*tx_type),
             Self::Decode { exception, .. } => *exception,
             Self::Overflow(_) | Self::BuildTransaction(_) | Self::SerdeDeserialize(_) => None,
@@ -285,7 +289,7 @@ fn malformed_exception(bytes: &[u8], spec: SpecId) -> Option<Exception> {
         |index: usize| items.get(index).filter(|(list, _)| !list).map(|(_, payload)| *payload);
 
     if fees.iter().any(|&index| string(index).is_some_and(|fee| (17..=32).contains(&fee.len()))) {
-        return Some(Exception::GasPriceExceedsU128);
+        return Some(Exception::InsufficientAccountFunds);
     }
     if string(to).is_some_and(<[u8]>::is_empty)
         && let Some(exception) = Exception::contract_creation(tx_type)

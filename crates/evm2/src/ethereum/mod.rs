@@ -1443,8 +1443,7 @@ mod tests {
 
     #[test]
     fn chain_id_is_checked_before_the_fee_cap() {
-        let mut block = BlockEnvExt::default();
-        block.basefee = U256::from(10);
+        let block = BlockEnvExt { basefee: U256::from(10), ..Default::default() };
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::PRAGUE,
             block,

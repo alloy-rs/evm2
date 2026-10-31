@@ -3,7 +3,7 @@
 //! A fixture's `expectException` lists the names a client may report, separated by `|`. A runner
 //! passes an invalid transaction or block only when its error maps to one of them.
 
-use evm2::{Version, registry::HandlerError};
+use evm2::registry::HandlerError;
 use std::fmt;
 
 macro_rules! exceptions {
@@ -34,44 +34,39 @@ macro_rules! exceptions {
 }
 
 exceptions! {
-    GasAllowanceExceeded => [
-        "TransactionException.GAS_ALLOWANCE_EXCEEDED",
-        "TR_GasLimitReached",
-        "TR_FeeCapLessThanBlocksORGasLimitReached"
-    ],
+    // `TR_GasLimitReached` is the `ethereum/tests` name of the same rule.
+    GasAllowanceExceeded => ["TransactionException.GAS_ALLOWANCE_EXCEEDED", "TR_GasLimitReached"],
     GasLimitExceedsMaximum => ["TransactionException.GAS_LIMIT_EXCEEDS_MAXIMUM"],
-    // The runner cannot build a fee above `u128`, so it reports one as this rule: a fee that large
-    // exceeds any balance or overflows the gas limit product.
-    GasPriceExceedsU128 => [
-        "TransactionException.GASLIMIT_PRICE_PRODUCT_OVERFLOW",
-        "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS",
-        "TR_NoFundsX"
-    ],
+    // `TR_InitCodeLimitExceeded` is the `ethereum/tests` name of the same rule.
     InitcodeSizeExceeded => [
         "TransactionException.INITCODE_SIZE_EXCEEDED",
         "TR_InitCodeLimitExceeded"
     ],
+    // `TR_NoFunds` and `TR_NoFundsX` are the `ethereum/tests` names of the same rule. The fixtures
+    // that name `TR_NoFundsOrGas` leave the order of the funds and gas limit checks open.
     InsufficientAccountFunds => [
         "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS",
         "TR_NoFunds",
-        "TR_NoFundsOrGas",
-        "TR_FeeCapLessThanBlocksORNoFunds"
+        "TR_NoFundsX",
+        "TR_NoFundsOrGas"
     ],
     InsufficientMaxFeePerBlobGas => ["TransactionException.INSUFFICIENT_MAX_FEE_PER_BLOB_GAS"],
+    // `TR_FeeCapLessThanBlocks` is the `ethereum/tests` name of the same rule.
     InsufficientMaxFeePerGas => [
         "TransactionException.INSUFFICIENT_MAX_FEE_PER_GAS",
-        "TR_FeeCapLessThanBlocks",
-        "TR_FeeCapLessThanBlocksORNoFunds",
-        "TR_FeeCapLessThanBlocksORGasLimitReached"
+        "TR_FeeCapLessThanBlocks"
     ],
+    // `TR_IntrinsicGas` and `IntrinsicGas` are the `ethereum/tests` names of the same rule. The
+    // fixtures that name `TR_NoFundsOrGas` leave the order of the funds and gas limit checks open.
     IntrinsicGasTooLow => [
         "TransactionException.INTRINSIC_GAS_TOO_LOW",
         "TR_IntrinsicGas",
         "IntrinsicGas",
         "TR_NoFundsOrGas"
     ],
-    // Execution-specs checks the gas limit against the larger of the intrinsic and floor gas as
-    // one rule, and some fixtures name a limit between the two an intrinsic gas failure.
+    // Execution-specs checks `intrinsic > tx.gas` and `calldata_floor > tx.gas` as separate steps
+    // that raise one `InsufficientTransactionGasError` (`validate_transaction`), and fixtures name
+    // a limit that is below the floor but not the intrinsic gas either way.
     GasLimitBelowFloor => [
         "TransactionException.INTRINSIC_GAS_BELOW_FLOOR_GAS_COST",
         "TransactionException.INTRINSIC_GAS_TOO_LOW",
@@ -81,25 +76,33 @@ exceptions! {
     ],
     InvalidChainid => ["TransactionException.INVALID_CHAINID"],
     InvalidSignatureVrs => ["TransactionException.INVALID_SIGNATURE_VRS"],
+    // `TR_NonceHasMaxValue` is the `ethereum/tests` name of the same rule.
     NonceIsMax => ["TransactionException.NONCE_IS_MAX", "TR_NonceHasMaxValue"],
-    NonceMismatchTooHigh => ["TransactionException.NONCE_MISMATCH_TOO_HIGH", "TR_NonceTooHigh"],
-    NonceMismatchTooLow => ["TransactionException.NONCE_MISMATCH_TOO_LOW", "TR_NonceTooLow"],
+    NonceMismatchTooHigh => ["TransactionException.NONCE_MISMATCH_TOO_HIGH"],
+    NonceMismatchTooLow => ["TransactionException.NONCE_MISMATCH_TOO_LOW"],
+    // `TR_TipGtFeeCap` is the `ethereum/tests` name of the same rule.
     PriorityGreaterThanMaxFeePerGas => [
         "TransactionException.PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS",
         "TR_TipGtFeeCap"
     ],
+    // `TR_RLP_WRONGVALUE` is the `ethereum/tests` name of the same rule.
     RlpInvalidValue => ["TransactionException.RLP_INVALID_VALUE", "TR_RLP_WRONGVALUE"],
+    // `SenderNotEOA` is the `ethereum/tests` name of the same rule.
     SenderNotEoa => ["TransactionException.SENDER_NOT_EOA", "SenderNotEOA"],
+    // `TR_TypeNotSupported` is the `ethereum/tests` name for any transaction type before its fork.
     Type1TxPreFork => ["TransactionException.TYPE_1_TX_PRE_FORK", "TR_TypeNotSupported"],
     Type2TxPreFork => ["TransactionException.TYPE_2_TX_PRE_FORK", "TR_TypeNotSupported"],
+    // `TR_BLOBLIST_OVERSIZE` is the `ethereum/tests` name of the same rule.
     Type3TxBlobCountExceeded => [
         "TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED",
         "TR_BLOBLIST_OVERSIZE"
     ],
+    // `TR_BLOBCREATE` is the `ethereum/tests` name of the same rule.
     Type3TxContractCreation => [
         "TransactionException.TYPE_3_TX_CONTRACT_CREATION",
         "TR_BLOBCREATE"
     ],
+    // `TR_BLOBVERSION_INVALID` is the `ethereum/tests` name of the same rule.
     Type3TxInvalidBlobVersionedHash => [
         "TransactionException.TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH",
         "TR_BLOBVERSION_INVALID"
@@ -108,6 +111,7 @@ exceptions! {
         "TransactionException.TYPE_3_TX_MAX_BLOB_GAS_ALLOWANCE_EXCEEDED"
     ],
     Type3TxPreFork => ["TransactionException.TYPE_3_TX_PRE_FORK", "TR_TypeNotSupported"],
+    // `TR_EMPTYBLOB` is the `ethereum/tests` name of the same rule.
     Type3TxZeroBlobs => ["TransactionException.TYPE_3_TX_ZERO_BLOBS", "TR_EMPTYBLOB"],
     Type4EmptyAuthorizationList => ["TransactionException.TYPE_4_EMPTY_AUTHORIZATION_LIST"],
     Type4TxContractCreation => ["TransactionException.TYPE_4_TX_CONTRACT_CREATION"],
@@ -119,6 +123,10 @@ exceptions! {
     IncorrectExcessBlobGas => ["BlockException.INCORRECT_EXCESS_BLOB_GAS"],
     InvalidBalHash => ["BlockException.INVALID_BAL_HASH"],
     InvalidBlockAccessList => ["BlockException.INVALID_BLOCK_ACCESS_LIST"],
+    // EIP-7928 requires sorted, unique entries, but execution-specs only compares the list hash.
+    // The EEST fixtures name the same violation `INCORRECT_BLOCK_FORMAT` (`bal_invalid_account_order`,
+    // `bal_invalid_duplicate_account`) and `INVALID_BLOCK_ACCESS_LIST` (`bal_invalid_account`,
+    // `bal_invalid_extraneous_entries`), so neither name alone fits.
     MalformedBlockAccessList => [
         "BlockException.INCORRECT_BLOCK_FORMAT",
         "BlockException.INVALID_BLOCK_ACCESS_LIST"
@@ -137,10 +145,7 @@ impl Exception {
     ///
     /// Returns `None` for errors that are not a transaction validity failure, such as a database
     /// error.
-    pub(crate) const fn from_handler_error(
-        error: &HandlerError,
-        version: &Version,
-    ) -> Option<Self> {
+    pub(crate) const fn from_handler_error(error: &HandlerError) -> Option<Self> {
         Some(match error {
             HandlerError::Database(_) | HandlerError::Fatal(_) | HandlerError::External(_) => {
                 return None;
@@ -163,15 +168,9 @@ impl Exception {
             HandlerError::RejectCallerWithCode => Self::SenderNotEoa,
             HandlerError::NonceOverflow => Self::NonceIsMax,
             HandlerError::GasLimitMoreThanBlock { .. } => Self::GasAllowanceExceeded,
-            // Under EIP-8037 the handler reports both the cap on the total gas limit and the cap
-            // on the intrinsic execution gas with this error. Execution-specs treats the second as
-            // an intrinsic gas failure.
-            HandlerError::TxGasLimitGreaterThanCap { cap, .. }
-                if *cap == version.tx_gas_caps().0 =>
-            {
-                Self::GasLimitExceedsMaximum
-            }
-            HandlerError::TxGasLimitGreaterThanCap { .. } => Self::IntrinsicGasTooLow,
+            HandlerError::TxGasLimitGreaterThanCap { .. } => Self::GasLimitExceedsMaximum,
+            // Execution-specs raises `InsufficientTransactionGasError` for it.
+            HandlerError::IntrinsicGasGreaterThanCap { .. } => Self::IntrinsicGasTooLow,
             HandlerError::CreateInitCodeSizeLimit { .. } => Self::InitcodeSizeExceeded,
             HandlerError::FeeCapLessThanBaseFee { .. } => Self::InsufficientMaxFeePerGas,
             HandlerError::EmptyAuthorizationList => Self::Type4EmptyAuthorizationList,
@@ -227,7 +226,6 @@ pub(crate) fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use evm2::SpecId;
 
     #[test]
     fn expected_exception_lists_alternatives() {
@@ -241,32 +239,33 @@ mod tests {
     }
 
     #[test]
-    fn gas_cap_error_names_the_rule_it_enforces() {
-        let amsterdam = Version::base(SpecId::AMSTERDAM);
-        let (total_cap, execution_cap) = amsterdam.tx_gas_caps();
-        let error = |cap| HandlerError::TxGasLimitGreaterThanCap { gas_limit: cap + 1, cap };
-
+    fn gas_cap_errors_name_the_rule_they_enforce() {
         assert_eq!(
-            Exception::from_handler_error(&error(total_cap), amsterdam),
+            Exception::from_handler_error(&HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit: 2,
+                cap: 1
+            }),
             Some(Exception::GasLimitExceedsMaximum)
         );
         assert_eq!(
-            Exception::from_handler_error(&error(execution_cap), amsterdam),
+            Exception::from_handler_error(&HandlerError::IntrinsicGasGreaterThanCap {
+                required: 2,
+                cap: 1
+            }),
             Some(Exception::IntrinsicGasTooLow)
         );
     }
 
     #[test]
     fn nonce_mismatch_names_the_side_it_is_on() {
-        let version = Version::base(SpecId::CANCUN);
         let error = |expected, got| HandlerError::InvalidNonce { expected, got };
 
         assert_eq!(
-            Exception::from_handler_error(&error(1, 2), version),
+            Exception::from_handler_error(&error(1, 2)),
             Some(Exception::NonceMismatchTooHigh)
         );
         assert_eq!(
-            Exception::from_handler_error(&error(2, 1), version),
+            Exception::from_handler_error(&error(2, 1)),
             Some(Exception::NonceMismatchTooLow)
         );
     }

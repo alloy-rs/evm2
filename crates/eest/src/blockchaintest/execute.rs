@@ -37,7 +37,7 @@ use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, aliases::U51
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles, SpecId, TxResult, Version,
+    BaseEvmTypes, Evm, Precompiles, SpecId, TxResult,
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
@@ -417,7 +417,7 @@ fn execute_block<'a>(
 ) -> Result<(), TestError> {
     let db_stats = db_stats_counts.is_some();
     let expect_exception = block.expect_exception.as_deref();
-    let reject = |kind| reject_block(expect_exception, spec, path, name, kind);
+    let reject = |kind| reject_block(expect_exception, path, name, kind);
 
     if let Some(expected_bal) = block_access_list(block)
         && let Err(err) = validate_block_access_list(expected_bal, total_transactions)
@@ -1000,7 +1000,6 @@ fn reserve_price_exceeds_blob_price(
 /// exception `kind` maps to, and a test failure otherwise.
 fn reject_block(
     expected: Option<&str>,
-    spec: SpecId,
     path: &Path,
     name: &str,
     kind: TestErrorKind,
@@ -1008,7 +1007,7 @@ fn reject_block(
     let Some(expected) = expected else {
         return Err(TestError::case(path, name, kind));
     };
-    match exception::check(expected, kind.exception(Version::base(spec)), &kind) {
+    match exception::check(expected, kind.exception(), &kind) {
         Ok(()) => Ok(BlockResolution::Discard),
         Err(got) => Err(TestError::case(
             path,
