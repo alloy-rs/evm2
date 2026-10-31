@@ -73,14 +73,20 @@ def llvm_env(root: str) -> dict[str, str]:
     return {"PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
 
 
-def get_benches(binary: str) -> list[str]:
+def get_benches(binary: str) -> dict[str, str]:
+    """Map each built-in benchmark to its fixture path, as listed by ``run --list``."""
     r = subprocess.run(
         [binary, "run", "--list"],
         stdout=subprocess.PIPE,
         text=True,
         check=True,
     )
-    return [line.strip() for line in r.stdout.splitlines() if line.strip()]
+    benches = {}
+    for line in r.stdout.splitlines():
+        name, _, path = line.strip().partition("\t")
+        if name:
+            benches[name] = path
+    return benches
 
 
 def run_cli(
