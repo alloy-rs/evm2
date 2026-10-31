@@ -307,7 +307,7 @@ mod tests {
         bytecode::Bytecode,
         evm::{
             bal::{AccountInfoBal, BalChanges, BalCodeChange, StorageBal},
-            state::{Account, AccountInfo, StorageOverlay, StorageSlot, Tracked},
+            state::{Account, AccountFlags, AccountInfo, StorageOverlay, StorageSlot, Tracked},
         },
     };
     use alloc::{vec, vec::Vec};
@@ -316,10 +316,7 @@ mod tests {
         CodeChange as AlloyCodeChange, NonceChange as AlloyNonceChange,
         SlotChanges as AlloySlotChanges, StorageChange as AlloyStorageChange,
     };
-    use alloy_primitives::{
-        B256, Bytes, U256,
-        map::{AddressSet, U256Map},
-    };
+    use alloy_primitives::{B256, Bytes, U256, map::U256Map};
 
     fn code(byte: u8) -> (B256, Bytecode) {
         let bytecode = Bytecode::new_raw(vec![byte].into());
@@ -459,10 +456,7 @@ mod tests {
         overlay.slots.insert(U256::from(5), slot(U256::ZERO, U256::from(42)));
         overlay.slots.insert(U256::from(6), slot(U256::from(7), U256::from(7)));
         let account = Account { storage: overlay, ..account };
-        let pending = PendingState {
-            accounts: AddressMap::from_iter([(address, account)]),
-            selfdestructs: Default::default(),
-        };
+        let pending = PendingState { accounts: AddressMap::from_iter([(address, account)]) };
 
         let mut bal = Bal::new();
         bal.commit(idx(1), pending);
@@ -499,11 +493,8 @@ mod tests {
         };
         let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
         overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::from(42)));
-        let account = Account { storage: overlay, ..account };
-        let pending = PendingState {
-            accounts: AddressMap::from_iter([(address, account)]),
-            selfdestructs: AddressSet::from_iter([address]),
-        };
+        let account = Account { storage: overlay, flags: AccountFlags::DESTROYED, ..account };
+        let pending = PendingState { accounts: AddressMap::from_iter([(address, account)]) };
 
         let mut bal = Bal::new();
         bal.commit(idx(2), pending);
