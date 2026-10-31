@@ -1428,6 +1428,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn chain_id_is_checked_before_the_fee_cap() {
+        let block = BlockEnvExt { basefee: U256::from(10), ..Default::default() };
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            block,
+            ethereum_tx_registry(SpecId::PRAGUE),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::PRAGUE),
+        );
+        let to = TxKind::Call(Address::with_last_byte(0xbb));
+        let legacy = |chain_id| {
+            TxEnvelope::Legacy(TxLegacy {
+                chain_id: Some(chain_id),
+                gas_price: 1,
+                gas_limit: 100_000,
+                to,
+                ..Default::default()
+            })
+        };
+        let eip2930 = |chain_id| {
+            TxEnvelope::Eip2930(TxEip2930 {
+                chain_id,
+                gas_price: 1,
+                gas_limit: 100_000,
+                to,
+                ..Default::default()
+            })
+        };
+        let eip1559 = |chain_id| {
+            TxEnvelope::Eip1559(TxEip1559 {
+                chain_id,
+                max_fee_per_gas: 1,
+                gas_limit: 100_000,
+                to,
+                ..Default::default()
+            })
+        };
+        let eip4844 = |chain_id| {
+            TxEnvelope::Eip4844(TxEip4844Variant::TxEip4844(TxEip4844 {
+                chain_id,
+                max_fee_per_gas: 1,
+                gas_limit: 100_000,
+                ..Default::default()
+            }))
+        };
+        let recover = |tx| Recovered::new_unchecked(tx, Address::with_last_byte(0xaa));
+
+        for tx in [legacy(2), eip2930(2), eip1559(2), eip4844(2)] {
+            assert_eq!(
+                evm.validate_tx(&recover(tx)),
+                Err(HandlerError::InvalidChainId { expected: 1, got: 2 })
+            );
+        }
+        // With the right chain id, the fee cap is what fails.
+        for tx in [legacy(1), eip2930(1), eip1559(1), eip4844(1)] {
+            assert!(matches!(
+                evm.validate_tx(&recover(tx)),
+                Err(HandlerError::FeeCapLessThanBaseFee { .. })
+            ));
+        }
+    }
+
     #[rstest::rstest]
     fn amsterdam_handler_rejects_gas_limit_above_total_cap(
         #[values(MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1)]
