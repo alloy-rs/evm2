@@ -51,14 +51,11 @@ impl PendingState {
         original: Option<AccountInfo>,
         current: Option<AccountInfo>,
     ) {
-        let code_changed = original.as_ref().map(|account| account.code_hash)
-            != current.as_ref().map(|account| account.code_hash);
-        let flags = if code_changed { AccountFlags::CODE_CHANGED } else { AccountFlags::empty() };
         let account = self.accounts.entry(address).or_default();
         *account = Account {
             original,
             present: current,
-            flags,
+            flags: AccountFlags::empty(),
             storage: core::mem::take(&mut account.storage),
         };
     }
