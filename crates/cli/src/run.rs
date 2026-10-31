@@ -100,8 +100,9 @@ pub(crate) struct RunArgs {
     /// Disable frame pointers in the compiled function.
     #[arg(long)]
     no_frame_pointers: bool,
-    #[arg(long, default_value = "1000000000")]
-    gas_limit: u64,
+    /// Transaction gas limit. Defaults to the fixture's, or the Osaka cap for bytecode.
+    #[arg(long)]
+    gas_limit: Option<u64>,
 }
 
 impl RunArgs {
@@ -169,9 +170,9 @@ impl RunArgs {
         let default_aot_dir = || std::env::temp_dir().join("evm2-cli").join(&bench_name);
         let mut aot_dir = None;
         let mut pending_jit = None;
+        let entry_bytecode = bench_entry.entry_bytecode()?;
 
         {
-            let bytecode = bench_entry.entry_bytecode()?;
             let compile_spec_id = bench_entry.spec_id;
 
             let mut compiler = EvmCompiler::new_llvm(self.aot)?;
@@ -199,7 +200,7 @@ impl RunArgs {
                 compiler.set_frame_pointers(false);
             }
 
-            let parsed = compiler.parse(bytecode.as_slice().into(), compile_spec_id)?;
+            let parsed = compiler.parse(entry_bytecode.as_slice(), compile_spec_id)?;
             if self.display || self.parse_only {
                 println!("{name}()\n{parsed:#}");
             }
@@ -243,7 +244,7 @@ impl RunArgs {
             } else if self.load.is_none() {
                 let func = unsafe { compiler.jit_function(f_id)? };
                 let mut functions = B256Map::default();
-                functions.insert(keccak256(&bytecode), func);
+                functions.insert(keccak256(&entry_bytecode), func);
                 compiler.clear_ir()?;
                 pending_jit = Some((compiler, functions));
             }
@@ -259,7 +260,8 @@ impl RunArgs {
         let (prepared, _compiler, _lib);
         if let Some(ref load_path) = load_path {
             let lib;
-            (prepared, lib) = PreparedBench::load_from_library(&bench_entry, load_path, name)?;
+            (prepared, lib) =
+                PreparedBench::load_from_library(&bench_entry, load_path, name, &entry_bytecode)?;
             _compiler = None;
             _lib = Some(lib);
         } else if let Some((mut compiler, functions)) = pending_jit {
@@ -277,7 +279,7 @@ impl RunArgs {
 
         match self.n_iters {
             0 => {}
-            1 if !self.interpret || self.jit_only => prepared.sanity_check()?,
+            1 if !self.interpret || self.jit_only => prepared.sanity_check(!self.no_gas)?,
             _ => {
                 if self.interpret || !self.jit_only {
                     bench(self.n_iters, &format!("{name}/interpreter"), || {
@@ -464,7 +466,7 @@ struct Bench {
     source: BenchSource,
     spec_id: SpecId,
     calldata: Option<Vec<u8>>,
-    gas_limit: u64,
+    gas_limit: Option<u64>,
     assert_success: bool,
 }
 
@@ -484,7 +486,7 @@ impl Bench {
             source: BenchSource::Fixture(bench.fixture_path),
             spec_id: spec,
             calldata: None,
-            gas_limit: u64::MAX,
+            gas_limit: None,
             assert_success: true,
         })
     }
@@ -514,7 +516,7 @@ fn fixture_from_bytecode(
     bytecode: Vec<u8>,
     spec_id: SpecId,
     calldata: Option<Vec<u8>>,
-    gas_limit: u64,
+    gas_limit: Option<u64>,
 ) -> Bench {
     Bench {
         name: name.into(),
@@ -583,20 +585,16 @@ impl PreparedBench {
         bench: &Bench,
         lib_path: &Path,
         symbol_name: &str,
+        entry_bytecode: &[u8],
     ) -> eyre::Result<(Self, libloading::Library)> {
-        let (name, accounts, block, db, tx) = parse_bench(bench)?;
+        let (name, _, block, db, tx) = parse_bench(bench)?;
         let lib = unsafe { libloading::Library::new(lib_path) }?;
-        let mut functions = B256Map::default();
-        for account in &accounts {
-            if account.bytecode.is_empty() || functions.contains_key(&account.code_hash) {
-                continue;
-            }
-            let func = unsafe {
-                let sym: libloading::Symbol<'_, EvmCompilerFn> = lib.get(symbol_name.as_bytes())?;
-                *sym
-            };
-            functions.insert(account.code_hash, func);
-        }
+        // The library holds only the entry contract; other contracts run on the interpreter.
+        let func = unsafe {
+            let sym: libloading::Symbol<'_, EvmCompilerFn> = lib.get(symbol_name.as_bytes())?;
+            *sym
+        };
+        let functions = B256Map::from_iter([(keccak256(entry_bytecode), func)]);
 
         Ok((
             Self {
@@ -623,7 +621,7 @@ impl PreparedBench {
         evm.transact(&self.tx).map(evm2::ExecutedTx::commit).map_err(Into::into)
     }
 
-    fn sanity_check(&self) -> eyre::Result<()> {
+    fn sanity_check(&self, compare_gas: bool) -> eyre::Result<()> {
         let interpreter = self.run_interpreter()?;
         let jit = self.run_jit()?;
         if self.assert_success {
@@ -636,7 +634,10 @@ impl PreparedBench {
             );
         }
         eyre::ensure!(
-            interpreter.status == jit.status,
+            interpreter.status == jit.status
+                && (!compare_gas
+                    || (interpreter.output == jit.output
+                        && interpreter.total_gas_spent == jit.total_gas_spent)),
             "interpreter and JIT results differ:\n  interpreter: {:?}\n  JIT: {:?}",
             interpreter,
             jit
@@ -725,7 +726,8 @@ fn parse_bytecode_bench(bench: &Bench, bytecode: &[u8]) -> eyre::Result<Prepared
     let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
     let code_hash = bytecode.hash_slow();
     db.insert_account_info(&BENCH_TARGET, AccountInfo::default().with_code(bytecode.clone()));
-    let gas_limit = bench.gas_limit();
+    let gas_limit =
+        bench.gas_limit.unwrap_or_else(|| Version::base(SpecId::OSAKA).tx_gas_limit_cap);
     let tx = TxLegacy {
         chain_id: None,
         nonce: 0,
@@ -807,7 +809,10 @@ fn build_fixture_tx(
         .gas_limit
         .get(indexes.gas)
         .ok_or_else(|| eyre::eyre!("fixture gas index {} does not exist", indexes.gas))?;
-    let gas_limit = u64_value(gas_limit)?.min(bench.gas_limit());
+    let gas_limit = match bench.gas_limit {
+        Some(gas_limit) => gas_limit,
+        None => u64_value(gas_limit)?,
+    };
     let value = *raw
         .value
         .get(indexes.value)
@@ -824,12 +829,6 @@ fn build_fixture_tx(
         input: data,
     };
     Ok(Recovered::new_unchecked(TxEnvelope::Legacy(tx), caller))
-}
-
-impl Bench {
-    fn gas_limit(&self) -> u64 {
-        self.gas_limit.min(Version::base(self.spec_id).tx_gas_limit_cap)
-    }
 }
 
 fn u128_value(value: U256) -> eyre::Result<u128> {

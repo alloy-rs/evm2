@@ -1,5 +1,6 @@
 use crate::tx::{AccessListItem, TestAuthorization};
 use alloy_eip7928::BlockAccessList;
+use alloy_eips::{eip4844::BLOB_TX_MIN_BLOB_GASPRICE, eip7840::BlobParams};
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, TxKind, U256};
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::collections::BTreeMap;
@@ -37,6 +38,9 @@ pub struct BlockchainTestCase {
     /// Seal engine type.
     #[serde(default)]
     pub seal_engine: SealEngine,
+    /// Chain configuration the test ran under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<ChainConfig>,
 }
 
 /// Historical block hash entry.
@@ -309,6 +313,12 @@ pub enum ForkSpec {
     PragueToOsakaAtTime15k,
     /// Osaka.
     Osaka,
+    /// BPO1 (Osaka with the first blob parameters only fork).
+    #[serde(rename = "BPO1")]
+    BPO1,
+    /// BPO2 (Osaka with the second blob parameters only fork).
+    #[serde(rename = "BPO2")]
+    BPO2,
     /// Osaka to BPO1 transition.
     OsakaToBPO1AtTime15k,
     /// BPO1 to BPO2 transition.
@@ -333,6 +343,54 @@ pub enum SealEngine {
     Ethash,
 }
 
+/// Chain configuration of a blockchain test case.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainConfig {
+    /// Chain ID.
+    pub chainid: U256,
+    /// Blob parameters of every fork up to the last fork the test runs.
+    #[serde(default)]
+    pub blob_schedule: BTreeMap<BlobFork, BlobScheduleEntry>,
+}
+
+/// A fork that sets the blob parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub enum BlobFork {
+    /// Cancun.
+    Cancun,
+    /// Prague.
+    Prague,
+    /// Osaka.
+    Osaka,
+    /// BPO1, a fork that only changes the blob parameters.
+    #[serde(rename = "BPO1")]
+    Bpo1,
+    /// BPO2, a fork that only changes the blob parameters.
+    #[serde(rename = "BPO2")]
+    Bpo2,
+    /// BPO3, a fork that only changes the blob parameters.
+    #[serde(rename = "BPO3")]
+    Bpo3,
+    /// BPO4, a fork that only changes the blob parameters.
+    #[serde(rename = "BPO4")]
+    Bpo4,
+    /// Amsterdam.
+    Amsterdam,
+}
+
+/// Blob parameters of one fork.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobScheduleEntry {
+    /// Target blobs per block.
+    pub target: U256,
+    /// Maximum blobs per block.
+    pub max: U256,
+    /// Blob base fee update fraction.
+    pub base_fee_update_fraction: U256,
+}
+
 /// Converts an optional address field that may be encoded as an empty string.
 fn deserialize_maybe_empty<'de, D>(deserializer: D) -> Result<Option<Address>, D::Error>
 where
@@ -353,6 +411,31 @@ where
 
 fn is_empty_bytes(bytes: &Bytes) -> bool {
     bytes.as_ref().is_empty()
+}
+
+impl BlobScheduleEntry {
+    /// Returns the blob parameters of this entry.
+    pub fn params(&self) -> BlobParams {
+        let max_blob_count = self.max.saturating_to();
+        BlobParams {
+            target_blob_count: self.target.saturating_to(),
+            max_blob_count,
+            update_fraction: self.base_fee_update_fraction.saturating_to(),
+            min_blob_fee: BLOB_TX_MIN_BLOB_GASPRICE,
+            max_blobs_per_tx: max_blob_count,
+            blob_base_cost: 0,
+        }
+    }
+}
+
+impl From<BlobParams> for BlobScheduleEntry {
+    fn from(params: BlobParams) -> Self {
+        Self {
+            target: U256::from(params.target_blob_count),
+            max: U256::from(params.max_blob_count),
+            base_fee_update_fraction: U256::from(params.update_fraction),
+        }
+    }
 }
 
 impl Transaction {

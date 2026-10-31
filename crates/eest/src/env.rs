@@ -2,26 +2,17 @@ use crate::{
     blockchaintest::env::explicit_blockchain_test_root_from_env,
     fixtures::{
         EEST_ONLY_ENV, EEST_STABLE_ENV, apply_subdir, apply_subdir_to_roots, env_flag,
-        fixtures_root, workspace_relative, workspace_root,
+        fixtures_root, workspace_relative,
     },
     harness::TestRoot,
 };
-use std::{
-    env,
-    path::{Path, PathBuf},
-};
+use std::{env, path::PathBuf};
 
 /// Environment variable for the state test root.
 pub(crate) const STATE_TEST_ROOT_ENV: &str = "EVM2_STATETEST_ROOT";
 
-/// Environment variable for selecting stable EEST fixtures instead of develop.
-pub(crate) const STATETEST_STABLE_ENV: &str = "EVM2_STATETEST_STABLE";
-
 /// Optional environment variable for selecting a subdirectory under the test root.
 pub(crate) const STATE_TEST_SUBDIR_ENV: &str = "SUBDIR";
-
-/// Optional repo-relative ethereum/tests checkout path.
-pub(crate) const DEFAULT_ETHEREUM_TESTS_PATH: &str = "tests/ethereum-tests";
 
 /// A named state-test root.
 pub(crate) type StateTestRoot = TestRoot;
@@ -58,8 +49,7 @@ pub(crate) fn state_test_roots() -> Vec<StateTestRoot> {
 /// exist.
 pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
     let fixtures = fixtures_root();
-    let ethereum_tests = workspace_root().join(DEFAULT_ETHEREUM_TESTS_PATH);
-    let eest_path = if env_flag(STATETEST_STABLE_ENV) || env_flag(EEST_STABLE_ENV) {
+    let eest_path = if env_flag(EEST_STABLE_ENV) {
         fixtures.join("main/stable/state_tests")
     } else {
         fixtures.join("main/develop/state_tests")
@@ -91,26 +81,6 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
         });
     }
 
-    if let Some(path) = general_state_tests_path(&ethereum_tests) {
-        roots.push(StateTestRoot {
-            name: "legacy::ethereum_tests".to_string(),
-            label: "ethereum/tests GeneralStateTests",
-            path,
-        });
-    }
-
     apply_subdir_to_roots(&mut roots, STATE_TEST_SUBDIR_ENV);
     roots
-}
-
-fn general_state_tests_path(root: &Path) -> Option<PathBuf> {
-    let sibling = root.parent().map(|parent| parent.join("GeneralStateTests"));
-    if let Some(path) = sibling
-        && path.is_dir()
-    {
-        return Some(path);
-    }
-
-    let path = root.join("GeneralStateTests");
-    path.is_dir().then_some(path)
 }

@@ -206,20 +206,11 @@ pub fn run_inner(
     let exp_len = U256::from_be_bytes(read_word_padded(input, 32).0);
     let mod_len = U256::from_be_bytes(read_word_padded(input, 64).0);
 
-    // Cast base and modulus to usize, it does not make sense to handle larger values
-    let base_len = usize::try_from(base_len).map_err(|_| PrecompileHalt::ModexpEip7823LimitSize)?;
-    let mod_len = usize::try_from(mod_len).map_err(|_| PrecompileHalt::ModexpEip7823LimitSize)?;
-    // cast exp len to the max size, it will fail later in gas calculation if it is too large.
-    let exp_len = usize::try_from(exp_len).unwrap_or(usize::MAX);
-
-    // for EIP-7823 we need to check size of inputs
-    if osaka
-        && (base_len > eip7823::INPUT_SIZE_LIMIT
-            || mod_len > eip7823::INPUT_SIZE_LIMIT
-            || exp_len > eip7823::INPUT_SIZE_LIMIT)
-    {
-        return Err(PrecompileHalt::ModexpEip7823LimitSize.into());
-    }
+    // Lengths that do not fit in 64 bits cost more gas than any call has.
+    let [base_len64, exp_len64, mod_len64] =
+        [base_len, exp_len, mod_len].map(|len| u64::try_from(len).unwrap_or(u64::MAX));
+    let [base_len, exp_len, mod_len] =
+        [base_len64, exp_len64, mod_len64].map(|len| usize::try_from(len).unwrap_or(usize::MAX));
 
     // Used to extract ADJUSTED_EXPONENT_LENGTH.
     let exp_highp_len = min(exp_len, 32);
@@ -237,8 +228,17 @@ pub fn run_inner(
     };
 
     // Check if we have enough gas.
-    let gas_cost = calc_gas(base_len as u64, exp_len as u64, mod_len as u64, &exp_highp);
+    let gas_cost = calc_gas(base_len64, exp_len64, mod_len64, &exp_highp);
     gas.spend(gas_cost.saturating_sub(min_gas))?;
+
+    // EIP-7823 limits the size of the inputs, after the gas is charged.
+    if osaka
+        && [base_len64, exp_len64, mod_len64]
+            .into_iter()
+            .any(|len| len > eip7823::INPUT_SIZE_LIMIT as u64)
+    {
+        return Err(PrecompileHalt::ModexpEip7823LimitSize.into());
+    }
 
     if base_len == 0 && mod_len == 0 {
         return Ok(PrecompileOutput::new(Bytes::new()));
@@ -599,6 +599,7 @@ mod tests {
             base_len: U256,
             exp_len: U256,
             mod_len: U256,
+            gas: u64,
             expected: Option<PrecompileHalt>,
         }
 
@@ -617,42 +618,69 @@ mod tests {
                 base_len: U256::from(1025),
                 exp_len: U256::from(1024),
                 mod_len: U256::from(1024),
+                gas: u64::MAX,
                 expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
                 base_len: U256::from(1024),
                 exp_len: U256::from(1025),
                 mod_len: U256::from(1024),
+                gas: u64::MAX,
                 expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
                 base_len: U256::from(1024),
                 exp_len: U256::from(1024),
                 mod_len: U256::from(1025),
+                gas: u64::MAX,
                 expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
                 base_len: U256::from(0),
                 exp_len: U256::from(0),
                 mod_len: U256::from(1025),
+                gas: u64::MAX,
                 expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
                 base_len: U256::from(1024),
                 exp_len: U256::from(1024),
                 mod_len: U256::from(1024),
+                gas: 100_000_000,
                 expected: Some(PrecompileHalt::OutOfGas),
+            },
+            TestInput {
+                base_len: U256::from(1) << 64,
+                exp_len: U256::from(1),
+                mod_len: U256::from(1),
+                gas: u64::MAX,
+                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
+            },
+            TestInput {
+                base_len: U256::from(1),
+                exp_len: U256::from(1) << 64,
+                mod_len: U256::from(1),
+                gas: u64::MAX,
+                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
+            },
+            TestInput {
+                base_len: U256::from(1),
+                exp_len: U256::from(1),
+                mod_len: U256::from(1) << 64,
+                gas: u64::MAX,
+                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
                 base_len: U256::from(0),
                 exp_len: U256::from(0),
                 mod_len: U256::from(0),
+                gas: 100_000_000,
                 expected: None,
             },
         ];
         for test in test_inputs {
             let input = test.input();
-            let res = run_osaka(&input, &mut GasTracker::new(100_000_000)).err();
+            let res = run_osaka(&input, &mut GasTracker::new(test.gas)).err();
             let halt = match &res {
                 Some(PrecompileError::Halt(halt)) => Some(halt),
                 None => None,
@@ -662,6 +690,31 @@ mod tests {
                 panic!("test failed: {test:?} result: {res:?}");
             }
         }
+    }
+
+    #[test]
+    fn oversized_lengths_are_charged_before_they_are_rejected() {
+        let input = |lengths: [U256; 3]| {
+            lengths.iter().flat_map(|len| len.to_be_bytes::<32>()).collect::<Vec<_>>()
+        };
+        let halt = |input: &[u8], run: fn(&[u8], &mut GasTracker) -> PrecompileResult| match run(
+            input,
+            &mut GasTracker::new(100_000),
+        ) {
+            Err(PrecompileError::Halt(halt)) => halt,
+            result => panic!("expected a halt, got {result:?}"),
+        };
+        // A length that does not fit in 64 bits costs more than any call can pay, on every fork.
+        for position in 0..3 {
+            let mut lengths = [U256::from(1); 3];
+            lengths[position] = U256::from(1) << 64;
+            for run in [run_byzantium, run_berlin, run_osaka] {
+                assert_eq!(halt(&input(lengths), run), PrecompileHalt::OutOfGas, "{position}");
+            }
+        }
+        // An Osaka length over the limit is out of gas when the gas does not cover its price.
+        let lengths = [U256::from(65_536), U256::from(1), U256::from(1)];
+        assert_eq!(halt(&input(lengths), run_osaka), PrecompileHalt::OutOfGas);
     }
 
     #[test]

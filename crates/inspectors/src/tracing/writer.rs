@@ -376,7 +376,8 @@ impl<W: Write> TraceWriter<W> {
 
         match &**decoded {
             DecodedTraceStep::InternalCall(call, end_idx) => {
-                let gas_used = node.trace.steps[*end_idx].gas_used.saturating_sub(step.gas_used);
+                let gas_used =
+                    step.gas_remaining.saturating_sub(node.trace.steps[*end_idx].gas_remaining);
 
                 self.write_branch()?;
                 self.indentation_level += 1;

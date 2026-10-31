@@ -2,8 +2,6 @@
 .vscode
 .idea
 /tmp
-/tests/GeneralStateTests
-/tests/BlockchainTests
 /test-fixtures
 __pycache__/
 

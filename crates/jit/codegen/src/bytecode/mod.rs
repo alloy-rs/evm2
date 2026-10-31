@@ -271,8 +271,12 @@ impl<'a> Bytecode<'a> {
             let (base_gas, stack_io) =
                 if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
                     (0, (0, 0))
+                } else if let Some(stack_io) = compute_stack_io(opcode, immediate) {
+                    (info.base_gas(), stack_io)
                 } else {
-                    (info.base_gas(), compute_stack_io(opcode, immediate))
+                    // Pays its static gas, then halts before touching the stack.
+                    flags |= InstFlags::INVALID_IMMEDIATE;
+                    (info.base_gas(), (0, 0))
                 };
 
             let data = match opcode {
@@ -361,7 +365,7 @@ impl<'a> Bytecode<'a> {
             redirects: FxHashMap::default(),
             cfg: Cfg::default(),
             config: AnalysisConfig::default(),
-            compiler_gas_limit: 100_000,
+            compiler_gas_limit: DEFAULT_COMPILER_GAS_LIMIT,
             compiler_gas_used: 0,
         }
     }
@@ -1226,6 +1230,7 @@ impl InstData {
         (self.opcode == op::JUMP && self.flags.contains(InstFlags::INVALID_JUMP))
             || self.flags.contains(InstFlags::DISABLED)
             || self.flags.contains(InstFlags::UNKNOWN)
+            || self.flags.contains(InstFlags::INVALID_IMMEDIATE)
             || matches!(
                 self.opcode,
                 op::STOP | op::RETURN | op::REVERT | op::INVALID | op::SELFDESTRUCT
@@ -1274,6 +1279,10 @@ bitflags::bitflags! {
         /// The host implements this opcode in a way compiled code cannot reproduce, so a
         /// program where it is reachable is not compiled.
         const UNSUPPORTED_HOST = 1 << 12;
+        /// The `DUPN`, `SWAPN`, or `EXCHANGE` immediate is invalid.
+        /// Always returns [`InvalidImmediateEncoding`](evm2::interpreter::InstrStop::InvalidImmediateEncoding)
+        /// at runtime.
+        const INVALID_IMMEDIATE = 1 << 13;
     }
 }
 
