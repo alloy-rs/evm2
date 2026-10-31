@@ -20,7 +20,6 @@ import io
 import json
 import os
 import re
-import statistics
 import subprocess
 import sys
 import uuid
@@ -46,6 +45,7 @@ from bench import (
     runtime_changed,
     time_changed,
 )
+from utils import geomean_pct, pct
 
 PERF_SITE_URL = "https://www.getfoundry.sh/perf/evm2/"
 # Metrics whose changes are deterministic and decide whether a benchmark changed.
@@ -128,19 +128,6 @@ def artifact_hashes(document: dict, test_id: str) -> dict[str, str]:
         for p in sorted(root.rglob("*"))
         if p.is_file()
     }
-
-
-def pct(before, after) -> float | None:
-    if before is None or after is None or before == 0:
-        return None
-    return (after - before) / before * 100
-
-
-def geomean_pct(pairs: list[tuple]) -> float | None:
-    ratios = [a / b for b, a in pairs if b and a and b > 0 and a > 0]
-    if not ratios:
-        return None
-    return (statistics.geometric_mean(ratios) - 1) * 100
 
 
 def fmt_change(value: float | None) -> str:

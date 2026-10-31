@@ -51,7 +51,9 @@ from utils import (
     cargo_build,
     cargo_env,
     eprint,
+    geomean_pct,
     get_benches,
+    pct,
     perf_available,
     perf_counts,
     repo_root,
@@ -138,17 +140,13 @@ def fmt_rel(pct: float) -> str:
 
 
 def fmt_pct(base: float | int, current: float | int) -> str:
-    if base == 0:
-        return "-"
-    return fmt_rel((current - base) / base * 100)
+    change = pct(base, current)
+    return "-" if change is None else fmt_rel(change)
 
 
 def fmt_geomean(pairs: list[tuple[float, float]]) -> str:
-    """Geometric mean of the current/base ratios, so every benchmark weighs the same."""
-    ratios = [c / b for b, c in pairs if b > 0 and c > 0]
-    if not ratios:
-        return "-"
-    return fmt_rel((statistics.geometric_mean(ratios) - 1) * 100)
+    change = geomean_pct(pairs)
+    return "-" if change is None else fmt_rel(change)
 
 
 def fmt_detail(current: str | int, base: str | int, diff: str) -> str:

@@ -33,6 +33,8 @@ from rich.progress import (
 )
 from rich.text import Text
 
+from common import repo_root
+
 MAIN_VERSION = os.environ.get("MAIN_VERSION", "v5.3.0")
 # ethereum/legacytests commit pinned by the `LegacyTests` submodule of ethereum/tests v17.2. The
 # ethereum/tests archives do not include submodules, so the tests are fetched from the submodule's
@@ -50,8 +52,7 @@ DEFAULT_EEST_VERSION = "tests%40v21.0.1"
 DEFAULT_EEST_TAR = "fixtures.tar.gz"
 LEGACY_URL = f"https://github.com/ethereum/legacytests/archive/{LEGACY_VERSION}.tar.gz"
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent
+REPO_ROOT = Path(repo_root())
 FIXTURES_DIR = Path(os.environ.get("EVM2_TEST_FIXTURES", REPO_ROOT / "test-fixtures"))
 
 MAIN_STABLE_DIR = FIXTURES_DIR / "main" / "stable"
