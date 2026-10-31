@@ -30,12 +30,13 @@ use alloy_eip7928::{BlockAccessList, validate_block_access_list};
 use alloy_eips::{
     eip2718::Typed2718,
     eip4844::DATA_GAS_PER_BLOB,
+    eip6110::{DEPOSIT_REQUEST_TYPE, MAINNET_DEPOSIT_CONTRACT_ADDRESS},
+    eip7002::WITHDRAWAL_REQUEST_TYPE,
+    eip7251::CONSOLIDATION_REQUEST_TYPE,
     eip7685::Requests,
     eip7840::{BLOB_BASE_COST, BlobParams},
 };
-use alloy_primitives::{
-    Address, B256, Bytes, KECCAK256_EMPTY, Log, U256, address, aliases::U512, b256,
-};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, U256, aliases::U512, b256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
@@ -62,9 +63,6 @@ const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 /// (2 MiB).
 const MAX_RLP_BLOCK_SIZE: usize = 10 * 1024 * 1024 - 2 * 1024 * 1024;
 
-/// EIP-6110 deposit contract address.
-const DEPOSIT_CONTRACT_ADDRESS: Address = address!("0x00000000219ab540356cbb839cbe05303d7705fa");
-
 /// First topic of the deposit contract's `DepositEvent`.
 const DEPOSIT_EVENT_SIGNATURE_HASH: B256 =
     b256!("0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5");
@@ -78,11 +76,10 @@ const DEPOSIT_EVENT_FIELDS: [(usize, usize); 5] =
 /// Length of an ABI-encoded `DepositEvent` payload.
 const DEPOSIT_EVENT_LENGTH: usize = 576;
 
-/// EIP-7685 request types.
-const DEPOSIT_REQUEST_TYPE: u8 = 0x00;
-const WITHDRAWAL_REQUEST_TYPE: u8 = 0x01;
-const CONSOLIDATION_REQUEST_TYPE: u8 = 0x02;
+/// EIP-8282 builder deposit request type.
 const BUILDER_DEPOSIT_REQUEST_TYPE: u8 = 0x03;
+
+/// EIP-8282 builder exit request type.
 const BUILDER_EXIT_REQUEST_TYPE: u8 = 0x04;
 
 /// Execution options for a single suite.
@@ -809,7 +806,9 @@ fn execute_block<'a>(
             return Err(TestError::case(path, name, err));
         }
 
-        if spec.enables(SpecId::PRAGUE)
+        // A captured case has no system contracts, so its requests omit the system call outputs.
+        if !captured
+            && spec.enables(SpecId::PRAGUE)
             && let Some(header) = block_header(block)
         {
             let computed = requests.requests_hash();
@@ -1140,6 +1139,7 @@ fn pre_block_system_calls(
     Ok(())
 }
 
+#[expect(clippy::too_many_arguments)]
 fn post_block_transition(
     evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
@@ -1280,7 +1280,7 @@ fn run_system_call(
 /// (execution-specs `parse_deposit_requests`).
 fn collect_deposit_requests(logs: &[Log], deposit_requests: &mut Vec<u8>) -> Result<(), String> {
     for log in logs {
-        if log.address == DEPOSIT_CONTRACT_ADDRESS
+        if log.address == MAINNET_DEPOSIT_CONTRACT_ADDRESS
             && log.topics().first() == Some(&DEPOSIT_EVENT_SIGNATURE_HASH)
         {
             extract_deposit_data(&log.data.data, deposit_requests)?;
