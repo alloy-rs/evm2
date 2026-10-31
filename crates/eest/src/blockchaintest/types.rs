@@ -2,6 +2,7 @@ use crate::tx::{AccessListItem, TestAuthorization};
 use alloy_eip7928::BlockAccessList;
 use alloy_eips::{eip4844::BLOB_TX_MIN_BLOB_GASPRICE, eip7840::BlobParams};
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, TxKind, U256};
+use evm2::SpecId;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::collections::BTreeMap;
 
@@ -333,6 +334,76 @@ pub enum ForkSpec {
     Amsterdam,
 }
 
+impl ForkSpec {
+    /// Returns the spec ID a fork runs under, or `None` for a transition fork, which runs under
+    /// several specs, and for the DAO fork.
+    pub const fn to_spec_id(self) -> Option<SpecId> {
+        Some(match self {
+            Self::Frontier => SpecId::FRONTIER,
+            Self::Homestead => SpecId::HOMESTEAD,
+            Self::EIP150 => SpecId::TANGERINE,
+            Self::EIP158 => SpecId::SPURIOUS_DRAGON,
+            Self::Byzantium => SpecId::BYZANTIUM,
+            Self::Constantinople | Self::ConstantinopleFix => SpecId::PETERSBURG,
+            Self::Istanbul => SpecId::ISTANBUL,
+            Self::Berlin => SpecId::BERLIN,
+            Self::London => SpecId::LONDON,
+            Self::Paris | Self::MergeEOF | Self::MergeMeterInitCode | Self::MergePush0 => {
+                SpecId::MERGE
+            }
+            Self::Shanghai => SpecId::SHANGHAI,
+            Self::Cancun => SpecId::CANCUN,
+            Self::Prague => SpecId::PRAGUE,
+            Self::Osaka | Self::BPO1 | Self::BPO2 => SpecId::OSAKA,
+            Self::Amsterdam => SpecId::AMSTERDAM,
+            Self::FrontierToHomesteadAt5
+            | Self::HomesteadToDaoAt5
+            | Self::HomesteadToEIP150At5
+            | Self::EIP158ToByzantiumAt5
+            | Self::ByzantiumToConstantinopleAt5
+            | Self::ByzantiumToConstantinopleFixAt5
+            | Self::BerlinToLondonAt5
+            | Self::ParisToShanghaiAtTime15k
+            | Self::ShanghaiToCancunAtTime15k
+            | Self::CancunToPragueAtTime15k
+            | Self::PragueToOsakaAtTime15k
+            | Self::OsakaToBPO1AtTime15k
+            | Self::BPO1ToBPO2AtTime15k
+            | Self::BPO2ToBPO3AtTime15k
+            | Self::BPO3ToBPO4AtTime15k
+            | Self::BPO2ToAmsterdamAtTime15k => return None,
+        })
+    }
+
+    /// Returns the fork that runs under `spec`, or `None` if no fork does.
+    ///
+    /// Osaka maps to the BPO fork that sets `blob_fork`, which only changes the blob parameters.
+    pub const fn from_spec_id(spec: SpecId, blob_fork: Option<BlobFork>) -> Option<Self> {
+        Some(match spec {
+            SpecId::FRONTIER => Self::Frontier,
+            SpecId::HOMESTEAD => Self::Homestead,
+            SpecId::TANGERINE => Self::EIP150,
+            SpecId::SPURIOUS_DRAGON => Self::EIP158,
+            SpecId::BYZANTIUM => Self::Byzantium,
+            SpecId::PETERSBURG => Self::ConstantinopleFix,
+            SpecId::ISTANBUL => Self::Istanbul,
+            SpecId::BERLIN => Self::Berlin,
+            SpecId::LONDON => Self::London,
+            SpecId::MERGE => Self::Paris,
+            SpecId::SHANGHAI => Self::Shanghai,
+            SpecId::CANCUN => Self::Cancun,
+            SpecId::PRAGUE => Self::Prague,
+            SpecId::OSAKA => match blob_fork {
+                Some(BlobFork::Bpo1) => Self::BPO1,
+                Some(BlobFork::Bpo2) => Self::BPO2,
+                _ => Self::Osaka,
+            },
+            SpecId::AMSTERDAM => Self::Amsterdam,
+            _ => return None,
+        })
+    }
+}
+
 /// Possible seal engines.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub enum SealEngine {
@@ -447,5 +518,24 @@ impl Transaction {
     /// Returns this transaction's target kind.
     pub(crate) fn kind(&self) -> TxKind {
         self.to.map_or(TxKind::Create, TxKind::Call)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_spec_id_maps_to_a_fork_that_runs_under_it() {
+        for value in 0..SpecId::COUNT as u32 {
+            let spec = SpecId::try_from_u32(value).unwrap();
+            let fork = ForkSpec::from_spec_id(spec, None).unwrap();
+            assert_eq!(fork.to_spec_id(), Some(spec));
+        }
+        assert_eq!(
+            ForkSpec::from_spec_id(SpecId::OSAKA, Some(BlobFork::Bpo2)),
+            Some(ForkSpec::BPO2)
+        );
+        assert_eq!(ForkSpec::BPO2ToAmsterdamAtTime15k.to_spec_id(), None);
     }
 }
