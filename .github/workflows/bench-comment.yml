@@ -45,6 +45,8 @@ jobs:
               ".github/workflows/bench.yml",
               "scripts/jit/bench.py",
               "scripts/jit/compare.py",
+              "scripts/jit/utils.py",
+              "scripts/common.py",
             ];
             let behind = false;
             try {
