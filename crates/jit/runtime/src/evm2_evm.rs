@@ -5,6 +5,7 @@ use evm2::{
     EvmTypesHost, ExecutionConfig, InterpreterRunner,
     interpreter::{Host, InstrStop, Interpreter},
 };
+use evm2_jit_context::can_run_compiled;
 
 /// External interpreter runner backed by [`JitBackend`].
 #[derive(Clone, Debug)]
@@ -80,11 +81,10 @@ fn run_supported<'frame, 'host, T: EvmTypesHost>(
     host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
     // Disabled runners must not hash code merely to discover that lookup is unavailable.
-    // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
     if !backend.enabled() {
         return None;
     }
-    if interpreter.gas().remaining() > i64::MAX as u64 {
+    if !can_run_compiled(interpreter) {
         backend.count_interpreter_fallback();
         return None;
     }
