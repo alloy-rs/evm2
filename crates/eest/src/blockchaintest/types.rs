@@ -1,7 +1,11 @@
 use crate::tx::{AccessListItem, TestAuthorization};
 use alloy_eip7928::BlockAccessList;
-use alloy_eips::{eip4844::BLOB_TX_MIN_BLOB_GASPRICE, eip7840::BlobParams};
+use alloy_eips::{
+    eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
+    eip7840::{BLOB_BASE_COST, BlobParams},
+};
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, TxKind, U256};
+use evm2::SpecId;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::collections::BTreeMap;
 
@@ -414,8 +418,10 @@ fn is_empty_bytes(bytes: &Bytes) -> bool {
 }
 
 impl BlobScheduleEntry {
-    /// Returns the blob parameters of this entry.
-    pub fn params(&self) -> BlobParams {
+    /// Returns the blob parameters of this entry under the spec that is active.
+    ///
+    /// The reserve price of EIP-7918 comes from the spec, not from the fixture's schedule.
+    pub fn params(&self, spec: SpecId) -> BlobParams {
         let max_blob_count = self.max.saturating_to();
         BlobParams {
             target_blob_count: self.target.saturating_to(),
@@ -423,7 +429,7 @@ impl BlobScheduleEntry {
             update_fraction: self.base_fee_update_fraction.saturating_to(),
             min_blob_fee: BLOB_TX_MIN_BLOB_GASPRICE,
             max_blobs_per_tx: max_blob_count,
-            blob_base_cost: 0,
+            blob_base_cost: if spec.enables(SpecId::OSAKA) { BLOB_BASE_COST } else { 0 },
         }
     }
 }
