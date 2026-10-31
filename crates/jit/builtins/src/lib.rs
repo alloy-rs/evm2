@@ -18,7 +18,10 @@ use evm2::{
     BaseEvmTypes, EvmTypesHost,
     bytecode::Bytecode,
     constants::BLOCK_HASH_HISTORY,
-    interpreter::{Host, MessageExt, MessageKind, Word, derive_create_destination, i256},
+    interpreter::{
+        Host, MessageExt, MessageKind, Word, create_preaccess_failure, derive_create_destination,
+        i256,
+    },
     utils::read_word_padded,
     version::{EvmFeatures, GasId},
 };
@@ -675,9 +678,14 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     if ecx.enables(EvmFeatures::EIP8037) {
         // `caller_info` is always `Some` when EIP-8037 is enabled.
         if let Some(caller_info) = caller_info.as_ref()
-            && (caller_info.balance < value
-                || caller_info.nonce == u64::MAX
-                || depth > ecx.version().max_call_depth())
+            && create_preaccess_failure(
+                caller_info.balance,
+                caller_info.nonce,
+                value,
+                depth,
+                ecx.version(),
+            )
+            .is_some()
         {
             unsafe {
                 sp.write(EvmWord::ZERO);

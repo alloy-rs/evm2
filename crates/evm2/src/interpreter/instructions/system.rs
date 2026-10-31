@@ -5,7 +5,7 @@ use crate::{
     bytecode::Bytecode,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, MessageResult,
-        Result, StackMut, Word, derive_create_destination,
+        Result, StackMut, Word, create_preaccess_failure, derive_create_destination,
     },
     utils::WordExt,
     version::GasId,
@@ -411,9 +411,14 @@ pub fn create_with<T: EvmTypesHost>(
     if state.feature(EvmFeatures::EIP8037) {
         // `caller_info` is always `Some` when EIP-8037 is enabled.
         if let Some(caller_info) = caller_info.as_ref()
-            && (caller_info.balance < value
-                || caller_info.nonce == u64::MAX
-                || depth > state.version().max_call_depth())
+            && create_preaccess_failure(
+                caller_info.balance,
+                caller_info.nonce,
+                value,
+                depth,
+                state.version(),
+            )
+            .is_some()
         {
             state.clear_return_data();
             stack.push_u64(0)?;
