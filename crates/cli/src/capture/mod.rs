@@ -8,7 +8,7 @@ mod rpc;
 
 pub(crate) use error::CaptureError;
 
-use crate::{args::Capture, error::Result, ethereum, style};
+use crate::{args::Capture, error::Result, ethereum, fixture, style};
 use alloy_consensus::{
     Block as ConsensusBlock, EthereumTxEnvelope, TxEip4844, transaction::SignerRecoverable,
 };
@@ -61,6 +61,9 @@ async fn capture(
     if from > to {
         return Err(CaptureError::InvalidRange { from, to });
     }
+    if !fixture::is_binary_path(&command.output) {
+        return Err(CaptureError::OutputNotBinary(command.output.clone()));
+    }
 
     let started_at = Instant::now();
     let rpc = rpc::RpcEndpoint::parse(
@@ -73,6 +76,8 @@ async fn capture(
     let mut block_inputs = Vec::with_capacity((to - from + 1) as usize);
     let mut transaction_count = 0usize;
 
+    let parent_number = from.checked_sub(1).ok_or(CaptureError::GenesisHasNoParent)?;
+    let parent_header = rpc.header(parent_number).await?;
     builder.capture_block_hashes(&rpc, from).await?;
     let mut blocks = stream::iter(from..=to)
         .map(|number| fetch_block(&rpc, number))
@@ -143,7 +148,10 @@ async fn capture(
         next_block += 1;
     }
 
-    let capture = builder.finish(block_inputs);
+    let last = block_inputs.last().expect("capture is not empty");
+    let spec = ethereum::mainnet_spec_for_header(&last.block.header);
+    builder.capture_system_contracts(&rpc, parent_number, spec).await?;
+    let capture = builder.finish(parent_header, block_inputs);
     let base_accounts = capture.pre_state.accounts.len();
     let base_storage_slots =
         capture.pre_state.accounts.iter().map(|account| account.storage.len()).sum();

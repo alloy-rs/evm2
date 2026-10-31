@@ -2,16 +2,34 @@ use super::{
     CaptureError,
     overlay::Overlay,
     parse::{parse_address, parse_b256, parse_bytes, parse_u64, parse_u256},
-    rpc::RpcEndpoint,
+    rpc::{RpcAccount, RpcEndpoint},
 };
 use crate::capture::model::{
     AccountState, BlockHash, CapturedBlock, CapturedBlocks, CapturedCase, CapturedInput,
     CapturedVersions, Code, CodeTable, State, StorageEntry,
 };
+use alloy_consensus::Header;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, keccak256};
-use futures_util::{StreamExt, stream};
+use evm2::evm::{
+    BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS,
+    WITHDRAWAL_REQUEST_ADDRESS,
+};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+
+/// The storage layout shared by the EIP-7002 and EIP-7251 request queue contracts.
+const QUEUE_EXCESS_SLOT: u64 = 0;
+const QUEUE_COUNT_SLOT: u64 = 1;
+const QUEUE_HEAD_SLOT: u64 = 2;
+const QUEUE_TAIL_SLOT: u64 = 3;
+const QUEUE_OFFSET_SLOT: u64 = 4;
+/// Slots per queued entry: source address, then the 48 byte pubkey and amount (EIP-7002).
+const WITHDRAWAL_ENTRY_SLOTS: u64 = 3;
+/// Slots per queued entry: source address, then the source and target pubkeys (EIP-7251).
+const CONSOLIDATION_ENTRY_SLOTS: u64 = 4;
+/// The consensus layer drops consolidation requests beyond this queue length (EIP-7251).
+const MAX_QUEUE_LEN: u64 = 262_144;
 
 #[derive(Default)]
 pub(super) struct CaptureBuilder {
@@ -141,7 +159,60 @@ impl CaptureBuilder {
         Ok(())
     }
 
-    pub(super) fn finish(self, mut block_inputs: Vec<CapturedBlock>) -> CapturedCase {
+    /// Captures the system contracts that the blocks call after their transactions.
+    ///
+    /// Block execution requires their code and, for the request queues, their queue storage, but
+    /// transaction traces never touch them at the state that the system calls start from. The
+    /// base pre-state therefore reads them as of the block before the first captured block. For
+    /// the slots a system call reads or writes, that replaces what the traces recorded: a trace
+    /// sees the contract after the system calls of earlier blocks in the range, which replay
+    /// executes itself. The other slots stay as the traces recorded them. Request transactions
+    /// write queue entries at the tail, and a drained queue leaves its old entries in storage,
+    /// which the gas of those writes depends on. The builder request contracts are captured with
+    /// code only.
+    pub(super) async fn capture_system_contracts(
+        &mut self,
+        rpc: &RpcEndpoint,
+        parent_number: u64,
+        spec: evm2::SpecId,
+    ) -> Result<(), CaptureError> {
+        for contract in system_contracts(spec) {
+            let account = rpc.account(contract.address, parent_number).await?;
+            let storage = match contract.queue_entry_slots {
+                Some(entry_slots) => {
+                    read_queue_storage(rpc, contract.address, entry_slots, parent_number).await?
+                }
+                None => Vec::new(),
+            };
+            self.capture_system_contract(contract.address, account, storage)?;
+        }
+        Ok(())
+    }
+
+    fn capture_system_contract(
+        &mut self,
+        address: Address,
+        account: RpcAccount,
+        storage: Vec<StorageEntry>,
+    ) -> Result<(), CaptureError> {
+        let code_hash = self.insert_code(account.code)?;
+        let state = self.account_state(address);
+        state.balance = account.balance;
+        state.nonce = account.nonce;
+        state.code_hash = code_hash;
+        state.storage.retain(|entry| storage.iter().all(|read| read.slot != entry.slot));
+        state.storage.extend(storage.into_iter().filter(|entry| !entry.value.is_zero()));
+        self.captured_balances.insert(address);
+        self.captured_nonces.insert(address);
+        self.captured_codes.insert(address);
+        Ok(())
+    }
+
+    pub(super) fn finish(
+        self,
+        parent_header: Header,
+        mut block_inputs: Vec<CapturedBlock>,
+    ) -> CapturedCase {
         let input = if block_inputs.len() == 1 {
             CapturedInput::Block(Box::new(block_inputs.pop().expect("single block exists")))
         } else {
@@ -166,6 +237,7 @@ impl CaptureBuilder {
                     .collect(),
             },
             post_state: None,
+            parent_header,
             input,
         }
     }
@@ -224,20 +296,8 @@ impl CaptureBuilder {
                     return Ok(());
                 }
                 if let Some(code) = account.get("code") {
-                    let bytecode = parse_bytes(code)?;
-                    let code_hash =
-                        if bytecode.is_empty() { KECCAK256_EMPTY } else { keccak256(&bytecode) };
-                    match self.codes.entry(code_hash) {
-                        Entry::Vacant(entry) => {
-                            entry.insert(bytecode);
-                        }
-                        Entry::Occupied(entry) if entry.get() == &bytecode => {}
-                        Entry::Occupied(_) => {
-                            return Err(CaptureError::CodeHashCollision { code_hash });
-                        }
-                    }
-                    let state = self.account_state(address);
-                    state.code_hash = code_hash;
+                    let code_hash = self.insert_code(parse_bytes(code)?)?;
+                    self.account_state(address).code_hash = code_hash;
                     self.captured_codes.insert(address);
                 }
             }
@@ -247,6 +307,18 @@ impl CaptureBuilder {
             return Ok(());
         }
         Ok(())
+    }
+
+    fn insert_code(&mut self, bytecode: Bytes) -> Result<B256, CaptureError> {
+        let code_hash = if bytecode.is_empty() { KECCAK256_EMPTY } else { keccak256(&bytecode) };
+        match self.codes.entry(code_hash) {
+            Entry::Vacant(entry) => {
+                entry.insert(bytecode);
+            }
+            Entry::Occupied(entry) if entry.get() == &bytecode => {}
+            Entry::Occupied(_) => return Err(CaptureError::CodeHashCollision { code_hash }),
+        }
+        Ok(code_hash)
     }
 
     fn account_state(&mut self, address: Address) -> &mut AccountState {
@@ -331,6 +403,95 @@ fn is_absent_account_probe(account: &Map<String, Value>) -> Result<bool, Capture
     Ok(true)
 }
 
+/// A system contract that a block calls after its transactions and requires to have code.
+struct SystemContract {
+    address: Address,
+    /// The storage slots of one entry of its request queue, if it keeps the EIP-7002 queue layout.
+    queue_entry_slots: Option<u64>,
+}
+
+/// Returns the system contracts that a block of this spec calls after its transactions.
+fn system_contracts(spec: evm2::SpecId) -> Vec<SystemContract> {
+    let mut contracts = Vec::new();
+    if spec.enables(evm2::SpecId::PRAGUE) {
+        contracts.push(SystemContract {
+            address: WITHDRAWAL_REQUEST_ADDRESS,
+            queue_entry_slots: Some(WITHDRAWAL_ENTRY_SLOTS),
+        });
+        contracts.push(SystemContract {
+            address: CONSOLIDATION_REQUEST_ADDRESS,
+            queue_entry_slots: Some(CONSOLIDATION_ENTRY_SLOTS),
+        });
+    }
+    if spec.enables(evm2::SpecId::AMSTERDAM) {
+        contracts.push(SystemContract {
+            address: BUILDER_DEPOSIT_REQUEST_ADDRESS,
+            queue_entry_slots: None,
+        });
+        contracts.push(SystemContract {
+            address: BUILDER_EXIT_REQUEST_ADDRESS,
+            queue_entry_slots: None,
+        });
+    }
+    contracts
+}
+
+/// Reads the storage that a system call of a request queue contract starts from.
+async fn read_queue_storage(
+    rpc: &RpcEndpoint,
+    address: Address,
+    entry_slots: u64,
+    block_number: u64,
+) -> Result<Vec<StorageEntry>, CaptureError> {
+    let (head, tail) = tokio::try_join!(
+        rpc.storage(address, U256::from(QUEUE_HEAD_SLOT), block_number),
+        rpc.storage(address, U256::from(QUEUE_TAIL_SLOT), block_number),
+    )?;
+    let slots = queue_slots(address, entry_slots, head, tail)?;
+    let mut entries = stream::iter(slots)
+        .map(|slot| async move {
+            let value = rpc.storage(address, slot, block_number).await?;
+            Ok::<_, CaptureError>(StorageEntry { slot: B256::from(slot), value })
+        })
+        .buffer_unordered(rpc.max_concurrent_requests())
+        .try_collect::<Vec<_>>()
+        .await?;
+    entries.sort_by_key(|entry| entry.slot);
+    Ok(entries)
+}
+
+/// Returns every storage slot of an EIP-7002 style request queue contract that a system call
+/// can read or that a later one will: the excess, count, head and tail slots, and all slots of
+/// the entries from the head up to the tail.
+fn queue_slots(
+    address: Address,
+    entry_slots: u64,
+    head: U256,
+    tail: U256,
+) -> Result<Vec<U256>, CaptureError> {
+    let invalid = || CaptureError::InvalidQueuePointers { address, head, tail };
+    let head = u64::try_from(head).map_err(|_| invalid())?;
+    let tail = u64::try_from(tail).map_err(|_| invalid())?;
+    if head > tail || tail - head > MAX_QUEUE_LEN {
+        return Err(invalid());
+    }
+    let mut slots = vec![
+        U256::from(QUEUE_EXCESS_SLOT),
+        U256::from(QUEUE_COUNT_SLOT),
+        U256::from(QUEUE_HEAD_SLOT),
+        U256::from(QUEUE_TAIL_SLOT),
+    ];
+    for index in head..tail {
+        let first = index
+            .checked_mul(entry_slots)
+            .and_then(|offset| offset.checked_add(QUEUE_OFFSET_SLOT))
+            .ok_or_else(invalid)?;
+        let end = first.checked_add(entry_slots).ok_or_else(invalid)?;
+        slots.extend((first..end).map(U256::from));
+    }
+    Ok(slots)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,6 +530,94 @@ mod tests {
 
         assert!(!builder.accounts.contains_key(&address));
         assert!(!builder.captured_balances.contains(&address));
+    }
+
+    #[test]
+    fn system_contract_capture_replaces_only_the_slots_it_read() {
+        let address = WITHDRAWAL_REQUEST_ADDRESS;
+        let mut builder = CaptureBuilder::mainnet();
+        let slot = |byte| B256::with_last_byte(byte).to_string();
+        let pre = account_trace(
+            address,
+            json!({
+                "balance": "0x1",
+                "nonce": 1,
+                "code": "0x60",
+                "storage": { slot(1): "0x5", slot(9): "0x7" },
+            }),
+        );
+        builder.capture_base_requirements(1, 0, &pre, &Overlay::default()).unwrap();
+
+        let account =
+            RpcAccount { balance: U256::from(9), nonce: 2, code: Bytes::from_static(&[1]) };
+        let storage = vec![
+            StorageEntry { slot: B256::with_last_byte(1), value: U256::ZERO },
+            StorageEntry { slot: B256::with_last_byte(2), value: U256::from(3) },
+        ];
+        builder.capture_system_contract(address, account, storage).unwrap();
+
+        let account = builder.accounts.get(&address).unwrap();
+        assert_eq!(account.balance, U256::from(9));
+        assert_eq!(account.nonce, 2);
+        assert_eq!(builder.codes.get(&account.code_hash).unwrap().as_ref(), &[1]);
+        let mut slots = account.storage.iter().map(|entry| entry.slot).collect::<Vec<_>>();
+        slots.sort();
+        assert_eq!(slots, [B256::with_last_byte(2), B256::with_last_byte(9)]);
+    }
+
+    #[test]
+    fn system_contract_capture_reads_an_untouched_contract() {
+        let address = WITHDRAWAL_REQUEST_ADDRESS;
+        let mut builder = CaptureBuilder::mainnet();
+
+        let account =
+            RpcAccount { balance: U256::from(9), nonce: 1, code: Bytes::from_static(&[1]) };
+        builder.capture_system_contract(address, account, Vec::new()).unwrap();
+
+        let account = builder.accounts.get(&address).unwrap();
+        assert_eq!(account.balance, U256::from(9));
+        assert_eq!(account.nonce, 1);
+        assert_eq!(builder.codes.get(&account.code_hash).unwrap().as_ref(), &[1]);
+    }
+
+    #[test]
+    fn system_contracts_follow_the_spec() {
+        assert!(system_contracts(evm2::SpecId::CANCUN).is_empty());
+        assert_eq!(system_contracts(evm2::SpecId::OSAKA).len(), 2);
+        assert_eq!(system_contracts(evm2::SpecId::AMSTERDAM).len(), 4);
+    }
+
+    #[test]
+    fn queue_slots_cover_every_entry_between_head_and_tail() {
+        let address = WITHDRAWAL_REQUEST_ADDRESS;
+        let slots = |entry_slots, head, tail| {
+            queue_slots(address, entry_slots, U256::from(head), U256::from(tail))
+                .unwrap()
+                .into_iter()
+                .map(|slot| slot.to::<u64>())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(slots(3, 0, 0), [0, 1, 2, 3]);
+        // Entries 2 and 3 of three slots each start at slots 10 and 13.
+        assert_eq!(slots(3, 2, 4), [0, 1, 2, 3, 10, 11, 12, 13, 14, 15]);
+        // Entry 1 of four slots starts at slot 8.
+        assert_eq!(slots(4, 1, 2), [0, 1, 2, 3, 8, 9, 10, 11]);
+    }
+
+    #[test]
+    fn queue_slots_reject_a_queue_beyond_the_limit() {
+        let err =
+            queue_slots(WITHDRAWAL_REQUEST_ADDRESS, 3, U256::ZERO, U256::from(MAX_QUEUE_LEN + 1));
+
+        assert!(matches!(err, Err(CaptureError::InvalidQueuePointers { .. })));
+    }
+
+    #[test]
+    fn queue_slots_reject_a_head_past_the_tail() {
+        let err = queue_slots(WITHDRAWAL_REQUEST_ADDRESS, 3, U256::from(2), U256::from(1));
+
+        assert!(matches!(err, Err(CaptureError::InvalidQueuePointers { .. })));
     }
 
     #[test]

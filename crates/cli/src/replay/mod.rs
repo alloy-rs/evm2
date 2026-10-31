@@ -157,7 +157,9 @@ fn replay_file(path: &Path, options: &ReplayOptions) -> Result<FileReplay> {
                 trace: options.trace,
                 print_json_outcome: options.print_json_outcome,
                 dump_state: options.dump_state,
-                compare_state_root: true,
+                // Binary fixtures come from `evm2 capture`, which keeps only the accounts the
+                // blocks touch, so their state roots can't be reproduced.
+                compare_state_root: false,
                 compare_receipt_root: true,
                 ..Default::default()
             },

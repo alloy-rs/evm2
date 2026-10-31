@@ -12,6 +12,7 @@
 //! mixing RPC trace interpretation with JSON layout details.
 
 use super::MainnetBlock;
+use alloy_consensus::Header;
 use alloy_primitives::{Address, B256, Bytes, U256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +21,8 @@ pub(super) struct CapturedCase {
     pub(super) code_table: CodeTable,
     pub(super) pre_state: State,
     pub(super) post_state: Option<State>,
+    /// The header of the block before the first captured block.
+    pub(super) parent_header: Header,
     pub(super) input: CapturedInput,
 }
 

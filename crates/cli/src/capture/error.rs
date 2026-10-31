@@ -4,12 +4,16 @@ use alloy_primitives::{Address, B256, U256};
 pub(crate) enum CaptureError {
     #[error("invalid block range: from {from} is greater than to {to}")]
     InvalidRange { from: u64, to: u64 },
+    #[error("capture output {} must be a binary fixture (.bin or .bin.zst)", .0.display())]
+    OutputNotBinary(std::path::PathBuf),
     #[error("invalid RPC URL: {0}")]
     InvalidRpcUrl(String),
     #[error("RPC transport request failed")]
     Transport(#[from] alloy_provider::transport::TransportError),
     #[error("RPC did not return block header {0}")]
     MissingBlockHeader(u64),
+    #[error("block 0 has no parent header to capture")]
+    GenesisHasNoParent,
     #[error("RPC did not return block {0}")]
     MissingBlock(u64),
     #[error("failed to create Tokio runtime for capture")]
@@ -31,6 +35,8 @@ pub(crate) enum CaptureError {
     },
     #[error("invalid trace result: {0}")]
     InvalidTraceResult(&'static str),
+    #[error("system contract {address} has invalid queue pointers: head {head}, tail {tail}")]
+    InvalidQueuePointers { address: Address, head: U256, tail: U256 },
     #[error("invalid hex value {0}")]
     InvalidHex(String),
     #[error("invalid integer value {0}")]

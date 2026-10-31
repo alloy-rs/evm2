@@ -1,5 +1,6 @@
 use super::{CaptureError, MainnetBlock};
-use alloy_primitives::B256;
+use alloy_consensus::Header;
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_provider::{Provider, RootProvider};
 use alloy_rpc_client::RpcClient;
 use alloy_rpc_types_eth::BlockNumberOrTag;
@@ -15,6 +16,12 @@ const RPC_COMPUTE_UNITS_PER_SECOND: u64 = 330;
 pub(super) enum TraceMode {
     PreState,
     Diff,
+}
+
+pub(super) struct RpcAccount {
+    pub(super) balance: U256,
+    pub(super) nonce: u64,
+    pub(super) code: Bytes,
 }
 
 #[derive(Clone)]
@@ -58,6 +65,44 @@ impl RpcEndpoint {
             })
             .await?;
         block.map(Into::into).ok_or(CaptureError::MissingBlock(block_number))
+    }
+
+    pub(super) async fn header(&self, block_number: u64) -> Result<Header, CaptureError> {
+        let header = self
+            .call(|| self.provider.get_header_by_number(BlockNumberOrTag::Number(block_number)))
+            .await?;
+        header.map(|header| header.inner).ok_or(CaptureError::MissingBlockHeader(block_number))
+    }
+
+    /// Returns the balance, nonce and code of an account after this block.
+    pub(super) async fn account(
+        &self,
+        address: Address,
+        block_number: u64,
+    ) -> Result<RpcAccount, CaptureError> {
+        let block = BlockNumberOrTag::Number(block_number);
+        let (balance, nonce, code) = tokio::try_join!(
+            self.call(|| async { self.provider.get_balance(address).block_id(block.into()).await }),
+            self.call(|| async {
+                self.provider.get_transaction_count(address).block_id(block.into()).await
+            }),
+            self.call(|| async { self.provider.get_code_at(address).block_id(block.into()).await }),
+        )?;
+        Ok(RpcAccount { balance, nonce, code })
+    }
+
+    /// Returns a storage slot of an account after this block.
+    pub(super) async fn storage(
+        &self,
+        address: Address,
+        slot: U256,
+        block_number: u64,
+    ) -> Result<U256, CaptureError> {
+        let block = BlockNumberOrTag::Number(block_number);
+        self.call(|| async {
+            self.provider.get_storage_at(address, slot).block_id(block.into()).await
+        })
+        .await
     }
 
     pub(super) async fn block_hash(&self, block_number: u64) -> Result<B256, CaptureError> {
