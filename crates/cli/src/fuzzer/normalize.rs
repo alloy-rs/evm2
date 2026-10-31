@@ -151,9 +151,9 @@ impl fmt::Display for FuzzError {
 impl From<HandlerError> for FuzzError {
     fn from(error: HandlerError) -> Self {
         match error {
-            HandlerError::IntrinsicGasTooLow { .. } | HandlerError::GasLimitBelowFloor { .. } => {
-                Self::IntrinsicGasTooLow
-            }
+            HandlerError::IntrinsicGasTooLow { .. }
+            | HandlerError::GasLimitBelowFloor { .. }
+            | HandlerError::IntrinsicGasGreaterThanCap { .. } => Self::IntrinsicGasTooLow,
             HandlerError::InsufficientFunds { .. } => Self::InsufficientFunds,
             HandlerError::InvalidNonce { .. } => Self::InvalidNonce,
             HandlerError::NonceOverflow => Self::NonceOverflow,
@@ -177,12 +177,6 @@ impl From<HandlerError> for FuzzError {
             }
             HandlerError::TxGasLimitGreaterThanCap { gas_limit, cap } => {
                 Self::Transaction(InvalidTransaction::TxGasLimitGreaterThanCap { gas_limit, cap })
-            }
-            HandlerError::IntrinsicGasGreaterThanCap { required, cap } => {
-                Self::Transaction(InvalidTransaction::TxGasLimitGreaterThanCap {
-                    gas_limit: required,
-                    cap,
-                })
             }
             error @ (HandlerError::Database(_)
             | HandlerError::Fatal(_)
@@ -378,9 +372,9 @@ mod tests {
             (HandlerError::UnsupportedTransactionType(4), InvalidTransaction::Eip7702NotSupported),
             (
                 HandlerError::IntrinsicGasGreaterThanCap { required: 17_000_000, cap: 16_777_216 },
-                InvalidTransaction::TxGasLimitGreaterThanCap {
-                    gas_limit: 17_000_000,
-                    cap: 16_777_216,
+                InvalidTransaction::GasFloorMoreThanGasLimit {
+                    gas_floor: 17_000_000,
+                    gas_limit: 16_777_216,
                 },
             ),
             (HandlerError::EmptyBlobs, InvalidTransaction::EmptyBlobs),
