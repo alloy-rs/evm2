@@ -59,6 +59,9 @@ pub(crate) struct RuntimeStatsGauges {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RuntimeStatsSnapshot {
     /// Total lookups that returned a compiled function.
+    ///
+    /// Callers add hits in per-thread batches, so a snapshot can lag by up to
+    /// `HIT_FLUSH_INTERVAL - 1` hits per thread.
     pub lookup_hits: u64,
     /// Total lookups that returned interpret (not ready).
     pub lookup_misses: u64,

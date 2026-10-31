@@ -1,6 +1,6 @@
 //! evm2 JIT interpreter dispatch helpers.
 
-use crate::runtime::{JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
+use crate::runtime::{JitBackend, RuntimeCacheKey};
 use evm2::{
     EvmTypesHost, ExecutionConfig, InterpreterRunner,
     interpreter::{Host, InstrStop, Interpreter},
@@ -89,16 +89,12 @@ fn run_supported<'frame, 'host, T: EvmTypesHost>(
         return None;
     }
     let code_hash = interpreter.original_bytecode_hash();
-    let code = interpreter.original_bytecode();
-    let decision = backend.lookup(LookupRequest {
-        key: RuntimeCacheKey { code_hash, spec_id: host.execution_config().base_spec_id() },
-        code,
-    });
-
-    let program = match decision {
-        LookupDecision::Compiled(program) => program,
-        LookupDecision::Unavailable(_) => return None,
-    };
+    let key = RuntimeCacheKey { code_hash, spec_id: host.execution_config().base_spec_id() };
+    let program = backend
+        .lookup_local(key, interpreter.original_bytecode_slice(), || {
+            interpreter.original_bytecode()
+        })
+        .ok()?;
 
     interpreter.prepare_run(host);
     Some(unsafe { program.func.call_with_interpreter(interpreter) })
@@ -118,7 +114,7 @@ mod tests {
     };
 
     #[cfg(feature = "llvm")]
-    use crate::runtime::RuntimeConfig;
+    use crate::runtime::{LookupDecision, LookupRequest, RuntimeConfig};
     #[cfg(feature = "llvm")]
     use alloy_primitives::{Address, hex};
     #[cfg(feature = "llvm")]

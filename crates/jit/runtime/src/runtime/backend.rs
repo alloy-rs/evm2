@@ -40,12 +40,21 @@ use evm2_jit_context::RawEvmCompilerFn;
 /// The resident map type: code_hash+spec_id → compiled program.
 pub(crate) type ResidentMap = DashMap<RuntimeCacheKey, Arc<CompiledProgram>, DefaultHashBuilder>;
 
+/// A lookup observed by a caller thread.
+#[derive(Debug)]
+pub(crate) enum LookupEvent {
+    /// A thread served `key` from its cache, which refreshes the key's last-hit time.
+    Hit(RuntimeCacheKey),
+    /// No compiled program was available: the backend tracks the bytecode's hotness.
+    Miss(LookupRequest),
+}
+
 /// Bounded MPMC lock-free queue of lookup-observed events.
 ///
-/// Producers (lookup hot path) push without blocking; on overflow the event
-/// is silently dropped (`stats.events_dropped` is bumped). The backend
+/// Producers (lookup misses and per-thread hit reports) push without blocking; on overflow the
+/// event is silently dropped (`stats.events_dropped` is bumped). The backend
 /// drains via `pop` on every loop iteration. Hotness signal is best-effort.
-pub(crate) type EventQueue = ArrayQueue<LookupRequest>;
+pub(crate) type EventQueue = ArrayQueue<LookupEvent>;
 
 /// Per-entry metadata tracked alongside the resident map for eviction decisions.
 struct ResidentMeta {
@@ -304,17 +313,19 @@ impl BackendState {
         }
     }
 
-    fn handle_lookup_observed(&mut self, event: LookupRequest) {
-        let hit = event.code.is_empty();
-        if hit {
-            self.inner.stats.lookup_hits.fetch_add(1, Ordering::Relaxed);
-            if let Some(meta) = self.resident_meta.get_mut(&event.key) {
-                meta.last_hit_at = Instant::now();
+    fn handle_lookup_observed(&mut self, event: LookupEvent) {
+        match event {
+            // Callers count hits themselves and report each key once per batch of hits.
+            LookupEvent::Hit(key) => {
+                if let Some(meta) = self.resident_meta.get_mut(&key) {
+                    meta.last_hit_at = Instant::now();
+                }
             }
-        } else {
-            self.inner.stats.lookup_misses.fetch_add(1, Ordering::Relaxed);
-            let kind = if self.aot { CompilationKind::Aot } else { CompilationKind::Jit };
-            self.try_admit(kind, event.key, event.code, SyncNotifier::none(), AdmitMode::Observed);
+            LookupEvent::Miss(req) => {
+                self.inner.stats.lookup_misses.fetch_add(1, Ordering::Relaxed);
+                let kind = if self.aot { CompilationKind::Aot } else { CompilationKind::Jit };
+                self.try_admit(kind, req.key, req.code, SyncNotifier::none(), AdmitMode::Observed);
+            }
         }
     }
 
@@ -519,7 +530,7 @@ impl BackendState {
 
     fn handle_clear_resident(&mut self) {
         self.workers.cancel_in_flight();
-        self.inner.resident.clear();
+        self.inner.clear_resident();
         self.resident_meta.clear();
         self.cold_head = None;
         self.cold_tail = None;
@@ -553,12 +564,12 @@ impl BackendState {
     }
 
     fn insert_resident(&mut self, key: RuntimeCacheKey, program: Arc<CompiledProgram>) {
-        self.inner.resident.insert(key, program);
+        self.inner.insert_resident(key, program);
         self.resident_meta.insert(key, ResidentMeta { last_hit_at: Instant::now() });
     }
 
     fn remove_resident(&mut self, key: &RuntimeCacheKey) {
-        self.inner.resident.remove(key);
+        self.inner.remove_resident(key);
         self.resident_meta.remove(key);
     }
 
@@ -782,6 +793,8 @@ impl BackendState {
 
         let now = Instant::now();
         self.last_sweep = now;
+        // Threads report the keys they hit again, so hot keys refresh `last_hit_at` once per sweep.
+        self.inner.report_epoch.fetch_add(1, Ordering::Relaxed);
 
         let idle_duration = self.tuning.idle_evict_duration;
         let budget = self.tuning.resident_code_cache_bytes;
@@ -1028,7 +1041,10 @@ mod notifier_tests {
     use super::*;
     use crate::runtime::{BackendShared, stats::RuntimeStats};
     use evm2::{SpecId, interpreter::op};
-    use std::{sync::atomic::AtomicUsize, time::Duration};
+    use std::{
+        sync::atomic::{AtomicU64, AtomicUsize},
+        time::Duration,
+    };
 
     /// Creates backend state without starting compiler workers.
     fn new_state(tuning: RuntimeTuning) -> BackendState {
@@ -1039,7 +1055,9 @@ mod notifier_tests {
         let inner = Arc::new(BackendShared {
             resident: ResidentMap::default(),
             events: EventQueue::new(config.tuning.channel_capacity),
+            local_caches: Default::default(),
             pause_depth: AtomicUsize::new(0),
+            report_epoch: AtomicU64::new(0),
             stats: Arc::new(RuntimeStats::default()),
         });
         let (result_tx, result_rx) = chan::unbounded();
@@ -1070,7 +1088,7 @@ mod notifier_tests {
         code.push(op::STOP);
         let bytecode = Bytes::from(code);
         let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
-        state.handle_lookup_observed(LookupRequest { key, code: bytecode });
+        state.handle_lookup_observed(LookupEvent::Miss(LookupRequest { key, code: bytecode }));
         key
     }
 
@@ -1095,7 +1113,10 @@ mod notifier_tests {
         );
         state.pending_jobs = 1;
         for _ in 0..10_000 {
-            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+            state.handle_lookup_observed(LookupEvent::Miss(LookupRequest {
+                key,
+                code: bytecode.clone(),
+            }));
         }
         assert_eq!(state.entries[&key].pending_notifiers.len(), 0);
         assert_eq!(state.entries[&key].pending_notifiers.capacity(), 0);
@@ -1110,7 +1131,10 @@ mod notifier_tests {
             });
         }
         for _ in 0..10_000 {
-            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+            state.handle_lookup_observed(LookupEvent::Miss(LookupRequest {
+                key,
+                code: bytecode.clone(),
+            }));
         }
         assert_eq!(state.entries[&key].pending_notifiers.len(), 2);
         assert_eq!(first_rx.try_recv(), Err(chan::TryRecvError::Empty));
@@ -1360,7 +1384,10 @@ mod notifier_tests {
 
         let bytecode = state.entries[&key].bytecode.clone();
         for _ in 0..10 {
-            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+            state.handle_lookup_observed(LookupEvent::Miss(LookupRequest {
+                key,
+                code: bytecode.clone(),
+            }));
         }
         let (sender, receiver) = chan::bounded(1);
         state.handle_compile_jit(CompileJitRequest {
