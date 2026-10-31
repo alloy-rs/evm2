@@ -30,6 +30,17 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
         let _ = interp;
     }
 
+    /// Returns whether [`Self::step`] and [`Self::step_end`] run for the frame of `interp`.
+    ///
+    /// Called once per frame, after [`Self::initialize_interp`]. A frame for which this returns
+    /// `false` runs on the uninspected instruction loop, as without an inspector, while its other
+    /// hooks still run.
+    #[inline]
+    fn inspect_steps(&mut self, interp: &Interpreter<'_, '_, T>) -> bool {
+        let _ = interp;
+        true
+    }
+
     /// Called when a log is emitted.
     #[inline]
     fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
@@ -1866,5 +1877,167 @@ mod tests {
             assert_eq!(stop, Ok(expected));
             assert_eq!(interp.gas().remaining(), 1000);
         }
+    }
+
+    #[test]
+    fn frame_without_step_inspection_keeps_its_other_hooks() {
+        #[derive(Default)]
+        struct FrameInspector {
+            state: E2eState,
+        }
+
+        impl Inspector<BaseEvmTypes> for FrameInspector {
+            fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                self.state.initialized += 1;
+            }
+
+            fn step(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                self.state.steps += 1;
+            }
+
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                self.state.step_ends += 1;
+            }
+
+            fn inspect_steps(&mut self, _interp: &Interpreter<'_, '_, BaseEvmTypes>) -> bool {
+                false
+            }
+
+            fn log(&mut self, log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+                self.state.logs.push(log.clone());
+            }
+
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                self.state.calls += 1;
+                None
+            }
+        }
+
+        let caller = Address::from([0xaa; 20]);
+        let contract = Address::from([0xbb; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::LOG0,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+        );
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::OSAKA),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(FrameInspector::default());
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(contract),
+                gas_limit: 100_000,
+                ..Default::default()
+            }),
+            caller,
+        );
+
+        let result = evm.transact(&tx).expect("transaction should execute").discard();
+        let inspector = evm.inspector().unwrap().downcast_ref::<FrameInspector>().unwrap();
+        let state = &inspector.state;
+
+        assert!(result.status);
+        assert_eq!(state.initialized, 1);
+        assert_eq!(state.steps, 0);
+        assert_eq!(state.step_ends, 0);
+        assert_eq!(state.logs.len(), 1);
+        assert_eq!(state.logs[0].address, contract);
+        assert_eq!(state.calls, 1);
+    }
+
+    #[test]
+    fn step_inspection_is_chosen_per_frame() {
+        #[derive(Default)]
+        struct CreateStepInspector {
+            frames: usize,
+            steps: usize,
+            step_ends: usize,
+        }
+
+        impl Inspector<BaseEvmTypes> for CreateStepInspector {
+            fn step(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                self.steps += 1;
+            }
+
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                self.step_ends += 1;
+            }
+
+            fn inspect_steps(&mut self, interp: &Interpreter<'_, '_, BaseEvmTypes>) -> bool {
+                self.frames += 1;
+                interp.message().kind.is_create()
+            }
+        }
+
+        let caller = Address::from([0xaa; 20]);
+        let contract = Address::from([0xbb; 20]);
+        // Stores the initcode `PUSH1 0, PUSH1 0, RETURN` in memory and creates from it.
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH5,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::RETURN,
+            op::PUSH1,
+            0,
+            op::MSTORE,
+            op::PUSH1,
+            5,
+            op::PUSH1,
+            27,
+            op::PUSH1,
+            0,
+            op::CREATE,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+        );
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::OSAKA),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(CreateStepInspector::default());
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(contract),
+                gas_limit: 200_000,
+                ..Default::default()
+            }),
+            caller,
+        );
+
+        let result = evm.transact(&tx).expect("transaction should execute").discard();
+        let inspector = evm.inspector().unwrap().downcast_ref::<CreateStepInspector>().unwrap();
+
+        assert!(result.status);
+        assert_eq!(inspector.frames, 2);
+        assert_eq!(inspector.steps, 3);
+        assert_eq!(inspector.step_ends, 3);
     }
 }
