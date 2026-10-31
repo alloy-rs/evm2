@@ -4,10 +4,15 @@ import functools
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
 import time
+
+# `utils` names this module when a jit script runs, so the shared helpers live in `common`.
+sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from common import cargo_env as base_cargo_env, repo_root  # noqa: E402
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -20,20 +25,31 @@ def strip_ansi(s: str) -> str:
     return ANSI_RE.sub("", s)
 
 
-def repo_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
 def _shared_target_dir() -> str:
     """Return a shared CARGO_TARGET_DIR so worktrees reuse the same build cache."""
     return os.path.join(repo_root(), "target")
 
 
 def cargo_env(rust_log: str | None = None) -> dict[str, str]:
-    env = {**os.environ, "NO_COLOR": "1", "CARGO_TARGET_DIR": _shared_target_dir()}
+    env = {**base_cargo_env(), "CARGO_TARGET_DIR": _shared_target_dir()}
     if rust_log:
         env["RUST_LOG"] = rust_log
     return env
+
+
+def pct(before: float | None, after: float | None) -> float | None:
+    """Percent change from ``before`` to ``after``, or ``None`` when there is no baseline."""
+    if before is None or after is None or before == 0:
+        return None
+    return (after - before) / before * 100
+
+
+def geomean_pct(pairs: list[tuple[float, float]]) -> float | None:
+    """Geometric mean of the after/before ratios as a percent change, equal weight per pair."""
+    ratios = [a / b for b, a in pairs if b and a and b > 0 and a > 0]
+    if not ratios:
+        return None
+    return (statistics.geometric_mean(ratios) - 1) * 100
 
 
 def cargo_build(root: str, target_dir: str | None = None) -> str:
