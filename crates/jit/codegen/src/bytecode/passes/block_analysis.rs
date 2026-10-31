@@ -44,7 +44,11 @@
 //! A jump to a range goes to the valid jump targets in it, such as the entries of a jump table.
 //! When a jump's operand is no range but an instruction before it leaves a narrow one, such as the
 //! index of a table that the code reads with a shift, the analysis runs the rest of the block on
-//! each value of that range, and the jump goes to the targets it finds.
+//! each value of that range, and the jump goes to the targets it finds. If the block alone does not
+//! resolve the jump, the analysis runs the same enumeration on every state of a block a few steps
+//! back along single predecessors, for up to two nested ranges, such as the bucket and the entry
+//! of a sparse selector table. The jump then stays dynamic if a discovered edge enters the chain
+//! after that block.
 //!
 //! ## Soundness
 //!
@@ -286,9 +290,27 @@ const MAX_RANGE_JUMP_WIDTH: usize = 4096;
 /// compile time.
 const MAX_RANGE_JUMP_TARGETS: usize = 1024;
 
-/// Number of values below which [`Bytecode::enumerate_jump`] runs the rest of a block on each value
-/// of a range. Ranges of two values are conditions, which no table indexes.
+/// Number of values below which [`Bytecode::enumerate_block`] runs the rest of a block on each
+/// value of a range. Ranges of two values are conditions, which no table indexes.
 const MAX_ENUMERATED_VALUES: u32 = 256;
+
+/// Maximum number of ranges that an enumeration nests, such as a bucket and an entry of a table.
+const MAX_NESTED_RANGES: u8 = 2;
+
+/// Maximum number of ranges of one run that an enumeration tries, earliest first.
+const MAX_SPLITS: usize = 2;
+
+/// Maximum number of runs of one enumeration.
+const MAX_ENUMERATION_RUNS: u32 = 512;
+
+/// Maximum number of runs that the chain enumerations of one jump spend in total.
+const MAX_CHAIN_RUNS: u32 = 1024;
+
+/// Maximum number of blocks before a jump's block that a chain enumeration walks back.
+const MAX_CHAIN_BACK: usize = 3;
+
+/// Maximum number of states of a chain's head that a chain enumeration runs on.
+const MAX_CHAIN_HEAD_PARTS: usize = 4;
 
 /// Maximum number of segments that may continue a stack, beyond which the stack is truncated
 /// instead, so that the joins and the runs of a block on each segment stay cheap.
@@ -628,7 +650,7 @@ struct Fixpoint {
     converged: bool,
 }
 
-/// What [`Bytecode::enumerate_jump`] found over all states of the dynamic jump that ends a block.
+/// What [`Bytecode::enumerate_block`] found over all states of the dynamic jump that ends a block.
 #[derive(Clone, Copy, Default)]
 struct Enumerated {
     /// Whether a state enumerated the range of its jump operand.
@@ -637,17 +659,75 @@ struct Enumerated {
     invalid: bool,
     /// Whether some state has an operand that is neither resolvable nor enumerable.
     failed: bool,
+    /// The number of single-predecessor blocks before the jump's block, back to the head whose
+    /// states a chain enumeration ran on, or zero if none did.
+    chain: u8,
+    /// The runs that the chain enumerations of the jump spent.
+    chain_runs: u32,
 }
 
-/// Scratch stacks of [`Bytecode::enumerate_jump`].
+/// What the enumerations of [`Bytecode::run_fixpoint`] share.
+struct EnumerateScratch<'a> {
+    branches: &'a IndexVec<Block, Option<Branch>>,
+    /// The buffers of the ranges that a run enumerates, one set per nesting level.
+    bufs: [EnumerateBuf; MAX_NESTED_RANGES as usize],
+}
+
+impl<'a> EnumerateScratch<'a> {
+    fn new(branches: &'a IndexVec<Block, Option<Branch>>) -> Self {
+        Self { branches, bufs: Default::default() }
+    }
+}
+
+/// Scratch stacks of [`Bytecode::enumerate_splits`].
 #[derive(Default)]
 struct EnumerateBuf {
-    stack: Vec<AbsValue>,
-    mem: MemWords,
     /// The state after the instruction that leaves the range.
     split_stack: Vec<AbsValue>,
     split_mem: MemWords,
+    /// The state of a value of the range.
+    stack: Vec<AbsValue>,
+    mem: MemWords,
 }
+
+/// The state of an enumeration of the targets of the jump that ends the last block of a path.
+struct Enumeration<'a, 'b> {
+    /// The blocks to run, the last of which ends in the jump.
+    path: &'a [Block],
+    scratch: &'a mut EnumerateScratch<'b>,
+    truncated: bool,
+    /// The runs left.
+    runs: u32,
+    targets: &'a mut SmallVec<[Block; 4]>,
+    work: &'a mut u64,
+    invalid: bool,
+}
+
+impl<'a, 'b> Enumeration<'a, 'b> {
+    const fn new(
+        path: &'a [Block],
+        scratch: &'a mut EnumerateScratch<'b>,
+        runs: u32,
+        targets: &'a mut SmallVec<[Block; 4]>,
+        work: &'a mut u64,
+    ) -> Self {
+        Self { path, scratch, truncated: false, runs, targets, work, invalid: false }
+    }
+}
+
+/// Where a run of an enumeration started: the state at the block `first` of the path, after the
+/// instruction `after` if any.
+#[derive(Clone, Copy)]
+struct RunStart<'a> {
+    stack: &'a [AbsValue],
+    mem: &'a MemWords,
+    first: usize,
+    after: Option<Inst>,
+}
+
+/// A range that a run may enumerate: the index in the path of its block, the instruction that
+/// leaves it on the stack, and the range.
+type Split = (usize, Inst, RangeInclusive<u32>);
 
 /// Block states of [`Bytecode::run_fixpoint`], one per context of each block.
 struct Parts {
@@ -1274,7 +1354,9 @@ impl Bytecode<'_> {
                 if *converged
                     && target.is_top()
                     && let Some(bid) = bid
-                    && let Enumerated { done: true, invalid, failed: false } = enumerated[bid]
+                    && let Enumerated { done: true, invalid, failed: false, chain, .. } =
+                        enumerated[bid]
+                    && self.chain_is_closed(bid, chain, discovered)
                 {
                     let mut targets: SmallVec<[Inst; 4]> =
                         discovered[bid].iter().map(|&tb| self.cfg.blocks[tb].insts.start).collect();
@@ -1558,6 +1640,7 @@ impl Bytecode<'_> {
 
         let branches: IndexVec<Block, Option<Branch>> =
             self.cfg.blocks.indices().map(|bid| self.branch(bid)).collect();
+        let mut scratch = EnumerateScratch::new(&branches);
         let forwarders: BitVec =
             self.cfg.blocks.indices().map(|bid| self.is_forwarder(bid)).collect();
         let mut copies = vec![0; self.jumpdests.len()];
@@ -1573,7 +1656,9 @@ impl Bytecode<'_> {
             .collect();
         let mut enumerated =
             IndexVec::<Block, _>::from_vec(vec![Enumerated::default(); num_blocks]);
-        let mut enumerate_buf = EnumerateBuf::default();
+        // The jumps that enumerated the states of each block as the head of a chain.
+        let mut chain_users =
+            IndexVec::<Block, SmallVec<[Block; 1]>>::from_vec(vec![SmallVec::new(); num_blocks]);
 
         'fixpoint: while let Some(Reverse((_, pid))) = parts.worklist.pop() {
             parts.queued.set(pid.index(), false);
@@ -1581,6 +1666,42 @@ impl Bytecode<'_> {
             if pops > budget.pops || work + const_sets.merged > budget.work {
                 converged = false;
                 break;
+            }
+
+            // A jump that enumerated the states of a chain head runs again when the head
+            // changes, and its parts propagate again if that finds new targets.
+            for &jump in &chain_users[parts.states[pid].0] {
+                let state = &mut enumerated[jump];
+                if state.failed {
+                    continue;
+                }
+                targets.clear();
+                let found = self.enumerate_chain(
+                    jump,
+                    &parts,
+                    &mut scratch,
+                    state,
+                    &mut targets,
+                    &mut work,
+                );
+                let Some((invalid, _)) = found else {
+                    state.failed = true;
+                    continue;
+                };
+                state.invalid |= invalid;
+                let mut new = false;
+                for &tb in &targets {
+                    if discovered_set.insert((jump, tb)) {
+                        discovered[jump].push(tb);
+                        new = true;
+                    }
+                }
+                if new {
+                    let users = parts.by_key[jump].values().copied().collect::<SmallVec<[_; 8]>>();
+                    for part in users {
+                        parts.queue(part);
+                    }
+                }
             }
 
             // Copy input state into reusable buffer.
@@ -1691,28 +1812,43 @@ impl Bytecode<'_> {
                         };
                         if unresolved {
                             let len = targets.len();
+                            let path = [bid];
+                            let mut enumeration = Enumeration::new(
+                                &path,
+                                &mut scratch,
+                                MAX_ENUMERATION_RUNS,
+                                &mut targets,
+                                &mut work,
+                            );
                             let found = narrowest.and_then(|(split, range)| {
-                                // Each value copies the stack and runs the rest of the block.
-                                let values = u64::from(range.last - range.start + 1);
-                                let rest = term_inst.index() - split.index();
-                                let copy = stack_buf.len().min(MAX_ABS_STACK_DEPTH);
-                                work += self.cfg.blocks[bid].insts().len() as u64
-                                    + values * (rest + copy) as u64;
-                                // The runs repeat folds that the analysis keeps, so they must not
-                                // drain that budget, but their cost counts as work.
-                                let gas = self.compiler_gas_used;
-                                let found = self.enumerate_jump(
-                                    bid,
-                                    &parts.states[pid].1,
-                                    split,
-                                    range,
-                                    &mut enumerate_buf,
-                                    &mut targets,
-                                );
-                                work += self.compiler_gas_used - gas;
-                                self.compiler_gas_used = gas;
-                                found
+                                let entry = &parts.states[pid].1;
+                                self.enumerate_block(&mut enumeration, entry, split, range)
                             });
+                            let mut found = found.map(|()| enumeration.invalid);
+                            if found.is_none() {
+                                targets.truncate(len);
+                                found = if state.failed {
+                                    None
+                                } else if state.chain > 0 {
+                                    // The chain enumeration already found the targets of the
+                                    // states of the head, and re-runs when the head changes.
+                                    targets.extend_from_slice(&discovered[bid]);
+                                    Some(false)
+                                } else {
+                                    self.find_chain(
+                                        bid,
+                                        &parts,
+                                        &mut scratch,
+                                        state,
+                                        &mut targets,
+                                        &mut work,
+                                    )
+                                    .map(|(invalid, head)| {
+                                        chain_users[head].push(bid);
+                                        invalid
+                                    })
+                                };
+                            }
                             match found {
                                 Some(invalid) => {
                                     state.done = true;
@@ -1876,62 +2012,316 @@ impl Bytecode<'_> {
     /// each value of `range`, which the instruction `split` leaves on top of the stack, such as
     /// the index of a jump table that the code reads with a shift.
     ///
-    /// `entry` is the state at the entry of the block. Returns `None` if a value leaves a jump
-    /// operand that is not constant, and otherwise whether a value jumps to an invalid target,
-    /// after adding the blocks of the valid targets to `targets`. A value whose path halts before
-    /// the jump has no target.
-    fn enumerate_jump(
+    /// `entry` is the state at the entry of the block. See [`Self::enumerate_run`] for the
+    /// result.
+    fn enumerate_block(
         &mut self,
-        bid: Block,
+        enumeration: &mut Enumeration<'_, '_>,
         entry: &BlockState,
         split: Inst,
         range: RangeInclusive<u32>,
-        buf: &mut EnumerateBuf,
-        targets: &mut SmallVec<[Block; 4]>,
-    ) -> Option<bool> {
+    ) -> Option<()> {
         let BlockState::Known { stack, truncated, mem, .. } = entry else { return None };
-        let EnumerateBuf { stack: values, mem: values_mem, split_stack, split_mem } = buf;
-        split_stack.clone_from(stack);
-        split_mem.clone_from(mem);
-        let term = self.cfg.blocks[bid].terminator();
-        for i in self.cfg.blocks[bid].insts().take_while(|&i| i <= split) {
-            if !self.interpret_inst(i, split_stack, *truncated, split_mem, Record::Skip) {
-                return None;
+        enumeration.truncated = *truncated;
+        let gas = self.compiler_gas_used;
+        *enumeration.work += self.cfg.blocks[enumeration.path[0]].insts().len() as u64;
+        let splits = std::iter::once((0, split, range)).collect();
+        // The values run at the deepest level, which enumerates no further ranges.
+        let start = RunStart { stack, mem, first: 0, after: None };
+        let found = self.enumerate_splits(enumeration, start, splits, MAX_NESTED_RANGES - 1);
+        *enumeration.work += self.compiler_gas_used - gas;
+        self.compiler_gas_used = gas;
+        found
+    }
+
+    /// Finds the targets of the dynamic jump that ends the last block of `enumeration.path` by
+    /// running its blocks from each state in `heads`, the entry states of the first block. A
+    /// run that reaches the jump with an operand that is no constant continues on each value of
+    /// the first range that an instruction left on the stack, and so on for up to
+    /// [`MAX_NESTED_RANGES`] ranges. See [`Self::enumerate_run`] for the result.
+    fn enumerate_heads<'a>(
+        &mut self,
+        enumeration: &mut Enumeration<'_, '_>,
+        heads: impl IntoIterator<Item = &'a BlockState>,
+    ) -> Option<()> {
+        let gas = self.compiler_gas_used;
+        let mut found = Some(());
+        for head in heads {
+            let BlockState::Known { stack, truncated, below, mem } = head else { continue };
+            // A later block of the chain may read below the entries of the state.
+            if !below.is_empty() {
+                found = None;
+                break;
+            }
+            enumeration.truncated = *truncated;
+            let insts = enumeration.path.iter().map(|&bid| self.cfg.blocks[bid].insts().len());
+            *enumeration.work += insts.sum::<usize>() as u64;
+            let (mut stack, mut mem) = (stack.clone(), mem.clone());
+            found = self.enumerate_run(enumeration, 0, None, &mut stack, &mut mem, 0);
+            if found.is_none() {
+                break;
             }
         }
+        *enumeration.work += self.compiler_gas_used - gas;
+        self.compiler_gas_used = gas;
+        found
+    }
 
-        let mut invalid = false;
-        for value in range.start..=range.last {
-            values.clone_from(split_stack);
-            values_mem.clone_from(split_mem);
-            let imm = U256Imm::new(U256::from(value), &mut self.u256_interner.borrow_mut());
-            *values.last_mut()? = AbsValue::Const(imm);
-            let mut rest =
-                self.cfg.blocks[bid].insts().skip_while(|&i| i <= split).take_while(|&i| i < term);
-            let reaches_jump =
-                rest.all(|i| self.interpret_inst(i, values, *truncated, values_mem, Record::Skip));
-            if !reaches_jump {
-                continue;
+    /// Runs the blocks of `enumeration.path` from the block `first`, after the instruction
+    /// `after` if any, on `stack` and `mem`, and adds the target of the jump that ends the last
+    /// block to the targets of `enumeration`.
+    ///
+    /// Each run takes one of the `runs` left. Returns `None` if a run leaves a jump operand that
+    /// is neither constant nor enumerable, and otherwise whether a run jumps to an invalid
+    /// target, after adding the blocks of the valid targets to `targets`. A run that halts
+    /// before the jump has no target. The runs repeat folds that the analysis keeps, so their
+    /// gas is restored, and their cost counts as `work` instead.
+    fn enumerate_run(
+        &mut self,
+        enumeration: &mut Enumeration<'_, '_>,
+        first: usize,
+        after: Option<Inst>,
+        stack: &mut Vec<AbsValue>,
+        mem: &mut MemWords,
+        depth: u8,
+    ) -> Option<()> {
+        enumeration.runs = enumeration.runs.checked_sub(1)?;
+        let (path, truncated) = (enumeration.path, enumeration.truncated);
+        let branches = enumeration.scratch.branches;
+        // The state to run again from the ranges that the run finds.
+        let start = (depth < MAX_NESTED_RANGES).then(|| (stack.clone(), mem.clone()));
+        let mut splits = SmallVec::<[Split; MAX_SPLITS]>::new();
+        for (k, &bid) in path.iter().enumerate().skip(first) {
+            let term = self.cfg.blocks[bid].terminator();
+            for i in self.cfg.blocks[bid].insts() {
+                if k == first && after.is_some_and(|after| i <= after) {
+                    continue;
+                }
+                if i == term && k + 1 == path.len() {
+                    let start =
+                        start.as_ref().map(|(stack, mem)| RunStart { stack, mem, first, after });
+                    return self.enumerate_targets(enumeration, stack, start, splits, depth);
+                }
+                if i == term
+                    && let Some(branch) = &branches[bid]
+                    && let Some(&AbsValue::Const(condition)) = stack.iter().rev().nth(1)
+                {
+                    // A constant condition may rule out the edge to the next block of the path.
+                    let zero = condition.get(&self.u256_interner.borrow()).is_zero();
+                    let ruled_out = if Some(path[k + 1]) == branch.fallthrough {
+                        !zero && !branch.fallthrough_is_target
+                    } else {
+                        zero
+                    };
+                    if ruled_out {
+                        return Some(());
+                    }
+                }
+                if !self.interpret_inst(i, stack, truncated, mem, Record::Skip) {
+                    return Some(());
+                }
+                // A later range can only nest in an earlier one, so a run tries the earliest
+                // first.
+                if i != term
+                    && depth < MAX_NESTED_RANGES
+                    && splits.len() < MAX_SPLITS
+                    && let Some(&AbsValue::Range(range)) = stack.last()
+                    && (2..MAX_ENUMERATED_VALUES).contains(&(range.last - range.start))
+                {
+                    splits.push((k, i, range));
+                }
             }
-            let target = *values.last()?;
-            let AbsValue::Const(_) = target else { return None };
+        }
+        None
+    }
+
+    /// Adds the target of the jump operand on the top of `stack` to the targets of
+    /// `enumeration`, running the paths on each value of the first of `splits` that resolves it
+    /// if it is no constant. `start` is where the run started. See [`Self::enumerate_run`].
+    fn enumerate_targets(
+        &mut self,
+        enumeration: &mut Enumeration<'_, '_>,
+        stack: &[AbsValue],
+        start: Option<RunStart<'_>>,
+        splits: SmallVec<[Split; MAX_SPLITS]>,
+        depth: u8,
+    ) -> Option<()> {
+        let target = *stack.last()?;
+        if let AbsValue::Const(imm) = target {
             match self.jump_target_pc(target) {
                 Some(pc) => {
                     let tb = self.cfg.inst_to_block[self.pc_to_inst(pc as usize)]?;
-                    if !targets.contains(&tb) {
-                        targets.push(tb);
+                    if !enumeration.targets.contains(&tb) {
+                        enumeration.targets.push(tb);
                     }
                 }
-                None => {
-                    let AbsValue::Const(imm) = target else { return None };
-                    if !self.fits_switch_case(imm) {
-                        return None;
-                    }
-                    invalid = true;
+                None if self.fits_switch_case(imm) => enumeration.invalid = true,
+                None => return None,
+            }
+            return Some(());
+        }
+        self.enumerate_splits(enumeration, start?, splits, depth)
+    }
+
+    /// Runs the blocks of `enumeration.path` on each value of the first of `splits` that
+    /// resolves the jump, from where a run started. See [`Self::enumerate_run`].
+    fn enumerate_splits(
+        &mut self,
+        enumeration: &mut Enumeration<'_, '_>,
+        start: RunStart<'_>,
+        splits: SmallVec<[Split; MAX_SPLITS]>,
+        depth: u8,
+    ) -> Option<()> {
+        let path = enumeration.path;
+        let truncated = enumeration.truncated;
+        let mut buf = std::mem::take(&mut enumeration.scratch.bufs[usize::from(depth)]);
+        let EnumerateBuf { split_stack, split_mem, stack: values, mem: values_mem } = &mut buf;
+        let found = 'found: {
+            for (k, split, range) in splits {
+                split_stack.clear();
+                split_stack.extend_from_slice(start.stack);
+                split_mem.clone_from(start.mem);
+                let run = self.run_insts(path, start.first, start.after);
+                for (_, i) in run.take_while(|&position| position <= (k, split)) {
+                    self.interpret_inst(i, split_stack, truncated, split_mem, Record::Skip);
                 }
+
+                // Each value copies the stack and runs the rest of the path.
+                let count = u64::from(range.last - range.start + 1);
+                let term = self.cfg.blocks[path[k]].terminator();
+                let later = path[k + 1..].iter().map(|&bid| self.cfg.blocks[bid].insts().len());
+                let rest = term.index() - split.index() + later.sum::<usize>();
+                let copy = split_stack.len().min(MAX_ABS_STACK_DEPTH);
+                *enumeration.work += count * (rest + copy) as u64;
+
+                let len = enumeration.targets.len();
+                let invalid = enumeration.invalid;
+                let all = (range.start..=range.last).all(|value| {
+                    values.clone_from(split_stack);
+                    values_mem.clone_from(split_mem);
+                    let imm = U256Imm::new(U256::from(value), &mut self.u256_interner.borrow_mut());
+                    *values.last_mut().unwrap() = AbsValue::Const(imm);
+                    let run = self.enumerate_run(
+                        enumeration,
+                        k,
+                        Some(split),
+                        values,
+                        values_mem,
+                        depth + 1,
+                    );
+                    run.is_some()
+                });
+                if all {
+                    break 'found Some(());
+                }
+                enumeration.targets.truncate(len);
+                enumeration.invalid = invalid;
+            }
+            None
+        };
+        enumeration.scratch.bufs[usize::from(depth)] = buf;
+        found
+    }
+
+    /// Enumerates the jump that ends `bid` over the states of the head of a chain before it of
+    /// up to [`MAX_CHAIN_BACK`] blocks, the shortest that resolves it, for a jump whose block
+    /// alone does not. Returns whether the jump may be invalid and the head.
+    fn find_chain(
+        &mut self,
+        bid: Block,
+        parts: &Parts,
+        scratch: &mut EnumerateScratch<'_>,
+        state: &mut Enumerated,
+        targets: &mut SmallVec<[Block; 4]>,
+        work: &mut u64,
+    ) -> Option<(bool, Block)> {
+        for back in 1..=MAX_CHAIN_BACK {
+            state.chain = back as u8;
+            if let found @ Some(_) = self.enumerate_chain(bid, parts, scratch, state, targets, work)
+            {
+                return found;
             }
         }
-        Some(invalid)
+        state.chain = 0;
+        None
+    }
+
+    /// Enumerates the jump that ends `bid` over all states of the head of the chain of
+    /// `state.chain` blocks before it, each of which has a single predecessor.
+    ///
+    /// The chain never goes through the entry block, which has an implicit predecessor.
+    fn enumerate_chain(
+        &mut self,
+        bid: Block,
+        parts: &Parts,
+        scratch: &mut EnumerateScratch<'_>,
+        state: &mut Enumerated,
+        targets: &mut SmallVec<[Block; 4]>,
+        work: &mut u64,
+    ) -> Option<(bool, Block)> {
+        let mut path = SmallVec::<[Block; 1 + MAX_CHAIN_BACK]>::new();
+        path.push(bid);
+        for _ in 0..state.chain {
+            let &[pred] = self.cfg.blocks[path[0]].preds.as_slice() else { return None };
+            if path[0].index() == 0 || path.contains(&pred) {
+                return None;
+            }
+            path.insert(0, pred);
+        }
+        let heads = &parts.by_key[path[0]];
+        if heads.is_empty() || heads.len() > MAX_CHAIN_HEAD_PARTS {
+            return None;
+        }
+        let len = targets.len();
+        let runs = MAX_ENUMERATION_RUNS.min(MAX_CHAIN_RUNS.saturating_sub(state.chain_runs));
+        let mut enumeration = Enumeration::new(&path, scratch, runs, targets, work);
+        let found = self
+            .enumerate_heads(&mut enumeration, heads.values().map(|&part| &parts.states[part].1));
+        state.chain_runs += runs - enumeration.runs;
+        let invalid = enumeration.invalid;
+        if found.is_none() {
+            targets.truncate(len);
+        }
+        found.map(|()| (invalid, path[0]))
+    }
+
+    /// Returns whether no discovered edge enters a block of the chain before `bid` after its
+    /// head, so the chain is the only way to reach `bid`.
+    fn chain_is_closed(
+        &self,
+        bid: Block,
+        chain: u8,
+        discovered: &IndexVec<Block, SmallVec<[Block; 4]>>,
+    ) -> bool {
+        let mut block = bid;
+        for _ in 0..chain {
+            if discovered.iter().any(|targets| targets.contains(&block)) {
+                return false;
+            }
+            let &[pred] = self.cfg.blocks[block].preds.as_slice() else { return false };
+            block = pred;
+        }
+        true
+    }
+
+    /// Returns the instructions that a run of `path` executes, from the block `first` after the
+    /// instruction `after` if any, with the index in `path` of their block.
+    fn run_insts(
+        &self,
+        path: &[Block],
+        first: usize,
+        after: Option<Inst>,
+    ) -> impl Iterator<Item = (usize, Inst)> + use<> {
+        let ranges = path
+            .iter()
+            .enumerate()
+            .skip(first)
+            .map(|(k, &bid)| (k, self.cfg.blocks[bid].insts()))
+            .collect::<SmallVec<[_; 1 + MAX_CHAIN_BACK]>>();
+        ranges
+            .into_iter()
+            .flat_map(|(k, insts)| insts.map(move |i| (k, i)))
+            .filter(move |&(k, i)| k != first || after.is_none_or(|after| i > after))
     }
 
     /// Returns whether a switch on the low 64 bits of a jump operand tells `imm` from the valid
@@ -2110,6 +2500,7 @@ impl Bytecode<'_> {
     }
 
     /// Returns the pc of `value` if it is a valid jump target constant.
+    #[inline]
     fn jump_target_pc(&self, value: AbsValue) -> Option<u32> {
         let pc = value.as_const()?.get_inline()?;
         self.is_valid_jump(pc as usize).then_some(pc)
@@ -5041,6 +5432,91 @@ mod tests_edge_cases {
 
         // The word is only known over zeros: after a write to memory the rest of it is unknown.
         let bytecode = analyze_asm(&src("PUSH0 CALLDATALOAD PUSH1 0x40 MSTORE"));
+        assert!(bytecode.has_dynamic_jumps);
+    }
+
+    /// Vyper's sparse selector table reads a bucket header and then an entry with two
+    /// `CODECOPY`s, each indexed by its own range, and jumps two blocks later. Only enumerating
+    /// the two ranges at the head of the chain of blocks finds the targets. The code puts the
+    /// head after the other blocks of the chain.
+    #[test]
+    fn chain_jump_table() {
+        let src = |bb1: &str| {
+            format!(
+                "
+                PUSH %head
+                JUMP
+            bb2:
+                JUMPDEST
+                CALLDATASIZE
+                PUSH1 0x44
+                GT
+                PUSH %bad
+                JUMPI
+                PUSH0               ; bb3
+                MLOAD
+                JUMP
+            bad:
+                JUMPDEST
+                PUSH0
+                DUP1
+                REVERT
+                JUMPDEST            ; 0x12
+                STOP
+                JUMPDEST            ; 0x14
+                STOP
+                JUMPDEST            ; 0x16
+                STOP
+            header:
+                PUSH3 0x000203
+            entries:
+                PUSH6 0x121416121416
+            head:
+                JUMPDEST
+                PUSH0
+                CALLDATALOAD
+                PUSH1 0xe0
+                SHR                 ; selector
+                DUP1
+                PUSH1 0x03
+                SWAP1
+                MOD                 ; bucket
+                PUSH %header
+                ADD
+                PUSH1 0x01
+                ADD                 ; skip the PUSH3 opcode
+                PUSH1 0x01
+                SWAP1
+                PUSH1 0x1f
+                CODECOPY            ; memory[0x1f] = first entry of the bucket
+                PUSH0
+                MLOAD
+                SWAP1
+                PUSH1 0x03
+                SWAP1
+                MOD                 ; index in the bucket
+                ADD
+                PUSH %entries
+                ADD
+                PUSH1 0x01
+                ADD                 ; skip the PUSH6 opcode
+                PUSH1 0x01
+                SWAP1
+                PUSH1 0x1f
+                CODECOPY            ; memory[0x1f] = target
+                CALLDATASIZE
+                PUSH %bb2
+                JUMPI
+                {bb1}
+                "
+            )
+        };
+        let bytecode = analyze_asm(&src("PUSH0 DUP1 REVERT"));
+        assert!(!bytecode.has_dynamic_jumps);
+        assert_eq!(multi_jump_target_pcs(&bytecode), [0x12, 0x14, 0x16]);
+
+        // Another block that jumps into the chain can reach the jump with other states.
+        let bytecode = analyze_asm(&src("PUSH %bb2 JUMP"));
         assert!(bytecode.has_dynamic_jumps);
     }
 
