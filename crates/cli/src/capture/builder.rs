@@ -28,6 +28,8 @@ const QUEUE_OFFSET_SLOT: u64 = 4;
 const WITHDRAWAL_ENTRY_SLOTS: u64 = 3;
 /// Slots per queued entry: source address, then the source and target pubkeys (EIP-7251).
 const CONSOLIDATION_ENTRY_SLOTS: u64 = 4;
+/// The consensus layer drops consolidation requests beyond this queue length (EIP-7251).
+const MAX_QUEUE_LEN: u64 = 262_144;
 
 #[derive(Default)]
 pub(super) struct CaptureBuilder {
@@ -163,7 +165,8 @@ impl CaptureBuilder {
     /// transaction traces never touch them at the state that the system calls start from. The
     /// base pre-state therefore reads them as of the block before the first captured block and
     /// replaces anything the traces recorded: a trace sees the contract after the system calls of
-    /// earlier blocks in the range, which replay executes itself.
+    /// earlier blocks in the range, which replay executes itself. The builder request contracts
+    /// are captured with code only: their storage stays empty.
     pub(super) async fn capture_system_contracts(
         &mut self,
         rpc: &RpcEndpoint,
@@ -466,7 +469,7 @@ fn queue_slots(
     let invalid = || CaptureError::InvalidQueuePointers { address, head, tail };
     let head = u64::try_from(head).map_err(|_| invalid())?;
     let tail = u64::try_from(tail).map_err(|_| invalid())?;
-    if head > tail {
+    if head > tail || tail - head > MAX_QUEUE_LEN {
         return Err(invalid());
     }
     let mut slots = vec![
@@ -480,7 +483,8 @@ fn queue_slots(
             .checked_mul(entry_slots)
             .and_then(|offset| offset.checked_add(QUEUE_OFFSET_SLOT))
             .ok_or_else(invalid)?;
-        slots.extend((first..first + entry_slots).map(U256::from));
+        let end = first.checked_add(entry_slots).ok_or_else(invalid)?;
+        slots.extend((first..end).map(U256::from));
     }
     Ok(slots)
 }
@@ -591,6 +595,14 @@ mod tests {
         assert_eq!(slots(3, 2, 4), [0, 1, 2, 3, 10, 11, 12, 13, 14, 15]);
         // Entry 1 of four slots starts at slot 8.
         assert_eq!(slots(4, 1, 2), [0, 1, 2, 3, 8, 9, 10, 11]);
+    }
+
+    #[test]
+    fn queue_slots_reject_a_queue_beyond_the_limit() {
+        let err =
+            queue_slots(WITHDRAWAL_REQUEST_ADDRESS, 3, U256::ZERO, U256::from(MAX_QUEUE_LEN + 1));
+
+        assert!(matches!(err, Err(CaptureError::InvalidQueuePointers { .. })));
     }
 
     #[test]
