@@ -9,8 +9,8 @@ mod types;
 
 pub use error::TestError;
 pub use execute::{
-    ExecuteConfig, ExecuteSummary, ExecutionMode, execute_case_on, execute_str, execute_suite,
-    pre_state,
+    ExecuteConfig, ExecuteSummary, ExecutionMode, blob_params, execute_case_on, execute_str,
+    execute_suite, pre_state,
 };
 pub use hook::{
     BlockFailed, BlockFinished, BlockStarted, CaseStarted, Hook, NoopHook, TransactionFailed,
@@ -19,6 +19,7 @@ pub use hook::{
 pub use runner::run;
 pub(crate) use runner::{IGNORED_TESTS, suites};
 pub use types::{
-    Account, Block, BlockHash, BlockHeader, BlockchainTest, BlockchainTestCase, DecodedBlock,
-    ForkSpec, SealEngine, State, Transaction, Withdrawal,
+    Account, BlobFork, BlobScheduleEntry, Block, BlockHash, BlockHeader, BlockchainTest,
+    BlockchainTestCase, ChainConfig, DecodedBlock, ForkSpec, SealEngine, State, Transaction,
+    Withdrawal,
 };

@@ -48,9 +48,9 @@ impl Default for BackendConfig {
             opt_level: OptimizationLevel::Default,
             is_dumping: false,
             debug_assertions: cfg!(debug_assertions),
-            debug_support: true,
+            debug_support: false,
             profiling_support: false,
-            simple_perf: true,
+            simple_perf: false,
             debug_file: None,
         }
     }
@@ -294,7 +294,6 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn switch_to_block(&mut self, block: Self::BasicBlock);
     fn seal_block(&mut self, block: Self::BasicBlock);
     fn seal_all_blocks(&mut self);
-    fn set_current_block_cold(&mut self);
     fn current_block(&mut self) -> Option<Self::BasicBlock>;
     fn block_addr(&mut self, block: Self::BasicBlock) -> Option<Self::Value>;
 
@@ -527,9 +526,9 @@ mod tests {
         assert_eq!(config.opt_level, OptimizationLevel::Default);
         assert!(!config.is_dumping);
         assert_eq!(config.debug_assertions, cfg!(debug_assertions));
-        assert!(config.debug_support);
+        assert!(!config.debug_support);
         assert!(!config.profiling_support);
-        assert!(config.simple_perf);
+        assert!(!config.simple_perf);
         assert_eq!(config.debug_file, None);
     }
 
