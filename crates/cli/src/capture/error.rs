@@ -10,6 +10,8 @@ pub(crate) enum CaptureError {
     Transport(#[from] alloy_provider::transport::TransportError),
     #[error("RPC did not return block header {0}")]
     MissingBlockHeader(u64),
+    #[error("block 0 has no parent header to capture")]
+    GenesisHasNoParent,
     #[error("RPC did not return block {0}")]
     MissingBlock(u64),
     #[error("failed to create Tokio runtime for capture")]

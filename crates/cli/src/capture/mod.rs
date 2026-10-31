@@ -73,7 +73,7 @@ async fn capture(
     let mut block_inputs = Vec::with_capacity((to - from + 1) as usize);
     let mut transaction_count = 0usize;
 
-    let parent_number = from.checked_sub(1).ok_or(CaptureError::MissingBlockHeader(from))?;
+    let parent_number = from.checked_sub(1).ok_or(CaptureError::GenesisHasNoParent)?;
     let parent_header = rpc.header(parent_number).await?;
     builder.capture_block_hashes(&rpc, from).await?;
     let mut blocks = stream::iter(from..=to)

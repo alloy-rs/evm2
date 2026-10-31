@@ -346,19 +346,6 @@ pub(super) enum AccountField {
     Code,
 }
 
-/// Returns the system contracts that a block of this spec calls after its transactions and
-/// requires to have code.
-fn system_contracts(spec: evm2::SpecId) -> Vec<Address> {
-    let mut contracts = Vec::new();
-    if spec.enables(evm2::SpecId::PRAGUE) {
-        contracts.extend([WITHDRAWAL_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS]);
-    }
-    if spec.enables(evm2::SpecId::AMSTERDAM) {
-        contracts.extend([BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS]);
-    }
-    contracts
-}
-
 fn is_absent_account_probe(account: &Map<String, Value>) -> Result<bool, CaptureError> {
     // Treat a zero-only observation as evidence that the account or slot was absent, not as an
     // empty account that must be materialized in the capture pre-state. For example:
@@ -390,6 +377,19 @@ fn is_absent_account_probe(account: &Map<String, Value>) -> Result<bool, Capture
         }
     }
     Ok(true)
+}
+
+/// Returns the system contracts that a block of this spec calls after its transactions and
+/// requires to have code.
+fn system_contracts(spec: evm2::SpecId) -> Vec<Address> {
+    let mut contracts = Vec::new();
+    if spec.enables(evm2::SpecId::PRAGUE) {
+        contracts.extend([WITHDRAWAL_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS]);
+    }
+    if spec.enables(evm2::SpecId::AMSTERDAM) {
+        contracts.extend([BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS]);
+    }
+    contracts
 }
 
 #[cfg(test)]
