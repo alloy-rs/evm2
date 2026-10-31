@@ -9,7 +9,7 @@ use alloy_consensus::{
 };
 use alloy_eips::{eip2930::AccessList, eip7702::SignedAuthorization, eip7840::BlobParams};
 use alloy_hardforks::EthereumHardfork;
-use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
+use alloy_primitives::{Address, Bytes, FixedBytes, U256};
 use evm2::SpecId;
 use evm2_eest::{
     AccessListItem, TestAuthorization,
@@ -33,7 +33,7 @@ pub(super) fn suite(capture: &CapturedCase) -> Result<BlockchainTest, CaptureErr
     let first_header = first.block_header.as_ref().expect("exported blocks include headers");
     let last_header = last.block_header.as_ref().expect("exported blocks include headers");
     let name = format!("mainnet_{}_{}", first_header.number, last_header.number);
-    let genesis_block_header = parent_header(first);
+    let genesis_block_header = export_header(&capture.parent_header);
     let lastblockhash = last_header.hash;
 
     let mut cases = BTreeMap::new();
@@ -189,18 +189,6 @@ fn export_state(capture: &CapturedCase, state: &CapturedState) -> EestState {
         })
         .collect();
     EestState(accounts)
-}
-
-fn parent_header(first: &Block) -> BlockHeader {
-    let mut header = first.block_header.clone().expect("exported blocks include headers");
-    header.hash = header.parent_hash;
-    header.number = header.number.saturating_sub(U256::from(1));
-    header.gas_used = U256::ZERO;
-    header.transactions_trie = B256::ZERO;
-    header.receipt_trie = B256::ZERO;
-    header.state_root = B256::ZERO;
-    header.uncle_hash = B256::ZERO;
-    header
 }
 
 fn export_block(input: &CapturedBlock) -> Result<Block, CaptureError> {

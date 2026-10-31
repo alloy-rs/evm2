@@ -2,13 +2,18 @@ use super::{
     CaptureError,
     overlay::Overlay,
     parse::{parse_address, parse_b256, parse_bytes, parse_u64, parse_u256},
-    rpc::RpcEndpoint,
+    rpc::{RpcAccount, RpcEndpoint},
 };
 use crate::capture::model::{
     AccountState, BlockHash, CapturedBlock, CapturedBlocks, CapturedCase, CapturedInput,
     CapturedVersions, Code, CodeTable, State, StorageEntry,
 };
+use alloy_consensus::Header;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, keccak256};
+use evm2::evm::{
+    BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS,
+    WITHDRAWAL_REQUEST_ADDRESS,
+};
 use futures_util::{StreamExt, stream};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
@@ -141,7 +146,49 @@ impl CaptureBuilder {
         Ok(())
     }
 
-    pub(super) fn finish(self, mut block_inputs: Vec<CapturedBlock>) -> CapturedCase {
+    /// Captures the system contracts that the blocks call after their transactions.
+    ///
+    /// Block execution requires their code, but transaction traces never touch them, so the
+    /// base pre-state reads them as of the block before the first captured block. A contract
+    /// that a transaction in the range touched is already captured. Their storage is not: the
+    /// request queues start empty.
+    pub(super) async fn capture_system_contracts(
+        &mut self,
+        rpc: &RpcEndpoint,
+        parent_number: u64,
+        spec: evm2::SpecId,
+    ) -> Result<(), CaptureError> {
+        for address in system_contracts(spec) {
+            let account = rpc.account(address, parent_number).await?;
+            self.capture_system_contract(address, account)?;
+        }
+        Ok(())
+    }
+
+    fn capture_system_contract(
+        &mut self,
+        address: Address,
+        account: RpcAccount,
+    ) -> Result<(), CaptureError> {
+        if self.captured_codes.contains(&address) {
+            return Ok(());
+        }
+        let code_hash = self.insert_code(account.code)?;
+        let state = self.account_state(address);
+        state.balance = account.balance;
+        state.nonce = account.nonce;
+        state.code_hash = code_hash;
+        self.captured_balances.insert(address);
+        self.captured_nonces.insert(address);
+        self.captured_codes.insert(address);
+        Ok(())
+    }
+
+    pub(super) fn finish(
+        self,
+        parent_header: Header,
+        mut block_inputs: Vec<CapturedBlock>,
+    ) -> CapturedCase {
         let input = if block_inputs.len() == 1 {
             CapturedInput::Block(Box::new(block_inputs.pop().expect("single block exists")))
         } else {
@@ -166,6 +213,7 @@ impl CaptureBuilder {
                     .collect(),
             },
             post_state: None,
+            parent_header,
             input,
         }
     }
@@ -224,20 +272,8 @@ impl CaptureBuilder {
                     return Ok(());
                 }
                 if let Some(code) = account.get("code") {
-                    let bytecode = parse_bytes(code)?;
-                    let code_hash =
-                        if bytecode.is_empty() { KECCAK256_EMPTY } else { keccak256(&bytecode) };
-                    match self.codes.entry(code_hash) {
-                        Entry::Vacant(entry) => {
-                            entry.insert(bytecode);
-                        }
-                        Entry::Occupied(entry) if entry.get() == &bytecode => {}
-                        Entry::Occupied(_) => {
-                            return Err(CaptureError::CodeHashCollision { code_hash });
-                        }
-                    }
-                    let state = self.account_state(address);
-                    state.code_hash = code_hash;
+                    let code_hash = self.insert_code(parse_bytes(code)?)?;
+                    self.account_state(address).code_hash = code_hash;
                     self.captured_codes.insert(address);
                 }
             }
@@ -247,6 +283,18 @@ impl CaptureBuilder {
             return Ok(());
         }
         Ok(())
+    }
+
+    fn insert_code(&mut self, bytecode: Bytes) -> Result<B256, CaptureError> {
+        let code_hash = if bytecode.is_empty() { KECCAK256_EMPTY } else { keccak256(&bytecode) };
+        match self.codes.entry(code_hash) {
+            Entry::Vacant(entry) => {
+                entry.insert(bytecode);
+            }
+            Entry::Occupied(entry) if entry.get() == &bytecode => {}
+            Entry::Occupied(_) => return Err(CaptureError::CodeHashCollision { code_hash }),
+        }
+        Ok(code_hash)
     }
 
     fn account_state(&mut self, address: Address) -> &mut AccountState {
@@ -296,6 +344,19 @@ pub(super) enum AccountField {
     Balance,
     Nonce,
     Code,
+}
+
+/// Returns the system contracts that a block of this spec calls after its transactions and
+/// requires to have code.
+fn system_contracts(spec: evm2::SpecId) -> Vec<Address> {
+    let mut contracts = Vec::new();
+    if spec.enables(evm2::SpecId::PRAGUE) {
+        contracts.extend([WITHDRAWAL_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS]);
+    }
+    if spec.enables(evm2::SpecId::AMSTERDAM) {
+        contracts.extend([BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS]);
+    }
+    contracts
 }
 
 fn is_absent_account_probe(account: &Map<String, Value>) -> Result<bool, CaptureError> {
@@ -369,6 +430,45 @@ mod tests {
 
         assert!(!builder.accounts.contains_key(&address));
         assert!(!builder.captured_balances.contains(&address));
+    }
+
+    #[test]
+    fn system_contract_capture_keeps_code_a_transaction_touched() {
+        let address = WITHDRAWAL_REQUEST_ADDRESS;
+        let mut builder = CaptureBuilder::mainnet();
+        let pre = account_trace(address, json!({ "balance": "0x1", "nonce": 1, "code": "0x60" }));
+        builder.capture_base_requirements(1, 0, &pre, &Overlay::default()).unwrap();
+
+        let account =
+            RpcAccount { balance: U256::from(9), nonce: 2, code: Bytes::from_static(&[1]) };
+        builder.capture_system_contract(address, account).unwrap();
+
+        let account = builder.accounts.get(&address).unwrap();
+        assert_eq!(account.balance, U256::from(1));
+        assert_eq!(account.nonce, 1);
+        assert_eq!(builder.codes.get(&account.code_hash).unwrap().as_ref(), &[0x60]);
+    }
+
+    #[test]
+    fn system_contract_capture_reads_an_untouched_contract() {
+        let address = WITHDRAWAL_REQUEST_ADDRESS;
+        let mut builder = CaptureBuilder::mainnet();
+
+        let account =
+            RpcAccount { balance: U256::from(9), nonce: 1, code: Bytes::from_static(&[1]) };
+        builder.capture_system_contract(address, account).unwrap();
+
+        let account = builder.accounts.get(&address).unwrap();
+        assert_eq!(account.balance, U256::from(9));
+        assert_eq!(account.nonce, 1);
+        assert_eq!(builder.codes.get(&account.code_hash).unwrap().as_ref(), &[1]);
+    }
+
+    #[test]
+    fn system_contracts_follow_the_spec() {
+        assert!(system_contracts(evm2::SpecId::CANCUN).is_empty());
+        assert_eq!(system_contracts(evm2::SpecId::OSAKA).len(), 2);
+        assert_eq!(system_contracts(evm2::SpecId::AMSTERDAM).len(), 4);
     }
 
     #[test]

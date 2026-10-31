@@ -157,7 +157,9 @@ fn replay_file(path: &Path, options: &ReplayOptions) -> Result<FileReplay> {
                 trace: options.trace,
                 print_json_outcome: options.print_json_outcome,
                 dump_state: options.dump_state,
-                compare_state_root: true,
+                // Captured fixtures keep only the accounts their blocks touch, so state roots
+                // can't be reproduced.
+                compare_state_root: false,
                 compare_receipt_root: true,
                 ..Default::default()
             },
@@ -201,7 +203,9 @@ fn replay_file(path: &Path, options: &ReplayOptions) -> Result<FileReplay> {
                     trace: options.trace,
                     print_json_outcome: options.print_json_outcome,
                     dump_state: options.dump_state,
-                    compare_state_root: true,
+                    // Captured fixtures keep only the accounts their blocks touch, so state roots
+                    // can't be reproduced.
+                    compare_state_root: false,
                     compare_receipt_root: true,
                     ..Default::default()
                 },

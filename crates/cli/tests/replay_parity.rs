@@ -124,7 +124,7 @@ fn mainnet_replay_receipt_validation_preserves_hook_outcomes() {
         &path,
         &suite,
         BlockchainTestExecuteConfig {
-            compare_state_root: true,
+            compare_state_root: false,
             compare_receipt_root: true,
             ..Default::default()
         },

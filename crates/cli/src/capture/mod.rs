@@ -73,6 +73,8 @@ async fn capture(
     let mut block_inputs = Vec::with_capacity((to - from + 1) as usize);
     let mut transaction_count = 0usize;
 
+    let parent_number = from.checked_sub(1).ok_or(CaptureError::MissingBlockHeader(from))?;
+    let parent_header = rpc.header(parent_number).await?;
     builder.capture_block_hashes(&rpc, from).await?;
     let mut blocks = stream::iter(from..=to)
         .map(|number| fetch_block(&rpc, number))
@@ -143,7 +145,10 @@ async fn capture(
         next_block += 1;
     }
 
-    let capture = builder.finish(block_inputs);
+    let last = block_inputs.last().expect("capture is not empty");
+    let spec = ethereum::mainnet_spec_for_header(&last.block.header);
+    builder.capture_system_contracts(&rpc, parent_number, spec).await?;
+    let capture = builder.finish(parent_header, block_inputs);
     let base_accounts = capture.pre_state.accounts.len();
     let base_storage_slots =
         capture.pre_state.accounts.iter().map(|account| account.storage.len()).sum();

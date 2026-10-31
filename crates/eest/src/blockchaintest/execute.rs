@@ -281,10 +281,6 @@ fn execute_case(
         .map_err(|err| TestError::case(path, name, err))?;
     let total_blocks = test_case.blocks.len();
     let mut db_stats_counts = DbStatsCounts::default();
-    // `evm2 capture` keeps only the accounts the blocks touch and zeroes the genesis state
-    // root, so its blocks' state roots can't be reproduced. Receipt roots still check them.
-    let captured = test_case.genesis_block_header.state_root.is_zero();
-    let compare_state_root = config.compare_state_root && !captured;
 
     hook.case_started(CaseStarted { name, total_blocks, network: test_case.network });
 
@@ -315,12 +311,11 @@ fn execute_case(
             &mut block_env,
             &mut parent_block_hash,
             &mut parent_header,
-            captured,
             hook,
             resources,
             config.trace,
             config.validate,
-            compare_state_root,
+            config.compare_state_root,
             config.compare_receipt_root,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
         ) {
@@ -405,7 +400,6 @@ fn execute_block<'a>(
     block_env: &mut BlockEnv,
     parent_block_hash: &mut Option<B256>,
     parent_header: &mut &'a BlockHeader,
-    captured: bool,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
     trace: bool,
@@ -523,11 +517,9 @@ fn execute_block<'a>(
             ));
         }
 
-        // A captured case's genesis header is the first block's own header, not its parent's.
-        let parent = (!(captured && block_index == 0)).then_some(*parent_header);
         if let Some(header) = block_header(block)
             && let Err(reason) =
-                validate_block_header(block, header, parent, blob_params.as_ref(), spec)
+                validate_block_header(block, header, parent_header, blob_params.as_ref(), spec)
         {
             return reject_block(should_fail, path, name, reason);
         }
@@ -763,7 +755,6 @@ fn execute_block<'a>(
             next_block_env,
             block_ommers(block),
             block_withdrawals(block),
-            captured,
         ) {
             // A failed post-block system call (e.g. SYSTEM_CONTRACT_CALL_FAILED) invalidates the
             // block, mirroring execution-specs raising `InvalidBlock`.
@@ -933,7 +924,7 @@ fn block_ommers(block: &Block) -> &[BlockHeader] {
 fn validate_block_header(
     block: &Block,
     header: &BlockHeader,
-    parent: Option<&BlockHeader>,
+    parent: &BlockHeader,
     blob_params: Option<&BlobParams>,
     spec: SpecId,
 ) -> Result<(), String> {
@@ -955,7 +946,6 @@ fn validate_block_header(
     if header.blob_gas_used.is_none() {
         return Err("block header is missing blobGasUsed".to_string());
     }
-    let Some(parent) = parent else { return Ok(()) };
     let parent_excess = parent.excess_blob_gas.unwrap_or_default();
     let parent_used = parent.blob_gas_used.unwrap_or_default();
     // Reject parent values whose sum the excess blob gas formula cannot add without overflow.
@@ -1094,10 +1084,7 @@ fn post_block_transition(
     block: BlockEnv,
     ommers: &[BlockHeader],
     withdrawals: &[Withdrawal],
-    captured: bool,
 ) -> Result<(), TestErrorKind> {
-    // A captured case keeps only the accounts its blocks touch, so the system contracts are absent.
-    let check = if captured { SystemCallCheck::Outcome } else { SystemCallCheck::OutcomeAndCode };
     let reward = block_reward(spec, ommers.len());
     if reward != 0 {
         increment_balance(evm, block_state, block.beneficiary, U256::from(reward))?;
@@ -1139,7 +1126,7 @@ fn post_block_transition(
             WITHDRAWAL_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7002",
-            check,
+            SystemCallCheck::OutcomeAndCode,
         )?;
         run_system_call(
             evm,
@@ -1147,7 +1134,7 @@ fn post_block_transition(
             evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7251",
-            check,
+            SystemCallCheck::OutcomeAndCode,
         )?;
     }
 
@@ -1159,7 +1146,7 @@ fn post_block_transition(
             evm2::evm::BUILDER_DEPOSIT_REQUEST_ADDRESS,
             Bytes::new(),
             "eip8282_deposit",
-            check,
+            SystemCallCheck::OutcomeAndCode,
         )?;
         run_system_call(
             evm,
@@ -1167,7 +1154,7 @@ fn post_block_transition(
             evm2::evm::BUILDER_EXIT_REQUEST_ADDRESS,
             Bytes::new(),
             "eip8282_exit",
-            check,
+            SystemCallCheck::OutcomeAndCode,
         )?;
     }
     Ok(())
@@ -1178,8 +1165,6 @@ fn post_block_transition(
 enum SystemCallCheck {
     /// The call may fail (EIP-4788, EIP-2935).
     None,
-    /// The call must succeed.
-    Outcome,
     /// The target must have code, and the call must succeed (execution-specs
     /// `process_checked_system_transaction`).
     OutcomeAndCode,
