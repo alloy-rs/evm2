@@ -1428,6 +1428,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn chain_id_is_checked_before_the_fee_cap() {
+        let mut block = BlockEnvExt::default();
+        block.basefee = U256::from(10);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            block,
+            ethereum_tx_registry(SpecId::PRAGUE),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::PRAGUE),
+        );
+        let tx = |chain_id| {
+            Recovered::new_unchecked(
+                TxEnvelope::Eip1559(TxEip1559 {
+                    chain_id,
+                    gas_limit: 100_000,
+                    max_fee_per_gas: 1,
+                    to: TxKind::Call(Address::with_last_byte(0xbb)),
+                    ..Default::default()
+                }),
+                Address::with_last_byte(0xaa),
+            )
+        };
+
+        assert_eq!(
+            evm.validate_tx(&tx(2)),
+            Err(HandlerError::InvalidChainId { expected: 1, got: 2 })
+        );
+        assert_eq!(
+            evm.validate_tx(&tx(1)),
+            Err(HandlerError::FeeCapLessThanBaseFee {
+                max_fee_per_gas: U256::from(1),
+                base_fee: U256::from(10)
+            })
+        );
+    }
+
     #[rstest::rstest]
     fn amsterdam_handler_rejects_gas_limit_above_total_cap(
         #[values(MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1)]

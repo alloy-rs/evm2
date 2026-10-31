@@ -46,9 +46,12 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let gas_price =
         effective_gas_price(max_fee_per_gas, max_priority_fee_per_gas, req.host.block.basefee);
 
+    validate_chain_id(req.host.version(), Some(tx.chain_id), false)?;
     validate_priority_fee(req.host.version(), max_fee_per_gas, max_priority_fee_per_gas)?;
     validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
-    validate_chain_id(req.host.version(), Some(tx.chain_id), false)?;
+    if auth_count == 0 {
+        return Err(HandlerError::EmptyAuthorizationList);
+    }
     if auth_count == 0 {
         return Err(HandlerError::EmptyAuthorizationList);
     }
