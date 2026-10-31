@@ -1,4 +1,4 @@
-use crate::{execution::ExecutionResourceError, tx::TxBuildError};
+use crate::{exception::Exception, execution::ExecutionResourceError, tx::TxBuildError};
 use alloy_primitives::{B256, Bytes};
 use std::{io, path::PathBuf};
 use thiserror::Error;
@@ -81,27 +81,21 @@ pub(crate) enum TestErrorKind {
     /// Transaction part index was invalid.
     #[error("bad transaction index: {0}")]
     BadIndex(&'static str),
-    /// Transaction request could not be converted to a consensus transaction.
-    #[error("could not build consensus transaction: {0}")]
-    BuildTransaction(String),
-    /// Signed transaction could not be decoded or its sender recovered.
-    #[error("{0}")]
-    InvalidSignedTransaction(String),
+    /// Transaction could not be built, decoded, or its sender recovered.
+    #[error(transparent)]
+    Transaction(#[from] TxBuildError),
     /// Execution resource initialization or compilation failed.
     #[error(transparent)]
     ExecutionResource(#[from] ExecutionResourceError),
 }
 
-impl From<TxBuildError> for TestErrorKind {
-    fn from(error: TxBuildError) -> Self {
-        match error {
-            TxBuildError::Overflow(name) => Self::Overflow(name),
-            TxBuildError::BuildTransaction(error) => Self::BuildTransaction(error),
-            TxBuildError::SerdeDeserialize(error) => Self::SerdeDeserialize(error),
-            error @ (TxBuildError::Decode(_)
-            | TxBuildError::InvalidV(_)
-            | TxBuildError::ProtectedLegacy
-            | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error.to_string()),
+impl TestErrorKind {
+    /// Returns the exception execution-specs raises for this error, if it is a transaction
+    /// validity failure.
+    pub(crate) fn exception(&self) -> Option<Exception> {
+        match self {
+            Self::Transaction(error) => error.exception(),
+            _ => None,
         }
     }
 }

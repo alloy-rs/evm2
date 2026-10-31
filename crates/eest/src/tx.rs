@@ -1,3 +1,4 @@
+use crate::exception::Exception;
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, TxEip4844, TypedTransaction,
     crypto::{RecoveryError, secp256k1},
@@ -8,6 +9,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+use alloy_rlp::Header;
 use alloy_rpc_types_eth::{
     AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
     TransactionRequest,
@@ -74,12 +76,20 @@ pub(crate) enum TxBuildError {
     /// Transaction request could not be converted to a consensus transaction.
     #[error("could not build consensus transaction: {0}")]
     BuildTransaction(String),
+    /// A blob or EIP-7702 transaction has no recipient.
+    #[error("type {0} transaction has no recipient")]
+    ContractCreation(u8),
     /// JSON decoding failed.
     #[error(transparent)]
     SerdeDeserialize(#[from] serde_json::Error),
     /// Signed transaction bytes could not be decoded.
-    #[error("could not decode signed transaction: {0}")]
-    Decode(#[from] Eip2718Error),
+    #[error("could not decode signed transaction: {source}")]
+    Decode {
+        /// Decoder error.
+        source: Eip2718Error,
+        /// Exception execution-specs raises for the field the encoding breaks, if known.
+        exception: Option<Exception>,
+    },
     /// Signature `v` value is not valid for the transaction type.
     #[error("invalid signature v value: {0}")]
     InvalidV(U256),
@@ -89,6 +99,21 @@ pub(crate) enum TxBuildError {
     /// Sender could not be recovered from the signature.
     #[error("could not recover sender: {0}")]
     Recover(#[from] RecoveryError),
+}
+
+impl TxBuildError {
+    /// Returns the exception execution-specs raises for a transaction that fails to build.
+    pub(crate) fn exception(&self) -> Option<Exception> {
+        match self {
+            Self::InvalidV(_) | Self::ProtectedLegacy | Self::Recover(_) => {
+                Some(Exception::InvalidSignatureVrs)
+            }
+            Self::Overflow("gasPrice" | "maxFeePerGas") => Some(Exception::GasPriceExceedsU128),
+            Self::ContractCreation(tx_type) => Exception::contract_creation(*tx_type),
+            Self::Decode { exception, .. } => *exception,
+            Self::Overflow(_) | Self::BuildTransaction(_) | Self::SerdeDeserialize(_) => None,
+        }
+    }
 }
 
 /// Where a transaction's sender comes from.
@@ -136,6 +161,11 @@ pub(crate) fn build_recovered_tx(
     fields: TxFields,
     signer: TxSigner,
 ) -> Result<RecoveredTxEnvelope, TxBuildError> {
+    if let Some(tx_type @ (3 | 4)) = fields.tx_type
+        && fields.kind.is_create()
+    {
+        return Err(TxBuildError::ContractCreation(tx_type));
+    }
     let mut request = TransactionRequest::default()
         .gas_limit(fields.gas_limit)
         .nonce(fields.nonce)
@@ -206,7 +236,9 @@ pub(crate) fn decode_recovered_tx(
     bytes: &[u8],
     spec: SpecId,
 ) -> Result<RecoveredTxEnvelope, TxBuildError> {
-    let tx = EthereumTxEnvelope::<TxEip4844>::decode_2718_exact(bytes)?;
+    let tx = EthereumTxEnvelope::<TxEip4844>::decode_2718_exact(bytes).map_err(|source| {
+        TxBuildError::Decode { source, exception: malformed_exception(bytes, spec) }
+    })?;
     if let EthereumTxEnvelope::Legacy(signed) = &tx
         && signed.tx().chain_id.is_some()
         && !spec.enables(SpecId::SPURIOUS_DRAGON)
@@ -215,6 +247,58 @@ pub(crate) fn decode_recovered_tx(
     }
     let caller = recover_sender(tx.signature(), tx.signature_hash(), spec)?;
     Ok(Recovered::new_unchecked(tx.into(), caller))
+}
+
+/// Returns the exception execution-specs raises for the first field of an undecodable signed
+/// transaction that breaks its width or shape.
+///
+/// The decoder reports an RLP error without naming its field, but execution-specs names the
+/// failure after the field.
+fn malformed_exception(bytes: &[u8], spec: SpecId) -> Option<Exception> {
+    let (tx_type, mut rest) = match bytes {
+        [tx_type @ ..0x7f, rest @ ..] => (*tx_type, rest),
+        _ => (0, bytes),
+    };
+    let mut rest = Header::decode_bytes(&mut rest, true).ok()?;
+    let mut items = Vec::new();
+    while !rest.is_empty() {
+        let header = Header::decode(&mut rest).ok()?;
+        let payload = rest.get(..header.payload_length)?;
+        rest = &rest[payload.len()..];
+        items.push((header.list, payload));
+    }
+
+    // The positions of the fee, recipient, and value fields. The signature is the last three.
+    let (fees, to, value): (&[usize], usize, usize) = match tx_type {
+        0 => (&[1], 3, 4),
+        1 => (&[2], 4, 5),
+        2 | 4 => (&[2, 3], 5, 6),
+        3 => (&[2, 3, 9], 5, 6),
+        _ => return None,
+    };
+    let string =
+        |index: usize| items.get(index).filter(|(list, _)| !list).map(|(_, payload)| *payload);
+
+    if fees.iter().any(|&index| string(index).is_some_and(|fee| (17..=32).contains(&fee.len()))) {
+        return Some(Exception::GasPriceExceedsU128);
+    }
+    if string(to).is_some_and(<[u8]>::is_empty)
+        && let Some(exception) = Exception::contract_creation(tx_type)
+    {
+        return Some(exception);
+    }
+    if string(value).is_some_and(|value| value.len() > 32) {
+        return Some(Exception::RlpInvalidValue);
+    }
+    let signature = items.len().checked_sub(3)?;
+    let invalid_v = string(signature).is_some_and(|v| {
+        let v = U256::try_from_be_slice(v).unwrap_or(U256::MAX);
+        signature_from_vrs(U256::ONE, U256::ONE, v, tx_type == 0, spec).is_err()
+    });
+    let wide_r_or_s = [signature + 1, signature + 2]
+        .into_iter()
+        .any(|index| string(index).is_some_and(|scalar| scalar.len() > 32));
+    (invalid_v || wide_r_or_s).then_some(Exception::InvalidSignatureVrs)
 }
 
 /// Splits a fixture `v` value into the signature parity and, for legacy transactions, the EIP-155
@@ -351,6 +435,64 @@ mod tests {
         let chain_id = u128::from(u64::MAX);
         assert_eq!(parse(encoded(chain_id)).unwrap().1, Some(u64::MAX));
         assert!(matches!(parse(encoded(chain_id + 1)), Err(TxBuildError::InvalidV(_))));
+    }
+
+    #[test]
+    fn malformed_exception_names_the_field_that_breaks_the_encoding() {
+        fn list(prefix: &[u8], items: &[Vec<u8>]) -> Vec<u8> {
+            let payload = items.concat();
+            let mut out = prefix.to_vec();
+            Header { list: true, payload_length: payload.len() }.encode(&mut out);
+            out.extend(payload);
+            out
+        }
+        let item = |bytes: &[u8]| alloy_rlp::encode(bytes);
+        let decode = |bytes: &[u8]| {
+            let Err(TxBuildError::Decode { exception, .. }) =
+                decode_recovered_tx(bytes, SpecId::CANCUN)
+            else {
+                panic!("transaction should not decode");
+            };
+            exception
+        };
+        let legacy = |value: &[u8], v: &[u8]| {
+            list(
+                &[],
+                &[
+                    item(&[]),
+                    item(&[1]),
+                    item(&[0x52, 0x08]),
+                    item(&[0; 20]),
+                    item(value),
+                    item(&[]),
+                    item(v),
+                    item(&[1]),
+                    item(&[1]),
+                ],
+            )
+        };
+
+        assert_eq!(decode(&legacy(&[0xff; 33], &[27])), Some(Exception::RlpInvalidValue));
+        assert_eq!(decode(&legacy(&[], &[34])), Some(Exception::InvalidSignatureVrs));
+        let set_code = list(
+            &[4],
+            &[
+                item(&[1]),
+                item(&[]),
+                item(&[]),
+                item(&[]),
+                item(&[0x52, 0x08]),
+                item(&[]),
+                item(&[]),
+                item(&[]),
+                vec![alloy_rlp::EMPTY_LIST_CODE],
+                vec![alloy_rlp::EMPTY_LIST_CODE],
+                item(&[1]),
+                item(&[1]),
+                item(&[1]),
+            ],
+        );
+        assert_eq!(decode(&set_code), Some(Exception::Type4TxContractCreation));
     }
 
     #[test]

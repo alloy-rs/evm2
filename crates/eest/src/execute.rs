@@ -3,6 +3,7 @@ use crate::compiled::{self, FileSummary};
 use crate::{
     dump,
     error::{TestError, TestErrorKind},
+    exception::{self, Exception},
     execution::ExecutionResources,
     filter::NameFilter,
     fixture_io,
@@ -26,7 +27,7 @@ use alloy_trie::{
 };
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
+    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult, Version,
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
@@ -38,7 +39,7 @@ use evm2::{
 use serde_json::json;
 #[cfg(feature = "jit")]
 use std::path::PathBuf;
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, fmt, path::Path};
 
 pub use crate::execution::ExecutionMode;
 
@@ -211,12 +212,14 @@ fn execute_unit(
                 Some(bytes) => decode_recovered_tx(bytes, spec).map_err(Into::into),
                 None => build_tx(&unit.transaction, &post.indexes, unit.env.current_chain_id),
             };
-            let tx = match tx {
-                Ok(tx) => tx,
-                Err(_) if post.expect_exception.is_some() => {
+            let tx = match (tx, &post.expect_exception) {
+                (Ok(tx), _) => tx,
+                (Err(err), Some(expected)) => {
+                    check_exception(expected, err.exception(), &err)
+                        .map_err(|err| TestError::case(path, name, err))?;
                     continue;
                 }
-                Err(err) => return Err(TestError::case(path, name, err)),
+                (Err(err), None) => return Err(TestError::case(path, name, err)),
             };
             let result = execute_spec(
                 spec,
@@ -248,11 +251,17 @@ fn validate_result(
     config: ExecuteConfig,
 ) -> Result<(), TestError> {
     let error = match (&post.expect_exception, result) {
-        (Some(_), Err(failure)) => {
+        (Some(expected), Err(failure)) => {
+            let error = check_exception(
+                expected,
+                Exception::from_handler_error(&failure.error, Version::base(spec)),
+                &failure.error,
+            )
+            .err();
             if config.print_json_outcome {
-                print_json_outcome(post, name, Some(&failure.outcome), spec, None);
+                print_json_outcome(post, name, Some(&failure.outcome), spec, error.as_ref());
             }
-            return Ok(());
+            error
         }
         (Some(_), Ok(outcome)) => Some(TestErrorKind::UnexpectedException {
             expected_exception: post.expect_exception.clone(),
@@ -288,6 +297,18 @@ fn validate_result(
         return Err(TestError::case(path, name, error));
     }
     Ok(())
+}
+
+/// Checks that a transaction rejected with `exception` is one the fixture expects.
+fn check_exception(
+    expected: &str,
+    exception: Option<Exception>,
+    error: &dyn fmt::Display,
+) -> Result<(), TestErrorKind> {
+    exception::check(expected, exception, error).map_err(|got| TestErrorKind::UnexpectedException {
+        expected_exception: Some(expected.to_owned()),
+        got_exception: Some(got),
+    })
 }
 
 fn validate_outcome(unit: &TestUnit, post: &Test, outcome: &SpecOutcome) -> Option<TestErrorKind> {
@@ -681,6 +702,27 @@ mod tests {
             op::SSTORE,
             op::STOP,
         ])
+    }
+
+    #[test]
+    fn check_exception_requires_a_listed_exception() {
+        let error = HandlerError::NonceOverflow;
+        let exception = Exception::from_handler_error(&error, Version::base(SpecId::CANCUN));
+
+        check_exception(
+            "TransactionException.INTRINSIC_GAS_TOO_LOW|TransactionException.NONCE_IS_MAX",
+            exception,
+            &error,
+        )
+        .unwrap();
+        let err =
+            check_exception("TransactionException.INSUFFICIENT_ACCOUNT_FUNDS", exception, &error)
+                .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "unexpected exception: got Some(\"TransactionException.NONCE_IS_MAX (nonce overflow in transaction)\"), expected Some(\"TransactionException.INSUFFICIENT_ACCOUNT_FUNDS\")"
+        );
+        assert!(check_exception("TransactionException.NONCE_IS_MAX", None, &error).is_err());
     }
 
     #[test]
