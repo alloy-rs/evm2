@@ -142,11 +142,17 @@ pub unsafe fn __revmc_builtin_exp<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
-    let rev![base, exponent_ptr] = sp;
-    let exponent = exponent_ptr.to_u256();
-    ecx.gas.spend(ecx.gas_params().exp_cost(exponent))?;
-    *exponent_ptr = base.to_u256().pow(exponent).into();
+    let rev![_, exponent] = &*sp;
+    ecx.gas.spend(ecx.gas_params().exp_cost(exponent.to_u256()))?;
+    unsafe { __revmc_builtin_pow::<T>(sp) };
     Ok(())
+}
+
+/// `EXP` without gas, for compiled code that already charged the dynamic gas of a constant
+/// exponent in its section.
+#[inline]
+pub unsafe fn __revmc_builtin_pow<T: EvmTypesHost>(rev![base, exponent]: &mut [EvmWord; 2]) {
+    *exponent = base.to_u256().pow(exponent.to_u256()).into();
 }
 
 #[inline]
@@ -519,9 +525,32 @@ pub unsafe fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
     ecx.return_data_len = ecx.interpreter().return_data().len();
     ecx.refresh_memory_cache();
     let new_len = result?;
-    // Compiled code relies on memory never shrinking, and on the opcode's stack effect.
-    if new_len != len - inputs + outputs || ecx.memory().len() < memory_len {
-        return Err(InstrStop::FatalExternalError.into());
+    // Compiled code relies on the opcode's stack effect, and on memory never shrinking.
+    let expected_len = len - inputs + outputs;
+    if new_len != expected_len {
+        return Err(ecx
+            .interpreter_mut()
+            .fail_host_instruction(
+                pc,
+                format_args!(
+                    "left {new_len} stack items, but compiled code expects {expected_len} from \
+                     the opcode's fixed inputs and outputs"
+                ),
+            )
+            .into());
+    }
+    let new_memory_len = ecx.memory().len();
+    if new_memory_len < memory_len {
+        return Err(ecx
+            .interpreter_mut()
+            .fail_host_instruction(
+                pc,
+                format_args!(
+                    "shrank memory from {memory_len} to {new_memory_len} bytes, but compiled \
+                     code expects memory never to shrink"
+                ),
+            )
+            .into());
     }
     Ok(())
 }
@@ -693,7 +722,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         code: Bytecode::new_legacy(code.clone()),
         input: code,
         value,
-        code_address: caller,
+        code_address: destination,
         caller_is_static: false,
         salt,
         ext: T::MessageExt::default(),
@@ -1055,6 +1084,7 @@ mod abi {
         __revmc_builtin_mulmod(sp: &mut [EvmWord; 3]);
         __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_, '_, '_, T>, expected: u32);
         __revmc_builtin_exp(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
+        __revmc_builtin_pow(sp: &mut [EvmWord; 2]);
         __revmc_builtin_keccak256(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
         __revmc_builtin_keccak256_cc(ecx: &mut EvmContext<'_, '_, '_, T>, out: &mut EvmWord, offset: u64, len: u64) -> BuiltinResult;
         __revmc_builtin_balance(ecx: &mut EvmContext<'_, '_, '_, T>, address: &mut EvmWord) -> BuiltinResult;

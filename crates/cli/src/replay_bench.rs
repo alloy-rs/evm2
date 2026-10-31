@@ -4,7 +4,7 @@
 //! transaction outcomes; timed runs use a no-op hook and include database setup,
 //! transaction decoding, execution and block commits.
 
-use alloy_eips::{eip7702::SignedAuthorization, eip7840::BlobParams};
+use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, B256, Bytes, Keccak256, Log, TxKind, U256};
 use alloy_rpc_types_eth::{AccessList as RpcAccessList, AccessListItem as RpcAccessListItem};
 use evm2::{
@@ -19,7 +19,7 @@ use evm2_eest::{
     blockchaintest::{
         Block, BlockFinished, BlockHeader, BlockStarted, BlockchainTest, BlockchainTestCase,
         CaseStarted, ForkSpec, Hook, Transaction, TransactionFinished, TransactionStarted,
-        Withdrawal,
+        Withdrawal, blob_params,
     },
     execute_blockchain_tests_suite,
 };
@@ -275,7 +275,7 @@ impl ReplayFixture {
             Path::new(&self.name),
             &self.suite,
             BlockchainTestExecuteConfig {
-                validate_post_state: false,
+                validate: false,
                 compare_receipt_root: true,
                 ..Default::default()
             },
@@ -326,7 +326,7 @@ impl ReplayFixture {
 
         for (block_index, block) in case.blocks.iter().enumerate() {
             let header = block_header(block).expect("replay fixture block must carry a header");
-            let block_env = revm_block_env(header, parent_excess_blob_gas, spec);
+            let block_env = revm_block_env(&self.name, case, header, parent_excess_blob_gas);
             let block_number = header.number.saturating_to::<u64>();
 
             let transactions = block_transactions(block);
@@ -553,24 +553,6 @@ fn block_withdrawals(block: &Block) -> &[Withdrawal] {
     block.rlp_decoded.as_ref().map(|decoded| decoded.withdrawals.as_slice()).unwrap_or_default()
 }
 
-fn blob_params_for_timestamp(timestamp: U256, spec: SpecId) -> BlobParams {
-    const MAINNET_BPO1_TIMESTAMP: u64 = 1_765_290_071;
-    const MAINNET_BPO2_TIMESTAMP: u64 = 1_767_747_671;
-
-    if spec.enables(SpecId::AMSTERDAM) || timestamp.saturating_to::<u64>() >= MAINNET_BPO2_TIMESTAMP
-    {
-        BlobParams::bpo2()
-    } else if timestamp.saturating_to::<u64>() >= MAINNET_BPO1_TIMESTAMP {
-        BlobParams::bpo1()
-    } else if spec.enables(SpecId::OSAKA) {
-        BlobParams::osaka()
-    } else if spec.enables(SpecId::PRAGUE) {
-        BlobParams::prague()
-    } else {
-        BlobParams::cancun()
-    }
-}
-
 fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
     match fork {
         ForkSpec::Frontier => SpecId::FRONTIER,
@@ -589,7 +571,7 @@ fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
         ForkSpec::Shanghai => SpecId::SHANGHAI,
         ForkSpec::Cancun => SpecId::CANCUN,
         ForkSpec::Prague => SpecId::PRAGUE,
-        ForkSpec::Osaka => SpecId::OSAKA,
+        ForkSpec::Osaka | ForkSpec::BPO1 | ForkSpec::BPO2 => SpecId::OSAKA,
         ForkSpec::Amsterdam => SpecId::AMSTERDAM,
         other => panic!("replay fixture fork {other:?} is not supported"),
     }
@@ -671,15 +653,21 @@ fn revm_seed_block_hashes(database: &mut RevmInMemoryDB, case: &BlockchainTestCa
         .insert(case.genesis_block_header.number, case.genesis_block_header.hash);
 }
 
-fn revm_block_env(header: &BlockHeader, parent_excess_blob_gas: u64, spec: SpecId) -> RevmBlockEnv {
+fn revm_block_env(
+    name: &str,
+    case: &BlockchainTestCase,
+    header: &BlockHeader,
+    parent_excess_blob_gas: u64,
+) -> RevmBlockEnv {
     let excess_blob_gas = header
         .excess_blob_gas
         .map(|gas| gas.saturating_to::<u64>())
         .unwrap_or(parent_excess_blob_gas);
     // The blob gas price is computed with the same `BlobParams` selection the
     // evm2 side uses, so both engines see an identical blob base fee.
-    let blob_gasprice =
-        blob_params_for_timestamp(header.timestamp, spec).calc_blob_fee(excess_blob_gas);
+    let blob_gasprice = blob_params(Path::new(name), name, case, header)
+        .expect("replay fixture must carry the blob schedule")
+        .map_or(1, |params| params.calc_blob_fee(excess_blob_gas));
     RevmBlockEnv {
         number: header.number,
         beneficiary: header.coinbase,

@@ -34,9 +34,9 @@
 //! 1. **Accepted overlay**: transaction-boundary state accepted by prior commits. It shadows the
 //!    wrapped database and is visible to later transactions executed by the same [`Evm`].
 //! 2. **Transaction scratch**: writes, warm-access state, transient storage, journal entries,
-//!    touched accounts, selfdestruct markers, and logs for the currently executing transaction. It
-//!    is cleared after `commit`, `commit_to`, `commit_with`, `discard`, `discard_with`, or `detach`
-//!    while retaining capacity where possible.
+//!    touched and selfdestructed account flags, and logs for the currently executing transaction.
+//!    It is cleared after `commit`, `commit_to`, `commit_with`, `discard`, `discard_with`, or
+//!    `detach` while retaining capacity where possible.
 //! 3. **Block accumulator**: optional block-level state output. It coalesces committed transaction
 //!    writes and keeps block-boundary originals.
 //!
@@ -1488,7 +1488,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 HostError::Execution(error) => Err(error),
             };
         }
-        message.code_address = message.destination;
         // Empty initcode deploys an empty contract without executing the bytecode's padding STOP.
         let (stop, gas, output) = if message.code.is_empty() {
             (
@@ -4324,12 +4323,11 @@ mod tests {
         assert!(info.is_empty_code_hash());
 
         let pending = state.take_pending_state();
-        assert!(pending.accounts.contains_key(&contract), "account change recorded");
-        assert!(pending.selfdestructs.contains(&contract));
+        assert!(pending.accounts[&contract].flags.contains(AccountFlags::DESTROYED));
     }
 
     #[test]
-    fn commit_transaction_clears_detached_selfdestructs() {
+    fn commit_transaction_clears_detached_destroyed_flag() {
         let contract = Address::from([0x44; 20]);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let mut database = InMemoryDB::default();

@@ -9,7 +9,7 @@ use evm2::{
     interpreter::{InstrStop, Interpreter},
 };
 use evm2_cli::evm_bench::BenchCase;
-use evm2_jit_context::EvmCompilerFn;
+use evm2_jit_context::{EvmCompilerFn, can_run_compiled};
 use evm2_jit_llvm::EvmLlvmBackend;
 use evm2_jit_runtime::{EvmCompiler, OptimizationLevel};
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
@@ -101,7 +101,7 @@ impl PreparedBench {
             spec,
             block: case.block(),
             db: case.state(),
-            tx: case.tx(spec),
+            tx: case.tx(),
             entry_bytecode: case.entry_bytecode(),
             functions: Arc::new(functions),
         })
@@ -114,11 +114,12 @@ impl PreparedBench {
         let jit = self.run_jit().unwrap_or_else(|err| {
             panic!("{} JIT benchmark transaction must execute: {err:?}", self.name)
         });
-        assert_eq!(
-            interpreter.status, jit.status,
-            "{} interpreter and JIT status differ",
-            self.name
+        assert!(
+            interpreter.status,
+            "{} benchmark transaction must succeed: {:?}",
+            self.name, interpreter.stop
         );
+        assert_eq!(interpreter, jit, "{} interpreter and JIT results differ", self.name);
     }
 
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
@@ -208,8 +209,7 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
-        // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
-        if interpreter.gas().remaining() > i64::MAX as u64 {
+        if !can_run_compiled(interpreter) {
             return None;
         }
         let func = *self.functions.get(&interpreter.original_bytecode_hash())?;

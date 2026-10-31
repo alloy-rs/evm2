@@ -4,7 +4,6 @@ use crate::{
     Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, Result,
     bytecode::AnalysisConfig,
 };
-use alloy_primitives::Bytes;
 use evm2::{OpcodeView, SpecId, version::GasParams};
 use evm2_jit_backend::{
     Attribute, BackendConfig, FunctionAttributeLocation, Linkage, OptimizationLevel, eyre::ensure,
@@ -320,7 +319,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// This setting is applied once per process on first JIT compilation.
     /// Subsequent compilers inherit the value set by the first.
     ///
-    /// Defaults to `true`.
+    /// Defaults to `false`.
     pub fn debug_support(&self) -> bool {
         self.backend.config().debug_support
     }
@@ -367,7 +366,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// This setting is applied once per process on first JIT compilation.
     /// Subsequent compilers inherit the value set by the first.
     ///
-    /// Defaults to `true`.
+    /// Defaults to `false`.
     pub fn simple_perf(&self) -> bool {
         self.backend.config().simple_perf
     }
@@ -514,7 +513,10 @@ impl<B: Backend> EvmCompiler<B> {
     /// this lets LLVM DCE the per-failure-site materialization and the failure-block phi.
     /// Successful exits (`STOP`/`RETURN`/`REVERT`) keep their original codes.
     ///
-    /// Useful for benchmarking the cost of failure-result materialization.
+    /// This is a deliberate trade-off: the compiled function reports `OutOfGas` where the
+    /// interpreter reports the real halt reason (for example, an invalid jump). Preserving the
+    /// reasons (`false`) makes the JIT 4.0% larger, compile 10.7% more instructions, and
+    /// execute 3.8% more instructions in total across the benchmarks (`onchain_lm_v2` +4.3%).
     ///
     /// Defaults to `true`.
     pub const fn set_single_error(&mut self, yes: bool) {
@@ -567,14 +569,9 @@ impl<B: Backend> EvmCompiler<B> {
     ///
     /// NOTE: `name` must be unique for each function, as it is used as the name of the final
     /// symbol.
-    pub fn translate<'a>(
-        &mut self,
-        name: &str,
-        input: impl Into<EvmCompilerInput<'a>>,
-        spec_id: SpecId,
-    ) -> Result<B::FuncId> {
+    pub fn translate(&mut self, name: &str, input: &[u8], spec_id: SpecId) -> Result<B::FuncId> {
         ensure!(!self.finalized, "cannot compile more functions after finalizing the module");
-        let bytecode = self.parse(input.into(), spec_id)?;
+        let bytecode = self.parse(input, spec_id)?;
         self.translate_inner(name, &bytecode)
     }
 
@@ -586,13 +583,13 @@ impl<B: Backend> EvmCompiler<B> {
     ///
     /// The returned function pointer is owned by the module, and must not be called after the
     /// module is cleared or the function is freed.
-    pub unsafe fn jit<'a>(
+    pub unsafe fn jit(
         &mut self,
         name: &str,
-        bytecode: impl Into<EvmCompilerInput<'a>>,
+        bytecode: &[u8],
         spec_id: SpecId,
     ) -> Result<EvmCompilerFn> {
-        let id = self.translate(name, bytecode.into(), spec_id)?;
+        let id = self.translate(name, bytecode, spec_id)?;
         unsafe { self.jit_function(id) }
     }
 
@@ -685,14 +682,8 @@ impl<B: Backend> EvmCompiler<B> {
 
     /// Parses the given EVM bytecode. Not public API.
     #[doc(hidden)] // Not public API.
-    pub fn parse<'a>(
-        &mut self,
-        input: EvmCompilerInput<'a>,
-        spec_id: SpecId,
-    ) -> Result<Bytecode<'a>> {
+    pub fn parse<'a>(&mut self, bytecode: &'a [u8], spec_id: SpecId) -> Result<Bytecode<'a>> {
         let _t = self.remarks.time(|r| &r.parse);
-        let EvmCompilerInput::Code(bytecode) = input;
-
         let mut bytecode =
             Bytecode::new(bytecode, spec_id, self.gas_params, self.opcode_view.as_ref());
         bytecode.compiler_gas_limit = self.compiler_gas_limit;
@@ -1104,32 +1095,6 @@ total:      {total:>11.3?}
     }
 }
 
-/// [`EvmCompiler`] input.
-#[allow(missing_debug_implementations)]
-pub enum EvmCompilerInput<'a> {
-    /// EVM bytecode.
-    Code(&'a [u8]),
-}
-
-impl<'a> From<&'a [u8]> for EvmCompilerInput<'a> {
-    fn from(code: &'a [u8]) -> Self {
-        EvmCompilerInput::Code(code)
-    }
-}
-
-impl<'a> From<&'a Vec<u8>> for EvmCompilerInput<'a> {
-    fn from(code: &'a Vec<u8>) -> Self {
-        EvmCompilerInput::Code(code)
-    }
-}
-
-impl<'a> From<&'a Bytes> for EvmCompilerInput<'a> {
-    fn from(code: &'a Bytes) -> Self {
-        EvmCompilerInput::Code(code)
-    }
-}
-
-#[allow(dead_code)]
 mod default_attrs {
     use evm2_jit_backend::Attribute;
 
@@ -1152,14 +1117,6 @@ mod default_attrs {
         for_param().chain([Attribute::NoCapture])
     }
 
-    pub(crate) fn for_sized_ptr((size, align): (usize, usize)) -> impl Iterator<Item = Attribute> {
-        for_ptr().chain([Attribute::Dereferenceable(size as u64), Attribute::Align(align as u64)])
-    }
-
-    pub(crate) fn for_ptr_t<T>() -> impl Iterator<Item = Attribute> {
-        for_sized_ptr(size_align::<T>())
-    }
-
     pub(crate) fn for_ref() -> impl Iterator<Item = Attribute> {
         // `NoFree` keeps `dereferenceable` valid past control flow, which LICM needs to promote
         // stack slots in loops.
@@ -1168,14 +1125,6 @@ mod default_attrs {
 
     pub(crate) fn for_sized_ref((size, align): (usize, usize)) -> impl Iterator<Item = Attribute> {
         for_ref().chain([Attribute::Dereferenceable(size as u64), Attribute::Align(align as u64)])
-    }
-
-    pub(crate) fn for_ref_t<T>() -> impl Iterator<Item = Attribute> {
-        for_sized_ref(size_align::<T>())
-    }
-
-    pub(crate) const fn size_align<T>() -> (usize, usize) {
-        (std::mem::size_of::<T>(), std::mem::align_of::<T>())
     }
 }
 

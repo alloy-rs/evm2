@@ -1,7 +1,7 @@
 use crate::{
     blockchaintest::{
-        Account, Block, BlockHash, BlockHeader, BlockchainTest, BlockchainTestCase, DecodedBlock,
-        ForkSpec, SealEngine, State, Transaction, Withdrawal,
+        Account, Block, BlockHash, BlockHeader, BlockchainTest, BlockchainTestCase, ChainConfig,
+        DecodedBlock, ForkSpec, SealEngine, State, Transaction, Withdrawal,
     },
     tx::{AccessListItem, TestAuthorization},
 };
@@ -38,6 +38,7 @@ struct BlockchainTestCaseRef<'a> {
     lastblockhash: &'a B256,
     network: &'a ForkSpec,
     seal_engine: &'a SealEngine,
+    config: &'a Option<ChainConfig>,
 }
 
 impl<'a> BlockchainTestCaseRef<'a> {
@@ -52,6 +53,7 @@ impl<'a> BlockchainTestCaseRef<'a> {
             lastblockhash: &case.lastblockhash,
             network: &case.network,
             seal_engine: &case.seal_engine,
+            config: &case.config,
         }
     }
 }
@@ -238,6 +240,7 @@ struct BlockchainTestCaseWire {
     lastblockhash: B256,
     network: ForkSpec,
     seal_engine: SealEngine,
+    config: Option<ChainConfig>,
 }
 
 impl From<BlockchainTestCaseWire> for BlockchainTestCase {
@@ -252,6 +255,7 @@ impl From<BlockchainTestCaseWire> for BlockchainTestCase {
             lastblockhash: value.lastblockhash,
             network: value.network,
             seal_engine: value.seal_engine,
+            config: value.config,
         }
     }
 }

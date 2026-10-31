@@ -26,6 +26,16 @@ mod arch;
 use arch::evm2_jit_entry;
 pub use arch::evm2_jit_exit;
 
+/// Returns `true` if compiled code can run the interpreter's frame.
+///
+/// Compiled code keeps the remaining gas in a signed counter, so a frame with more than
+/// `i64::MAX` gas must run on the interpreter. Check this before calling
+/// [`EvmCompilerFn::call_with_interpreter`] or [`EvmCompilerFn::call`].
+#[inline]
+pub const fn can_run_compiled<T: EvmTypesHost>(interpreter: &Interpreter<'_, '_, T>) -> bool {
+    interpreter.gas().remaining() <= i64::MAX as u64
+}
+
 /// The EVM bytecode compiler runtime context.
 ///
 /// This is a simple wrapper around the interpreter's resources, allowing the compiled function to
@@ -342,7 +352,7 @@ impl EvmCompilerFn {
     /// # Safety
     ///
     /// The caller must ensure that the function is safe to call for this interpreter state, and
-    /// that the remaining gas is at most `i64::MAX`.
+    /// that [`can_run_compiled`] holds.
     #[inline]
     pub unsafe fn call_with_interpreter<'ctx, 'frame, 'host, T: EvmTypesHost>(
         self,
@@ -370,7 +380,7 @@ impl EvmCompilerFn {
     /// # Safety
     ///
     /// The caller must ensure that the arguments are valid, that the function is safe to call, and
-    /// that the remaining gas is at most `i64::MAX`.
+    /// that [`can_run_compiled`] holds.
     #[inline]
     pub unsafe fn call<T: EvmTypesHost>(
         self,

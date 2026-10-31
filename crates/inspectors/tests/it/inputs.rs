@@ -4,7 +4,7 @@ use crate::utils::{AccountInfo, Bytecode, CacheDB, EmptyDB, SpecId, TransactTo, 
 use alloy_primitives::{Address, Bytes, U256, hex};
 use evm2::{
     BaseEvmTypes, Evm, ExecutionConfig, Inspector, Precompiles, Version,
-    constants::CALL_DEPTH_LIMIT, ethereum::ethereum_tx_registry,
+    constants::CALL_DEPTH_LIMIT, ethereum::ethereum_tx_registry, interpreter::opcode::op,
 };
 use evm2_inspectors::{
     access_list::AccessListInspector,
@@ -220,6 +220,40 @@ fn byte_budget_can_halt_from_a_step() {
     );
     assert!(!completed);
     assert!(inspector.limit_exceeded());
+}
+
+#[test]
+fn byte_budget_halt_before_sload_records_no_storage_access() {
+    // The memory snapshot of the SLOAD step exceeds the budget, which halts before the SLOAD runs.
+    let (inspector, completed) = inspect_with_limits(
+        &hex!("600060015f525400"),
+        Bytes::new(),
+        TracingInspectorConfig::none().steps().memory_snapshots().set_state_diffs(true),
+        TraceLimits::default()
+            .set_max_recorded_bytes(Some(31))
+            .set_behavior(TraceLimitBehavior::Halt),
+    );
+    assert!(!completed);
+    let step = inspector.traces().nodes()[0].trace.steps.last().unwrap();
+    assert_eq!(step.op.get(), op::SLOAD);
+    assert!(step.storage_change.is_none());
+}
+
+#[test]
+fn byte_budget_halt_before_sstore_reports_no_store_delta() {
+    // The memory snapshot of the SSTORE step exceeds the budget, which halts before it runs.
+    let (inspector, completed) = inspect_with_limits(
+        &hex!("6001600060015f525500"),
+        Bytes::new(),
+        TracingInspectorConfig::none().steps().memory_snapshots().set_step_deltas(true),
+        TraceLimits::default()
+            .set_max_recorded_bytes(Some(32))
+            .set_behavior(TraceLimitBehavior::Halt),
+    );
+    assert!(!completed);
+    let trace = &inspector.traces().nodes()[0].trace;
+    assert_eq!(trace.steps.last().unwrap().op.get(), op::SSTORE);
+    assert!(trace.step_deltas.iter().all(|delta| delta.store.is_none()));
 }
 
 #[test]

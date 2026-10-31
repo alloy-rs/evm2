@@ -404,6 +404,58 @@ fn test_geth_erc7562_tracer() {
     }
 }
 
+/// geth reads each slot in `OnOpcode`, so a frame records its first read of a slot that an earlier
+/// frame already warmed.
+#[test]
+fn test_geth_erc7562_records_warm_first_reads() {
+    let outer = address!("1000000000000000000000000000000000000001");
+    let inner = address!("1000000000000000000000000000000000000003");
+    let caller = address!("1000000000000000000000000000000000000002");
+
+    // SLOAD 1, then DELEGATECALL the inner code, which SLOADs the same, now warm, slot.
+    let outer_code =
+        hex!("6001545060006000600060007310000000000000000000000000000000000000035af45000").to_vec();
+    let inner_code = hex!("6001545000").to_vec();
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            for (address, code) in [(outer, outer_code), (inner, inner_code)] {
+                db.insert_account_info(
+                    &address,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(code.into())),
+                        ..Default::default()
+                    },
+                );
+            }
+            db.insert_account_storage(&outer, &U256::from(1), &U256::from(0x2a));
+        });
+
+    let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default());
+    let mut inspector = DebugInspector::new(opts).unwrap();
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller,
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(outer),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+
+    let slot = B256::from(U256::from(1));
+    let value = B256::from(U256::from(0x2a));
+    assert_eq!(frame.accessed_slots.reads[&slot], vec![value]);
+    assert_eq!(frame.calls.len(), 1);
+    assert_eq!(frame.calls[0].accessed_slots.reads[&slot], vec![value]);
+}
+
 fn trace_contract(
     spec: SpecId,
     opts: GethDebugTracingOptions,
@@ -1737,6 +1789,58 @@ fn test_geth_opcode_limit_end_to_end() {
         assert_eq!(calls["calls"].as_array().unwrap().len(), 1);
         assert_eq!(run(json!({ "tracer": "callTracer", "limit": 2 })).0, calls);
     }
+}
+
+/// geth emits a child's steps right after the call step that entered it. A zero-value call to an
+/// excluded precompile attaches no child, so it must not take the next call's child.
+#[test]
+fn test_geth_struct_logs_follow_calls_with_excluded_precompiles() {
+    let account = address!("1000000000000000000000000000000000000001");
+    let child = address!("0000000000000000000000000000000000001234");
+    let call = |target: [u8; 2]| {
+        [
+            vec![op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0],
+            vec![op::PUSH2, target[0], target[1], op::PUSH2, 0xff, 0xff, op::CALL, op::POP],
+        ]
+        .concat()
+    };
+    // Call the identity precompile, then the child, which runs a few opcodes.
+    let code = [call([0, 4]), call([0x12, 0x34]), vec![op::STOP]].concat();
+    let child_code = vec![op::PUSH1, 1, op::PUSH1, 1, op::ADD, op::STOP];
+
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            for (addr, code) in [(account, code), (child, child_code)] {
+                db.insert_account_info(
+                    &addr,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(code.into())),
+                        ..Default::default()
+                    },
+                );
+            }
+        });
+    let config = TracingInspectorConfig::default_geth().set_exclude_precompile_calls(true);
+    let mut inspector = TracingInspector::new(config);
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TxKind::Call(account),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = inspector.geth_builder().geth_traces(0, Bytes::new(), Default::default());
+    let ops: Vec<_> = frame.struct_logs.iter().map(|log| (&*log.op, log.depth)).collect();
+    let mut expected = vec![("PUSH1", 1); 5];
+    expected.extend([("PUSH2", 1), ("PUSH2", 1), ("CALL", 1), ("POP", 1)]);
+    expected.extend(vec![("PUSH1", 1); 5]);
+    expected.extend([("PUSH2", 1), ("PUSH2", 1), ("CALL", 1)]);
+    expected.extend([("PUSH1", 2), ("PUSH1", 2), ("ADD", 2), ("STOP", 2)]);
+    expected.extend([("POP", 1), ("STOP", 1)]);
+    assert_eq!(ops, expected);
 }
 
 /// Returns the bytes of the JSON geth writes for a struct log, which leaves out a zero refund and
