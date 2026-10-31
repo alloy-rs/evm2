@@ -447,14 +447,18 @@ fn execute_block<'a>(
             });
         expected_state_root = Some(header.state_root);
     }
+    // The blob checks multiply the blob counts by the blob gas, which must not overflow.
     if let Some(params) = &blob_params
-        && (params.max_blob_count == 0 || params.max_blob_count < params.target_blob_count)
+        && (params.max_blob_count == 0
+            || params.max_blob_count < params.target_blob_count
+            || params.max_blob_count.checked_mul(DATA_GAS_PER_BLOB).is_none())
     {
         return Err(TestError::case(
             path,
             name,
             TestErrorKind::UnexpectedFailure(format!(
-                "invalid blob schedule: max {} below target {}",
+                "invalid blob schedule: max {} and target {} must satisfy target <= max, max > 0, and \
+                 fit in blob gas",
                 params.max_blob_count, params.target_blob_count
             )),
         ));
