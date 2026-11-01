@@ -573,5 +573,7 @@ mod tests {
             Some(ForkSpec::BPO2)
         );
         assert_eq!(ForkSpec::BPO2ToAmsterdamAtTime15k.to_spec_id(), None);
+        assert_eq!(ForkSpec::Constantinople.to_spec_id(), None);
+        assert_eq!(ForkSpec::Constantinople.to_state_spec_id(), None);
     }
 }
