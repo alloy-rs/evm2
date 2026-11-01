@@ -452,7 +452,7 @@ pub fn create_with<T: EvmTypesHost>(
         code: Bytecode::new_legacy(input.clone()),
         input,
         value,
-        code_address: caller,
+        code_address: destination,
         // CREATE is rejected in a static context (see `require_non_staticcall`).
         caller_is_static: false,
         salt,
