@@ -774,6 +774,25 @@ fn test_geth_erc7562_contract_size_reads_accepted_state() {
     assert_eq!((size.contract_size, size.opcode), (3, op::EXTCODESIZE));
 }
 
+/// geth reads the code size when the opcode runs, so an account created earlier in the same
+/// transaction has a size.
+#[test]
+fn test_geth_erc7562_contract_size_of_account_created_in_same_transaction() {
+    // CREATE a contract whose runtime code is 5 bytes, then EXTCODESIZE the created address.
+    let code = hex!("6460056000f36000526005601b6000f03b00");
+    let (trace, _) = trace_contract(
+        SpecId::CANCUN,
+        GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default()),
+        code.into(),
+    );
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+
+    let created = frame.calls[0].to.unwrap();
+    assert_eq!(frame.contract_size.len(), 1);
+    assert_eq!(frame.contract_size[&created].contract_size, 5);
+    assert_eq!(frame.contract_size[&created].opcode, op::EXTCODESIZE);
+}
+
 /// geth reads each slot in `OnOpcode`, so a frame records its first read of a slot that an earlier
 /// frame already warmed.
 #[test]
