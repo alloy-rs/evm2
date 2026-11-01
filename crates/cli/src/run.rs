@@ -34,7 +34,7 @@ pub(crate) struct RunArgs {
     #[arg(default_value = "1")]
     n_iters: u64,
 
-    /// List available benchmark names and exit.
+    /// List available benchmarks and exit, as `<name>\t<fixture path>` lines.
     #[arg(long)]
     list: bool,
 
@@ -109,7 +109,9 @@ impl RunArgs {
     pub(crate) fn run(self) -> eyre::Result<()> {
         if self.list {
             for bench in get_benches() {
-                println!("{}", bench.name);
+                if let BenchSource::Fixture(fixture_path) = bench.source {
+                    println!("{}\t{fixture_path}", bench.name);
+                }
             }
             return Ok(());
         }

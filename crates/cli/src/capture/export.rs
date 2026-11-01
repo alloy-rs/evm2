@@ -362,6 +362,6 @@ mod tests {
             schedule.keys().copied().collect::<Vec<_>>(),
             [BlobFork::Cancun, BlobFork::Prague, BlobFork::Osaka, BlobFork::Bpo1]
         );
-        assert_eq!(schedule[&BlobFork::Bpo1].params().update_fraction, 8_346_193);
+        assert_eq!(schedule[&BlobFork::Bpo1].params(SpecId::OSAKA).update_fraction, 8_346_193);
     }
 }

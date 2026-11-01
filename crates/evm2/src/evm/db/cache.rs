@@ -15,7 +15,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
-    map::{AddressMap, AddressSet, B256Map, U256Map, hash_map::Entry},
+    map::{AddressMap, B256Map, U256Map, hash_map::Entry},
 };
 use core::convert::Infallible;
 
