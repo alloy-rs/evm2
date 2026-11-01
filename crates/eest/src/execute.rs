@@ -199,7 +199,7 @@ fn execute_unit(
 ) -> Result<(), TestError> {
     let state = parse_state(&unit.pre).map_err(|err| TestError::case(path, name, err))?;
     for (spec_name, posts) in &unit.post {
-        let Some(spec) = spec_name.to_spec_id() else {
+        let Some(spec) = spec_name.to_state_spec_id() else {
             continue;
         };
         if is_fork_skipped(spec) {

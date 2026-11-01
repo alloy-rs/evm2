@@ -739,7 +739,7 @@ fn select_case<'a>(
     let post = unit
         .post
         .iter()
-        .filter(|(spec_name, _)| spec_name.to_spec_id() == Some(spec_id))
+        .filter(|(spec_name, _)| spec_name.to_state_spec_id() == Some(spec_id))
         .flat_map(|(_, posts)| posts)
         .next()
         .ok_or_else(|| {

@@ -1,6 +1,8 @@
-use crate::tx::{AccessListItem, TestAuthorization};
+use crate::{
+    blockchaintest::ForkSpec,
+    tx::{AccessListItem, TestAuthorization},
+};
 use alloy_primitives::{Address, B256, Bytes, U256};
-use evm2::SpecId;
 use serde::{Deserialize, Deserializer, de};
 use std::collections::BTreeMap;
 
@@ -19,7 +21,7 @@ pub struct TestUnit {
     /// Pre-state accounts.
     pub pre: BTreeMap<Address, AccountInfo>,
     /// Expected post-state roots by fork.
-    pub post: BTreeMap<SpecName, Vec<Test>>,
+    pub post: BTreeMap<ForkSpec, Vec<Test>>,
     /// Transaction parts indexed by each post entry.
     pub transaction: TransactionParts,
     /// Expected output.
@@ -124,91 +126,6 @@ pub struct TransactionParts {
     pub blob_versioned_hashes: Vec<B256>,
     /// EIP-4844 max fee per blob gas.
     pub max_fee_per_blob_gas: Option<U256>,
-}
-
-/// State test fork name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Hash)]
-pub enum SpecName {
-    /// Frontier.
-    Frontier,
-    /// Frontier to Homestead transition.
-    FrontierToHomesteadAt5,
-    /// Homestead.
-    Homestead,
-    /// Homestead to DAO transition.
-    HomesteadToDaoAt5,
-    /// Homestead to EIP-150 transition.
-    HomesteadToEIP150At5,
-    /// EIP-150 aka Tangerine Whistle.
-    #[serde(alias = "TangerineWhistle")]
-    EIP150,
-    /// EIP-158 aka Spurious Dragon.
-    #[serde(alias = "SpuriousDragon")]
-    EIP158,
-    /// EIP-158 to Byzantium transition.
-    EIP158ToByzantiumAt5,
-    /// Byzantium.
-    Byzantium,
-    /// Skipped Constantinople transition.
-    ByzantiumToConstantinopleAt5,
-    /// Byzantium to Petersburg transition.
-    ByzantiumToConstantinopleFixAt5,
-    /// Skipped Constantinople.
-    Constantinople,
-    /// Petersburg.
-    ConstantinopleFix,
-    /// Istanbul.
-    Istanbul,
-    /// Berlin.
-    Berlin,
-    /// Berlin to London transition.
-    BerlinToLondonAt5,
-    /// London.
-    London,
-    /// Paris.
-    Paris,
-    /// Merge.
-    Merge,
-    /// Shanghai.
-    Shanghai,
-    /// Cancun.
-    Cancun,
-    /// Prague.
-    Prague,
-    /// Osaka.
-    Osaka,
-    /// Amsterdam.
-    Amsterdam,
-}
-
-impl SpecName {
-    /// Converts the state test fork name to the local spec ID.
-    #[inline]
-    pub const fn to_spec_id(self) -> Option<SpecId> {
-        match self {
-            Self::Frontier => Some(SpecId::FRONTIER),
-            Self::FrontierToHomesteadAt5 | Self::Homestead => Some(SpecId::HOMESTEAD),
-            Self::HomesteadToDaoAt5 | Self::HomesteadToEIP150At5 | Self::EIP150 => {
-                Some(SpecId::TANGERINE)
-            }
-            Self::EIP158 => Some(SpecId::SPURIOUS_DRAGON),
-            Self::EIP158ToByzantiumAt5 | Self::Byzantium => Some(SpecId::BYZANTIUM),
-            Self::ByzantiumToConstantinopleAt5
-            | Self::ByzantiumToConstantinopleFixAt5
-            | Self::ConstantinopleFix => Some(SpecId::PETERSBURG),
-            Self::Istanbul => Some(SpecId::ISTANBUL),
-            Self::Berlin => Some(SpecId::BERLIN),
-            Self::BerlinToLondonAt5 | Self::London => Some(SpecId::LONDON),
-            Self::Paris | Self::Merge => Some(SpecId::MERGE),
-            Self::Shanghai => Some(SpecId::SHANGHAI),
-            Self::Cancun => Some(SpecId::CANCUN),
-            Self::Prague => Some(SpecId::PRAGUE),
-            Self::Osaka => Some(SpecId::OSAKA),
-            Self::Amsterdam => Some(SpecId::AMSTERDAM),
-            // Skip Constantinople due to the pre-Petersburg reentrancy bug.
-            Self::Constantinople => None,
-        }
-    }
 }
 
 /// State test post entry.

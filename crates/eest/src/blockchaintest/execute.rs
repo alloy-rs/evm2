@@ -1723,7 +1723,8 @@ pub fn blob_params(
         .map_err(|err| TestError::case(path, name, err))
 }
 
-/// Returns the specs of a fork, or `None` for the DAO fork, which the runner does not support.
+/// Returns the specs of a fork, or `None` for the forks the runner does not support: the DAO fork
+/// and Constantinople.
 const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
     use Activation::{Block, Timestamp};
     const AT_5: Activation = Block(5);
@@ -1909,6 +1910,32 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err.kind, TestErrorKind::UnsupportedFork(ForkSpec::HomesteadToDaoAt5)));
+    }
+
+    #[test]
+    fn state_spec_of_a_transition_is_the_spec_after_it() {
+        use ForkSpec::*;
+        for fork in [
+            FrontierToHomesteadAt5,
+            HomesteadToEIP150At5,
+            EIP158ToByzantiumAt5,
+            ByzantiumToConstantinopleAt5,
+            ByzantiumToConstantinopleFixAt5,
+            BerlinToLondonAt5,
+            ParisToShanghaiAtTime15k,
+            ShanghaiToCancunAtTime15k,
+            CancunToPragueAtTime15k,
+            PragueToOsakaAtTime15k,
+            OsakaToBPO1AtTime15k,
+            BPO1ToBPO2AtTime15k,
+            BPO2ToBPO3AtTime15k,
+            BPO3ToBPO4AtTime15k,
+            BPO2ToAmsterdamAtTime15k,
+        ] {
+            let schedule = fork_schedule(fork).unwrap();
+            let (_, last) = schedule.transition.unwrap();
+            assert_eq!(fork.to_state_spec_id(), Some(last.spec), "{fork:?}");
+        }
     }
 
     #[test]

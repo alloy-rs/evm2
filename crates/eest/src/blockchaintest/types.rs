@@ -339,7 +339,10 @@ pub enum ForkSpec {
 
 impl ForkSpec {
     /// Returns the spec ID a fork runs under, or `None` for a transition fork, which runs under
-    /// several specs, and for the DAO fork.
+    /// several specs, and for the forks no runner supports: the DAO fork and Constantinople.
+    ///
+    /// evm2 has no `CONSTANTINOPLE` spec. Constantinople differs from Petersburg by EIP-1283 net
+    /// gas metering for `SSTORE`, so running it under Petersburg would charge the wrong gas.
     pub const fn to_spec_id(self) -> Option<SpecId> {
         Some(match self {
             Self::Frontier => SpecId::FRONTIER,
@@ -347,7 +350,7 @@ impl ForkSpec {
             Self::EIP150 => SpecId::TANGERINE,
             Self::EIP158 => SpecId::SPURIOUS_DRAGON,
             Self::Byzantium => SpecId::BYZANTIUM,
-            Self::Constantinople | Self::ConstantinopleFix => SpecId::PETERSBURG,
+            Self::ConstantinopleFix => SpecId::PETERSBURG,
             Self::Istanbul => SpecId::ISTANBUL,
             Self::Berlin => SpecId::BERLIN,
             Self::London => SpecId::LONDON,
@@ -359,7 +362,8 @@ impl ForkSpec {
             Self::Prague => SpecId::PRAGUE,
             Self::Osaka | Self::BPO1 | Self::BPO2 => SpecId::OSAKA,
             Self::Amsterdam => SpecId::AMSTERDAM,
-            Self::FrontierToHomesteadAt5
+            Self::Constantinople
+            | Self::FrontierToHomesteadAt5
             | Self::HomesteadToDaoAt5
             | Self::HomesteadToEIP150At5
             | Self::EIP158ToByzantiumAt5
@@ -375,6 +379,33 @@ impl ForkSpec {
             | Self::BPO2ToBPO3AtTime15k
             | Self::BPO3ToBPO4AtTime15k
             | Self::BPO2ToAmsterdamAtTime15k => return None,
+        })
+    }
+
+    /// Returns the spec ID a state test runs a fork under, or `None` if it does not support the
+    /// fork.
+    ///
+    /// A state test runs one transaction under one spec, so a transition fork maps to the spec
+    /// after the transition. The blockchain runner instead runs both specs of a transition.
+    pub const fn to_state_spec_id(self) -> Option<SpecId> {
+        Some(match self {
+            Self::FrontierToHomesteadAt5 => SpecId::HOMESTEAD,
+            Self::HomesteadToEIP150At5 => SpecId::TANGERINE,
+            Self::EIP158ToByzantiumAt5 => SpecId::BYZANTIUM,
+            Self::ByzantiumToConstantinopleAt5 | Self::ByzantiumToConstantinopleFixAt5 => {
+                SpecId::PETERSBURG
+            }
+            Self::BerlinToLondonAt5 => SpecId::LONDON,
+            Self::ParisToShanghaiAtTime15k => SpecId::SHANGHAI,
+            Self::ShanghaiToCancunAtTime15k => SpecId::CANCUN,
+            Self::CancunToPragueAtTime15k => SpecId::PRAGUE,
+            Self::PragueToOsakaAtTime15k
+            | Self::OsakaToBPO1AtTime15k
+            | Self::BPO1ToBPO2AtTime15k
+            | Self::BPO2ToBPO3AtTime15k
+            | Self::BPO3ToBPO4AtTime15k => SpecId::OSAKA,
+            Self::BPO2ToAmsterdamAtTime15k => SpecId::AMSTERDAM,
+            fork => return fork.to_spec_id(),
         })
     }
 
