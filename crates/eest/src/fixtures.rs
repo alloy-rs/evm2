@@ -7,7 +7,7 @@ use std::{
 /// Environment variable for the downloaded fixture root.
 pub(crate) const TEST_FIXTURES_ENV: &str = "EVM2_TEST_FIXTURES";
 
-/// Generic EEST stable selector.
+/// Environment variable for selecting stable EEST fixtures instead of develop.
 pub(crate) const EEST_STABLE_ENV: &str = "EVM2_EEST_STABLE";
 
 /// Selector for execution-specs-only runs, where the setup script skips the legacy fixtures.

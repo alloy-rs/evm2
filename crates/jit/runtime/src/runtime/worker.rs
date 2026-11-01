@@ -638,9 +638,6 @@ pub(super) fn create_compiler(
     } else {
         config.tuning.jit_opt_level
     });
-    // Long-running nodes cannot afford the debug object copies or the append-only perf map.
-    compiler.set_debug_support(false);
-    compiler.set_simple_perf(false);
     compiler.set_debug_assertions(config.debug_assertions);
     compiler.set_single_error(config.single_error);
     compiler.set_dedup(!config.no_dedup);

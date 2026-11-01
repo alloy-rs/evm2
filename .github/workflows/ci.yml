@@ -11,6 +11,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
+  # Nightly after 2026-10-31 fails to compile boa_engine (E0391 "needs async drop" cycle):
+  # https://github.com/rust-lang/rust/issues/165263
+  # Remove this pin once a nightly builds boa_engine again.
+  NIGHTLY_TOOLCHAIN: nightly-2026-10-31
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -67,11 +71,11 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@2ab28a31ae569be9f780c7675b684471060afa40 # 2026-10-09T21-43-19Z-2ab28a31
         if: ${{ !matrix.target }}
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: ${{ matrix.rust == 'nightly' && env.NIGHTLY_TOOLCHAIN || matrix.rust }}
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@2ab28a31ae569be9f780c7675b684471060afa40 # 2026-10-09T21-43-19Z-2ab28a31
         if: ${{ matrix.target }}
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: ${{ matrix.rust == 'nightly' && env.NIGHTLY_TOOLCHAIN || matrix.rust }}
           targets: ${{ matrix.target }}
       - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
         if: runner.os == 'Linux'
@@ -399,7 +403,7 @@ jobs:
         run: .github/scripts/install_llvm.sh ubuntu
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@2ab28a31ae569be9f780c7675b684471060afa40 # 2026-10-09T21-43-19Z-2ab28a31
         with:
-          toolchain: nightly
+          toolchain: ${{ env.NIGHTLY_TOOLCHAIN }}
           components: clippy
       - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -427,7 +431,7 @@ jobs:
         run: .github/scripts/install_llvm.sh ubuntu
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@2ab28a31ae569be9f780c7675b684471060afa40 # 2026-10-09T21-43-19Z-2ab28a31
         with:
-          toolchain: nightly
+          toolchain: ${{ env.NIGHTLY_TOOLCHAIN }}
       - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

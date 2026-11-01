@@ -38,13 +38,13 @@ fn recovery_ignores_crypto_provider() {
     let authorization = SignedAuthorization::new_unchecked(inner, recid.to_byte(), r, s);
     let tx = TxEip7702 { authorization_list: vec![authorization.clone()], ..Default::default() };
 
-    assert_eq!(LazyAuthorization::from(authorization.clone()).authority(), Some(signer));
+    assert_eq!(LazyAuthorization::Signed(&authorization).authority(), Some(signer));
     let recovered = LazyTxEip7702::from_recovered_authorizations(tx.clone());
-    assert_eq!(recovered.authorization_list[0].authority(), Some(signer));
+    assert_eq!(recovered.authorizations().next().unwrap().authority(), Some(signer));
 
     assert!(install_crypto(BogusCrypto), "recovery initialized the crypto provider");
 
-    assert_eq!(LazyAuthorization::from(authorization).authority(), Some(signer));
+    assert_eq!(LazyAuthorization::Signed(&authorization).authority(), Some(signer));
     let recovered = LazyTxEip7702::from_recovered_authorizations(tx);
-    assert_eq!(recovered.authorization_list[0].authority(), Some(signer));
+    assert_eq!(recovered.authorizations().next().unwrap().authority(), Some(signer));
 }
