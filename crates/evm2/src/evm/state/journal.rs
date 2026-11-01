@@ -156,8 +156,7 @@ mod tests {
         assert_eq!(state.account(&precompile3).unwrap().is_touched(), touched);
         assert!(!state.account(&other).unwrap().is_touched());
 
-        // Finalization consumes the touch but keeps it in the reported changes, also when run
-        // twice.
+        // Finalization keeps the touch in the reported changes, also when run twice.
         state.finalize_transaction(Version::base(spec)).unwrap();
         state.finalize_transaction(Version::base(spec)).unwrap();
         let pending = state.take_pending_state();

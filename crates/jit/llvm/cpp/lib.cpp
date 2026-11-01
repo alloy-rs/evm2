@@ -390,7 +390,7 @@ extern "C" void evm2_jit_llvm_set_dso_local(LLVMValueRef Val, bool Local) {
 /// The registration is leaked so that no destructor edits LLVM's global
 /// callback list at process exit while a compile thread may still read it.
 extern "C" void evm2_jit_llvm_expand_ir_insts_after_lsr() {
-  static auto *Callback = new RegisterTargetPassConfigCallback(
+  [[maybe_unused]] static auto *Callback = new RegisterTargetPassConfigCallback(
       [](TargetMachine &, legacy::PassManagerBase &, TargetPassConfig *PC) {
         // Only the IDs matter: the pipeline builds the inserted pass with its default
         // constructor, which uses `CodeGenOptLevel::None`.

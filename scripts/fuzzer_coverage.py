@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from utils import cargo_env, repo_root
+from common import cargo_env, repo_root
 
 ROOT = Path(repo_root())
 DEFAULT_OUTPUT_DIR = ROOT / "target" / "llvm-cov" / "fuzzer-html"
