@@ -457,7 +457,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                     failure_value
                 }
             };
-            fx.bcx.set_current_block_cold();
             // Do not sync the stack here: this is a shared synthetic merge block for
             // failures that may occur before their instruction body has materialized
             // the current virtual stack. Syncing here can use values that do not
@@ -1918,7 +1917,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.cached_mem_base = None;
 
         self.if_then(exceeds, |this| {
-            this.bcx.set_current_block_cold();
             this.call_fallible_builtin(Builtin::Mresize, &[this.ecx, min_size]);
         });
         self.build_memory_addr(offset)

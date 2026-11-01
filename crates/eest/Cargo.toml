@@ -17,7 +17,7 @@ workspace = true
 evm2.workspace = true
 evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
 
-alloy-consensus = { workspace = true, features = ["std"] }
+alloy-consensus = { workspace = true, features = ["k256", "std"] }
 alloy-eip7928 = { workspace = true, features = ["std", "serde", "rlp"] }
 alloy-eips = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["std", "serde", "rlp"] }
