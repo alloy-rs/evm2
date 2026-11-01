@@ -123,6 +123,7 @@ exceptions! {
     IncorrectExcessBlobGas => ["BlockException.INCORRECT_EXCESS_BLOB_GAS"],
     InvalidBalHash => ["BlockException.INVALID_BAL_HASH"],
     InvalidBlockAccessList => ["BlockException.INVALID_BLOCK_ACCESS_LIST"],
+    InvalidDepositEventLayout => ["BlockException.INVALID_DEPOSIT_EVENT_LAYOUT"],
     // EIP-7928 requires sorted, unique entries, but execution-specs only compares the list hash.
     // The EEST fixtures name the same violation `INCORRECT_BLOCK_FORMAT` (`bal_invalid_account_order`,
     // `bal_invalid_duplicate_account`) and `INVALID_BLOCK_ACCESS_LIST` (`bal_invalid_account`,
@@ -133,6 +134,7 @@ exceptions! {
     ],
     InvalidGasUsed => ["BlockException.INVALID_GAS_USED"],
     InvalidReceiptsRoot => ["BlockException.INVALID_RECEIPTS_ROOT"],
+    InvalidRequests => ["BlockException.INVALID_REQUESTS"],
     RlpBlockLimitExceeded => ["BlockException.RLP_BLOCK_LIMIT_EXCEEDED"],
     SystemContractCallFailed => ["BlockException.SYSTEM_CONTRACT_CALL_FAILED"],
     SystemContractEmpty => ["BlockException.SYSTEM_CONTRACT_EMPTY"],

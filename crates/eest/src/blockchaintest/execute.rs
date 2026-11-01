@@ -668,7 +668,10 @@ fn execute_block<'a>(
                         && let Err(reason) =
                             collect_deposit_requests(&result.logs, &mut deposit_requests)
                     {
-                        return reject_block(should_fail, path, name, reason);
+                        return reject(TestErrorKind::InvalidBlock {
+                            exception: Exception::InvalidDepositEventLayout,
+                            reason,
+                        });
                     }
                     if compare_receipt_root {
                         let status = if spec.enables(SpecId::BYZANTIUM) {
@@ -758,15 +761,13 @@ fn execute_block<'a>(
         {
             let computed = requests.requests_hash();
             if header.requests_hash != Some(computed) {
-                return reject_block(
-                    should_fail,
-                    path,
-                    name,
-                    format!(
+                return reject(TestErrorKind::InvalidBlock {
+                    exception: Exception::InvalidRequests,
+                    reason: format!(
                         "requests hash mismatch: header {:?}, computed {computed}",
                         header.requests_hash
                     ),
-                );
+                });
             }
         }
 
