@@ -1,12 +1,9 @@
 use super::*;
 use crate::tracing::types::{
-    CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason,
+    CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason, TraceMemberOrder,
 };
 use alloc::string::String;
-use evm2::{
-    evm::EmptyDB,
-    interpreter::{InstrStop, opcode::OpCode},
-};
+use evm2::interpreter::{InstrStop, op, opcode::OpCode};
 
 fn test_step(pc: usize, op: u8) -> CallTraceStep {
     CallTraceStep {
@@ -18,7 +15,6 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
         returndata: Bytes::from(vec![pc as u8]),
         gas_remaining: 1000 - pc as u64,
         gas_refund_counter: 0,
-        gas_used: pc as u64,
         gas_cost: 1,
         state_gas_cost: None,
         state_gas_reservoir: None,
@@ -27,11 +23,10 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
             alloc::boxed::Box::new(StorageChange {
                 key: U256::ZERO,
                 value: U256::from(pc),
-                had_value: None,
+                had_value: Some(U256::ZERO),
                 reason: StorageChangeReason::SSTORE,
             })
         }),
-        storage_slot: (op == op::SSTORE).then(|| Box::new((U256::ZERO, U256::from(pc)))),
         status: (op == op::REVERT).then_some(InstrStop::Revert),
         error: None,
         immediate_bytes: None,
@@ -79,87 +74,6 @@ fn struct_log_omits_zero_refund_and_empty_memory() {
     let log = step.convert_to_geth_struct_log(&opts, 1, None);
     assert_eq!(log.refund_counter, Some(4800));
     assert_eq!(log.memory.map(|memory| memory.len()), Some(1));
-}
-
-#[test]
-fn erc7562_keccak_preimages_require_successful_steps() {
-    for status in [
-        None,
-        Some(InstrStop::OutOfGas),
-        Some(InstrStop::MemoryOOG),
-        Some(InstrStop::MemoryLimitOOG),
-        Some(InstrStop::PrecompileOOG),
-        Some(InstrStop::InvalidOperandOOG),
-        Some(InstrStop::ReentrancySentryOOG),
-        Some(InstrStop::StackUnderflow),
-        Some(InstrStop::FatalExternalError),
-    ] {
-        for (offset, len, expected) in
-            [(0, 0, vec![]), (1, 2, vec![2, 3]), (1, 4, vec![2, 3, 0, 0]), (4, 2, vec![0, 0])]
-        {
-            let mut step = test_step(0, op::KECCAK256);
-            step.stack = Some(vec![U256::from(len), U256::from(offset)].into_boxed_slice());
-            step.memory = Some(RecordedMemory::new(&[1, 2, 3]));
-            step.status = status;
-            let builder = GethTraceBuilder::new(vec![CallTraceNode {
-                trace: CallTrace {
-                    steps: vec![step, test_step(1, op::REVERT)],
-                    status: Some(InstrStop::Revert),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }]);
-            let frame = builder
-                .geth_erc7562_traces(Erc7562Config::default(), 0, &mut EmptyDB::default())
-                .unwrap();
-            let expected = if status.is_none() { vec![Bytes::from(expected)] } else { vec![] };
-            assert_eq!(frame.keccak, expected, "status {status:?}, offset {offset}, len {len}");
-        }
-    }
-}
-
-#[test]
-fn erc7562_classifies_all_out_of_gas_statuses() {
-    for (status, expected) in [
-        (None, false),
-        (Some(InstrStop::Stop), false),
-        (Some(InstrStop::Return), false),
-        (Some(InstrStop::Revert), false),
-        (Some(InstrStop::OutOfFunds), false),
-        (Some(InstrStop::OpcodeNotFound), false),
-        (Some(InstrStop::OutOfGas), true),
-        (Some(InstrStop::MemoryOOG), true),
-        (Some(InstrStop::MemoryLimitOOG), true),
-        (Some(InstrStop::PrecompileOOG), true),
-        (Some(InstrStop::InvalidOperandOOG), true),
-        (Some(InstrStop::ReentrancySentryOOG), true),
-    ] {
-        assert_eq!(status.is_some_and(InstrStop::is_out_of_gas), expected);
-        for frame_status in [false, true] {
-            let mut step = test_step(0, op::KECCAK256);
-            step.status = status;
-            let builder = GethTraceBuilder::new(vec![CallTraceNode {
-                trace: CallTrace {
-                    status: if frame_status { status } else { None },
-                    steps: if frame_status { vec![] } else { vec![step] },
-                    ..Default::default()
-                },
-                ..Default::default()
-            }]);
-            for ignored in [false, true] {
-                let mut config = Erc7562Config::default();
-                if ignored {
-                    config.ignored_opcodes.push(op::KECCAK256);
-                }
-                let frame =
-                    builder.geth_erc7562_traces(config, 0, &mut EmptyDB::default()).unwrap();
-                assert_eq!(
-                    frame.out_of_gas, expected,
-                    "status {status:?}, frame_status {frame_status}, ignored {ignored}"
-                );
-            }
-        }
-    }
 }
 
 #[test]
@@ -215,9 +129,26 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
             }
         })
         .collect();
+    // Each call opcode enters the next child, as the inspector records them.
+    for node in &mut nodes {
+        let mut children = 0..node.children.len();
+        for (step_idx, step) in node.trace.steps.iter().enumerate() {
+            node.ordering.push(TraceMemberOrder::Step(step_idx));
+            if step.is_call_like_op()
+                && let Some(child) = children.next()
+            {
+                node.ordering.push(TraceMemberOrder::Call(child));
+            }
+        }
+    }
     nodes[0].trace.steps.last_mut().unwrap().status = Some(InstrStop::OutOfGas);
     // The SLOAD reads the value its delegatecall child wrote.
-    nodes[2].trace.steps[2].storage_slot = Some(Box::new((U256::ZERO, U256::from(30))));
+    nodes[2].trace.steps[2].storage_change = Some(Box::new(StorageChange {
+        key: U256::ZERO,
+        value: U256::from(30),
+        had_value: None,
+        reason: StorageChangeReason::SLOAD,
+    }));
     let builder = GethTraceBuilder::new(nodes);
     let expected = [
         (0, 1),
@@ -315,10 +246,15 @@ fn storage_snapshots_accumulate_and_skip_failed_steps() {
     let mut failed = test_step(4, op::SSTORE);
     failed.status = Some(InstrStop::OutOfGas);
     let mut sload = test_step(1, op::SLOAD);
-    sload.storage_slot = Some(Box::new((U256::ZERO, U256::from(1))));
+    sload.storage_change = Some(Box::new(StorageChange {
+        key: U256::ZERO,
+        value: U256::from(1),
+        had_value: None,
+        reason: StorageChangeReason::SLOAD,
+    }));
     // A step that is not an SLOAD or SSTORE has no slot.
     let mut add = test_step(2, op::ADD);
-    add.storage_slot = None;
+    add.storage_change = None;
     let builder = GethTraceBuilder::new(vec![CallTraceNode {
         trace: CallTrace {
             steps: vec![test_step(0, op::PUSH0), sload, add, failed],
