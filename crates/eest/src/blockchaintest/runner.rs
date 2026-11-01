@@ -132,44 +132,12 @@ fn should_ignore(name: &str) -> bool {
 
 #[rustfmt::skip]
 pub(crate) const IGNORED_TESTS: &[&str] = &[
-    // Block header/blob-gas validation is consensus-level block validation, not EVM execution.
-    "cancun/eip4844_blobs/test_blob_type_tx_pre_fork.json",
-    "cancun/eip4844_blobs/test_invalid_blob_gas_used_in_header.json",
-    "cancun/eip4844_blobs/test_invalid_block_blob_count.json",
-    // The same tests were renamed into subdirectories on BAL releases.
-    "cancun/eip4844_blobs/blob_txs/invalid_block_blob_count.json",
-    "cancun/eip4844_blobs/excess_blob_gas/invalid_blob_gas_used_in_header.json",
-    "cancun/eip4844_blobs/test_invalid_excess_blob_gas_above_target_change.json",
-    "cancun/eip4844_blobs/test_invalid_excess_blob_gas_change.json",
-    "cancun/eip4844_blobs/test_invalid_excess_blob_gas_target_blobs_increase_from_zero.json",
-    "cancun/eip4844_blobs/test_invalid_negative_excess_blob_gas.json",
-    "cancun/eip4844_blobs/test_invalid_non_multiple_excess_blob_gas.json",
-    "cancun/eip4844_blobs/test_invalid_post_fork_block_without_blob_fields.json",
-    "cancun/eip4844_blobs/test_invalid_pre_fork_block_with_blob_fields.json",
-    "cancun/eip4844_blobs/blob_txs/blob_type_tx_pre_fork.json",
-    "cancun/eip4844_blobs/excess_blob_gas_fork_transition/invalid_post_fork_block_without_blob_fields.json",
-    "cancun/eip4844_blobs/excess_blob_gas_fork_transition/invalid_pre_fork_block_with_blob_fields.json",
-    "cancun/eip4844_blobs/test_invalid_static_excess_blob_gas.json",
-    "cancun/eip4844_blobs/test_invalid_static_excess_blob_gas_from_zero_on_blobs_above_target.json",
-    "cancun/eip4844_blobs/test_invalid_zero_excess_blob_gas_in_header.json",
-    // The same excess-blob-gas tests were renamed into this subdirectory on BAL releases.
-    "cancun/eip4844_blobs/excess_blob_gas/",
-
-    // These validate block RLP encoding or full blob sidecar rejection, which this runner does not decode/validate.
+    // These validate block RLP structure or full blob sidecar rejection, which this runner does not decode/validate.
     "cancun/eip4844_blobs/test_invalid_blob_tx_contract_creation.json",
     "cancun/eip4844_blobs/test_reject_valid_full_blob_in_block_rlp.json",
     // The same tests were renamed into subdirectories on BAL releases.
     "cancun/eip4844_blobs/blob_txs/invalid_blob_tx_contract_creation.json",
     "cancun/eip4844_blobs/blob_txs_full/reject_valid_full_blob_in_block_rlp.json",
-
-    // These are block-level blob count / fork transition tests, not transaction execution tests.
-    "cancun/eip4844_blobs/test_invalid_tx_blob_count.json",
-    "osaka/eip7594_peerdas/test_invalid_max_blobs_per_tx.json",
-    "osaka/eip7594_peerdas/test_max_blobs_per_tx_fork_transition.json",
-    // The same tests were renamed into subdirectories on BAL releases.
-    "cancun/eip4844_blobs/blob_txs/invalid_tx_blob_count.json",
-    "osaka/eip7594_peerdas/max_blob_per_tx/invalid_max_blobs_per_tx.json",
-    "osaka/eip7594_peerdas/max_blob_per_tx/max_blobs_per_tx_fork_transition.json",
 
     // Create-collision fixtures need storage-aware collision handling.
     "eip7610_create_collision",
@@ -184,15 +152,6 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "dynamicAccountOverwriteEmpty.json",
     "dynamicAccountOverwriteEmpty_Paris.json",
 
-    // The harness does not track cumulative block gas allowance or validate Osaka block RLP size limits.
-    "osaka/eip7825_transaction_gas_limit_cap/test_tx_gas_larger_than_block_gas_limit.json",
-    "osaka/eip7934_block_rlp_limit/test_block_at_rlp_size_limit_boundary.json",
-    "osaka/eip7934_block_rlp_limit/test_fork_transition_block_rlp_limit.json",
-    // The same tests were renamed into subdirectories on BAL releases.
-    "osaka/eip7825_transaction_gas_limit_cap/tx_gas_limit/tx_gas_larger_than_block_gas_limit.json",
-    "osaka/eip7934_block_rlp_limit/max_block_rlp_size/block_at_rlp_size_limit_boundary.json",
-    "osaka/eip7934_block_rlp_limit/max_block_rlp_size/fork_transition_block_rlp_limit.json",
-
     // These validate block header fields/roots and belong to consensus-level block validation.
     "frontier/validation/header/gas_limit_below_minimum.json",
     // The same test was renamed with a `block_` prefix on glamsterdam-devnet releases.
@@ -204,11 +163,12 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "london/validation/test_invalid_header.json",
     "shanghai/eip4895_withdrawals/test_withdrawals_root.json",
 
-    // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
-    "prague/eip6110_deposits",
-    "prague/eip7002_el_triggerable_withdrawals",
-    "prague/eip7251_consolidations",
-    "prague/eip7685_general_purpose_el_requests",
+    // These check which header fields a block carries on either side of a fork, which is
+    // consensus-level block validation.
+    "eip7843_slotnum/fork_transition/invalid_post_fork_block_without_slot_number.json",
+    "eip7843_slotnum/fork_transition/invalid_pre_fork_block_with_slot_number.json",
+    "eip7928_block_level_access_lists/fork_transition/invalid_post_fork_block_without_bal_hash_field.json",
+    "eip7928_block_level_access_lists/fork_transition/invalid_pre_fork_block_with_bal_hash_field.json",
 
     // This fixture has a block gas limit below the transaction intrinsic gas and belongs to block validation.
     "static/state_tests/stEIP1559/lowGasLimit.json",

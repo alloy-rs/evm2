@@ -8,8 +8,8 @@ Use the root commands for lint, format, and docs. Targeted JIT commands:
 cargo nextest run -p evm2-jit-codegen --test codegen                             # compiler tests
 EVM2_JIT_TEST_DUMP=1 cargo nextest run -p evm2-jit-codegen --test codegen "test_name" # dump single compiler test
 cargo nextest run -p evm2-jit-runtime                                            # runtime tests
-cargo st "statetests::devnet::jit"                                               # EEST JIT state tests
-cargo st "blockchain_tests::devnet::jit"                                         # EEST JIT blockchain tests
+cargo st "statetests::eest::jit"                                                 # EEST JIT state tests
+cargo st "blockchain_tests::eest::jit"                                          # EEST JIT blockchain tests
 ```
 
 ## Architecture

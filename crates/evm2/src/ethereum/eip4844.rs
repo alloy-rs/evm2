@@ -111,7 +111,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
 
     let (execution_gas_limit, reservoir) =
         initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, initial_state_gas);
-    let tx_env = TxEnvExt {
+    *req.host.tx_env_mut() = TxEnvExt {
         origin: caller,
         gas_price,
         chain_id: U256::from(req.host.version().chain_id),
@@ -130,14 +130,8 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         tx.value,
         &mut tx_gas,
     )?;
-    let result = execute_initial_frame(
-        req.host,
-        &tx_env,
-        frame,
-        &mut tx_gas,
-        execution_gas_limit,
-        reservoir,
-    )?;
+    let result =
+        execute_initial_frame(req.host, frame, &mut tx_gas, execution_gas_limit, reservoir)?;
     H::settle_transaction(
         req.host,
         req.envelope,

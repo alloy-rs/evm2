@@ -169,7 +169,7 @@ pub fn immediate_size(opcode: u8) -> u8 {
 mod tests {
     use super::*;
     use alloy_primitives::Bytes;
-    use evm2::{BaseEvmTypes, bytecode::Bytecode, env::TxEnv};
+    use evm2::{BaseEvmTypes, bytecode::Bytecode};
 
     #[test]
     fn test_opcode_counter_inspector() {
@@ -177,12 +177,11 @@ mod tests {
 
         let opcodes = [op::ADD, op::ADD, op::ADD, op::BYTE];
 
-        let tx_env = TxEnv::<BaseEvmTypes>::default();
         let message = Message::<BaseEvmTypes> {
             code: Bytecode::new_legacy(Bytes::from(opcodes)),
             ..Message::<BaseEvmTypes>::default()
         };
-        let mut interp = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interp = Interpreter::<BaseEvmTypes>::new(&message);
 
         for _ in &opcodes {
             opcode_counter.step(&mut interp);
@@ -195,12 +194,11 @@ mod tests {
 
         let opcodes = [op::PUSH1, op::PUSH1, op::ADD, op::PUSH1, op::SSTORE, op::STOP];
 
-        let tx_env = TxEnv::<BaseEvmTypes>::default();
         let message = Message::<BaseEvmTypes> {
             code: Bytecode::new_legacy(Bytes::from(opcodes)),
             ..Message::<BaseEvmTypes>::default()
         };
-        let mut interp = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interp = Interpreter::<BaseEvmTypes>::new(&message);
 
         for _ in &opcodes {
             opcode_counter.step(&mut interp);

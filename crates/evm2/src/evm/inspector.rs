@@ -147,7 +147,7 @@ mod tests {
         Version,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
-        env::{BlockEnvExt, TxEnvExt},
+        env::BlockEnvExt,
         ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
@@ -213,6 +213,7 @@ mod tests {
             _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
+            assert_eq!(message.code_address, message.destination);
             self.create_depths.push(message.depth);
             self.create_destinations.push(message.destination);
             None
@@ -390,10 +391,9 @@ mod tests {
             Precompiles::base(spec_id),
         );
         evm.set_inspector(inspector);
-        let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = MessageExt { gas_limit, code: bytecode, ..message.clone() };
-        let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
     }
@@ -770,8 +770,7 @@ mod tests {
                 code: legacy_bytecode(code.clone()),
                 ..Default::default()
             };
-            let result =
-                Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+            let result = Host::execute_message(&mut evm, &mut message).unwrap();
             let inspector = evm.clear_inspector_as::<HookInspector>().unwrap();
             assert_matches!(result.stop, InstrStop::Stop);
             assert_eq!(inspector.call_depths, [depth, depth + 1]);
@@ -883,10 +882,9 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(MutateCallInspector { destination: replacement });
-        let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = MessageExt { gas_limit: 100_000, code: bytecode, ..Default::default() };
-        let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_matches!(result.stop, InstrStop::Stop);
         // The redirected call transferred the value to the replacement, not the target.
@@ -1228,13 +1226,12 @@ mod tests {
         push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
-        let tx_env = TxEnvExt::default();
         let message = Message::<TestTypes> {
             gas_limit: 10_000,
             code: legacy_bytecode(code),
             ..Default::default()
         };
-        let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
+        let mut interp = Interpreter::<TestTypes>::new(&message);
         let stop = interp.run_inspect(&mut host, &mut inspector);
 
         assert_matches!(stop, Err(crate::ExecutionError::Database(error)) if error.is_fatal());
@@ -1501,8 +1498,18 @@ mod tests {
 
         let caller = Address::from([0xaa; 20]);
         let target = Address::from([0xbb; 20]);
-        // CREATE(0, 0, 0), then STOP.
-        let code = vec![op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE, op::STOP];
+        // MSTORE8(0, 0), CREATE(0, 0, 1) with a one byte STOP initcode, then STOP.
+        let code = vec![
+            op::PUSH0,
+            op::PUSH0,
+            op::MSTORE8,
+            op::PUSH1,
+            1,
+            op::PUSH0,
+            op::PUSH0,
+            op::CREATE,
+            op::STOP,
+        ];
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &caller,
@@ -1774,68 +1781,6 @@ mod tests {
     }
 
     #[test]
-    fn isolated_transaction_resets_transient_state_and_merges_storage() {
-        let target = Address::with_last_byte(0xbb);
-        let caller = Address::with_last_byte(0x99);
-        for reverts in [false, true] {
-            let mut parent = State::new(EmptyDB::default());
-            // Return the initial persistent and transient values, then write persistent storage.
-            let code = vec![
-                op::PUSH0,
-                op::SLOAD,
-                op::PUSH0,
-                op::MSTORE,
-                op::PUSH0,
-                op::TLOAD,
-                op::PUSH1,
-                32,
-                op::MSTORE,
-                op::PUSH1,
-                8,
-                op::PUSH0,
-                op::SSTORE,
-                op::PUSH1,
-                64,
-                op::PUSH0,
-                if reverts { op::REVERT } else { op::RETURN },
-            ];
-            parent.account(&target).unwrap().set_code_slow(legacy_bytecode(code));
-            parent.account(&caller).unwrap().set_balance(Word::from(1_000_000_000));
-            parent.storage_slot(&target, Word::ZERO).unwrap().set(Word::from(7));
-            parent.storage_slot(&target, Word::ZERO).unwrap().warm();
-            parent.tstore(&target, &Word::ZERO, &Word::from(9));
-            let checkpoint = parent.checkpoint();
-            let mut child = Evm::<BaseEvmTypes>::new(
-                SpecId::CANCUN,
-                BlockEnvExt::default(),
-                ethereum_tx_registry(SpecId::CANCUN),
-                EmptyDB::default(),
-                Precompiles::base(SpecId::CANCUN),
-            );
-            child.state_mut().set_pending_state(parent.prepare_isolated_state());
-            let tx = Recovered::new_unchecked(
-                TxEnvelope::Legacy(TxLegacy {
-                    to: TxKind::Call(target),
-                    gas_limit: 100_000,
-                    ..Default::default()
-                }),
-                caller,
-            );
-            let output = child.transact(&tx).unwrap().detach();
-            assert_eq!(output.result.status, !reverts);
-            assert_eq!(Word::from_be_slice(&output.result.output[..32]), Word::from(7));
-            assert_eq!(Word::from_be_slice(&output.result.output[32..]), Word::ZERO);
-            parent.merge_isolated_state(output.pending_state);
-            assert_eq!(parent.checkpoint(), checkpoint);
-            let slot = parent.storage_slot(&target, Word::ZERO).unwrap();
-            assert_eq!(slot.original(), Word::ZERO);
-            assert_eq!(slot.current(), Word::from(if reverts { 7 } else { 8 }));
-            assert!(slot.is_warm());
-            assert_eq!(parent.tload(&target, &Word::ZERO), Word::from(9));
-        }
-    }
-
-    #[test]
     fn inspector_gas_changes_survive_dispatch_errors() {
         struct GasEdit;
         impl Inspector<TestTypes> for GasEdit {
@@ -1848,13 +1793,12 @@ mod tests {
             (Vec::from([op::PUSH1, 0]), 2, InstrStop::OutOfGas),
             (Vec::from([op::INVALID]), 10_000, InstrStop::InvalidFEOpcode),
         ] {
-            let tx_env = TxEnvExt::default();
             let message = Message::<TestTypes> {
                 gas_limit,
                 code: legacy_bytecode(code),
                 ..Default::default()
             };
-            let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
+            let mut interp = Interpreter::<TestTypes>::new(&message);
             let stop = interp.run_inspect(&mut TestHost::default(), &mut GasEdit);
 
             assert_eq!(stop, Ok(expected));

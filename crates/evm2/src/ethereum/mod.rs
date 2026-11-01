@@ -17,7 +17,6 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
-    env::TxEnv,
     evm::{
         AccountInfo,
         handler::{DefaultTxHandlerHooks, GasSettlement},
@@ -354,8 +353,8 @@ pub const fn validate_execution_gas_limit_cap(
     if tx_gas_limit > cap {
         let required_execution_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
         if required_execution_gas > cap {
-            return Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: required_execution_gas,
+            return Err(HandlerError::IntrinsicGasGreaterThanCap {
+                required: required_execution_gas,
                 cap,
             });
         }
@@ -420,7 +419,7 @@ pub const fn validate_intrinsic_gas(
 /// Validates that the gas limit covers the calldata floor gas.
 pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult<()> {
     if gas_limit < floor_gas {
-        return Err(HandlerError::IntrinsicGasTooLow { required: floor_gas, got: gas_limit });
+        return Err(HandlerError::GasLimitBelowFloor { required: floor_gas, got: gas_limit });
     }
     Ok(())
 }
@@ -708,7 +707,6 @@ pub const fn settle_initial_frame_gas<E>(
 /// Executes the prepared first frame and settles its gas into the transaction-level tracker.
 pub fn execute_initial_frame<T: EvmTypes>(
     host: &mut Evm<'_, T>,
-    tx_env: &TxEnv<T>,
     frame: Option<InitialFrame<T>>,
     tx_gas: &mut GasTracker,
     execution_gas_limit: u64,
@@ -720,7 +718,7 @@ pub fn execute_initial_frame<T: EvmTypes>(
 
     // Failed execution has already been rolled back to the message's own checkpoint inside
     // `execute_message`; the settle merges the frame gas into the transaction-level gas.
-    let mut result = host.execute_message(tx_env, &mut message)?;
+    let mut result = host.execute_message(&mut message)?;
     settle_initial_frame_gas(tx_gas, &mut result, charged_state_gas);
     Ok(result)
 }
@@ -786,24 +784,17 @@ pub fn finalize_gas<'a, T: EvmTypes>(
     } = settlement;
 
     let max_refund_quotient = host.version().gas_params.get(GasId::MaxRefundQuotient);
-    // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
-    // `TxResult::tx_gas_used` reproduces the finalized gas used. State gas is execution state gas
-    // plus the upfront `initial_state_gas`, less the EIP-7702 per-authorization `state_refund`.
-    let total_gas_spent =
-        tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
     let refunded = result.final_refund(tx_gas_limit, max_refund_quotient);
     // EIP-7623: when the calldata floor exceeds spent-minus-refund, `TxResult::tx_gas_used`
     // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor: block-level
     // execution gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
     // execution-specs, without the floor clamp.
     //
-    // The settled tracker's state gas is self-consistent: a failed frame's state charges were
-    // rolled back before it was merged, while unconditional pre-execution charges (the EIP-7702
-    // authorizations, whose delegations survive an execution failure) remain. The upfront
-    // `initial_state_gas` is likewise added unconditionally.
-    let state_gas_spent =
-        (result.gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0) as u64)
-            .saturating_sub(state_refund);
+    // The per-authorization `state_refund` is EIP-7702 state gas returned on top of the settled
+    // tracker's.
+    let (total_gas_spent, state_gas_spent) =
+        gas_spent_breakdown(tx_gas_limit, &result.gas, initial_state_gas);
+    let state_gas_spent = state_gas_spent.saturating_sub(state_refund);
     Ok(TxResultExt {
         status: result.stop.is_success(),
         total_gas_spent,
@@ -816,6 +807,27 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         ext: T::TxResultExt::default(),
         ..TxResultExt::default()
     })
+}
+
+/// Returns `(total_gas_spent, state_gas_spent)` for a settled transaction-level gas tracker.
+///
+/// `tx_gas_limit` is the execution gas limit plus the state-gas reservoir the transaction started
+/// with. `total_gas_spent` is defined so that `TxResult::tx_gas_used` reproduces the finalized gas
+/// used. `state_gas_spent` is the tracker's state gas plus the upfront `initial_state_gas`.
+///
+/// The settled tracker's state gas is self-consistent: a failed frame's state charges were rolled
+/// back before it was merged, while unconditional pre-execution charges (the EIP-7702
+/// authorizations, whose delegations survive an execution failure) remain. The upfront
+/// `initial_state_gas` is likewise added unconditionally.
+pub(crate) fn gas_spent_breakdown(
+    tx_gas_limit: u64,
+    gas: &GasTracker,
+    initial_state_gas: u64,
+) -> (u64, u64) {
+    let total_gas_spent =
+        tx_gas_limit.saturating_sub(gas.remaining()).saturating_sub(gas.reservoir());
+    let state_gas_spent = gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0);
+    (total_gas_spent, state_gas_spent as u64)
 }
 
 /// Returns the account and storage-key counts in an access list.
@@ -914,12 +926,13 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmTypes, ExecutionConfig, Precompiles,
-        env::{BlockEnvExt, TxEnvExt},
+        constants::MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
+        env::BlockEnvExt,
         evm::InMemoryDB,
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
-    use alloc::{string::ToString, vec};
+    use alloc::{format, string::ToString, vec};
     use alloy_consensus::{TxEip2930, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
 
@@ -980,7 +993,7 @@ mod tests {
         if gas_limit < 31_050 {
             assert_eq!(
                 result,
-                Err(HandlerError::IntrinsicGasTooLow { required: 31_050, got: gas_limit })
+                Err(HandlerError::GasLimitBelowFloor { required: 31_050, got: gas_limit })
             );
         } else {
             let result = result.unwrap();
@@ -1077,6 +1090,19 @@ mod tests {
             evm.transact(&tx).map(|executed| executed.discard()),
             Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
         );
+    }
+
+    #[test]
+    fn gas_limit_below_floor_is_not_an_intrinsic_gas_error() {
+        assert_eq!(
+            validate_intrinsic_gas(20_999, 21_000, 0),
+            Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
+        );
+        assert_eq!(
+            validate_floor_gas(21_009, 21_010),
+            Err(HandlerError::GasLimitBelowFloor { required: 21_010, got: 21_009 })
+        );
+        assert_eq!(validate_floor_gas(21_010, 21_010), Ok(()));
     }
 
     #[test]
@@ -1356,7 +1382,7 @@ mod tests {
         assert_eq!(message.code_address, delegated);
         assert_eq!(charged_state_gas, 0);
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output.len(), 32);
@@ -1379,6 +1405,14 @@ mod tests {
             })
         );
         assert_eq!(validate_tx_gas_limit_cap(amsterdam, tx_gas_limit), Ok(()));
+        assert_eq!(validate_tx_gas_limit_cap(amsterdam, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM), Ok(()));
+        assert_eq!(
+            validate_tx_gas_limit_cap(amsterdam, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1),
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1,
+                cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM
+            })
+        );
         assert_eq!(
             validate_execution_gas_limit_cap(amsterdam, tx_gas_limit, intrinsic, floor_gas),
             Ok(())
@@ -1390,8 +1424,8 @@ mod tests {
                 amsterdam.tx_gas_limit_cap + 1,
                 floor_gas,
             ),
-            Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: amsterdam.tx_gas_limit_cap + 1,
+            Err(HandlerError::IntrinsicGasGreaterThanCap {
+                required: amsterdam.tx_gas_limit_cap + 1,
                 cap: amsterdam.tx_gas_limit_cap
             })
         );
@@ -1405,6 +1439,39 @@ mod tests {
                 cap: amsterdam_without_eip8037.tx_gas_limit_cap,
             })
         );
+    }
+
+    #[rstest::rstest]
+    fn amsterdam_handler_rejects_gas_limit_above_total_cap(
+        #[values(MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1)]
+        gas_limit: u64,
+    ) {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Eip2930(TxEip2930 {
+                chain_id: 1,
+                gas_limit,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                ..Default::default()
+            }),
+            Address::with_last_byte(0xaa),
+        );
+
+        let expected = if gas_limit > MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM {
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit,
+                cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
+            })
+        } else {
+            Ok(())
+        };
+        assert_eq!(evm.validate_tx(&tx), expected);
     }
 
     #[rstest::rstest]
@@ -1448,6 +1515,116 @@ mod tests {
                 intrinsic_and_floor_gas(&version, sender, to, &input, 0, 0, value);
             assert_eq!(intrinsic, base + calldata_gas + initcode_gas);
             assert_eq!(floor, base + floor_calldata_gas);
+        }
+    }
+
+    #[rstest::rstest]
+    fn underfunded_top_level_value_depends_on_balance_check(
+        #[values(false, true)] balance_check: bool,
+        #[values(false, true)] fee_charge: bool,
+    ) {
+        let caller = Address::with_last_byte(0xaa);
+        let recipient = Address::with_last_byte(0xbb);
+        for spec in [SpecId::PRAGUE, SpecId::AMSTERDAM] {
+            for to in [TxKind::Create, TxKind::Call(recipient)] {
+                for value in [0, 1, 2] {
+                    for input in [
+                        Bytes::from_static(&[op::STOP]),
+                        Bytes::from_static(&[op::PUSH0, op::PUSH0, op::REVERT]),
+                    ] {
+                        for tx_type in 0..=2 {
+                            let mut version = Version::new(spec);
+                            version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+                            version.features.set(EvmFeatures::BALANCE_CHECK, balance_check);
+                            version.features.set(EvmFeatures::FEE_CHARGE, fee_charge);
+                            let mut database = InMemoryDB::default();
+                            database.insert_account_info(
+                                &caller,
+                                AccountInfo::default().with_nonce(10).with_balance(U256::ONE),
+                            );
+                            database.insert_account_info(
+                                &recipient,
+                                AccountInfo::default()
+                                    .with_code(Bytecode::new_legacy(input.clone())),
+                            );
+                            let tx = match tx_type {
+                                0 => TxEnvelope::Legacy(TxLegacy {
+                                    nonce: 10,
+                                    gas_limit: 500_000,
+                                    to,
+                                    value: U256::from(value),
+                                    input: input.clone(),
+                                    ..Default::default()
+                                }),
+                                1 => TxEnvelope::Eip2930(TxEip2930 {
+                                    chain_id: version.chain_id,
+                                    nonce: 10,
+                                    gas_limit: 500_000,
+                                    to,
+                                    value: U256::from(value),
+                                    input: input.clone(),
+                                    ..Default::default()
+                                }),
+                                _ => TxEnvelope::Eip1559(TxEip1559 {
+                                    chain_id: version.chain_id,
+                                    nonce: 10,
+                                    gas_limit: 500_000,
+                                    to,
+                                    value: U256::from(value),
+                                    input: input.clone(),
+                                    ..Default::default()
+                                }),
+                            };
+                            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                                ExecutionConfig::for_spec_and_version(spec, version),
+                                spec,
+                                BlockEnvExt {
+                                    gas_limit: U256::from(10_000_000),
+                                    ..Default::default()
+                                },
+                                ethereum_tx_registry(spec),
+                                database,
+                                Precompiles::base(spec),
+                            );
+                            let tx = Recovered::new_unchecked(tx, caller);
+                            let case = format!("{spec:?} {to:?} value={value} type={tx_type}");
+                            let caller_before = evm.state.account_info_untracked(&caller).unwrap();
+                            let recipient_before =
+                                evm.state.account_info_untracked(&recipient).unwrap();
+                            if balance_check && value == 2 {
+                                assert_eq!(
+                                    evm.transact(&tx).map(crate::evm::ExecutedTx::discard),
+                                    Err(HandlerError::InsufficientFunds {
+                                        fee: U256::from(2),
+                                        balance: U256::ONE
+                                    }),
+                                    "{case}"
+                                );
+                                assert_eq!(
+                                    evm.state.account_info_untracked(&caller).unwrap(),
+                                    caller_before,
+                                    "{case}"
+                                );
+                                assert_eq!(
+                                    evm.state.account_info_untracked(&recipient).unwrap(),
+                                    recipient_before,
+                                    "{case}"
+                                );
+                                continue;
+                            }
+                            let result = evm.transact(&tx).unwrap().commit();
+                            if value == 2 {
+                                assert_eq!(result.stop, InstrStop::OutOfFunds, "{case}");
+                            } else {
+                                assert_eq!(result.status, input[0] == op::STOP, "{case}");
+                            }
+                            let nonce =
+                                evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce;
+                            assert_eq!(nonce, 11, "{case}");
+                        }
+                    }
+                }
+            }
         }
     }
 }

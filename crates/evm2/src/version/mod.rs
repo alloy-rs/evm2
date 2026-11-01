@@ -4,7 +4,7 @@ use crate::{
     EvmConfig, EvmTypesHost, SpecId,
     constants::{
         CALL_DEPTH_LIMIT, MAX_CODE_SIZE, MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE,
-        MAX_INITCODE_SIZE_AMSTERDAM,
+        MAX_INITCODE_SIZE_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
     },
     interpreter::{instructions as instr, op},
 };
@@ -38,6 +38,10 @@ pub struct Version {
     /// Transaction gas limit cap.
     pub tx_gas_limit_cap: u64,
     /// Hard memory limit in bytes.
+    ///
+    /// Frame output ranges are `u32`, so
+    /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) clamps a larger
+    /// limit to [`u32::MAX`], and memory stops growing there.
     pub memory_limit: u64,
     /// Maximum deployed contract bytecode size.
     pub max_code_size: usize,
@@ -50,8 +54,6 @@ pub struct Version {
     /// Nested transaction roots can retain their outer call depth while receiving a fresh
     /// [`CALL_DEPTH_LIMIT`]-descendant budget. This must leave room in `u16` for that budget
     /// and the attempted-too-deep message: at most `u16::MAX - CALL_DEPTH_LIMIT - 1` (64510).
-    /// Installing a version with a larger value through
-    /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) panics.
     pub initial_call_depth: u16,
 
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -86,7 +88,8 @@ impl Version {
     ///
     /// Without EIP-8037, [`tx_gas_limit_cap`](Self::tx_gas_limit_cap) (EIP-7825) bounds `tx.gas`
     /// itself, which also bounds the execution gas. With EIP-8037, `tx.gas` may exceed it because
-    /// the excess funds the state-gas reservoir, so it only bounds the required execution gas.
+    /// the excess funds the state-gas reservoir, so it only bounds the required execution gas, and
+    /// `tx.gas` is bounded by [`MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM`] instead.
     ///
     /// The Ethereum transaction handlers enforce these caps through
     /// [`validate_tx_gas_limit_cap`](crate::ethereum::validate_tx_gas_limit_cap) and
@@ -96,16 +99,37 @@ impl Version {
     #[inline]
     pub const fn tx_gas_caps(&self) -> (u64, u64) {
         if self.feature(EvmFeatures::EIP8037) {
-            (u64::MAX, self.tx_gas_limit_cap)
+            (MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, self.tx_gas_limit_cap)
         } else {
             (self.tx_gas_limit_cap, u64::MAX)
         }
     }
 
+    /// Panics if a field holds a value the interpreter cannot run with.
+    ///
+    /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) calls this when it
+    /// installs a version, so instructions can rely on these invariants:
+    ///
+    /// - [`initial_call_depth`](Self::initial_call_depth) is at most `u16::MAX - CALL_DEPTH_LIMIT -
+    ///   1` (64510).
+    /// - [`GasId::MaxRefundQuotient`] is non-zero.
+    #[inline]
+    pub const fn assert_valid(&self) {
+        assert!(
+            self.initial_call_depth < u16::MAX - CALL_DEPTH_LIMIT,
+            "initial call depth must leave room for 1024 descendants and the rejected attempt"
+        );
+        assert!(
+            self.gas_params.get(GasId::MaxRefundQuotient) != 0,
+            "max refund quotient must be non-zero"
+        );
+    }
+
     /// Returns the deepest permitted inspector-visible call depth.
     ///
     /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) validates
-    /// [`Self::initial_call_depth`], so this cannot overflow for an installed version.
+    /// [`Self::initial_call_depth`] through [`Self::assert_valid`], so this cannot overflow for an
+    /// installed version.
     #[inline]
     pub const fn max_call_depth(&self) -> u16 {
         self.initial_call_depth + CALL_DEPTH_LIMIT
@@ -389,7 +413,10 @@ mod tests {
         assert_eq!(osaka.tx_gas_caps(), (MAX_TX_GAS_LIMIT_OSAKA, u64::MAX));
 
         let amsterdam = Version::base(SpecId::AMSTERDAM);
-        assert_eq!(amsterdam.tx_gas_caps(), (u64::MAX, MAX_TX_GAS_LIMIT_OSAKA));
+        assert_eq!(
+            amsterdam.tx_gas_caps(),
+            (MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_GAS_LIMIT_OSAKA)
+        );
 
         let mut amsterdam_without_eip8037 = Version::new(SpecId::AMSTERDAM);
         amsterdam_without_eip8037.features.remove(EvmFeatures::EIP8037);
@@ -401,6 +428,23 @@ mod tests {
     fn execution_config_rejects_unrepresentable_call_budget() {
         let mut version = Version::new(SpecId::CANCUN);
         version.initial_call_depth = u16::MAX - CALL_DEPTH_LIMIT;
+        crate::ExecutionConfig::<BaseEvmTypes>::for_spec_and_version(SpecId::CANCUN, version);
+    }
+
+    #[test]
+    fn execution_config_clamps_memory_limit_to_u32() {
+        let mut version = Version::new(SpecId::CANCUN);
+        version.memory_limit = u64::MAX;
+        let config =
+            crate::ExecutionConfig::<BaseEvmTypes>::for_spec_and_version(SpecId::CANCUN, version);
+        assert_eq!(config.version().memory_limit, u32::MAX as u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "max refund quotient must be non-zero")]
+    fn execution_config_rejects_zero_max_refund_quotient() {
+        let mut version = Version::new(SpecId::CANCUN);
+        version.gas_params.set(GasId::MaxRefundQuotient, 0);
         crate::ExecutionConfig::<BaseEvmTypes>::for_spec_and_version(SpecId::CANCUN, version);
     }
 }

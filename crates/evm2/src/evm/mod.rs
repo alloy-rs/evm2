@@ -34,9 +34,9 @@
 //! 1. **Accepted overlay**: transaction-boundary state accepted by prior commits. It shadows the
 //!    wrapped database and is visible to later transactions executed by the same [`Evm`].
 //! 2. **Transaction scratch**: writes, warm-access state, transient storage, journal entries,
-//!    touched accounts, selfdestruct markers, and logs for the currently executing transaction. It
-//!    is cleared after `commit`, `commit_to`, `commit_with`, `discard`, `discard_with`, or `detach`
-//!    while retaining capacity where possible.
+//!    touched and selfdestructed account flags, and logs for the currently executing transaction.
+//!    It is cleared after `commit`, `commit_to`, `commit_with`, `discard`, `discard_with`, or
+//!    `detach` while retaining capacity where possible.
 //! 3. **Block accumulator**: optional block-level state output. It coalesces committed transaction
 //!    writes and keeps block-boundary originals.
 //!
@@ -134,9 +134,9 @@ use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
-#[cfg(feature = "async")]
-use core::future::Future;
 use core::ptr::NonNull;
+#[cfg(feature = "async")]
+use core::{any::TypeId, future::Future};
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -195,11 +195,22 @@ pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + '
     ///
     /// Record execution errors with [`Interpreter::fail`]; the EVM extracts them after this
     /// method returns.
+    ///
+    /// The EVM calls this only while [`Self::supports`] holds for the active execution config;
+    /// other callers must check it first.
     fn run<'frame, 'host>(
         &self,
         interpreter: &mut Interpreter<'frame, 'host, T>,
         host: &mut T::Host<'host>,
     ) -> Option<InstrStop>;
+
+    /// Returns whether this runner can execute frames under `config`.
+    ///
+    /// The EVM calls this when the runner or the execution config changes, not per frame, and
+    /// skips the runner while it returns `false`.
+    fn supports(&self, _config: &ExecutionConfig<T>) -> bool {
+        true
+    }
 }
 
 /// EVM host and transaction dispatcher.
@@ -211,6 +222,7 @@ pub struct Evm<'a, T: EvmTypesHost> {
     execution_config: ExecutionConfig<T>,
     features: EvmFeatures,
     pub(crate) block: BlockEnv<T>,
+    tx_env: TxEnv<T>,
     registry: TxRegistry<T, TxResult<T>>,
     #[derive_where(skip)]
     pub(crate) state: State<'a>,
@@ -222,8 +234,14 @@ pub struct Evm<'a, T: EvmTypesHost> {
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
     inspector: Option<InspectorSlot<'a, T>>,
+    inspect_system_calls: bool,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
+    /// Whether `interpreter_runner` is set and supports `execution_config`.
+    ///
+    /// Refreshed whenever either changes.
+    #[derive_where(skip)]
+    runner_supported: bool,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
@@ -237,7 +255,11 @@ pub struct Evm<'a, T: EvmTypesHost> {
     #[cfg(feature = "async")]
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
-    evm_send: bool,
+    /// The erased value types last verified as `Send` by [`Evm::evm_is_send`] or
+    /// [`Evm::evm_is_send_with_inspector`].
+    #[cfg(feature = "async")]
+    #[derive_where(skip)]
+    send_types: Option<ErasedTypeIds>,
 }
 
 impl<'a, T: EvmTypes> Evm<'a, T> {
@@ -344,19 +366,23 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             features: execution_config.version().features,
             execution_config,
             block,
+            tx_env: TxEnv::<T>::default(),
             registry,
             state: State::new_mono(database),
             ext,
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            inspect_system_calls: false,
             interpreter_runner: None,
+            runner_supported: false,
             current_frame: None,
             frame_checkpoint: None,
             running: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
-            evm_send: false,
+            #[cfg(feature = "async")]
+            send_types: None,
         }
     }
 
@@ -408,6 +434,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn assert_execution_config_mutable(&self) {
         assert!(!self.running, "execution config cannot be modified during EVM execution");
+    }
+
+    #[inline]
+    fn refresh_runner_support(&mut self) {
+        self.runner_supported = self
+            .interpreter_runner
+            .as_ref()
+            .is_some_and(|runner| runner.supports(&self.execution_config));
     }
 
     #[inline]
@@ -476,6 +510,27 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub const fn set_block(&mut self, block: BlockEnv<T>) {
         self.block = block;
+    }
+
+    /// Returns the active transaction environment.
+    ///
+    /// Transaction handlers and system calls replace it before executing their initial frame, and
+    /// it keeps the last transaction's values afterwards.
+    #[inline]
+    pub const fn tx_env(&self) -> &TxEnv<T> {
+        &self.tx_env
+    }
+
+    /// Returns the active transaction environment mutably, including during execution.
+    ///
+    /// The current frame and nested frames observe changes on subsequent reads, such as `ORIGIN`
+    /// or `GASPRICE`. Validation, fees, and nonces do not read it, so an inspector can override,
+    /// for example, the origin of a running transaction from its top-level call or create hook
+    /// without affecting how the transaction is charged. Handlers overwrite it when the next
+    /// transaction starts executing.
+    #[inline]
+    pub const fn tx_env_mut(&mut self) -> &mut TxEnv<T> {
+        &mut self.tx_env
     }
 
     /// Replaces the active execution specification and its fork-dependent dispatch state.
@@ -569,6 +624,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.block = block;
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
+        self.refresh_runner_support();
     }
 
     #[inline]
@@ -582,9 +638,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.spec_id = spec_id;
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
+        // Refresh before the old registry and precompiles drop, so an unwinding destructor
+        // cannot leave a stale verdict.
+        self.refresh_runner_support();
         self.registry = registry;
         self.precompiles = precompiles;
-        self.evm_send = false;
     }
 
     /// Returns the accepted-state overlay database.
@@ -604,7 +662,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// available through [`Self::database_mut`].
     #[inline]
     pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase + 'a>> {
-        self.evm_send = false;
         self.state.overlay_db_mut()
     }
 
@@ -636,7 +693,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_database(&mut self, database: impl DynDatabase + 'a) {
         self.state.set_initial(database);
-        self.evm_send = false;
     }
 
     #[cfg(feature = "async")]
@@ -649,7 +705,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn assert_erased_send(&self) {
         assert!(
-            self.evm_send,
+            self.send_types == Some(self.erased_type_ids()),
             "async EVM execution requires EVM erased fields to be verified as Send with \
              Evm::evm_is_send"
         );
@@ -659,10 +715,24 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         );
     }
 
+    #[cfg(feature = "async")]
+    #[inline]
+    fn erased_type_ids(&self) -> ErasedTypeIds {
+        ErasedTypeIds {
+            database: self.database().type_id(),
+            precompiles: self.precompiles().type_id(),
+            inspector: self.inspector().map(|inspector| inspector.type_id()),
+        }
+    }
+
     /// Marks this EVM as thread-sendable after checking the current erased field types.
     ///
     /// This requires no active inspector. Use [`Self::evm_is_send_with_inspector`] when an
     /// inspector is installed.
+    ///
+    /// Async execution re-checks that the erased types are still the verified ones, so replacing
+    /// one with a different type makes it panic until the new types are verified.
+    #[cfg(feature = "async")]
     #[inline]
     pub fn evm_is_send<D, P>(&mut self) -> &mut Self
     where
@@ -673,11 +743,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.assert_database_type::<D>();
         self.assert_precompiles_type::<P>();
         assert!(self.inspector.is_none(), "inspector type mismatch");
-        self.evm_send = true;
+        self.send_types = Some(self.erased_type_ids());
         self
     }
 
     /// Marks this EVM as thread-sendable after checking the current erased field types.
+    #[cfg(feature = "async")]
     #[inline]
     pub fn evm_is_send_with_inspector<D, P, I>(&mut self) -> &mut Self
     where
@@ -689,10 +760,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.assert_database_type::<D>();
         self.assert_precompiles_type::<P>();
         self.assert_inspector_type::<I>();
-        self.evm_send = true;
+        self.send_types = Some(self.erased_type_ids());
         self
     }
 
+    #[cfg(feature = "async")]
     #[inline]
     fn assert_database_type<D: DynDatabase + 'static>(&self)
     where
@@ -701,6 +773,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         assert_eq!(self.database().type_id(), typeid::of::<D>(), "database type mismatch");
     }
 
+    #[cfg(feature = "async")]
     #[inline]
     fn assert_precompiles_type<P: PrecompileProvider<T> + 'static>(&self)
     where
@@ -713,6 +786,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         );
     }
 
+    #[cfg(feature = "async")]
     #[inline]
     fn assert_inspector_type<I: Inspector<T> + 'static>(&self)
     where
@@ -773,7 +847,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Returns the mutable EVM state.
     #[inline]
     pub const fn state_mut(&mut self) -> &mut State<'a> {
-        self.evm_send = false;
         &mut self.state
     }
 
@@ -784,9 +857,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Returns the logs emitted by the current in-flight transaction mutably.
-    ///
-    /// Unlike [`Self::state_mut`], this keeps the EVM verified as `Send`, since logs are not
-    /// erased.
     #[inline]
     pub const fn logs_mut(&mut self) -> &mut Vec<Log> {
         self.state.logs_mut()
@@ -820,7 +890,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
         self.precompiles = boxed_precompile_provider(precompiles);
-        self.evm_send = false;
     }
 
     /// Replaces the precompile provider with an already boxed one.
@@ -828,7 +897,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_boxed_precompiles(&mut self, precompiles: Box<dyn PrecompileProvider<T> + 'a>) {
         self.assert_precompiles_mutable();
         self.precompiles = precompiles;
-        self.evm_send = false;
     }
 
     /// Returns the precompile provider as `P` if it has that concrete type.
@@ -936,7 +1004,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
         self.inspector = Some(InspectorSlot::Owned(boxed_inspector(inspector)));
-        self.evm_send = false;
     }
 
     /// Sets the active boxed execution inspector.
@@ -944,14 +1011,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + 'a>) {
         self.assert_inspector_mutable();
         self.inspector = Some(InspectorSlot::Owned(inspector));
-        self.evm_send = false;
     }
 
     /// Removes the active execution inspector.
     #[inline]
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T> + 'a>> {
         self.assert_inspector_mutable();
-        self.evm_send = false;
         match self.inspector.take()? {
             InspectorSlot::Owned(inspector) => Some(inspector),
             InspectorSlot::Borrowed(_) => unreachable!("borrowed inspector outlived its call"),
@@ -973,11 +1038,26 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
     }
 
+    /// Returns whether [`Self::system_call`] runs with the active inspector installed.
+    #[inline]
+    pub const fn inspects_system_calls(&self) -> bool {
+        self.inspect_system_calls
+    }
+
+    /// Sets whether [`Self::system_call`] runs with the active inspector installed.
+    ///
+    /// Defaults to `false`: system calls are not inspected.
+    #[inline]
+    pub const fn set_inspect_system_calls(&mut self, inspect: bool) {
+        self.inspect_system_calls = inspect;
+    }
+
     /// Sets the optional external interpreter runner.
     #[inline]
     pub fn set_interpreter_runner<R: InterpreterRunner<T>>(&mut self, runner: R) {
         self.assert_interpreter_runner_mutable();
         self.interpreter_runner = Some(Arc::new(runner));
+        self.refresh_runner_support();
     }
 
     /// Sets the optional shared external interpreter runner.
@@ -985,13 +1065,16 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_shared_interpreter_runner(&mut self, runner: Arc<dyn InterpreterRunner<T>>) {
         self.assert_interpreter_runner_mutable();
         self.interpreter_runner = Some(runner);
+        self.refresh_runner_support();
     }
 
     /// Removes the optional external interpreter runner.
     #[inline]
     pub fn clear_interpreter_runner(&mut self) -> Option<Arc<dyn InterpreterRunner<T>>> {
         self.assert_interpreter_runner_mutable();
-        self.interpreter_runner.take()
+        let runner = self.interpreter_runner.take();
+        self.refresh_runner_support();
+        runner
     }
 
     /// Returns the active EVM version.
@@ -1092,14 +1175,24 @@ impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     }
 }
 
+/// The concrete types of the erased database, precompile provider, and inspector.
+#[cfg(feature = "async")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ErasedTypeIds {
+    database: TypeId,
+    precompiles: TypeId,
+    inspector: Option<TypeId>,
+}
+
 #[cfg(feature = "async")]
 struct SendEvmRef<'a, 'evm, T: EvmTypesHost> {
     evm: &'a mut Evm<'evm, T>,
 }
 
 #[cfg(feature = "async")]
-// SAFETY: `SendEvmRef` is only constructed by async entrypoints after `Evm::evm_is_send` has
-// verified the concrete erased field types as `Send`.
+// SAFETY: `SendEvmRef` is only constructed by async entrypoints for an `Evm<'static, T>` whose
+// erased field types `Evm::evm_is_send` verified as `Send`. The `'static` bound keeps a verified
+// type from being replaced by a shorter-lived instance of itself, which `TypeId` cannot tell apart.
 unsafe impl<T> Send for SendEvmRef<'_, '_, T>
 where
     T: EvmTypesHost,
@@ -1230,6 +1323,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     + 'fut
     where
         T::Tx: Sync,
+        'a: 'static,
     {
         self.assert_erased_send();
         let stack = self.async_stack();
@@ -1267,17 +1361,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn execute_message_impl(
         &mut self,
-        tx_env: &TxEnv<T>,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let mut result = match message.kind {
-            MessageKind::Create | MessageKind::Create2 => {
-                self.execute_create_message(tx_env, message)
-            }
+            MessageKind::Create | MessageKind::Create2 => self.execute_create_message(message),
             MessageKind::Call
             | MessageKind::CallCode
             | MessageKind::DelegateCall
-            | MessageKind::StaticCall => self.execute_call_message(tx_env, message),
+            | MessageKind::StaticCall => self.execute_call_message(message),
         }?;
         // Settle the returning frame's gas for its stop reason at this single exit,
         // rather than in each result builder, so every consumer (parent
@@ -1293,12 +1384,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline(never)]
     fn execute_message_inspected<'frame>(
         &mut self,
-        tx_env: &'frame TxEnv<T>,
         message: &'frame mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let guard = self.enter_execution();
         let Some(inspector) = guard.evm.active_inspector() else {
-            return guard.evm.execute_message_impl(tx_env, message);
+            return guard.evm.execute_message_impl(message);
         };
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
         // replacement while the hooks are running.
@@ -1323,7 +1413,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             None => {
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
                 let frame_message = unsafe { trustme::decouple_lt(&*message) };
-                let frame = top_frame.insert(guard.evm.interpreter_pool.pop(tx_env, frame_message));
+                let frame = top_frame.insert(guard.evm.interpreter_pool.pop(frame_message));
                 top_code = message.code.clone();
                 // SAFETY: `top_code` owns a clone of the code, so the frame's pointers into it
                 // stay valid even if a hook replaces `message.code`. It is declared before
@@ -1346,7 +1436,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let mut result = if let Some(error) = frame.take_error() {
             Err(error)
         } else {
-            inspected.map(Ok).unwrap_or_else(|| guard.evm.execute_message_impl(tx_env, message))
+            inspected.map(Ok).unwrap_or_else(|| guard.evm.execute_message_impl(message))
         };
 
         if let Ok(result) = &mut result {
@@ -1371,7 +1461,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline(never)]
     fn execute_create_message(
         &mut self,
-        tx_env: &TxEnv<T>,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         if message.depth > self.version().max_call_depth() {
@@ -1399,12 +1488,22 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 HostError::Execution(error) => Err(error),
             };
         }
-        message.code_address = message.destination;
-        let input = core::mem::take(&mut message.input);
-        let result = self.run_frame(tx_env, message, checkpoint.clone());
-        message.input = input;
-        let stop = result?;
-        self.finish_create_message_run(checkpoint, &message.destination, stop)
+        // Empty initcode deploys an empty contract without executing the bytecode's padding STOP.
+        let (stop, gas, output) = if message.code.is_empty() {
+            (
+                InstrStop::Stop,
+                Gas::new_with_execution_gas_and_reservoir(message.gas_limit, message.reservoir),
+                Bytes::new(),
+            )
+        } else {
+            let input = core::mem::take(&mut message.input);
+            let result = self.run_frame(message, checkpoint.clone());
+            message.input = input;
+            let stop = result?;
+            let interp = self.interpreter_pool.last_mut().unwrap();
+            (stop, interp.gas(), Bytes::copy_from_slice(interp.output()))
+        };
+        self.finish_create_message_run(checkpoint, &message.destination, stop, gas, output)
     }
 
     #[inline(never)]
@@ -1420,10 +1519,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Err(InstrStop::OutOfFunds.into());
         }
 
-        // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero instead of
-        // wrapping or saturating the creator nonce.
+        // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 fail the frame and return
+        // zero instead of wrapping or saturating the creator nonce.
         if nested && info.as_ref().is_some_and(|info| info.nonce == u64::MAX) {
-            return Err(InstrStop::Return.into());
+            return Err(InstrStop::NonceOverflow.into());
         }
 
         // `destination` already holds the contract address (derived when the message was
@@ -1454,11 +1553,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         checkpoint: StateCheckpoint,
         address: &Address,
         stop: InstrStop,
+        mut gas: Gas,
+        mut output: Bytes,
     ) -> Result<MessageResult<T>, ExecutionError> {
-        let interp = self.interpreter_pool.last_mut().unwrap();
-        let mut gas = interp.gas();
-        let output = if stop.is_success() {
-            let mut output = Bytes::copy_from_slice(interp.output());
+        if stop.is_success() {
             if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
                 self.state.rollback(checkpoint, self.features);
                 return Ok(MessageResultExt {
@@ -1479,12 +1577,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 self.state.rollback(checkpoint, self.features);
                 return Err(code.into());
             }
-
-            output
         } else {
             self.state.rollback(checkpoint, self.features);
-            Bytes::copy_from_slice(interp.output())
-        };
+        }
 
         Ok(MessageResultExt {
             stop,
@@ -1538,7 +1633,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline(never)]
     fn execute_call_message(
         &mut self,
-        tx_env: &TxEnv<T>,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         if message.depth > self.version().max_call_depth() {
@@ -1577,7 +1671,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 ..MessageResultExt::default()
             });
         }
-        let stop = self.run_frame(tx_env, message, checkpoint.clone())?;
+        let stop = self.run_frame(message, checkpoint.clone())?;
         Ok(self.finish_call_message_run(checkpoint, stop))
     }
 
@@ -1662,12 +1756,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn run_frame(
         &mut self,
-        tx_env: &TxEnv<T>,
         message: &Message<T>,
         checkpoint: StateCheckpoint,
     ) -> Result<InstrStop, ExecutionError> {
         let previous = self.frame_checkpoint.replace(checkpoint);
-        let stop = self.run_interpreter(tx_env, message);
+        let stop = self.run_interpreter(message);
         self.frame_checkpoint = previous;
         stop
     }
@@ -1675,12 +1768,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline(never)]
     fn run_interpreter<'frame>(
         &mut self,
-        tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
     ) -> Result<InstrStop, ExecutionError> {
         let guard = self.enter_execution();
-        let mut interp: Box<Interpreter<'frame, 'a, T>> =
-            guard.evm.interpreter_pool.pop(tx_env, message);
+        let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
         guard.evm.inspect_initialize_interp(interp_ref);
         let inspector = guard.evm.active_inspector().map(|inspector| {
@@ -1692,10 +1783,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
-        let interpreter_runner = guard.evm.interpreter_runner.clone();
+        let runner =
+            guard.evm.interpreter_runner.as_ref().filter(|_| guard.evm.runner_supported).cloned();
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(guard.evm, inspector)
-        } else if let Some(runner) = interpreter_runner
+        } else if let Some(runner) = runner
             && let Some(stop) = runner.run(interp_ref, guard.evm)
         {
             interp_ref.finish_run(stop)
@@ -1733,6 +1825,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         &self.block
     }
 
+    fn tx_env(&mut self) -> &TxEnv<T> {
+        &self.tx_env
+    }
+
     fn load_account(
         &mut self,
         address: &Address,
@@ -1746,9 +1842,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
         let is_cold = account.warm();
 
-        let (balance, nonce, code_hash, exists, is_empty) = match account.get() {
-            Some(info) => (info.balance, info.nonce, info.code_hash, true, info.is_empty()),
-            None => (Word::ZERO, 0, B256::ZERO, false, true),
+        let is_empty_for_new_account_gas = account.is_empty_for_new_account_gas(self.features);
+        let (balance, nonce, code_hash, is_empty) = match account.get() {
+            Some(info) => (info.balance, info.nonce, info.code_hash, info.is_empty()),
+            None => (Word::ZERO, 0, B256::ZERO, true),
         };
 
         // load code
@@ -1762,19 +1859,11 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             nonce,
             code_hash,
             code,
-            exists,
             is_empty,
+            is_empty_for_new_account_gas,
             is_cold,
             _non_exhaustive: (),
         })
-    }
-
-    fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> Result<bool, DatabaseError> {
-        Ok(self.state.account(address)?.is_empty_for_new_account_gas(features))
     }
 
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError> {
@@ -1858,14 +1947,13 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     #[inline]
     fn execute_message(
         &mut self,
-        tx_env: &TxEnv<T>,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let checkpoint = self.state.checkpoint();
         let result = if self.inspector.is_some() {
-            self.execute_message_inspected(tx_env, message)
+            self.execute_message_inspected(message)
         } else {
-            self.execute_message_impl(tx_env, message)
+            self.execute_message_impl(message)
         };
         if result.is_err() {
             self.state.rollback(checkpoint, self.features);
@@ -1880,19 +1968,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, HostError> {
         let features = self.features;
-        let eip2929 = features.contains(EvmFeatures::EIP2929);
         let (is_cold, target_is_empty_for_new_account_gas) =
-            match self.state.account_with_skip(target, eip2929 && skip_cold_load) {
-                Ok(mut account) => {
-                    let is_cold = account.warm() && eip2929;
-                    (is_cold, account.is_empty_for_new_account_gas(features))
-                }
+            match self.state.account_with_skip(target, skip_cold_load) {
+                Ok(mut account) => (account.warm(), account.is_empty_for_new_account_gas(features)),
                 Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
                 Err(code) => return Err(code.into()),
             };
-        if skip_cold_load && is_cold {
-            return Err(InstrStop::OutOfGas.into());
-        }
         let (previously_destroyed, balance, should_destroy) = {
             let account = self.state.account(contract)?;
             let should_destroy = !features.contains(EvmFeatures::EIP6780) || account.is_created();
@@ -1937,10 +2018,11 @@ pub struct AccountLoad {
     pub code_hash: B256,
     /// Account bytecode.
     pub code: Bytecode,
-    /// Whether the account exists in state.
-    pub exists: bool,
     /// Whether the account is empty.
     pub is_empty: bool,
+    /// Whether the account is empty for new-account gas: absent or empty under EIP-161, absent
+    /// and untouched before it.
+    pub is_empty_for_new_account_gas: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -2056,7 +2138,7 @@ mod tests {
     use crate::{
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
-        env::{BlockEnvExt, TxEnvExt},
+        env::BlockEnvExt,
         ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
@@ -2151,14 +2233,13 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_interpreter_runner(TestInterpreterRunner { stop, calls: Arc::clone(&calls) });
-        let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 30_000,
             code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
             ..Default::default()
         };
 
-        let stop = evm.run_interpreter(&tx_env, &message).unwrap();
+        let stop = evm.run_interpreter(&message).unwrap();
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         stop
@@ -2261,7 +2342,7 @@ mod tests {
         evm.set_inspector(LogInspector::default());
         let mut message = precompile_message(TEST_PRECOMPILE);
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::Return);
         let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
@@ -2285,7 +2366,7 @@ mod tests {
                 let mut child = precompile_message(INNER_TEST_PRECOMPILE);
                 child.depth = message.depth + 1;
                 child.input = message.input.clone();
-                Host::execute_message(evm, &TxEnvExt::default(), &mut child)?;
+                Host::execute_message(evm, &mut child)?;
                 evm.log(Log { address: TEST_PRECOMPILE, data: LogData::default() });
                 Ok(PrecompileOutput::new(Bytes::new()))
             }),
@@ -2314,8 +2395,7 @@ mod tests {
             if revert {
                 message.input = Bytes::from_static(b"revert");
             }
-            let result =
-                Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+            let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
             assert_eq!(result.stop, InstrStop::Return);
             let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
@@ -2361,8 +2441,7 @@ mod tests {
 
         for address in [TEST_PRECOMPILE, INNER_TEST_PRECOMPILE] {
             let mut message = precompile_message(address);
-            let result =
-                Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+            let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
             assert_eq!(result.stop, InstrStop::PrecompileOOG);
             assert_eq!(result.gas.remaining(), 0);
@@ -2418,7 +2497,7 @@ mod tests {
             test_precompile(TEST_PRECOMPILE, |evm, _, _| {
                 let mut child = precompile_message(INNER_TEST_PRECOMPILE);
                 child.depth = 1;
-                Host::execute_message(evm, &TxEnvExt::default(), &mut child)?;
+                Host::execute_message(evm, &mut child)?;
                 panic!("execution must abort on a database error");
             }),
             test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
@@ -2436,11 +2515,7 @@ mod tests {
             InMemoryDB::default(),
             precompiles,
         );
-        let result = Host::execute_message(
-            &mut evm,
-            &TxEnvExt::default(),
-            &mut precompile_message(TEST_PRECOMPILE),
-        );
+        let result = Host::execute_message(&mut evm, &mut precompile_message(TEST_PRECOMPILE));
         let ExecutionError::Database(error) = result.unwrap_err() else {
             panic!("expected database error")
         };
@@ -2534,7 +2609,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
+        let result = Host::execute_message(&mut evm, &mut message);
 
         let ExecutionError::Fatal(error) = result.unwrap_err() else {
             panic!("expected fatal precompile error")
@@ -2592,7 +2667,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::Stop);
         evm.state.finalize_transaction_(Version::base(SpecId::OSAKA));
@@ -2899,8 +2974,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let tx_env = TxEnvExt::default();
-        let _ = evm.run_interpreter(&tx_env, &message);
+        let _ = evm.run_interpreter(&message);
     }
 
     #[test]
@@ -2925,9 +2999,8 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let tx_env = TxEnvExt::default();
 
-        let _ = evm.run_interpreter(&tx_env, &message);
+        let _ = evm.run_interpreter(&message);
     }
 
     #[test]
@@ -2983,10 +3056,68 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let tx_env = TxEnvExt::default();
-        let _ = evm.run_interpreter(&tx_env, &message);
+        let _ = evm.run_interpreter(&message);
         assert_eq!(evm.block().number, Word::from(123));
         assert_eq!(evm.block().timestamp, Word::from(124));
+    }
+
+    #[test]
+    fn tx_env_mut_during_transaction_overrides_origin() {
+        struct OriginInspector(Address);
+
+        impl Inspector<BaseEvmTypes> for OriginInspector {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 0 {
+                    interp.host().tx_env_mut().origin = self.0;
+                }
+                None
+            }
+        }
+
+        let caller = Address::repeat_byte(0xaa);
+        let origin = Address::repeat_byte(0xbb);
+        let target = Address::repeat_byte(0x11);
+        let inner = Address::repeat_byte(0x22);
+        // SSTORE(0, ORIGIN), then CALL(inner).
+        let mut code = vec![op::ORIGIN, op::PUSH0, op::SSTORE];
+        code.extend([op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH20]);
+        code.extend(inner.0);
+        code.extend([op::GAS, op::CALL, op::STOP]);
+        // SSTORE(1, ORIGIN)
+        let inner_code = vec![op::ORIGIN, op::PUSH1, 1, op::SSTORE, op::STOP];
+        let mut database = InMemoryDB::default();
+        for (address, code) in [(target, code), (inner, inner_code)] {
+            database.insert_account_info(
+                &address,
+                AccountInfo::default().with_nonce(1).with_code(legacy_bytecode(code)),
+            );
+        }
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(target),
+                gas_limit: 500_000,
+                ..Default::default()
+            }),
+            caller,
+        );
+        let executed = evm.transact_with_inspector(&tx, &mut OriginInspector(origin)).unwrap();
+        assert!(executed.commit().status);
+
+        let origin_word = Word::from_be_slice(origin.as_slice());
+        assert_eq!(evm.state.storage_slot_untracked(&target, &Word::ZERO).unwrap(), origin_word);
+        assert_eq!(evm.state.storage_slot_untracked(&inner, &Word::from(1)).unwrap(), origin_word);
+        assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce, 1);
     }
 
     #[test]
@@ -3018,8 +3149,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let tx_env = TxEnvExt::default();
-        let _ = evm.run_interpreter(&tx_env, &message);
+        let _ = evm.run_interpreter(&message);
     }
 
     #[derive(Clone, Copy)]
@@ -3071,11 +3201,11 @@ mod tests {
             }
             TopLevelInspectorHook::Call => {
                 let mut message = MessageExt { kind: MessageKind::Call, ..Default::default() };
-                let _ = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
+                let _ = Host::execute_message(&mut evm, &mut message);
             }
             TopLevelInspectorHook::Create => {
                 let mut message = MessageExt { kind: MessageKind::Create, ..Default::default() };
-                let _ = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
+                let _ = Host::execute_message(&mut evm, &mut message);
             }
         }
     }
@@ -3220,6 +3350,94 @@ mod tests {
     #[test]
     fn interpreter_runner_can_fallback_to_interpreter() {
         assert_eq!(run_with_test_interpreter_runner(None, &[op::STOP]), InstrStop::Stop);
+    }
+
+    #[derive(Debug)]
+    struct SpecBoundRunner {
+        spec_id: SpecId,
+        initial_call_depth: u16,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl InterpreterRunner<BaseEvmTypes> for SpecBoundRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Some(InstrStop::Return)
+        }
+
+        fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            config.base_spec_id() == self.spec_id
+                && config.version().initial_call_depth == self.initial_call_depth
+        }
+    }
+
+    #[test]
+    fn interpreter_runner_support_follows_runner_and_execution_config() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let message = MessageExt {
+            gas_limit: 30_000,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..Default::default()
+        };
+        let run = |evm: &mut Evm<'_, BaseEvmTypes>| {
+            let stop = evm.run_interpreter(&message).unwrap();
+            (stop, calls.load(Ordering::Relaxed))
+        };
+        let set_spec = |evm: &mut Evm<'_, BaseEvmTypes>, spec_id: SpecId| {
+            evm.set_execution_config(
+                ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id),
+                spec_id,
+                TxRegistry::new(),
+                Precompiles::base(spec_id),
+            );
+        };
+
+        evm.set_shared_interpreter_runner(Arc::new(SpecBoundRunner {
+            spec_id: SpecId::PRAGUE,
+            initial_call_depth: 0,
+            calls: Arc::clone(&calls),
+        }));
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 0));
+
+        set_spec(&mut evm, SpecId::PRAGUE);
+        assert_eq!(run(&mut evm), (InstrStop::Return, 1));
+
+        set_spec(&mut evm, SpecId::OSAKA);
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 1));
+
+        set_spec(&mut evm, SpecId::PRAGUE);
+        assert_eq!(run(&mut evm), (InstrStop::Return, 2));
+
+        let mut version = *Version::base(SpecId::PRAGUE);
+        version.initial_call_depth = 1;
+        evm.set_block_and_execution_config_within_spec(
+            BlockEnvExt::default(),
+            ExecutionConfig::for_spec_and_version(SpecId::PRAGUE, version),
+        );
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 2));
+
+        evm.set_block_and_execution_config_within_spec(
+            BlockEnvExt::default(),
+            ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::PRAGUE),
+        );
+        assert_eq!(run(&mut evm), (InstrStop::Return, 3));
+
+        let runner = evm.clear_interpreter_runner().unwrap();
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 3));
+
+        evm.set_shared_interpreter_runner(runner);
+        assert_eq!(run(&mut evm), (InstrStop::Return, 4));
     }
 
     #[test]
@@ -3591,7 +3809,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
         assert!(result.stop.is_success());
     }
 
@@ -3656,7 +3874,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
+        let result = Host::execute_message(&mut evm, &mut message);
 
         let ExecutionError::Database(error) = result.unwrap_err() else {
             panic!("expected database error")
@@ -3665,10 +3883,7 @@ mod tests {
         assert!(error.downcast_ref::<FailingDbError>().is_some());
         assert_eq!(error.to_string(), "storage read failed");
         message.code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-        assert_eq!(
-            Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap().stop,
-            InstrStop::Stop
-        );
+        assert_eq!(Host::execute_message(&mut evm, &mut message).unwrap().stop, InstrStop::Stop);
     }
 
     #[test]
@@ -3693,7 +3908,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
         assert!(!evm.state.storage(&contract).unwrap().is_warm(&key));
@@ -3775,7 +3990,7 @@ mod tests {
             code: selfdestruct_to_code(&target),
             ..MessageExt::default()
         };
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
         assert_eq!(target_reads.load(Ordering::SeqCst), 0);
@@ -3805,7 +4020,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
@@ -3857,7 +4072,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
         assert_eq!(result.stop, InstrStop::OutOfGas);
         assert!(result.output.is_empty());
 
@@ -3899,7 +4114,7 @@ mod tests {
             code,
             ..MessageExt::default()
         };
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::CreateContractStartingWithEF);
         assert!(result.output.is_empty());
@@ -3934,7 +4149,7 @@ mod tests {
             code,
             ..MessageExt::default()
         };
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::CreateContractSizeLimit);
         assert!(result.output.is_empty());
@@ -3961,7 +4176,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
@@ -3996,7 +4211,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
@@ -4062,7 +4277,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
         assert!(result.stop.is_success());
 
         let version = *evm.version();
@@ -4108,12 +4323,11 @@ mod tests {
         assert!(info.is_empty_code_hash());
 
         let pending = state.take_pending_state();
-        assert!(pending.accounts.contains_key(&contract), "account change recorded");
-        assert!(pending.selfdestructs.contains(&contract));
+        assert!(pending.accounts[&contract].flags.contains(AccountFlags::DESTROYED));
     }
 
     #[test]
-    fn commit_transaction_clears_detached_selfdestructs() {
+    fn commit_transaction_clears_detached_destroyed_flag() {
         let contract = Address::from([0x44; 20]);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let mut database = InMemoryDB::default();
@@ -4707,7 +4921,7 @@ mod tests {
                         code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
                         ..MessageExt::default()
                     };
-                    Host::execute_message(req.host, &TxEnvExt::default(), &mut message)?;
+                    Host::execute_message(req.host, &mut message)?;
                     Ok(TxResultExt::default())
                 },
             ),
@@ -4825,7 +5039,7 @@ mod tests {
                         code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
                         ..MessageExt::default()
                     };
-                    Host::execute_message(req.host, &TxEnvExt::default(), &mut message)?;
+                    Host::execute_message(req.host, &mut message)?;
                     Ok(TxResultExt::default())
                 },
             ),
@@ -4838,27 +5052,6 @@ mod tests {
 
         assert!(result.is_err());
         assert!(evm.logs().is_empty());
-    }
-
-    #[cfg(feature = "async")]
-    #[test]
-    #[should_panic(expected = "async EVM execution cannot run with a borrowed inspector")]
-    fn transact_with_inspector_rejects_nested_async_send() {
-        let mut evm = scoped_inspector_evm();
-        evm.registry.register(
-            TEST_TX_TYPE,
-            TxEnvelope::as_legacy,
-            handler(
-                |_| Ok(()),
-                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
-                    drop(req.host.transact_async_send(&test_tx(1)));
-                    Ok(TxResultExt::default())
-                },
-            ),
-        );
-        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
-
-        let _ = evm.transact_with_inspector(&test_tx(0), &mut CallCounter::default());
     }
 
     #[test]

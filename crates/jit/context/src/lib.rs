@@ -26,6 +26,16 @@ mod arch;
 use arch::evm2_jit_entry;
 pub use arch::evm2_jit_exit;
 
+/// Returns `true` if compiled code can run the interpreter's frame.
+///
+/// Compiled code keeps the remaining gas in a signed counter, so a frame with more than
+/// `i64::MAX` gas must run on the interpreter. Check this before calling
+/// [`EvmCompilerFn::call_with_interpreter`] or [`EvmCompilerFn::call`].
+#[inline]
+pub const fn can_run_compiled<T: EvmTypesHost>(interpreter: &Interpreter<'_, '_, T>) -> bool {
+    interpreter.gas().remaining() <= i64::MAX as u64
+}
+
 /// The EVM bytecode compiler runtime context.
 ///
 /// This is a simple wrapper around the interpreter's resources, allowing the compiled function to
@@ -64,8 +74,8 @@ pub struct EvmContext<'ctx, 'frame, 'host, T: EvmTypesHost = BaseEvmTypes> {
 
     /// The host's block environment, cached for block opcodes.
     pub block_env: NonNull<BlockEnv<T>>,
-    /// The transaction environment, cached for transaction opcodes.
-    pub tx_env: &'frame TxEnv<T>,
+    /// The host's transaction environment, cached for transaction opcodes.
+    pub tx_env: NonNull<TxEnv<T>>,
 
     _marker: PhantomData<&'ctx mut Interpreter<'frame, 'host, T>>,
 }
@@ -96,7 +106,7 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
         let interpreter_ptr = ptr::from_mut(&mut *interpreter);
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
         let block_env = NonNull::from(interpreter.host().block_env());
-        let tx_env = interpreter.tx_env();
+        let tx_env = NonNull::from(interpreter.host().tx_env());
         let message = interpreter.message();
         let gas = interpreter.gas();
         let calldatasize = message.input.len();
@@ -180,10 +190,10 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
         unsafe { self.block_env.as_ref() }
     }
 
-    /// Returns the transaction-global environment.
+    /// Returns the current transaction environment.
     #[inline]
-    pub const fn tx_env(&self) -> &'frame TxEnv<T> {
-        self.tx_env
+    pub const fn tx_env(&self) -> &TxEnv<T> {
+        unsafe { self.tx_env.as_ref() }
     }
 
     /// Returns active runtime version data.
@@ -342,7 +352,7 @@ impl EvmCompilerFn {
     /// # Safety
     ///
     /// The caller must ensure that the function is safe to call for this interpreter state, and
-    /// that the remaining gas is at most `i64::MAX`.
+    /// that [`can_run_compiled`] holds.
     #[inline]
     pub unsafe fn call_with_interpreter<'ctx, 'frame, 'host, T: EvmTypesHost>(
         self,
@@ -370,7 +380,7 @@ impl EvmCompilerFn {
     /// # Safety
     ///
     /// The caller must ensure that the arguments are valid, that the function is safe to call, and
-    /// that the remaining gas is at most `i64::MAX`.
+    /// that [`can_run_compiled`] holds.
     #[inline]
     pub unsafe fn call<T: EvmTypesHost>(
         self,
@@ -831,7 +841,7 @@ mod tests {
     use evm2::{
         DatabaseError, Evm, ExecutionError, InterpreterRunner,
         bytecode::Bytecode,
-        env::{BlockEnvExt, TxEnvExt},
+        env::BlockEnvExt,
         evm::{EmptyDB, precompile::NoPrecompiles},
         interpreter::MessageExt,
         registry::TxRegistry,
@@ -864,7 +874,6 @@ mod tests {
                 .interpreter_mut()
                 .fail(DatabaseError::new(core::fmt::Error, false))
         }
-        let tx = TxEnvExt::default();
         let mut message = MessageExt {
             gas_limit: 30_000,
             code: Bytecode::new_legacy(Bytes::from_static(&[0x00])),
@@ -878,12 +887,12 @@ mod tests {
             NoPrecompiles::default(),
         );
         host.set_interpreter_runner(TestRunner(EvmCompilerFn::new(fail)));
-        let error = host.execute_message(&tx, &mut message).unwrap_err();
+        let error = host.execute_message(&mut message).unwrap_err();
         let ExecutionError::Database(error) = error else { panic!("expected database error") };
         assert!(!error.is_fatal());
         assert!(error.downcast_ref::<core::fmt::Error>().is_some());
         host.set_interpreter_runner(TestRunner(EvmCompilerFn::new(__test_fn)));
-        assert_eq!(host.execute_message(&tx, &mut message).unwrap().stop, InstrStop::Stop);
+        assert_eq!(host.execute_message(&mut message).unwrap().stop, InstrStop::Stop);
     }
 
     #[test]

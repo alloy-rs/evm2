@@ -1,6 +1,6 @@
 //! Transaction-scoped persistent storage overlay.
 
-use super::{DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
+use super::{DbResult, JournalEntry, StateInner, Tracked};
 use crate::{LoadError, interpreter::Word};
 use alloy_primitives::{
     Address,
@@ -23,24 +23,6 @@ pub struct StorageOverlay {
 }
 
 impl StorageOverlay {
-    /// Applies an isolated execution's slots, retaining parent originals and combining warmth.
-    #[cfg(test)]
-    pub(crate) fn merge_isolated(&mut self, child: Self) {
-        self.wiped |= child.wiped;
-        for (key, slot) in child.slots {
-            match self.slots.entry(key) {
-                hash_map::Entry::Vacant(entry) => {
-                    entry.insert(slot);
-                }
-                hash_map::Entry::Occupied(mut entry) => {
-                    let parent = entry.get_mut();
-                    parent.value.current = slot.value.current;
-                    parent.is_warm |= slot.is_warm;
-                }
-            }
-        }
-    }
-
     /// Returns the changed storage slots.
     ///
     /// A slot is changed when its current value differs from its transaction-boundary original,
@@ -107,8 +89,9 @@ pub struct StorageHandle<'a, 'db> {
     address: &'a Address,
     /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
     storage: &'a mut StorageOverlay,
-    /// Whether the account was created in this transaction, so its unloaded slots read as zero.
-    created: bool,
+    /// Whether the account's creation discarded its old storage, so its unloaded slots read as
+    /// zero.
+    discards_storage: bool,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner<'db>,
@@ -121,10 +104,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub(crate) const fn new(
         address: &'a Address,
         storage: &'a mut StorageOverlay,
-        created: bool,
+        discards_storage: bool,
         inner: &'a mut StateInner<'db>,
     ) -> Self {
-        Self { address, storage, created, inner }
+        Self { address, storage, discards_storage, inner }
     }
 
     /// Returns the account address.
@@ -216,7 +199,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         key: Word,
         skip_cold_load: bool,
     ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
-        let Self { address, storage, created, inner } = self;
+        let Self { address, storage, discards_storage, inner } = self;
         let (slot, is_cold) = match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded slot has no cold database read to skip, so the skip only
@@ -239,13 +222,8 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && !is_warm {
                     return Err(LoadError::ColdLoadSkipped);
                 }
-                // Like revm, an unloaded slot of a created account reads zero without a database
-                // read, since the creation discards the address's old storage.
-                let value = if storage.wiped || created {
-                    Word::ZERO
-                } else {
-                    inner.database.get_storage(address, &key)?
-                };
+                let value =
+                    inner.read_unloaded_slot(address, &key, storage.wiped || discards_storage)?;
                 (entry.insert(StorageSlot::loaded(value, is_warm)), !is_warm)
             }
         };
@@ -260,10 +238,11 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     ///
     /// Only called during transaction finalization (selfdestruct and EIP-161 dead-account
     /// deletion), after the last revertible scope, so the wipe is not journaled. Loaded slot
-    /// entries are kept with their values reset to zero: wiped slots resolve to zero on re-load,
-    /// and resetting `original` alongside `current` turns the transaction's prior writes into
-    /// unchanged reads, which keeps a destroyed account's storage accesses visible to the EIP-7928
-    /// block access list (execution-specs `destroy_storage` converts writes to reads).
+    /// entries are kept with their `current` value reset to zero and their `original` value kept:
+    /// wiped slots resolve to zero on re-load, and the reset turns the transaction's prior writes
+    /// into unchanged reads of the slot's original value, which keeps a destroyed account's storage
+    /// accesses visible to the EIP-7928 block access list (execution-specs `destroy_storage`
+    /// converts writes to reads).
     #[inline]
     pub fn wipe(&mut self) {
         self.storage.wiped = true;
@@ -397,10 +376,12 @@ mod tests {
         SpecId, Version,
         evm::{
             CacheDB,
+            bal::{AccountBal, Bal, BalChanges, BalError, BlockAccessIndex},
             state::{AccountInfo, State},
         },
     };
-    use alloc::vec;
+    use alloc::{sync::Arc, vec};
+    use alloy_eip7928::StorageChange;
     use alloy_primitives::Address;
 
     #[test]
@@ -610,5 +591,39 @@ mod tests {
         let mut slot = state.storage_slot(&address, key).unwrap();
         assert!(slot.is_warm());
         assert!(!slot.warm(), "base-prewarmed slot must not report a cold transition");
+    }
+
+    #[test]
+    fn created_account_slot_reads_keep_strict_bal_coverage() {
+        let creator = Address::with_last_byte(0x50);
+        let address = Address::with_last_byte(0x51);
+        let (covered, uncovered) = (Word::from(7), Word::from(9));
+        let mut account = AccountBal::default();
+        account.storage.storage.insert(
+            covered,
+            BalChanges::new(vec![StorageChange::new(BlockAccessIndex::new(1), Word::from(42))]),
+        );
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
+        database.insert_account_storage(&address, &uncovered, &Word::from(20));
+        let mut state = State::new(database);
+        state.set_bal(Arc::new(Bal::from_iter([(address, account)])));
+        state.set_bal_index(BlockAccessIndex::new(2));
+        let version = Version::base(SpecId::LONDON);
+        state.create_account(&creator, &address, &Word::ZERO, version.features).unwrap().unwrap();
+
+        // The created account reads zero, but a slot missing from the BAL is still invalid.
+        let error = state.storage_slot(&address, uncovered).unwrap_err();
+        assert!(error.downcast_ref::<BalError>().is_some());
+        let error = state.storage_slot_untracked(&address, &uncovered).unwrap_err();
+        assert!(error.downcast_ref::<BalError>().is_some());
+        assert!(!state.accounts[&address].storage.slots.contains_key(&uncovered));
+
+        assert_eq!(state.storage_slot(&address, covered).unwrap().current(), Word::ZERO);
+        assert_eq!(state.storage_slot_untracked(&address, &covered).unwrap(), Word::ZERO);
+
+        // With database fallback enabled, an uncovered slot is allowed and still reads zero.
+        state.set_allow_bal_db_fallback(true);
+        assert_eq!(state.storage_slot(&address, uncovered).unwrap().current(), Word::ZERO);
     }
 }

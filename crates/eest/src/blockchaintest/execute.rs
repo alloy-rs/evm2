@@ -5,8 +5,8 @@ use super::{
         TransactionFinished, TransactionStarted,
     },
     types::{
-        Account, Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, Transaction,
-        Withdrawal,
+        Account, BlobFork, BlobScheduleEntry, Block, BlockHeader, BlockchainTest,
+        BlockchainTestCase, ForkSpec, Transaction, Withdrawal,
     },
 };
 #[cfg(feature = "jit")]
@@ -20,12 +20,23 @@ use crate::{
     forks::is_fork_skipped,
     state::{insert_account_with_storage, parse_bytecode},
     trace::{self, Eip3155Tracer},
-    tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
+    tx::{
+        TxFields, TxSigner, build_recovered_tx, rpc_access_list, signature_from_vrs,
+        signed_authorizations,
+    },
 };
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
-use alloy_eips::{eip2718::Typed2718, eip7840::BlobParams};
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
+use alloy_eips::{
+    eip2718::Typed2718,
+    eip4844::DATA_GAS_PER_BLOB,
+    eip6110::{DEPOSIT_REQUEST_TYPE, MAINNET_DEPOSIT_CONTRACT_ADDRESS},
+    eip7002::WITHDRAWAL_REQUEST_TYPE,
+    eip7251::CONSOLIDATION_REQUEST_TYPE,
+    eip7685::Requests,
+    eip7840::BlobParams,
+};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, U256, aliases::U512, b256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
@@ -41,19 +52,44 @@ use evm2::{
 };
 #[cfg(feature = "jit")]
 use std::path::PathBuf;
-use std::{mem, path::Path};
+use std::{collections::BTreeMap, mem, path::Path};
 
 pub use crate::execution::ExecutionMode;
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 
+/// EIP-7934 maximum RLP-encoded block size: `MAX_BLOCK_SIZE` (10 MiB) minus `SAFETY_MARGIN`
+/// (2 MiB).
+const MAX_RLP_BLOCK_SIZE: usize = 10 * 1024 * 1024 - 2 * 1024 * 1024;
+
+/// First topic of the deposit contract's `DepositEvent`.
+const DEPOSIT_EVENT_SIGNATURE_HASH: B256 =
+    b256!("0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5");
+
+/// ABI layout of a `DepositEvent` payload: the offset of each dynamic field's length word and
+/// the field's size, in the order the consensus layer consumes them (public key, withdrawal
+/// credentials, amount, signature, index).
+const DEPOSIT_EVENT_FIELDS: [(usize, usize); 5] =
+    [(160, 48), (256, 32), (320, 8), (384, 96), (512, 8)];
+
+/// Length of an ABI-encoded `DepositEvent` payload.
+const DEPOSIT_EVENT_LENGTH: usize = 576;
+
+/// EIP-8282 builder deposit request type.
+const BUILDER_DEPOSIT_REQUEST_TYPE: u8 = 0x03;
+
+/// EIP-8282 builder exit request type.
+const BUILDER_EXIT_REQUEST_TYPE: u8 = 0x04;
+
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug)]
 pub struct ExecuteConfig {
-    /// Whether to validate the full final-state allocation when fixtures contain `postState`.
-    /// Unexpected live accounts and non-zero storage are rejected.
-    pub validate_post_state: bool,
+    /// Whether to run the harness checks that are not part of execution: comparing the final
+    /// state with the fixture's `postState` (unexpected live accounts and non-zero storage are
+    /// rejected) and recovering each sender from its signature. When false, the runner trusts
+    /// the fixture's `sender`.
+    pub validate: bool,
     /// Whether to recompute each committed block's state root and compare it to
     /// the block header's `stateRoot`.
     pub compare_state_root: bool,
@@ -80,7 +116,7 @@ pub struct ExecuteConfig {
 impl Default for ExecuteConfig {
     fn default() -> Self {
         Self {
-            validate_post_state: true,
+            validate: true,
             compare_state_root: false,
             compare_receipt_root: false,
             trace: false,
@@ -210,8 +246,7 @@ fn execute_suite_with_resources(
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in &suite.0 {
         if !test_filter.matches(name)
-            || test_case.network.is_transition()
-            || is_blockchain_fork_skipped(fork_to_spec_id(test_case.network))
+            || fork_schedule(test_case.network).is_some_and(|schedule| schedule.is_skipped())
         {
             summary.skipped += 1;
             continue;
@@ -261,18 +296,18 @@ fn execute_case(
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
 ) -> Result<Option<B256>, TestError> {
-    let spec = fork_to_spec_id(test_case.network);
+    let schedule = case_schedule(path, name, test_case)?;
+    let spec = schedule.initial.spec;
     let mut parent_block_hash = Some(test_case.genesis_block_header.hash);
-    let mut parent_excess_blob_gas =
-        test_case.genesis_block_header.excess_blob_gas.unwrap_or_default().saturating_to::<u64>();
-    let mut block_env =
-        block_env_from_header(&test_case.genesis_block_header, parent_excess_blob_gas, spec);
+    let mut parent_header = &test_case.genesis_block_header;
+    let mut block_env = block_env_from_header(parent_header, &schedule)
+        .map_err(|err| TestError::case(path, name, err))?;
     let total_blocks = test_case.blocks.len();
     let mut db_stats_counts = DbStatsCounts::default();
     // `evm2 capture` keeps only the accounts the blocks touch and zeroes the genesis state
     // root, so its blocks' state roots can't be reproduced. Receipt roots still check them.
-    let compare_state_root =
-        config.compare_state_root && !test_case.genesis_block_header.state_root.is_zero();
+    let captured = test_case.genesis_block_header.state_root.is_zero();
+    let compare_state_root = config.compare_state_root && !captured;
 
     hook.case_started(CaseStarted { name, total_blocks, network: test_case.network });
 
@@ -280,6 +315,8 @@ fn execute_case(
         let block_number = block_number(block);
         let block_gas_used = block_gas_used(block);
         let total_transactions = block_transactions(block).len();
+        let spec = block_header(block)
+            .map_or(spec, |header| schedule.spec_at(header.number, header.timestamp));
         hook.block_started(BlockStarted {
             block_index,
             total_blocks,
@@ -295,14 +332,17 @@ fn execute_case(
             block_number,
             total_transactions,
             block,
+            &schedule,
             spec,
             database,
             &mut block_env,
             &mut parent_block_hash,
-            &mut parent_excess_blob_gas,
+            &mut parent_header,
+            captured,
             hook,
             resources,
             config.trace,
+            config.validate,
             compare_state_root,
             config.compare_receipt_root,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
@@ -340,7 +380,7 @@ fn execute_case(
         ));
     }
 
-    if config.validate_post_state
+    if config.validate
         && let Some(expected) = &test_case.post_state
     {
         validate_post_state(database, expected).map_err(|err| TestError::case(path, name, err))?;
@@ -374,22 +414,25 @@ enum BlockResolution {
 }
 
 #[expect(clippy::too_many_arguments)]
-fn execute_block(
+fn execute_block<'a>(
     path: &Path,
     name: &str,
     block_index: usize,
     total_blocks: usize,
     block_number: Option<U256>,
     total_transactions: usize,
-    block: &Block,
+    block: &'a Block,
+    schedule: &ForkSchedule,
     spec: SpecId,
     database: &mut InMemoryDB,
     block_env: &mut BlockEnv,
     parent_block_hash: &mut Option<B256>,
-    parent_excess_blob_gas: &mut u64,
+    parent_header: &mut &'a BlockHeader,
+    captured: bool,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
     trace: bool,
+    validate: bool,
     compare_state_root: bool,
     compare_receipt_root: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
@@ -412,16 +455,35 @@ fn execute_block(
 
     let mut block_hash = None;
     let mut beacon_root = None;
-    let mut this_excess_blob_gas = None;
     let mut expected_state_root = None;
+    let mut blob_params = None;
 
     let mut next_block_env = *block_env;
     if let Some(header) = block_header(block) {
         block_hash = Some(header.hash);
         beacon_root = header.parent_beacon_block_root;
-        next_block_env = block_env_from_header(header, *parent_excess_blob_gas, spec);
-        this_excess_blob_gas = header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>());
+        next_block_env = block_env_from_header(header, schedule)
+            .map_err(|err| TestError::case(path, name, err))?;
+        blob_params = schedule
+            .blob_params(header.number, header.timestamp)
+            .map_err(|err| TestError::case(path, name, err))?;
         expected_state_root = Some(header.state_root);
+    }
+    // The blob checks multiply the blob counts by the blob gas, which must not overflow.
+    if let Some(params) = &blob_params
+        && (params.max_blob_count == 0
+            || params.max_blob_count < params.target_blob_count
+            || params.max_blob_count.checked_mul(DATA_GAS_PER_BLOB).is_none())
+    {
+        return Err(TestError::case(
+            path,
+            name,
+            TestErrorKind::UnexpectedFailure(format!(
+                "invalid blob schedule: max {} and target {} must satisfy target <= max, max > 0, and \
+                 fit in blob gas",
+                params.max_blob_count, params.target_blob_count
+            )),
+        ));
     }
 
     let initial_database = mem::take(database);
@@ -476,6 +538,15 @@ fn execute_block(
             ));
         }
 
+        // A captured case's genesis header is the first block's own header, not its parent's.
+        let parent = (!(captured && block_index == 0)).then_some(*parent_header);
+        if let Some(header) = block_header(block)
+            && let Err(reason) =
+                validate_block_header(block, header, parent, blob_params.as_ref(), spec)
+        {
+            return reject_block(should_fail, path, name, reason);
+        }
+
         if let Err(err) = pre_block_system_calls(
             &mut evm,
             &mut block_state,
@@ -497,7 +568,10 @@ fn execute_block(
         let mut cumulative_tx_gas_used = 0u64;
         let mut block_execution_gas_used = 0u64;
         let mut block_state_gas_used = 0u64;
+        let mut block_blob_gas_used = 0u64;
         let mut receipts = Vec::with_capacity(transactions.len());
+        let mut requests = Requests::default();
+        let mut deposit_requests = Vec::new();
         for (transaction_index, raw_tx) in transactions.iter().enumerate() {
             hook.transaction_started(TransactionStarted {
                 block_index,
@@ -506,7 +580,7 @@ fn execute_block(
                 transaction_index,
                 total_transactions,
             });
-            let tx = match build_tx(raw_tx) {
+            let tx = match build_tx(raw_tx, spec, validate) {
                 Ok(tx) => tx,
                 Err(_err) if should_fail => {
                     return Ok(BlockResolution::Discard);
@@ -524,32 +598,56 @@ fn execute_block(
                 }
             };
 
-            // EIP-8037: per-dimension block-level inclusion check (execution-specs
-            // `process_transaction`). A transaction is only includable when its gas limit --
+            // Block-level inclusion check (execution-specs `check_transaction`): the transaction's
+            // gas limit must fit the block gas remaining, and its blobs the block blob gas
+            // remaining. Under EIP-8037 (Amsterdam+) the gas limit is checked per dimension:
             // capped by the EIP-7825 limit on the execution dimension, uncapped on the state
-            // dimension -- still fits the block gas remaining on both dimensions.
-            if spec.enables(SpecId::AMSTERDAM)
-                && let Some(header) = block_header(block)
-            {
+            // dimension.
+            if let Some(header) = block_header(block) {
                 let block_gas_limit = header.gas_limit.saturating_to::<u64>();
                 let tx_gas_limit = tx.gas_limit();
-                let execution_gas_available =
-                    block_gas_limit.saturating_sub(block_execution_gas_used);
-                let state_gas_available = block_gas_limit.saturating_sub(block_state_gas_used);
-                if tx_gas_limit.min(evm.version().tx_gas_limit_cap) > execution_gas_available
+                let (execution_gas_used, state_gas_used, execution_gas_limit) =
+                    if spec.enables(SpecId::AMSTERDAM) {
+                        (
+                            block_execution_gas_used,
+                            block_state_gas_used,
+                            tx_gas_limit.min(evm.version().tx_gas_limit_cap),
+                        )
+                    } else {
+                        (cumulative_tx_gas_used, cumulative_tx_gas_used, tx_gas_limit)
+                    };
+                let execution_gas_available = block_gas_limit.saturating_sub(execution_gas_used);
+                let state_gas_available = block_gas_limit.saturating_sub(state_gas_used);
+                if execution_gas_limit > execution_gas_available
                     || tx_gas_limit > state_gas_available
                 {
-                    if should_fail {
-                        return Ok(BlockResolution::Discard);
-                    }
-                    return Err(TestError::case(
+                    return reject_block(
+                        should_fail,
                         path,
                         name,
-                        TestErrorKind::UnexpectedFailure(format!(
+                        format!(
                             "transaction gas limit {tx_gas_limit} exceeds available block gas \
                              (execution {execution_gas_available}, state {state_gas_available})"
-                        )),
-                    ));
+                        ),
+                    );
+                }
+
+                if let Some(blob_params) = &blob_params {
+                    let blob_gas = blob_gas_used(raw_tx);
+                    let blob_gas_available =
+                        blob_params.max_blob_gas_per_block().saturating_sub(block_blob_gas_used);
+                    if blob_gas > blob_gas_available {
+                        return reject_block(
+                            should_fail,
+                            path,
+                            name,
+                            format!(
+                                "transaction blob gas {blob_gas} exceeds available block blob \
+                                 gas {blob_gas_available}"
+                            ),
+                        );
+                    }
+                    block_blob_gas_used += blob_gas;
                 }
             }
 
@@ -577,6 +675,12 @@ fn execute_block(
                         success: result.status,
                         logs: &result.logs,
                     });
+                    if spec.enables(SpecId::PRAGUE)
+                        && let Err(reason) =
+                            collect_deposit_requests(&result.logs, &mut deposit_requests)
+                    {
+                        return reject_block(should_fail, path, name, reason);
+                    }
                     if compare_receipt_root {
                         let status = if spec.enables(SpecId::BYZANTIUM) {
                             Eip658Value::Eip658(result.status)
@@ -641,6 +745,21 @@ fn execute_block(
             }
         }
 
+        if spec.enables(SpecId::CANCUN)
+            && let Some(header) = block_header(block)
+            && header.blob_gas_used != Some(U256::from(block_blob_gas_used))
+        {
+            return reject_block(
+                should_fail,
+                path,
+                name,
+                format!(
+                    "block blob gas used mismatch: header {:?}, computed {block_blob_gas_used}",
+                    header.blob_gas_used
+                ),
+            );
+        }
+
         if compare_receipt_root && let Some(header) = block_header(block) {
             let got = alloy_consensus::proofs::calculate_receipt_root(&receipts);
             if got != header.receipt_trie {
@@ -660,6 +779,7 @@ fn execute_block(
             evm.state_mut().bump_bal_index();
         }
 
+        requests.push_request_with_type(DEPOSIT_REQUEST_TYPE, deposit_requests);
         if let Err(err) = post_block_transition(
             &mut evm,
             &mut block_state,
@@ -667,6 +787,8 @@ fn execute_block(
             next_block_env,
             block_ommers(block),
             block_withdrawals(block),
+            captured,
+            &mut requests,
         ) {
             // A failed post-block system call (e.g. SYSTEM_CONTRACT_CALL_FAILED) invalidates the
             // block, mirroring execution-specs raising `InvalidBlock`.
@@ -674,6 +796,23 @@ fn execute_block(
                 return Ok(BlockResolution::Discard);
             }
             return Err(TestError::case(path, name, err));
+        }
+
+        if spec.enables(SpecId::PRAGUE)
+            && let Some(header) = block_header(block)
+        {
+            let computed = requests.requests_hash();
+            if header.requests_hash != Some(computed) {
+                return reject_block(
+                    should_fail,
+                    path,
+                    name,
+                    format!(
+                        "requests hash mismatch: header {:?}, computed {computed}",
+                        header.requests_hash
+                    ),
+                );
+            }
         }
 
         if let Some(expected_bal) = block_access_list(block) {
@@ -726,8 +865,8 @@ fn execute_block(
             *database = restored_database;
             *block_env = next_block_env;
             *parent_block_hash = block_hash;
-            if let Some(excess_blob_gas) = this_excess_blob_gas {
-                *parent_excess_blob_gas = excess_blob_gas;
+            if let Some(header) = block_header(block) {
+                *parent_header = header;
             }
             if trace || compare_state_root {
                 let got = state_root_from_database(database);
@@ -831,6 +970,127 @@ fn block_ommers(block: &Block) -> &[BlockHeader] {
     block.rlp_decoded.as_ref().map(|decoded| decoded.uncle_headers.as_slice()).unwrap_or_default()
 }
 
+/// Block-level validity checks that execution-specs performs before executing the transactions:
+/// the EIP-7934 block RLP size limit and the EIP-4844 header blob fields.
+fn validate_block_header(
+    block: &Block,
+    header: &BlockHeader,
+    parent: Option<&BlockHeader>,
+    blob_params: Option<&BlobParams>,
+    spec: SpecId,
+) -> Result<(), String> {
+    if spec.enables(SpecId::OSAKA) && block.rlp.len() > MAX_RLP_BLOCK_SIZE {
+        return Err(format!(
+            "block RLP size {} exceeds the limit {MAX_RLP_BLOCK_SIZE}",
+            block.rlp.len()
+        ));
+    }
+
+    // The blob parameters are `None` before Cancun.
+    let Some(blob_params) = blob_params else {
+        if header.excess_blob_gas.is_some() || header.blob_gas_used.is_some() {
+            return Err("pre-Cancun block header carries blob gas fields".to_string());
+        }
+        return Ok(());
+    };
+
+    if header.blob_gas_used.is_none() {
+        return Err("block header is missing blobGasUsed".to_string());
+    }
+    let Some(parent) = parent else { return Ok(()) };
+    let parent_excess = parent.excess_blob_gas.unwrap_or_default();
+    let parent_used = parent.blob_gas_used.unwrap_or_default();
+    // Reject parent values whose sum the excess blob gas formula cannot add without overflow.
+    if parent_excess.saturating_add(parent_used) > U256::from(u64::MAX) {
+        return Err(format!(
+            "parent blob gas fields out of range: excess {parent_excess}, used {parent_used}"
+        ));
+    }
+    let parent_base_fee = parent.base_fee_per_gas.unwrap_or_default();
+    let expected_excess_blob_gas =
+        next_excess_blob_gas(blob_params, parent_excess.to(), parent_used.to(), parent_base_fee);
+    if header.excess_blob_gas != Some(U256::from(expected_excess_blob_gas)) {
+        return Err(format!(
+            "excess blob gas mismatch: header {:?}, expected {expected_excess_blob_gas}",
+            header.excess_blob_gas
+        ));
+    }
+    Ok(())
+}
+
+/// Returns the excess blob gas of the block after a parent with these values (execution-specs
+/// `calculate_excess_blob_gas`, with the EIP-7918 reserve price from Osaka). Unlike
+/// [`BlobParams::next_block_excess_blob_gas_osaka`], the reserve price comparison takes a base
+/// fee of any width.
+fn next_excess_blob_gas(
+    params: &BlobParams,
+    parent_excess: u64,
+    parent_used: u64,
+    parent_base_fee: U256,
+) -> u64 {
+    let excess = parent_excess + parent_used;
+    let target = params.target_blob_gas_per_block();
+    if excess < target {
+        return 0;
+    }
+    if reserve_price_exceeds_blob_price(params, parent_excess, parent_base_fee) {
+        // The scaled blob gas is at most `parent_used`, so the sum stays below `u64::MAX`.
+        let scaled_used = u128::from(parent_used)
+            * u128::from(params.max_blob_count - params.target_blob_count)
+            / u128::from(params.max_blob_count);
+        parent_excess + scaled_used as u64
+    } else {
+        excess - target
+    }
+}
+
+/// Returns whether `blob_base_cost * base_fee > DATA_GAS_PER_BLOB * blob_price` for the blob price
+/// at this excess blob gas, in unbounded integer arithmetic like execution-specs. The blob price
+/// is the EIP-4844 `fake_exponential` sum, which this stops accumulating once it reaches the
+/// reserve price, so every product stays far below the 512-bit limit.
+fn reserve_price_exceeds_blob_price(
+    params: &BlobParams,
+    excess_blob_gas: u64,
+    base_fee: U256,
+) -> bool {
+    let reserve_price = U512::from(params.blob_base_cost) * U512::from(base_fee);
+    let denominator = U512::from(params.update_fraction);
+    let numerator = U512::from(excess_blob_gas);
+    let gas_per_blob = U512::from(DATA_GAS_PER_BLOB);
+    let mut term = U512::from(params.min_blob_fee) * denominator;
+    let mut sum = U512::ZERO;
+    let mut index = U512::ONE;
+    while !term.is_zero() {
+        sum += term;
+        if gas_per_blob * (sum / denominator) >= reserve_price {
+            return false;
+        }
+        term = term * numerator / (denominator * index);
+        index += U512::ONE;
+    }
+    reserve_price > gas_per_blob * (sum / denominator)
+}
+
+/// Resolves an invalid block: it is discarded when the fixture expects an exception, and a test
+/// failure otherwise.
+fn reject_block(
+    should_fail: bool,
+    path: &Path,
+    name: &str,
+    reason: String,
+) -> Result<BlockResolution, TestError> {
+    if should_fail {
+        Ok(BlockResolution::Discard)
+    } else {
+        Err(TestError::case(path, name, TestErrorKind::UnexpectedFailure(reason)))
+    }
+}
+
+/// Returns the blob gas a transaction consumes (EIP-4844).
+const fn blob_gas_used(tx: &Transaction) -> u64 {
+    tx.blob_versioned_hashes.len() as u64 * DATA_GAS_PER_BLOB
+}
+
 fn pre_block_system_calls(
     evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
@@ -851,6 +1111,7 @@ fn pre_block_system_calls(
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(root.as_slice()),
             "eip4788",
+            SystemCallCheck::None,
         )?;
     }
     if spec.enables(SpecId::PRAGUE)
@@ -862,11 +1123,13 @@ fn pre_block_system_calls(
             HISTORY_STORAGE_ADDRESS,
             Bytes::copy_from_slice(hash.as_slice()),
             "eip2935",
+            SystemCallCheck::None,
         )?;
     }
     Ok(())
 }
 
+#[expect(clippy::too_many_arguments)]
 fn post_block_transition(
     evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
@@ -874,7 +1137,11 @@ fn post_block_transition(
     block: BlockEnv,
     ommers: &[BlockHeader],
     withdrawals: &[Withdrawal],
+    captured: bool,
+    requests: &mut Requests,
 ) -> Result<(), TestErrorKind> {
+    // A captured case keeps only the accounts its blocks touch, so the system contracts are absent.
+    let check = if captured { SystemCallCheck::Outcome } else { SystemCallCheck::OutcomeAndCode };
     let reward = block_reward(spec, ommers.len());
     if reward != 0 {
         increment_balance(evm, block_state, block.beneficiary, U256::from(reward))?;
@@ -910,34 +1177,60 @@ fn post_block_transition(
     }
 
     if spec.enables(SpecId::PRAGUE) {
-        run_system_call(evm, block_state, WITHDRAWAL_REQUEST_ADDRESS, Bytes::new(), "eip7002")?;
-        run_system_call(
+        let output = run_system_call(
+            evm,
+            block_state,
+            WITHDRAWAL_REQUEST_ADDRESS,
+            Bytes::new(),
+            "eip7002",
+            check,
+        )?;
+        requests.push_request_with_type(WITHDRAWAL_REQUEST_TYPE, output);
+        let output = run_system_call(
             evm,
             block_state,
             evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7251",
+            check,
         )?;
+        requests.push_request_with_type(CONSOLIDATION_REQUEST_TYPE, output);
     }
 
     // EIP-8282: builder deposit (request type 0x03) and builder exit (0x04) requests, Amsterdam+.
     if spec.enables(SpecId::AMSTERDAM) {
-        run_system_call(
+        let output = run_system_call(
             evm,
             block_state,
             evm2::evm::BUILDER_DEPOSIT_REQUEST_ADDRESS,
             Bytes::new(),
             "eip8282_deposit",
+            check,
         )?;
-        run_system_call(
+        requests.push_request_with_type(BUILDER_DEPOSIT_REQUEST_TYPE, output);
+        let output = run_system_call(
             evm,
             block_state,
             evm2::evm::BUILDER_EXIT_REQUEST_ADDRESS,
             Bytes::new(),
             "eip8282_exit",
+            check,
         )?;
+        requests.push_request_with_type(BUILDER_EXIT_REQUEST_TYPE, output);
     }
     Ok(())
+}
+
+/// What a system call must satisfy for the block to be valid.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SystemCallCheck {
+    /// The call may fail (EIP-4788, EIP-2935).
+    None,
+    /// The call must succeed.
+    Outcome,
+    /// The target must have code, and the call must succeed (execution-specs
+    /// `process_checked_system_transaction`).
+    OutcomeAndCode,
 }
 
 fn run_system_call(
@@ -946,20 +1239,64 @@ fn run_system_call(
     address: Address,
     data: Bytes,
     label: &'static str,
-) -> Result<(), TestErrorKind> {
+    check: SystemCallCheck,
+) -> Result<Bytes, TestErrorKind> {
+    // A checked call to a target without code is an invalid block (execution-specs
+    // `SYSTEM_CONTRACT_EMPTY`); the EVM itself treats it as a successful no-op.
+    if check == SystemCallCheck::OutcomeAndCode {
+        let info = evm
+            .read_account_info(&address)
+            .map_err(|code| TestErrorKind::UnexpectedFailure(code.to_string()))?;
+        if info.is_none_or(|info| info.is_empty_code_hash()) {
+            return Err(TestErrorKind::UnexpectedFailure(format!(
+                "{label} system contract has no code"
+            )));
+        }
+    }
     let executed = evm.system_call(SystemTx::new(address, data))?;
     if !executed.result().status {
-        let _ = executed.discard();
-        let has_code = match evm.read_account_info(&address) {
-            Ok(info) => info.is_some_and(|info| !info.is_empty_code_hash()),
-            Err(code) => return Err(TestErrorKind::UnexpectedFailure(code.to_string())),
-        };
-        if has_code {
-            return Err(TestErrorKind::SystemCall(label));
+        // A failed unchecked call keeps the state accesses it recorded, which a BAL lists as reads.
+        if check == SystemCallCheck::None {
+            let _ = executed.commit_to(block_state);
+            return Ok(Bytes::new());
         }
-        return Ok(());
+        let _ = executed.discard();
+        return Err(TestErrorKind::SystemCall(label));
     }
-    let _ = executed.commit_to(block_state);
+    Ok(executed.commit_to(block_state).output)
+}
+
+/// Appends the unframed fields of every deposit event in `logs` to `deposit_requests`
+/// (execution-specs `parse_deposit_requests`).
+fn collect_deposit_requests(logs: &[Log], deposit_requests: &mut Vec<u8>) -> Result<(), String> {
+    for log in logs {
+        if log.address == MAINNET_DEPOSIT_CONTRACT_ADDRESS
+            && log.topics().first() == Some(&DEPOSIT_EVENT_SIGNATURE_HASH)
+        {
+            extract_deposit_data(&log.data.data, deposit_requests)?;
+        }
+    }
+    Ok(())
+}
+
+/// Strips the ABI framing from a `DepositEvent` payload, appending the fields to `out`
+/// (execution-specs `extract_deposit_data`).
+fn extract_deposit_data(data: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
+    if data.len() != DEPOSIT_EVENT_LENGTH {
+        return Err("invalid deposit event data length".to_string());
+    }
+    let word = |offset: usize| U256::from_be_slice(&data[offset..offset + 32]);
+    for (index, (offset, _)) in DEPOSIT_EVENT_FIELDS.into_iter().enumerate() {
+        if word(index * 32) != U256::from(offset) {
+            return Err(format!("invalid offset for deposit field {index}"));
+        }
+    }
+    for (index, (offset, size)) in DEPOSIT_EVENT_FIELDS.into_iter().enumerate() {
+        if word(offset) != U256::from(size) {
+            return Err(format!("invalid size for deposit field {index}"));
+        }
+        out.extend_from_slice(&data[offset + 32..offset + 32 + size]);
+    }
     Ok(())
 }
 
@@ -1018,10 +1355,15 @@ fn parse_state(
     Ok(database)
 }
 
-fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecId) -> BlockEnv {
-    let excess_blob_gas =
-        header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>()).unwrap_or(excess_blob_gas);
-    BlockEnvExt {
+fn block_env_from_header(
+    header: &BlockHeader,
+    schedule: &ForkSchedule,
+) -> Result<BlockEnv, TestErrorKind> {
+    let excess_blob_gas = header.excess_blob_gas.unwrap_or_default().saturating_to::<u64>();
+    let blob_basefee = schedule
+        .blob_params(header.number, header.timestamp)?
+        .map_or(U256::ONE, |params| U256::from(params.calc_blob_fee(excess_blob_gas)));
+    Ok(BlockEnvExt {
         number: header.number,
         beneficiary: header.coinbase,
         timestamp: header.timestamp,
@@ -1033,54 +1375,57 @@ fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecI
         } else {
             U256::ZERO
         },
-        blob_basefee: U256::from(
-            blob_params_for_timestamp(header.timestamp, spec).calc_blob_fee(excess_blob_gas),
-        ),
+        blob_basefee,
         slot_num: header.slot_number.unwrap_or_default(),
         ext: (),
         _non_exhaustive: (),
-    }
+    })
 }
 
-fn blob_params_for_timestamp(timestamp: U256, spec: SpecId) -> BlobParams {
-    const MAINNET_BPO1_TIMESTAMP: u64 = 1_765_290_071;
-    const MAINNET_BPO2_TIMESTAMP: u64 = 1_767_747_671;
-
-    if spec.enables(SpecId::AMSTERDAM) || timestamp.to::<u64>() >= MAINNET_BPO2_TIMESTAMP {
-        BlobParams::bpo2()
-    } else if timestamp.to::<u64>() >= MAINNET_BPO1_TIMESTAMP {
-        BlobParams::bpo1()
-    } else if spec.enables(SpecId::OSAKA) {
-        BlobParams::osaka()
-    } else if spec.enables(SpecId::PRAGUE) {
-        BlobParams::prague()
-    } else {
-        BlobParams::cancun()
-    }
-}
-
-fn build_tx(raw: &Transaction) -> Result<RecoveredTxEnvelope, TestErrorKind> {
-    let caller = raw.sender.ok_or(TestErrorKind::MissingSender)?;
+fn build_tx(
+    raw: &Transaction,
+    spec: SpecId,
+    validate: bool,
+) -> Result<RecoveredTxEnvelope, TestErrorKind> {
     let gas_limit = raw.gas_limit.try_into().map_err(|_| TestErrorKind::Overflow("gasLimit"))?;
     let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
+    let tx_type = raw.tx_type();
+    let (signer, chain_id) = if validate {
+        let (signature, legacy_chain_id) =
+            signature_from_vrs(raw.r, raw.s, raw.v, tx_type == 0, spec)?;
+        // A legacy transaction signs its chain ID through `v`, so `v` decides it.
+        let chain_id = if tx_type == 0 { legacy_chain_id.map(U256::from) } else { raw.chain_id };
+        (TxSigner::Signature { signature, spec }, chain_id)
+    } else {
+        (TxSigner::Fixture(raw.sender.ok_or(TestErrorKind::MissingSender)?), raw.chain_id)
+    };
 
-    Ok(build_recovered_tx(TxFields {
-        tx_type: Some(raw.tx_type()),
-        caller,
-        kind: raw.kind(),
-        data: raw.data.clone(),
-        gas_limit,
-        nonce,
-        value: raw.value,
-        chain_id: raw.chain_id,
-        gas_price: raw.gas_price,
-        max_fee_per_gas: raw.max_fee_per_gas,
-        max_priority_fee_per_gas: raw.max_priority_fee_per_gas,
-        access_list: access_list(raw)?,
-        authorization_list: signed_authorizations(raw.authorization_list.as_deref())?,
-        blob_versioned_hashes: raw.blob_versioned_hashes.clone(),
-        max_fee_per_blob_gas: raw.max_fee_per_blob_gas,
-    })?)
+    let tx = build_recovered_tx(
+        TxFields {
+            tx_type: Some(tx_type),
+            kind: raw.kind(),
+            data: raw.data.clone(),
+            gas_limit,
+            nonce,
+            value: raw.value,
+            chain_id,
+            gas_price: raw.gas_price,
+            max_fee_per_gas: raw.max_fee_per_gas,
+            max_priority_fee_per_gas: raw.max_priority_fee_per_gas,
+            access_list: access_list(raw)?,
+            authorization_list: signed_authorizations(raw.authorization_list.as_deref())?,
+            blob_versioned_hashes: raw.blob_versioned_hashes.clone(),
+            max_fee_per_blob_gas: raw.max_fee_per_blob_gas,
+        },
+        signer,
+    )?;
+    if validate
+        && let Some(expected) = raw.sender
+        && expected != tx.signer()
+    {
+        return Err(TestErrorKind::SenderMismatch { recovered: tx.signer(), expected });
+    }
+    Ok(tx)
 }
 
 fn access_list(raw: &Transaction) -> Result<Option<RpcAccessList>, TestErrorKind> {
@@ -1340,57 +1685,324 @@ fn is_blockchain_fork_skipped(spec: SpecId) -> bool {
     is_fork_skipped(spec)
 }
 
-fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
-    match fork {
-        ForkSpec::Frontier => SpecId::FRONTIER,
-        ForkSpec::Homestead => SpecId::HOMESTEAD,
-        ForkSpec::EIP150 => SpecId::TANGERINE,
-        ForkSpec::EIP158 => SpecId::SPURIOUS_DRAGON,
-        ForkSpec::Byzantium => SpecId::BYZANTIUM,
-        ForkSpec::Constantinople | ForkSpec::ConstantinopleFix => SpecId::PETERSBURG,
-        ForkSpec::Istanbul => SpecId::ISTANBUL,
-        ForkSpec::Berlin => SpecId::BERLIN,
-        ForkSpec::London => SpecId::LONDON,
-        ForkSpec::Paris
-        | ForkSpec::MergeEOF
-        | ForkSpec::MergeMeterInitCode
-        | ForkSpec::MergePush0 => SpecId::MERGE,
-        ForkSpec::Shanghai => SpecId::SHANGHAI,
-        ForkSpec::Cancun => SpecId::CANCUN,
-        ForkSpec::Prague => SpecId::PRAGUE,
-        ForkSpec::Osaka => SpecId::OSAKA,
-        ForkSpec::Amsterdam => SpecId::AMSTERDAM,
-        ForkSpec::FrontierToHomesteadAt5
-        | ForkSpec::HomesteadToDaoAt5
-        | ForkSpec::HomesteadToEIP150At5
-        | ForkSpec::EIP158ToByzantiumAt5
-        | ForkSpec::ByzantiumToConstantinopleAt5
-        | ForkSpec::ByzantiumToConstantinopleFixAt5
-        | ForkSpec::BerlinToLondonAt5
-        | ForkSpec::ParisToShanghaiAtTime15k
-        | ForkSpec::ShanghaiToCancunAtTime15k
-        | ForkSpec::CancunToPragueAtTime15k
-        | ForkSpec::PragueToOsakaAtTime15k
-        | ForkSpec::OsakaToBPO1AtTime15k
-        | ForkSpec::BPO1ToBPO2AtTime15k
-        | ForkSpec::BPO2ToBPO3AtTime15k
-        | ForkSpec::BPO3ToBPO4AtTime15k
-        | ForkSpec::BPO2ToAmsterdamAtTime15k => unreachable!("transition forks are skipped"),
+/// The specs a fork runs, in order.
+struct ForkSchedule {
+    initial: ForkStage,
+    /// The stage that a transition fork switches to, and when.
+    transition: Option<(Activation, ForkStage)>,
+    /// The test's blob parameters by fork.
+    blob_schedule: BTreeMap<BlobFork, BlobScheduleEntry>,
+}
+
+/// What is active between two transitions: a spec, and the fork that sets the blob parameters.
+#[derive(Clone, Copy)]
+struct ForkStage {
+    spec: SpecId,
+    /// `None` before Cancun.
+    blob_fork: Option<BlobFork>,
+}
+
+/// When a transition fork activates.
+#[derive(Clone, Copy)]
+enum Activation {
+    Block(u64),
+    Timestamp(u64),
+}
+
+impl ForkStage {
+    /// A stage whose blob fork is the latest one the spec enables.
+    const fn new(spec: SpecId) -> Self {
+        let blob_fork = if spec.enables(SpecId::AMSTERDAM) {
+            Some(BlobFork::Amsterdam)
+        } else if spec.enables(SpecId::OSAKA) {
+            Some(BlobFork::Osaka)
+        } else if spec.enables(SpecId::PRAGUE) {
+            Some(BlobFork::Prague)
+        } else if spec.enables(SpecId::CANCUN) {
+            Some(BlobFork::Cancun)
+        } else {
+            None
+        };
+        Self { spec, blob_fork }
     }
+
+    /// A stage of a blob parameters only fork, which keeps the Osaka spec.
+    const fn bpo(blob_fork: BlobFork) -> Self {
+        Self { spec: SpecId::OSAKA, blob_fork: Some(blob_fork) }
+    }
+}
+
+impl ForkSchedule {
+    const fn fixed(spec: SpecId) -> Self {
+        Self::new(ForkStage::new(spec), None)
+    }
+
+    const fn transition(initial: SpecId, activation: Activation, spec: SpecId) -> Self {
+        Self::new(ForkStage::new(initial), Some((activation, ForkStage::new(spec))))
+    }
+
+    const fn new(initial: ForkStage, transition: Option<(Activation, ForkStage)>) -> Self {
+        Self { initial, transition, blob_schedule: BTreeMap::new() }
+    }
+
+    /// Returns the stage of the block with this number and timestamp.
+    fn stage_at(&self, number: U256, timestamp: U256) -> ForkStage {
+        match self.transition {
+            Some((Activation::Block(at), stage)) if number >= U256::from(at) => stage,
+            Some((Activation::Timestamp(at), stage)) if timestamp >= U256::from(at) => stage,
+            _ => self.initial,
+        }
+    }
+
+    /// Returns the spec of the block with this number and timestamp.
+    fn spec_at(&self, number: U256, timestamp: U256) -> SpecId {
+        self.stage_at(number, timestamp).spec
+    }
+
+    /// Returns the blob parameters of the block with this number and timestamp, or `None` before
+    /// Cancun.
+    fn blob_params(
+        &self,
+        number: U256,
+        timestamp: U256,
+    ) -> Result<Option<BlobParams>, TestErrorKind> {
+        let stage = self.stage_at(number, timestamp);
+        let Some(blob_fork) = stage.blob_fork else { return Ok(None) };
+        let entry = self
+            .blob_schedule
+            .get(&blob_fork)
+            .ok_or(TestErrorKind::MissingBlobSchedule(blob_fork))?;
+        if entry.base_fee_update_fraction.is_zero() {
+            return Err(TestErrorKind::ZeroBlobUpdateFraction(blob_fork));
+        }
+        Ok(Some(entry.params(stage.spec)))
+    }
+
+    /// Returns whether any spec of the fork is skipped.
+    fn is_skipped(&self) -> bool {
+        is_blockchain_fork_skipped(self.initial.spec)
+            || self.transition.is_some_and(|(_, stage)| is_blockchain_fork_skipped(stage.spec))
+    }
+}
+
+/// Returns the fork schedule of a test case, with the blob parameters from its `config`.
+fn case_schedule(
+    path: &Path,
+    name: &str,
+    test_case: &BlockchainTestCase,
+) -> Result<ForkSchedule, TestError> {
+    let mut schedule = fork_schedule(test_case.network).ok_or_else(|| {
+        TestError::case(path, name, TestErrorKind::UnsupportedFork(test_case.network))
+    })?;
+    if let Some(config) = &test_case.config {
+        schedule.blob_schedule.clone_from(&config.blob_schedule);
+    }
+    Ok(schedule)
+}
+
+/// Returns the blob parameters of the block with this header in a test case, or `None` before
+/// Cancun.
+///
+/// The parameters come from the case's `config.blobSchedule`, and the fork that is active at the
+/// header's number and timestamp.
+pub fn blob_params(
+    path: &Path,
+    name: &str,
+    test_case: &BlockchainTestCase,
+    header: &BlockHeader,
+) -> Result<Option<BlobParams>, TestError> {
+    case_schedule(path, name, test_case)?
+        .blob_params(header.number, header.timestamp)
+        .map_err(|err| TestError::case(path, name, err))
+}
+
+/// Returns the specs of a fork, or `None` for the DAO fork, which the runner does not support.
+const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
+    use Activation::{Block, Timestamp};
+    const AT_5: Activation = Block(5);
+    const AT_15K: Activation = Timestamp(15_000);
+
+    Some(match fork {
+        ForkSpec::BPO1 => ForkSchedule::new(ForkStage::bpo(BlobFork::Bpo1), None),
+        ForkSpec::BPO2 => ForkSchedule::new(ForkStage::bpo(BlobFork::Bpo2), None),
+        ForkSpec::FrontierToHomesteadAt5 => {
+            ForkSchedule::transition(SpecId::FRONTIER, AT_5, SpecId::HOMESTEAD)
+        }
+        ForkSpec::HomesteadToEIP150At5 => {
+            ForkSchedule::transition(SpecId::HOMESTEAD, AT_5, SpecId::TANGERINE)
+        }
+        ForkSpec::EIP158ToByzantiumAt5 => {
+            ForkSchedule::transition(SpecId::SPURIOUS_DRAGON, AT_5, SpecId::BYZANTIUM)
+        }
+        ForkSpec::ByzantiumToConstantinopleAt5 | ForkSpec::ByzantiumToConstantinopleFixAt5 => {
+            ForkSchedule::transition(SpecId::BYZANTIUM, AT_5, SpecId::PETERSBURG)
+        }
+        ForkSpec::BerlinToLondonAt5 => {
+            ForkSchedule::transition(SpecId::BERLIN, AT_5, SpecId::LONDON)
+        }
+        ForkSpec::ParisToShanghaiAtTime15k => {
+            ForkSchedule::transition(SpecId::MERGE, AT_15K, SpecId::SHANGHAI)
+        }
+        ForkSpec::ShanghaiToCancunAtTime15k => {
+            ForkSchedule::transition(SpecId::SHANGHAI, AT_15K, SpecId::CANCUN)
+        }
+        ForkSpec::CancunToPragueAtTime15k => {
+            ForkSchedule::transition(SpecId::CANCUN, AT_15K, SpecId::PRAGUE)
+        }
+        ForkSpec::PragueToOsakaAtTime15k => {
+            ForkSchedule::transition(SpecId::PRAGUE, AT_15K, SpecId::OSAKA)
+        }
+        ForkSpec::OsakaToBPO1AtTime15k => ForkSchedule::new(
+            ForkStage::new(SpecId::OSAKA),
+            Some((AT_15K, ForkStage::bpo(BlobFork::Bpo1))),
+        ),
+        ForkSpec::BPO1ToBPO2AtTime15k => ForkSchedule::new(
+            ForkStage::bpo(BlobFork::Bpo1),
+            Some((AT_15K, ForkStage::bpo(BlobFork::Bpo2))),
+        ),
+        ForkSpec::BPO2ToBPO3AtTime15k => ForkSchedule::new(
+            ForkStage::bpo(BlobFork::Bpo2),
+            Some((AT_15K, ForkStage::bpo(BlobFork::Bpo3))),
+        ),
+        ForkSpec::BPO3ToBPO4AtTime15k => ForkSchedule::new(
+            ForkStage::bpo(BlobFork::Bpo3),
+            Some((AT_15K, ForkStage::bpo(BlobFork::Bpo4))),
+        ),
+        ForkSpec::BPO2ToAmsterdamAtTime15k => ForkSchedule::new(
+            ForkStage::bpo(BlobFork::Bpo2),
+            Some((AT_15K, ForkStage::new(SpecId::AMSTERDAM))),
+        ),
+        fixed => match fixed.to_spec_id() {
+            Some(spec) => ForkSchedule::fixed(spec),
+            None => return None,
+        },
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        super::types::{SealEngine, State},
+        super::types::{ChainConfig, SealEngine, State},
         *,
     };
-    #[cfg(feature = "jit")]
-    use evm2::interpreter::op;
+    use alloy_eips::eip7840::BLOB_BASE_COST;
     use std::collections::BTreeMap;
 
     #[cfg(feature = "jit")]
+    use crate::tx::recover_address;
+    #[cfg(feature = "jit")]
+    use alloy_consensus::{SignableTransaction, TxLegacy, crypto::secp256k1};
+    #[cfg(feature = "jit")]
+    use alloy_primitives::{TxKind, to_eip155_v};
+    #[cfg(feature = "jit")]
+    use evm2::interpreter::op;
+
+    #[cfg(feature = "jit")]
     const BYTECODE_STORE42: &[u8] = &[op::PUSH1, 0x42, op::PUSH0, op::SSTORE, op::STOP];
+
+    fn cancun_config() -> ChainConfig {
+        ChainConfig {
+            chainid: U256::ONE,
+            blob_schedule: BTreeMap::from([(
+                BlobFork::Cancun,
+                BlobScheduleEntry::from(BlobParams::cancun()),
+            )]),
+        }
+    }
+
+    fn test_case(network: ForkSpec, config: Option<ChainConfig>) -> BlockchainTestCase {
+        BlockchainTestCase {
+            genesis_block_header: BlockHeader::default(),
+            genesis_rlp: None,
+            blocks: Vec::new(),
+            post_state: None,
+            pre: State(BTreeMap::new()),
+            block_hashes: Vec::new(),
+            lastblockhash: B256::ZERO,
+            network,
+            seal_engine: SealEngine::NoProof,
+            config,
+        }
+    }
+
+    #[test]
+    fn blob_params_switch_at_the_transition_fork() {
+        let config = ChainConfig {
+            chainid: U256::ONE,
+            blob_schedule: BTreeMap::from([
+                (BlobFork::Bpo1, BlobScheduleEntry::from(BlobParams::bpo1())),
+                (BlobFork::Bpo2, BlobScheduleEntry::from(BlobParams::bpo2())),
+            ]),
+        };
+        let case = test_case(ForkSpec::BPO1ToBPO2AtTime15k, Some(config));
+        let blob_params = |timestamp| {
+            let header = BlockHeader { timestamp: U256::from(timestamp), ..Default::default() };
+            blob_params(Path::new("test.json"), "test", &case, &header).unwrap().unwrap()
+        };
+        assert_eq!(blob_params(14_999).update_fraction, BlobParams::bpo1().update_fraction);
+        assert_eq!(blob_params(15_000).update_fraction, BlobParams::bpo2().update_fraction);
+    }
+
+    #[test]
+    fn blob_params_carry_the_reserve_price_from_osaka() {
+        let config = |fork, entry| ChainConfig {
+            chainid: U256::ONE,
+            blob_schedule: BTreeMap::from([(fork, BlobScheduleEntry::from(entry))]),
+        };
+        let header = BlockHeader::default();
+        let osaka_config = config(BlobFork::Osaka, BlobParams::osaka());
+        let osaka = test_case(ForkSpec::Osaka, Some(osaka_config));
+        let params = blob_params(Path::new("test.json"), "test", &osaka, &header);
+        assert_eq!(params.unwrap().unwrap().blob_base_cost, BLOB_BASE_COST);
+        let prague_config = config(BlobFork::Prague, BlobParams::prague());
+        let prague = test_case(ForkSpec::Prague, Some(prague_config));
+        let params = blob_params(Path::new("test.json"), "test", &prague, &header);
+        assert_eq!(params.unwrap().unwrap().blob_base_cost, 0);
+    }
+
+    #[test]
+    fn blob_params_require_a_schedule_entry_from_cancun() {
+        let case = test_case(ForkSpec::Cancun, None);
+        let err = blob_params(Path::new("test.json"), "test", &case, &BlockHeader::default())
+            .unwrap_err();
+        assert!(matches!(err.kind, TestErrorKind::MissingBlobSchedule(BlobFork::Cancun)));
+    }
+
+    #[test]
+    fn blob_params_reject_a_zero_update_fraction() {
+        let config = ChainConfig {
+            chainid: U256::ONE,
+            blob_schedule: BTreeMap::from([(
+                BlobFork::Cancun,
+                BlobScheduleEntry {
+                    target: U256::from(3),
+                    max: U256::from(6),
+                    base_fee_update_fraction: U256::ZERO,
+                },
+            )]),
+        };
+        let case = test_case(ForkSpec::Cancun, Some(config));
+        let err = blob_params(Path::new("test.json"), "test", &case, &BlockHeader::default())
+            .unwrap_err();
+        assert!(matches!(err.kind, TestErrorKind::ZeroBlobUpdateFraction(BlobFork::Cancun)));
+    }
+
+    #[test]
+    fn unsupported_fork_fails_instead_of_skipping() {
+        let suite = BlockchainTest(BTreeMap::from([(
+            "dao".to_string(),
+            test_case(ForkSpec::HomesteadToDaoAt5, None),
+        )]));
+        let err = execute_suite(
+            Path::new("dao.json"),
+            &suite,
+            ExecuteConfig::default(),
+            &NameFilter::default(),
+            &mut NoopHook,
+        )
+        .unwrap_err();
+        assert!(matches!(err.kind, TestErrorKind::UnsupportedFork(ForkSpec::HomesteadToDaoAt5)));
+    }
 
     #[test]
     fn post_state_rejects_omitted_live_accounts() {
@@ -1490,6 +2102,7 @@ mod tests {
                 lastblockhash: B256::ZERO,
                 network: ForkSpec::Paris,
                 seal_engine: SealEngine::NoProof,
+                config: None,
             },
         )]));
         let run = |suite: &BlockchainTest, config| {
@@ -1505,9 +2118,7 @@ mod tests {
         assert!(matches!(err.kind, TestErrorKind::UnexpectedFailure(message)
             if message == format!("unexpected account in post-state: {address}")));
 
-        let summary =
-            run(&suite, ExecuteConfig { validate_post_state: false, ..Default::default() })
-                .unwrap();
+        let summary = run(&suite, ExecuteConfig { validate: false, ..Default::default() }).unwrap();
         assert_eq!(summary.executed, 1);
 
         let case = suite.0.get_mut("omitted-account").unwrap();
@@ -1597,6 +2208,7 @@ mod tests {
                     lastblockhash: block_hash,
                     network: fork,
                     seal_engine: SealEngine::NoProof,
+                    config: None,
                     genesis_rlp: None,
                 },
             )]));
@@ -1641,6 +2253,8 @@ mod tests {
                         number: U256::ONE,
                         gas_limit: U256::from(30_000_000),
                         receipt_trie: B256::ZERO,
+                        excess_blob_gas: Some(U256::ZERO),
+                        blob_gas_used: Some(U256::ZERO),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -1651,6 +2265,7 @@ mod tests {
                 lastblockhash: B256::with_last_byte(2),
                 network: ForkSpec::Cancun,
                 seal_engine: SealEngine::NoProof,
+                config: Some(cancun_config()),
                 genesis_rlp: None,
             },
         )]));
@@ -1669,6 +2284,30 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error.kind, super::TestErrorKind::ReceiptRootMismatch { .. }));
+    }
+
+    #[test]
+    fn next_excess_blob_gas_matches_blob_params_and_keeps_full_width_base_fees() {
+        let params = BlobParams::osaka();
+        for excess in [0, 786_432, 5_000_000, 249_036_800, 400_000_000] {
+            for used in [0, 131_072, 786_432] {
+                for base_fee in [0, 1, 1_000_000_000, u64::MAX] {
+                    assert_eq!(
+                        next_excess_blob_gas(&params, excess, used, U256::from(base_fee)),
+                        params.next_block_excess_blob_gas_osaka(excess, used, base_fee),
+                    );
+                }
+            }
+        }
+
+        // The reserve price, 2^256, exceeds the blob price, so the reserve branch applies.
+        assert_eq!(next_excess_blob_gas(&params, 786_432, 0, U256::ONE << 243), 786_432);
+        // The blob price exceeds `u128`, and 2^145 times it still exceeds this reserve price, so
+        // the target subtraction applies.
+        assert_eq!(
+            next_excess_blob_gas(&params, 1_000_000_000, 786_432, U256::ONE << 140),
+            1_000_000_000,
+        );
     }
 
     #[test]
@@ -1709,6 +2348,7 @@ mod tests {
                 lastblockhash: block_hash,
                 network: ForkSpec::Cancun,
                 seal_engine: SealEngine::NoProof,
+                config: Some(cancun_config()),
                 genesis_rlp: None,
             },
         )]));
@@ -1767,6 +2407,7 @@ mod tests {
                 lastblockhash: genesis_hash,
                 network: ForkSpec::Cancun,
                 seal_engine: SealEngine::NoProof,
+                config: Some(cancun_config()),
                 genesis_rlp: None,
             },
         )]));
@@ -1810,6 +2451,8 @@ mod tests {
                         hash: block_hash,
                         number: U256::ONE,
                         gas_limit: U256::from(30_000_000),
+                        excess_blob_gas: Some(U256::ZERO),
+                        blob_gas_used: Some(U256::ZERO),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -1820,6 +2463,7 @@ mod tests {
                 lastblockhash: genesis_hash,
                 network: ForkSpec::Cancun,
                 seal_engine: SealEngine::NoProof,
+                config: Some(cancun_config()),
                 genesis_rlp: None,
             },
         )]));
@@ -1842,8 +2486,18 @@ mod tests {
 
     #[cfg(feature = "jit")]
     fn execute_simple_storage_block(mode: ExecutionMode) -> ExecuteSummary {
-        let caller = Address::from([0x11; 20]);
+        let secret = B256::with_last_byte(1);
+        let caller = recover_address(secret.as_slice()).unwrap();
         let target = Address::from([0x22; 20]);
+        let unsigned = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 100_000,
+            to: TxKind::Call(target),
+            ..Default::default()
+        };
+        let signature = secp256k1::sign_message(secret, unsigned.signature_hash()).unwrap();
         let genesis_hash = B256::with_last_byte(1);
         let block_hash = B256::with_last_byte(2);
         let mut pre = BTreeMap::new();
@@ -1908,6 +2562,8 @@ mod tests {
                         gas_used: U256::from(43_105),
                         base_fee_per_gas: Some(U256::ZERO),
                         timestamp: U256::ONE,
+                        excess_blob_gas: Some(U256::ZERO),
+                        blob_gas_used: Some(U256::ZERO),
                         ..BlockHeader::default()
                     }),
                     transactions: Some(vec![Transaction {
@@ -1917,9 +2573,9 @@ mod tests {
                         gas_limit: U256::from(100_000),
                         gas_price: Some(U256::ZERO),
                         nonce: U256::ZERO,
-                        r: U256::ZERO,
-                        s: U256::ZERO,
-                        v: U256::ZERO,
+                        r: signature.r(),
+                        s: signature.s(),
+                        v: U256::from(to_eip155_v(signature.v() as u8, 1)),
                         value: U256::ZERO,
                         to: Some(target),
                         chain_id: Some(U256::ONE),
@@ -1939,6 +2595,7 @@ mod tests {
                 lastblockhash: block_hash,
                 network: ForkSpec::Cancun,
                 seal_engine: SealEngine::NoProof,
+                config: Some(cancun_config()),
             },
         )]));
         let input = serde_json::to_string(&suite).unwrap();
@@ -1946,7 +2603,7 @@ mod tests {
         execute_str(
             Path::new("simple-storage.json"),
             &input,
-            ExecuteConfig { validate_post_state: true, mode, ..ExecuteConfig::default() },
+            ExecuteConfig { validate: true, mode, ..ExecuteConfig::default() },
             &NameFilter::default(),
             &mut hook,
         )

@@ -65,6 +65,14 @@ pub enum HandlerError {
         /// Transaction gas limit.
         got: u64,
     },
+    /// Transaction gas limit is lower than the calldata floor gas (EIP-7623).
+    #[error("gas limit below floor gas: required {required}, got {got}")]
+    GasLimitBelowFloor {
+        /// Required floor gas.
+        required: u64,
+        /// Transaction gas limit.
+        got: u64,
+    },
     /// Sender cannot pay value plus maximum gas cost.
     #[error("lack of funds ({balance}) for max fee ({fee})")]
     InsufficientFunds {
@@ -93,6 +101,19 @@ pub enum HandlerError {
         /// Transaction gas limit.
         gas_limit: u64,
         /// Active transaction gas limit cap.
+        cap: u64,
+    },
+    /// Intrinsic execution gas, or the calldata floor gas if larger, exceeds the active execution
+    /// gas cap (EIP-8037).
+    ///
+    /// Unlike [`TxGasLimitGreaterThanCap`](Self::TxGasLimitGreaterThanCap), the transaction's own
+    /// gas limit is not what exceeds a cap: it may exceed the execution cap, but the gas it must
+    /// spend before execution cannot.
+    #[error("intrinsic gas exceeds cap: required {required}, cap {cap}")]
+    IntrinsicGasGreaterThanCap {
+        /// Required execution gas: the larger of the intrinsic and floor gas.
+        required: u64,
+        /// Active execution gas cap.
         cap: u64,
     },
     /// Create transaction initcode exceeds the active size limit.
@@ -422,7 +443,7 @@ impl<T: EvmTypesHost, Output> TxRegistry<T, Output> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
+        BaseEvmConfigSelector, EvmTypesHost, ExecutionConfig, SpecId,
         env::{BlockEnv, BlockEnvExt, TxEnv},
         evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
         interpreter::{Host, Message, MessageResult, Word},
@@ -489,20 +510,16 @@ mod tests {
             &self.block
         }
 
+        fn tx_env(&mut self) -> &TxEnv<TestTypes> {
+            unimplemented!()
+        }
+
         fn load_account(
             &mut self,
             _address: &Address,
             _load_code: bool,
             _skip_cold_load: bool,
         ) -> Result<AccountLoad, crate::HostError> {
-            unimplemented!()
-        }
-
-        fn target_is_empty_for_new_account_gas(
-            &mut self,
-            _address: &Address,
-            _features: EvmFeatures,
-        ) -> Result<bool, DatabaseError> {
             unimplemented!()
         }
 
@@ -543,7 +560,6 @@ mod tests {
 
         fn execute_message(
             &mut self,
-            _tx_env: &TxEnv<TestTypes>,
             _message: &mut Message<TestTypes>,
         ) -> Result<MessageResult<TestTypes>, crate::ExecutionError> {
             unimplemented!()

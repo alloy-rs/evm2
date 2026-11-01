@@ -35,6 +35,7 @@ pub(crate) struct TestHost {
     pub(crate) spec_id: SpecId,
     pub(crate) execution_config: ExecutionConfig<TestTypes>,
     pub(crate) block: BlockEnv<TestTypes>,
+    pub(crate) tx_env: TxEnv<TestTypes>,
     pub(crate) code_hash: B256,
     pub(crate) code: Bytes,
     pub(crate) exists: bool,
@@ -53,7 +54,7 @@ pub(crate) struct TestHost {
     pub(crate) calls: Vec<Message<TestTypes>>,
     pub(crate) call_static_flags: Vec<bool>,
     pub(crate) selfdestructs: Vec<(Address, Address, bool)>,
-    pub(crate) new_account_checks: Vec<Address>,
+    pub(crate) account_loads: Vec<Address>,
 }
 
 impl Default for TestHost {
@@ -64,6 +65,7 @@ impl Default for TestHost {
                 SpecId::OSAKA,
             ),
             block: BlockEnvExt::default(),
+            tx_env: TxEnvExt::default(),
             code_hash: B256::ZERO,
             code: Bytes::new(),
             exists: true,
@@ -85,7 +87,7 @@ impl Default for TestHost {
             calls: Vec::new(),
             call_static_flags: Vec::new(),
             selfdestructs: Vec::new(),
-            new_account_checks: Vec::new(),
+            account_loads: Vec::new(),
         }
     }
 }
@@ -103,6 +105,10 @@ impl Host<TestTypes> for TestHost {
         &self.block
     }
 
+    fn tx_env(&mut self) -> &TxEnv<TestTypes> {
+        &self.tx_env
+    }
+
     fn load_account(
         &mut self,
         address: &Address,
@@ -112,6 +118,8 @@ impl Host<TestTypes> for TestHost {
         if skip_cold_load && self.is_cold {
             return Err(InstrStop::OutOfGas.into());
         }
+        self.account_loads.push(*address);
+        let features = self.execution_config.version().features;
         Ok(AccountLoad {
             balance: address.into_word().into(),
             nonce: 0,
@@ -121,23 +129,15 @@ impl Host<TestTypes> for TestHost {
             } else {
                 Bytecode::default()
             },
-            exists: self.exists,
             is_empty: self.is_empty,
+            is_empty_for_new_account_gas: if features.contains(EvmFeatures::EIP161) {
+                !self.exists || self.is_empty
+            } else {
+                !self.exists && !self.is_touched
+            },
             is_cold: self.is_cold,
             _non_exhaustive: (),
         })
-    }
-
-    fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> Result<bool, DatabaseError> {
-        self.new_account_checks.push(*address);
-        if features.contains(EvmFeatures::EIP161) {
-            return Ok(!self.exists || self.is_empty);
-        }
-        Ok(!self.exists && !self.is_touched)
     }
 
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError> {
@@ -204,7 +204,6 @@ impl Host<TestTypes> for TestHost {
 
     fn execute_message(
         &mut self,
-        _tx_env: &TxEnv<TestTypes>,
         message: &mut Message<TestTypes>,
     ) -> Result<MessageResult<TestTypes>, crate::ExecutionError> {
         // Mimics the depth limit enforced by the real host.
@@ -341,10 +340,11 @@ impl Default for RunConfig<'_> {
 pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data } = config;
     let message = Message::<TestTypes> { code: legacy_bytecode(code), gas_limit, ..message };
-    let mut inner = Interpreter::<TestTypes>::new(&tx_env, &message);
+    let mut inner = Interpreter::<TestTypes>::new(&message);
     *inner.return_data_mut() = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
+    host.tx_env = tx_env;
     host.spec_id = spec_id;
     host.execution_config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id);
     let (err, execution_error) = match inner.run(host) {

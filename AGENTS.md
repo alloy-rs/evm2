@@ -38,21 +38,21 @@ EVM2_DISPATCH_BACKEND=packed cargo nextest run -p evm2-eest --test eest --ignore
 `./scripts/setup_test_fixtures.py` downloads fixtures into `test-fixtures/`.
 If fixtures are already available in another worktree, symlink `test-fixtures`
 to that directory instead of re-downloading them.
-By default it downloads the glamsterdam (Amsterdam) devnet fixtures plus legacy
-Cancun/Constantinople state tests. The devnet release defaults to
-`tests-glamsterdam-devnet@v8.1.4` / `fixtures_glamsterdam-devnet.tar.gz`
-(from the `ethereum/execution-specs` repo, base overridable via `DEVNET_BASE_URL`);
-override `DEVNET_VERSION` and `DEVNET_TAR` to select a different devnet release, or
-clear either to disable devnet. The glamsterdam devnet fixtures cover
-frontier..amsterdam, so the EEST `main` develop suite is now opt-in via
-`EVM2_STATETEST_MAIN=1` (stable with `EVM2_STATETEST_STABLE=1`). Add
-`EVM2_STATETEST_DEVNET_ONLY=1` to skip legacy fixtures. Use `EVM2_STATETEST_ROOT`
-or `EVM2_BLOCKCHAINTEST_ROOT` for a single explicit root.
+By default it downloads the mainline execution-specs fixtures plus legacy
+Cancun/Constantinople state tests. The release defaults to
+`tests@v21.0.1` / `fixtures.tar.gz` (from the `ethereum/execution-specs` repo,
+base overridable via `EEST_BASE_URL`); override `EEST_VERSION` and `EEST_TAR`
+to select a different release (for example a devnet), or clear either to disable
+it. The release covers frontier..amsterdam, so the EEST `main` develop suite is
+opt-in via `EVM2_STATETEST_MAIN=1` (stable with `EVM2_EEST_STABLE=1`, honored
+by both runners). Add `EVM2_STATETEST_EEST_ONLY=1` to skip legacy fixtures. Use
+`EVM2_STATETEST_ROOT` or `EVM2_BLOCKCHAINTEST_ROOT` for a single explicit root.
 
 Compiled EEST runs use a default subset when the full corpus is too expensive:
 AOT defaults to the `ci-aot` subset, and JIT defaults to the `ci-smoke` subset.
 Set `EVM2_COMPILED_EEST_SUBSET=all` to force full coverage, or set it to
-`ci-aot` or `ci-smoke` to run those subsets explicitly.
+`ci-aot` or `ci-smoke` to run those subsets explicitly. Set
+`EVM2_EEST_SINGLE_THREAD=1` to run compiled files on one worker thread.
 
 To run additional tests from an arbitrary folder (or single file) without a
 test-name filter, use `./scripts/eest.sh <path>`. Every JSON file found anywhere
