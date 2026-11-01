@@ -1,4 +1,4 @@
-use crate::execution::ExecutionResources;
+use crate::{execution::ExecutionResources, fixtures::env_flag};
 use evm2::evm::DbStatsCounts;
 use std::{
     panic::{self, AssertUnwindSafe},
@@ -10,6 +10,9 @@ use std::{
     thread::{self, Builder},
     time::{Duration, Instant},
 };
+
+/// Environment variable forcing compiled EEST runs onto a single worker thread.
+const SINGLE_THREAD_ENV: &str = "EVM2_EEST_SINGLE_THREAD";
 
 const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 
@@ -43,7 +46,7 @@ where
         return Ok(FileSummary::default());
     }
 
-    let num_threads = if std::env::var_os("SINGLE_THREAD").is_some() {
+    let num_threads = if env_flag(SINGLE_THREAD_ENV) {
         1
     } else {
         thread::available_parallelism().map_or(1, |n| n.get().min(n_files))

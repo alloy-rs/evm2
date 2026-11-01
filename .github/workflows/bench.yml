@@ -68,7 +68,7 @@ jobs:
           fi
 
       # The CLI reads fixtures from its source tree, so check out the old code in place and
-      # keep only this ref's benchmark scripts.
+      # keep only this ref's benchmark scripts and the helpers they share.
       - name: Check out backfill commit
         if: inputs.commit != ''
         env:
@@ -83,10 +83,12 @@ jobs:
             sudo .github/scripts/install_llvm_ubuntu.sh "$llvm" dev
           fi
           scripts="$RUNNER_TEMP/jit-scripts"
-          cp -R scripts/jit "$scripts"
+          mkdir "$scripts"
+          cp -R scripts/common.py scripts/jit "$scripts"
           git checkout --quiet --detach "$COMMIT"
           rm -rf scripts/jit
-          cp -R "$scripts" scripts/jit
+          cp -R "$scripts/jit" scripts/jit
+          cp "$scripts/common.py" scripts/common.py
 
       - name: Resolve and download exact baseline
         id: baseline

@@ -1,5 +1,4 @@
 use crate::bytecode::{Bytecode, Inst, InstFlags};
-use alloy_primitives::U256;
 use core::{fmt, ops::Range};
 use evm2::interpreter::op;
 use smallvec::SmallVec;
@@ -24,6 +23,13 @@ impl fmt::Debug for GasSection {
 }
 
 impl GasSection {
+    /// The cost recorded for a section that costs at least this much.
+    ///
+    /// A section's cost is stored in 32 bits, so a larger one saturates here. Section gas is
+    /// charged ahead of the instructions, so a saturated cost would charge too little, and
+    /// [`Bytecode::analyze`] rejects the bytecode instead.
+    pub(crate) const SATURATED: u32 = u32::MAX;
+
     /// Returns `true` if the section is empty.
     #[inline]
     pub(crate) fn is_empty(self) -> bool {
@@ -235,12 +241,9 @@ impl SectionsAnalysis {
             self.gas.process_gas(inst);
         }
 
-        // When EXP's builtin will be skipped — either because both operands are known
-        // (foldable_output) or because the exponent is known and handled by a peephole (≤ 2) —
-        // fold the dynamic gas into the section statically.
+        // The exponent is known, so translation does not charge EXP's dynamic gas.
         if data.opcode == op::EXP
-            && let Some(exponent) = bytecode.const_operand(inst, 1)
-            && (bytecode.foldable_output(inst).is_some() || exponent <= U256::from(2))
+            && let Some(exponent) = bytecode.exp_static_exponent(inst)
         {
             self.gas.process_extra(bytecode.gas_params.exp_cost(exponent));
         }
@@ -473,21 +476,21 @@ mod tests {
         assert_eq!(head.gas_section.gas_cost, 2, "only CALLDATASIZE gas (2) should be charged");
     }
 
-    /// DUPN with an invalid immediate must have stack_io = (0, 0) so that section analysis
-    /// matches translate (which emits `InvalidImmediateEncoding` and diverges).
-    /// Previously, the fallback to OPCODE_INFO's placeholder `(0, 1)` inflated the section's
-    /// cumulative diff, causing translate to underflow the virtual stack on a subsequent SSTORE.
+    /// DUPN with an invalid immediate diverges like a disabled opcode, so the instructions after
+    /// it do not join its section: translate halts with `InvalidImmediateEncoding` before them.
     #[test]
-    fn invalid_dupn_imm_does_not_inflate_section() {
+    fn invalid_dupn_imm_diverges() {
         // PUSH0, DUPN 0x5b (invalid immediate), PUSH0, SSTORE, STOP
-        // Without the fix, DUPN had stack_io=(0,1), inflating the section diff by 1.
-        // Translate would skip the +1 (goto_return!(fail)), then SSTORE's diff=-2 would
-        // underflow the virtual stack.
         let bytecode = analyze_code_spec(
             vec![op::PUSH0, op::DUPN, 0x5b, op::PUSH0, op::SSTORE, op::STOP],
             SpecId::AMSTERDAM,
         );
         let dupn = bytecode.inst(Inst::from_usize(1));
+        assert!(dupn.is_diverging(), "DUPN with invalid immediate must diverge");
         assert_eq!(dupn.stack_io(), (0, 0), "DUPN with invalid immediate must have zero stack I/O");
+
+        // The instructions after it are dead, so they add no stack inputs or gas to a section.
+        let after = bytecode.inst(Inst::from_usize(3));
+        assert!(after.is_dead_code());
     }
 }
