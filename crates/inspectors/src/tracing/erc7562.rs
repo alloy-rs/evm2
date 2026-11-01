@@ -383,6 +383,10 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
         self.budget.halt(interp, true);
     }
 
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        self.calls.step_end(interp);
+    }
+
     fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
         Inspector::<T>::log(&mut self.calls, log, host);
     }

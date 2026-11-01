@@ -8,7 +8,7 @@ use crate::{
             CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
             TraceMemberOrder,
         },
-        utils::{CODE_DEPOSIT_OUT_OF_GAS, fails_before_body, fmt_geth_halt, gas_used},
+        utils::{CODE_DEPOSIT_OUT_OF_GAS, fails_before_body, fmt_geth_halt},
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -912,19 +912,6 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
             tx_index: tx_info.index.map(|idx| idx as usize),
             tx_hash: tx_info.hash,
         }
-    }
-}
-
-/// Returns the key and value of the storage slot an SSTORE is about to write, or the key of the
-/// slot an SLOAD is about to read, with a zero value that `step_end` replaces.
-fn storage_slot(stack: &[U256], op: u8) -> Option<Box<(U256, U256)>> {
-    match op {
-        op::SLOAD => Some(Box::new((*stack.last()?, U256::ZERO))),
-        op::SSTORE => {
-            let [.., value, key] = stack else { return None };
-            Some(Box::new((*key, *value)))
-        }
-        _ => None,
     }
 }
 

@@ -10,7 +10,8 @@ use alloy_primitives::{Bytes, hex};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
-    AccountInfo, EvmTypes, EvmTypesHost, constants::STACK_LIMIT,
+    AccountInfo, EvmTypes, EvmTypesHost,
+    constants::STACK_LIMIT,
     env::BlockEnv,
     evm::{DbResult, DynDatabase},
     interpreter::{
