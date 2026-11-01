@@ -2168,7 +2168,7 @@ fn test_geth_opcode_limit_end_to_end() {
 /// geth emits a child's steps right after the call step that entered it. A zero-value call to an
 /// excluded precompile attaches no child, so it must not take the next call's child.
 #[test]
-fn test_geth_struct_logs_follow_calls_with_excluded_precompiles() {
+fn test_geth_struct_logs_follow_calls_to_precompiles() {
     let account = address!("1000000000000000000000000000000000000001");
     let child = address!("0000000000000000000000000000000000001234");
     let call = |target: [u8; 2]| {
@@ -2194,8 +2194,7 @@ fn test_geth_struct_logs_follow_calls_with_excluded_precompiles() {
                 );
             }
         });
-    let config = TracingInspectorConfig::default_geth().set_exclude_precompile_calls(true);
-    let mut inspector = TracingInspector::new(config);
+    let mut inspector = TracingInspector::new(TracingInspectorConfig::default_geth());
     let mut evm = context.build_mainnet().with_inspector(&mut inspector);
     let res = evm
         .inspect_tx(TxEnv {
