@@ -3,7 +3,7 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::Bytes;
 use alloy_primitives::{B256, TxKind, U256};
 use evm2::{
-    SpecId, Version,
+    SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, TxEnvelope},
@@ -123,12 +123,12 @@ impl Case<'_> {
         db
     }
 
-    pub(crate) fn tx(&self, spec: SpecId) -> RecoveredTxEnvelope {
+    pub(crate) fn tx(&self) -> RecoveredTxEnvelope {
         let raw = &self.unit.transaction;
         let indexes = self.post.indexes;
-        let gas_limit =
-            raw.gas_limit.get(indexes.gas).copied().expect("fixture gas index must exist");
-        let gas_limit = u64_value(gas_limit).min(Version::base(spec).tx_gas_limit_cap);
+        let gas_limit = u64_value(
+            raw.gas_limit.get(indexes.gas).copied().expect("fixture gas index must exist"),
+        );
         let tx = TxLegacy {
             chain_id: None,
             nonce: u64_value(raw.nonce),

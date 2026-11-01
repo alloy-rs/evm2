@@ -62,7 +62,10 @@ pub struct RuntimeConfig {
     /// this lets LLVM DCE the per-failure-site materialization and the failure-block phi.
     /// Successful exits (`STOP`/`RETURN`/`REVERT`) keep their original codes.
     ///
-    /// Useful for benchmarking the cost of failure-result materialization.
+    /// This is a deliberate trade-off: the compiled function reports `OutOfGas` where the
+    /// interpreter reports the real halt reason (for example, an invalid jump). Preserving the
+    /// reasons (`false`) makes the JIT 4.0% larger, compile 10.7% more instructions, and
+    /// execute 3.8% more instructions in total across the benchmarks (`onchain_lm_v2` +4.3%).
     ///
     /// Defaults to `true`.
     pub single_error: bool,
@@ -119,14 +122,19 @@ pub struct RuntimeConfig {
     /// Defaults to `None`.
     pub jit_helper_path: Option<PathBuf>,
 
-    /// Blocking mode: every lookup synchronously JIT-compiles on miss and never
-    /// falls back to the interpreter.
+    /// Blocking mode: every lookup synchronously JIT-compiles on miss.
     ///
     /// When `true`, [`lookup()`](super::JitBackend::lookup) behaves like
     /// [`lookup_blocking()`](super::JitBackend::lookup_blocking): if the
     /// compiled function is not already resident, the calling thread blocks
-    /// until JIT compilation completes. This implies `enabled = true` and
-    /// `jit_hot_threshold = 0`.
+    /// until JIT compilation completes. This implies `enabled = true`,
+    /// `jit_hot_threshold = 0`, and `jit_max_bytecode_len = 0` (no size limit), so every
+    /// non-empty frame is compiled.
+    ///
+    /// A frame still runs on the interpreter when compilation fails, times out
+    /// (`sync_compile_timeout`), is dropped because the pending-job cap or the worker pool is
+    /// full, or the program is evicted before use. Each such frame is counted in
+    /// [`interpreter_fallbacks`](super::RuntimeStatsSnapshot::interpreter_fallbacks).
     ///
     /// Intended for debugging and testing only — not for production use.
     ///
