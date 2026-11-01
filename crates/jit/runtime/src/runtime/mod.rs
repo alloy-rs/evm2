@@ -105,13 +105,9 @@ pub(crate) struct BackendInner {
     enabled: AtomicBool,
     /// Whether the backend thread has been spawned and is draining the command channel.
     started: AtomicBool,
-    /// Blocking mode: every lookup synchronously compiles and never falls back.
+    /// Blocking mode: every lookup synchronously compiles and counts each fallback.
     blocking: bool,
     host: config::HostConfig,
-    /// Key of the last opcode config and spec that matched the host's opcode table.
-    verified_opcodes: std::sync::atomic::AtomicU64,
-    /// Key of the last opcode config and spec that did not match the host's opcode table.
-    rejected_opcodes: std::sync::atomic::AtomicU64,
     gas_params: Option<evm2::version::GasParams>,
     /// Tuning knobs (Copy). Cached for hot-path eligibility checks.
     tuning: crate::runtime::config::RuntimeTuning,
@@ -177,6 +173,7 @@ impl JitBackend {
         if config.blocking {
             config.enabled = true;
             config.tuning.jit_hot_threshold = 0;
+            config.tuning.jit_max_bytecode_len = 0;
         }
         #[cfg(not(unix))]
         if config.jit_mode == JitMode::OutOfProcess {
@@ -209,8 +206,6 @@ impl JitBackend {
                 started: AtomicBool::new(false),
                 blocking: config.blocking,
                 host: config.host.clone(),
-                verified_opcodes: std::sync::atomic::AtomicU64::new(0),
-                rejected_opcodes: std::sync::atomic::AtomicU64::new(0),
                 gas_params: config.gas_params,
                 tx,
                 thread: std::sync::Mutex::new(None),
@@ -223,46 +218,73 @@ impl JitBackend {
         Ok(this)
     }
 
+    /// Counts a frame that ran on the interpreter because the runtime could not run it.
+    pub(crate) fn count_interpreter_fallback(&self) {
+        self.inner.shared.stats.interpreter_fallbacks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Checks that generated code uses the field layout of the interpreter type `T`.
+    #[inline]
+    pub(crate) fn supports_host_type<T: evm2::EvmTypesHost>(&self) -> bool {
+        self.inner.host.type_id == std::any::TypeId::of::<T>()
+    }
+
     /// Checks that generated code matches the interpreter type, gas schedule, and opcode table.
+    ///
+    /// An enabled backend counts a rejection as an interpreter fallback and logs the reason,
+    /// because the caller then runs every frame on the interpreter. Compiled code is not keyed
+    /// by gas schedule, so a host whose schedule differs from the backend's is never compiled
+    /// for.
     pub(crate) fn supports_host<T: evm2::EvmTypesHost>(
         &self,
         config: &evm2::ExecutionConfig<T>,
     ) -> bool {
-        let host = &self.inner.host;
-        host.type_id == std::any::TypeId::of::<T>()
-            && config.version().gas_params
-                == *self
-                    .inner
-                    .gas_params
-                    .as_ref()
-                    .unwrap_or(&evm2::Version::base(config.base_spec_id()).gas_params)
-            && self.opcodes_match(config)
+        let Some(reason) = self.host_mismatch(config) else { return true };
+        if self.enabled() {
+            self.count_interpreter_fallback();
+            warn!(
+                spec_id = ?config.base_spec_id(),
+                reason,
+                "host unsupported, running the interpreter",
+            );
+        }
+        false
+    }
+
+    /// Returns why generated code does not match `config`, or `None` if it does.
+    pub(crate) fn host_mismatch<T: evm2::EvmTypesHost>(
+        &self,
+        config: &evm2::ExecutionConfig<T>,
+    ) -> Option<&'static str> {
+        if !self.supports_host_type::<T>() {
+            return Some("host type differs from the one the backend was built for");
+        }
+        let gas_params = self
+            .inner
+            .gas_params
+            .as_ref()
+            .unwrap_or(&evm2::Version::base(config.base_spec_id()).gas_params);
+        if config.version().gas_params != *gas_params {
+            return Some("gas schedule differs from the one the backend compiles with");
+        }
+        if !self.opcodes_match(config) {
+            return Some("opcode table differs from the one the backend compiles with");
+        }
+        None
     }
 
     /// Checks the active opcode config against the host's opcode table.
     fn opcodes_match<T: evm2::EvmTypesHost>(&self, config: &evm2::ExecutionConfig<T>) -> bool {
-        let active = config.opcode_config();
-        // The verdict depends on the base spec too. Addresses leave the top byte free.
-        let address =
-            active as *const evm2::OpcodeConfig<T> as u64 | (config.base_spec_id() as u64) << 56;
-        if self.inner.verified_opcodes.load(Ordering::Relaxed) == address {
-            return true;
-        }
-        if self.inner.rejected_opcodes.load(Ordering::Relaxed) == address {
-            return false;
-        }
-        let matches = match &self.inner.host.opcodes {
+        match &self.inner.host.opcodes {
             None => config.has_base_opcode_table(),
             Some(opcodes) => {
                 // SAFETY: The caller checked that the host type is `T`, so `opcodes.config` is a
                 // `&'static OpcodeConfig<T>`.
-                active.same_table(unsafe { &*(opcodes.config as *const evm2::OpcodeConfig<T>) })
+                config
+                    .opcode_config()
+                    .same_table(unsafe { &*(opcodes.config as *const evm2::OpcodeConfig<T>) })
             }
-        };
-        let cache =
-            if matches { &self.inner.verified_opcodes } else { &self.inner.rejected_opcodes };
-        cache.store(address, Ordering::Relaxed);
-        matches
+        }
     }
 
     /// Looks up a compiled function for the given request.
@@ -329,8 +351,18 @@ impl JitBackend {
     /// If the function is already compiled, returns it immediately. Otherwise, enqueues
     /// a synchronous JIT compilation request and blocks until the result is available.
     /// Returns [`LookupDecision::Unavailable`] if the bytecode is ineligible for
-    /// compilation (see [`RuntimeTuning::should_compile`]) or compilation fails.
+    /// compilation (see [`RuntimeTuning::should_compile`]) or compilation does not produce a
+    /// resident program. Each such miss is counted in
+    /// [`interpreter_fallbacks`](RuntimeStatsSnapshot::interpreter_fallbacks).
     pub fn lookup_blocking(&self, req: LookupRequest) -> LookupDecision {
+        let decision = self.lookup_blocking_inner(req);
+        if let LookupDecision::Unavailable(_) = decision {
+            self.count_interpreter_fallback();
+        }
+        decision
+    }
+
+    fn lookup_blocking_inner(&self, req: LookupRequest) -> LookupDecision {
         if !self.inner.tuning.should_compile(&req.code) {
             return LookupDecision::Unavailable(LookupMissReason::Ineligible);
         }

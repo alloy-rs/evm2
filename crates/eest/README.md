@@ -25,7 +25,7 @@ Populate it with:
 By default this downloads the mainline execution-specs release fixtures
 (`tests@v21.0.1`, Frontier through Amsterdam) plus the legacy Cancun and
 Constantinople state tests. Set `EVM2_STATETEST_MAIN=1` to also
-download the EEST `main` develop suite (stable with `EVM2_STATETEST_STABLE=1`),
+download the EEST `main` develop suite (stable with `EVM2_EEST_STABLE=1`),
 or `EVM2_STATETEST_EEST_ONLY=1` to skip the legacy fixtures.
 
 The legacy fixtures come from the `ethereum/legacytests` commit that the
@@ -82,6 +82,9 @@ cargo nextest run -p evm2-eest --features jit --test eest \
   --ignore-default-filter blockchain_tests::aot
 ```
 
+Compiled files run on a worker pool inside each test, so nextest's thread count
+does not limit it. Set `EVM2_EEST_SINGLE_THREAD=1` to use one worker thread.
+
 ## State tests
 
 Run all discovered state tests with nextest:
@@ -95,8 +98,8 @@ Cancun and Constantinople state tests, and `main/develop/state_tests` when the
 `main` suite has been downloaded. EEST develop includes the stable fixtures, so
 stable is not run separately.
 
-Set `EVM2_STATETEST_STABLE=1` to download and run EEST stable fixtures instead
-of develop.
+Set `EVM2_EEST_STABLE=1` to download and run EEST stable fixtures instead of
+develop. Both runners and the setup script read it.
 
 ## Blockchain tests
 
@@ -110,9 +113,6 @@ This runs every downloaded blockchain-test root: `eest/blockchain_tests`,
 plus `main/develop/blockchain_tests` when the `main` suite has been downloaded.
 Transition forks are skipped. Blocks with a `blockAccessList` build the block
 access list and check it against the fixture, including the header hash.
-
-Set `EVM2_BLOCKCHAINTEST_STABLE=1` or `EVM2_EEST_STABLE=1` to use EEST stable
-instead of develop for main blockchain fixtures.
 
 ## Filtering
 
@@ -151,8 +151,8 @@ cargo nextest list -p evm2-eest --test eest --ignore-default-filter
 ```
 
 For local experiments, `EVM2_STATETEST_ROOT`, `EVM2_BLOCKCHAINTEST_ROOT`,
-`EVM2_STATETEST_STABLE`, `EVM2_BLOCKCHAINTEST_STABLE`, `EVM2_EEST_STABLE`,
-`EVM2_TEST_FIXTURES`, and `SUBDIR` are supported as optional filters.
+`EVM2_EEST_STABLE`, `EVM2_TEST_FIXTURES`, and `SUBDIR` are supported as optional
+filters.
 
 No hardforks are skipped by default. Set `EVM2_SKIP_FORKS` to a
 comma-separated list of hardfork names (for example
