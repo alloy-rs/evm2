@@ -115,6 +115,11 @@ pub struct CallTrace {
     /// determine it, such as the stack length of a stack underflow.
     #[cfg_attr(feature = "serde", serde(default))]
     pub geth_error: Option<String>,
+    /// The halt that [`geth_error`](Self::geth_error) was formatted for.
+    ///
+    /// The error is dropped when the final result of the call differs from it.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) geth_error_stop: Option<InstrStop>,
     /// Opcode-level execution steps.
     pub steps: Vec<CallTraceStep>,
     /// The deltas recorded for [`Self::steps`], in step order.

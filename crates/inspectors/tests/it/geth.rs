@@ -16,10 +16,11 @@ use alloy_rpc_types_trace::geth::{
     PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, ExecutionConfig, Precompiles, Version,
+    AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, ExecutionConfig, Inspector,
+    Precompiles, Version,
     ethereum::ethereum_tx_registry,
     evm::{DbResult, DynDatabase},
-    interpreter::Word,
+    interpreter::{InstrStop, Interpreter, Message, MessageResult, Word},
 };
 use evm2_inspectors::tracing::{
     DebugInspector, Erc7562Error, Erc7562Inspector, KECCAK256_PREIMAGE_TRACER,
@@ -2635,6 +2636,67 @@ fn test_debug_default_tracer_moves_stacks() {
             );
         }
     }
+}
+
+/// Reports the call as reverted after the tracer saw its opcode halt, like a wrapping inspector
+/// that changes the result of a call.
+struct RevertCalls(TracingInspector);
+
+impl Inspector<BaseEvmTypes> for RevertCalls {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.0.step(interp);
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.0.step_end(interp);
+    }
+
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &mut Message<BaseEvmTypes>,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.0.call(interp, message)
+    }
+
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &Message<BaseEvmTypes>,
+        result: &mut MessageResult<BaseEvmTypes>,
+    ) {
+        result.stop = InstrStop::Revert;
+        self.0.call_end(interp, message, result);
+    }
+}
+
+#[test]
+fn test_geth_call_error_follows_the_final_result() {
+    let contract = address!("1000000000000000000000000000000000000001");
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(Bytes::from_static(&[op::INVALID]))),
+            ..Default::default()
+        },
+    );
+    let mut inspector = RevertCalls(TracingInspector::new(
+        TracingInspectorConfig::from_geth_call_config(&CallConfig::default()),
+    ));
+    let mut evm = Context::mainnet().with_db(db).build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            kind: TxKind::Call(contract),
+            gas_limit: 100_000,
+            ..Default::default()
+        })
+        .unwrap();
+    let frame = inspector
+        .0
+        .geth_builder()
+        .geth_call_traces(CallConfig::default(), res.result.tx_gas_used());
+    assert_eq!(frame.error.as_deref(), Some("execution reverted"));
 }
 
 #[test]

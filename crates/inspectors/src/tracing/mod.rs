@@ -426,6 +426,10 @@ impl TracingInspector {
         trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
 
         trace.status = Some(result.stop);
+        // Another inspector may have changed the result since the opcode halted.
+        if trace.geth_error_stop.is_some_and(|stop| stop != result.stop) {
+            trace.geth_error = None;
+        }
         trace.success = result.stop.is_success();
         trace.output = result.output.clone();
         if !trace.success {
@@ -669,7 +673,9 @@ impl TracingInspector {
     /// it halted on.
     #[cold]
     fn record_halt<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>, stop: InstrStop) {
-        self.last_trace().trace.geth_error = fmt_geth_halt(stop, interp);
+        let trace = &mut self.last_trace().trace;
+        trace.geth_error = fmt_geth_halt(stop, interp);
+        trace.geth_error_stop = Some(stop);
     }
 
     /// Restores a root omitted when evm2 halts during runtime gas charging, before its hooks run.
