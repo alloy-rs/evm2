@@ -1,5 +1,4 @@
 use crate::bytecode::{Bytecode, Inst, InstFlags};
-use alloy_primitives::U256;
 use core::{fmt, ops::Range};
 use evm2::interpreter::op;
 use smallvec::SmallVec;
@@ -24,6 +23,13 @@ impl fmt::Debug for GasSection {
 }
 
 impl GasSection {
+    /// The cost recorded for a section that costs at least this much.
+    ///
+    /// A section's cost is stored in 32 bits, so a larger one saturates here. Section gas is
+    /// charged ahead of the instructions, so a saturated cost would charge too little, and
+    /// [`Bytecode::analyze`] rejects the bytecode instead.
+    pub(crate) const SATURATED: u32 = u32::MAX;
+
     /// Returns `true` if the section is empty.
     #[inline]
     pub(crate) fn is_empty(self) -> bool {
@@ -235,12 +241,9 @@ impl SectionsAnalysis {
             self.gas.process_gas(inst);
         }
 
-        // When EXP's builtin will be skipped — either because both operands are known
-        // (foldable_output) or because the exponent is known and handled by a peephole (≤ 2) —
-        // fold the dynamic gas into the section statically.
+        // The exponent is known, so translation does not charge EXP's dynamic gas.
         if data.opcode == op::EXP
-            && let Some(exponent) = bytecode.const_operand(inst, 1)
-            && (bytecode.foldable_output(inst).is_some() || exponent <= U256::from(2))
+            && let Some(exponent) = bytecode.exp_static_exponent(inst)
         {
             self.gas.process_extra(bytecode.gas_params.exp_cost(exponent));
         }

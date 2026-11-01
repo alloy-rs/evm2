@@ -30,15 +30,20 @@ impl PreparedBench {
             spec,
             block: case.block(),
             db: case.state(),
-            tx: case.tx(spec),
+            tx: case.tx(),
         }
     }
 
     pub(crate) fn sanity_check(&self) {
         let mut runner = Runner::new(self);
-        let _ = runner.run().unwrap_or_else(|err| {
+        let result = runner.run().unwrap_or_else(|err| {
             panic!("{} benchmark transaction must execute: {err:?}", self.name)
         });
+        assert!(
+            result.status,
+            "{} benchmark transaction must succeed: {:?}",
+            self.name, result.stop
+        );
     }
 
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {

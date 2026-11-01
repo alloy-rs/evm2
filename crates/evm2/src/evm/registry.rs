@@ -65,6 +65,14 @@ pub enum HandlerError {
         /// Transaction gas limit.
         got: u64,
     },
+    /// Transaction gas limit is lower than the calldata floor gas (EIP-7623).
+    #[error("gas limit below floor gas: required {required}, got {got}")]
+    GasLimitBelowFloor {
+        /// Required floor gas.
+        required: u64,
+        /// Transaction gas limit.
+        got: u64,
+    },
     /// Sender cannot pay value plus maximum gas cost.
     #[error("lack of funds ({balance}) for max fee ({fee})")]
     InsufficientFunds {
@@ -93,6 +101,19 @@ pub enum HandlerError {
         /// Transaction gas limit.
         gas_limit: u64,
         /// Active transaction gas limit cap.
+        cap: u64,
+    },
+    /// Intrinsic execution gas, or the calldata floor gas if larger, exceeds the active execution
+    /// gas cap (EIP-8037).
+    ///
+    /// Unlike [`TxGasLimitGreaterThanCap`](Self::TxGasLimitGreaterThanCap), the transaction's own
+    /// gas limit is not what exceeds a cap: it may exceed the execution cap, but the gas it must
+    /// spend before execution cannot.
+    #[error("intrinsic gas exceeds cap: required {required}, cap {cap}")]
+    IntrinsicGasGreaterThanCap {
+        /// Required execution gas: the larger of the intrinsic and floor gas.
+        required: u64,
+        /// Active execution gas cap.
         cap: u64,
     },
     /// Create transaction initcode exceeds the active size limit.
