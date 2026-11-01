@@ -1,7 +1,7 @@
 //! Geth trace builder
 use crate::tracing::{
     tx_state::TxState,
-    types::{CallKind, CallTraceNode, CallTraceStepStackItem},
+    types::{CallKind, CallTraceNode, CallTraceStepStackItem, StorageChange},
     utils::load_account_code,
 };
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, vec, vec::Vec};
@@ -181,7 +181,8 @@ impl<'a> GethTraceBuilder<'a> {
             // SLOADs and SSTOREs, unless the opcode fails before it runs.
             if opts.is_storage_enabled()
                 && !step.is_error()
-                && let Some((key, value)) = step.storage_slot.as_deref().copied()
+                && let Some(StorageChange { key, value, .. }) =
+                    step.storage_change.as_deref().copied()
             {
                 let contract_storage = storage.entry(trace_node.execution_address()).or_default();
                 contract_storage.insert(key.into(), value.into());

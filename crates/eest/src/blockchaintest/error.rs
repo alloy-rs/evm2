@@ -56,9 +56,20 @@ pub(crate) enum TestErrorKind {
     /// The test's blob schedule has a zero base fee update fraction for the active fork.
     #[error("blob schedule entry for {0:?} has a zero base fee update fraction")]
     ZeroBlobUpdateFraction(BlobFork),
-    /// Sender is required in blockchain tests.
+    /// Sender is required when signatures are not validated.
     #[error("transaction sender is required")]
     MissingSender,
+    /// Signed transaction has an invalid signature.
+    #[error("{0}")]
+    InvalidSignedTransaction(String),
+    /// Sender recovered from the signature differs from the fixture's sender.
+    #[error("sender mismatch: recovered {recovered}, fixture {expected}")]
+    SenderMismatch {
+        /// Sender recovered from the signature.
+        recovered: alloy_primitives::Address,
+        /// Sender declared by the fixture.
+        expected: alloy_primitives::Address,
+    },
     /// An ommer is not old enough, or is too old, to receive a block reward.
     #[error("invalid ommer age: block {block_number}, ommer {ommer_number}")]
     InvalidOmmerAge {
@@ -141,6 +152,10 @@ impl From<TxBuildError> for TestErrorKind {
             TxBuildError::Overflow(name) => Self::Overflow(name),
             TxBuildError::BuildTransaction(error) => Self::BuildTransaction(error),
             TxBuildError::SerdeDeserialize(error) => Self::SerdeDeserialize(error),
+            error @ (TxBuildError::Decode(_)
+            | TxBuildError::InvalidV(_)
+            | TxBuildError::ProtectedLegacy
+            | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error.to_string()),
         }
     }
 }

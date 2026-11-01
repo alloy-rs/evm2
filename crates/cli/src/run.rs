@@ -11,7 +11,7 @@ use evm2::{
 };
 use evm2_cli::evm_bench;
 use evm2_eest::{StateTestPost, StateTestSuite, StateTestUnit};
-use evm2_jit_context::EvmCompilerFn;
+use evm2_jit_context::{EvmCompilerFn, can_run_compiled};
 use evm2_jit_llvm::EvmLlvmBackend;
 use evm2_jit_runtime::{
     EvmCompiler, Linker, OptimizationLevel, eyre, parse_asm, shared_library_path,
@@ -34,7 +34,7 @@ pub(crate) struct RunArgs {
     #[arg(default_value = "1")]
     n_iters: u64,
 
-    /// List available benchmark names and exit.
+    /// List available benchmarks and exit, as `<name>\t<fixture path>` lines.
     #[arg(long)]
     list: bool,
 
@@ -83,8 +83,9 @@ pub(crate) struct RunArgs {
     out_dir: Option<PathBuf>,
     #[arg(short = 'O', long, default_value = "2")]
     opt_level: OptimizationLevel,
-    #[arg(long, value_enum, default_value = "osaka")]
-    spec_id: SpecIdValueEnum,
+    /// Spec to run: a fork name such as `osaka`, or `latest` for the newest one.
+    #[arg(long, value_parser = parse_spec_id, default_value = SpecId::DEFAULT.name())]
+    spec_id: SpecId,
     #[arg(long)]
     debug_assertions: bool,
     #[arg(long)]
@@ -109,7 +110,9 @@ impl RunArgs {
     pub(crate) fn run(self) -> eyre::Result<()> {
         if self.list {
             for bench in get_benches() {
-                println!("{}", bench.name);
+                if let BenchSource::Fixture(fixture_path) = bench.source {
+                    println!("{}\t{fixture_path}", bench.name);
+                }
             }
             return Ok(());
         }
@@ -117,7 +120,7 @@ impl RunArgs {
         let Some(bench_name) = self.bench_name.clone() else {
             eyre::bail!("missing <BENCH_NAME>; use `--list` to see available benchmarks");
         };
-        let spec_id = self.spec_id.into();
+        let spec_id = self.spec_id;
         let calldata = self
             .calldata
             .as_deref()
@@ -370,17 +373,20 @@ impl DotFormat {
 
 fn bench<T>(n_iters: u64, name: &str, mut f: impl FnMut() -> eyre::Result<T>) {
     let warmup = (n_iters / 10).max(10);
-    perf_control("enable");
     for _ in 0..warmup {
         black_box(f().expect("warmup execution failed"));
     }
 
+    let counting = perf_control("enable");
     let t = std::time::Instant::now();
     for _ in 0..n_iters {
         black_box(f().expect("benchmark execution failed"));
     }
     let d = t.elapsed();
     perf_control("disable");
+    if counting {
+        perf_report(n_iters);
+    }
     eprintln!("{name}: {:>9?} ({d:>12?} / {n_iters})", d / n_iters as u32);
 }
 
@@ -389,8 +395,10 @@ fn bench<T>(n_iters: u64, name: &str, mut f: impl FnMut() -> eyre::Result<T>) {
 ///
 /// The variable holds the file descriptors of the control pipe to write and of the pipe that
 /// acknowledges commands, separated by a comma.
-fn perf_control(command: &str) {
-    let Ok(fds) = std::env::var("EVM2_PERF_CONTROL") else { return };
+///
+/// Returns whether a wrapper received the command.
+fn perf_control(command: &str) -> bool {
+    let Ok(fds) = std::env::var("EVM2_PERF_CONTROL") else { return false };
     let (ctl, ack) = fds.split_once(',').expect("invalid EVM2_PERF_CONTROL");
     let mut ctl = std::fs::File::options()
         .write(true)
@@ -401,63 +409,28 @@ fn perf_control(command: &str) {
     ctl.write_all(format!("{command}\n").as_bytes()).expect("failed to write to perf");
     // `perf` answers `ack\n` and a NUL.
     ack.read_exact(&mut [0; 5]).expect("failed to read the perf acknowledgement");
+    true
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-#[clap(rename_all = "lowercase")]
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
-enum SpecIdValueEnum {
-    FRONTIER,
-    FRONTIER_THAWING,
-    HOMESTEAD,
-    DAO_FORK,
-    TANGERINE,
-    SPURIOUS_DRAGON,
-    BYZANTIUM,
-    CONSTANTINOPLE,
-    PETERSBURG,
-    ISTANBUL,
-    MUIR_GLACIER,
-    BERLIN,
-    LONDON,
-    ARROW_GLACIER,
-    GRAY_GLACIER,
-    MERGE,
-    SHANGHAI,
-    CANCUN,
-    PRAGUE,
-    OSAKA,
-    AMSTERDAM,
-    LATEST,
+/// Tells the `perf stat` wrapper's owner how many iterations its counters covered, by writing
+/// the count to the pipe whose file descriptor `EVM2_PERF_REPORT` holds, if any.
+///
+/// The pipe carries nothing else, so the report cannot be forged by text the CLI prints, such as a
+/// benchmark name.
+fn perf_report(n_iters: u64) {
+    let Ok(fd) = std::env::var("EVM2_PERF_REPORT") else { return };
+    let mut report = std::fs::File::options()
+        .write(true)
+        .open(format!("/proc/self/fd/{fd}"))
+        .expect("failed to open the perf report pipe");
+    writeln!(report, "{n_iters}").expect("failed to write the perf report");
 }
 
-impl From<SpecIdValueEnum> for SpecId {
-    fn from(value: SpecIdValueEnum) -> Self {
-        match value {
-            SpecIdValueEnum::FRONTIER => Self::FRONTIER,
-            SpecIdValueEnum::FRONTIER_THAWING => Self::FRONTIER,
-            SpecIdValueEnum::HOMESTEAD => Self::HOMESTEAD,
-            SpecIdValueEnum::DAO_FORK => Self::HOMESTEAD,
-            SpecIdValueEnum::TANGERINE => Self::TANGERINE,
-            SpecIdValueEnum::SPURIOUS_DRAGON => Self::SPURIOUS_DRAGON,
-            SpecIdValueEnum::BYZANTIUM => Self::BYZANTIUM,
-            SpecIdValueEnum::CONSTANTINOPLE => Self::PETERSBURG,
-            SpecIdValueEnum::PETERSBURG => Self::PETERSBURG,
-            SpecIdValueEnum::ISTANBUL => Self::ISTANBUL,
-            SpecIdValueEnum::MUIR_GLACIER => Self::ISTANBUL,
-            SpecIdValueEnum::BERLIN => Self::BERLIN,
-            SpecIdValueEnum::LONDON => Self::LONDON,
-            SpecIdValueEnum::ARROW_GLACIER => Self::LONDON,
-            SpecIdValueEnum::GRAY_GLACIER => Self::LONDON,
-            SpecIdValueEnum::MERGE => Self::MERGE,
-            SpecIdValueEnum::SHANGHAI => Self::SHANGHAI,
-            SpecIdValueEnum::CANCUN => Self::CANCUN,
-            SpecIdValueEnum::PRAGUE => Self::PRAGUE,
-            SpecIdValueEnum::OSAKA => Self::OSAKA,
-            SpecIdValueEnum::AMSTERDAM => Self::AMSTERDAM,
-            SpecIdValueEnum::LATEST => Self::OSAKA,
-        }
+fn parse_spec_id(name: &str) -> Result<SpecId, String> {
+    if name.eq_ignore_ascii_case("latest") {
+        return Ok(SpecId::NEXT);
     }
+    name.parse().map_err(|_| format!("unknown spec id {name:?}"))
 }
 
 #[derive(Clone, Debug)]
@@ -667,8 +640,7 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
-        // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
-        if interpreter.gas().remaining() > i64::MAX as u64 {
+        if !can_run_compiled(interpreter) {
             return None;
         }
         let func = *self.functions.get(&interpreter.original_bytecode_hash())?;
@@ -887,7 +859,7 @@ fn read_code_string(contents: &[u8], ext: Option<&str>) -> eyre::Result<Vec<u8>>
 
 #[cfg(test)]
 mod tests {
-    use super::{SpecId, SpecIdValueEnum, read_code_string};
+    use super::{SpecId, parse_spec_id, read_code_string};
     use crate::args::{Args, Command};
     use clap::Parser;
 
@@ -897,8 +869,10 @@ mod tests {
     }
 
     #[test]
-    fn latest_spec_matches_default_run_spec() {
-        assert_eq!(SpecId::from(SpecIdValueEnum::LATEST), SpecId::OSAKA);
+    fn spec_id_parser_accepts_names_and_latest() {
+        assert_eq!(parse_spec_id("osaka"), Ok(SpecId::OSAKA));
+        assert_eq!(parse_spec_id("LATEST"), Ok(SpecId::NEXT));
+        assert!(parse_spec_id("constantinople").is_err());
     }
 
     #[test]

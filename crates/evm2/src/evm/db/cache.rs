@@ -8,7 +8,7 @@ use crate::{
         bal::BalContext,
         state::{
             Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSink,
-            StateChangeSource, StorageChange,
+            StateChangeSource, StorageChange, TxStateChanges,
         },
     },
     interpreter::Word,
@@ -158,7 +158,7 @@ impl<ExtDB> CacheDB<ExtDB> {
     pub(crate) fn commit(&mut self, accounts: &AddressMap<Account>) {
         // When BAL construction is enabled, fold the transaction's pending post-state into the
         // builder before applying the changes to the cache.
-        self.bal_context.commit(accounts);
+        self.bal_context.commit(TxStateChanges::new(accounts));
 
         for (&address, entry) in accounts {
             let overlay = &entry.storage;
