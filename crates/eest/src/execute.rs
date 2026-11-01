@@ -215,7 +215,7 @@ fn execute_unit(
             let tx = match (tx, &post.expect_exception) {
                 (Ok(tx), _) => tx,
                 (Err(err), Some(expected)) => {
-                    check_exception(expected, err.exception(), &err)
+                    check_exception(name, expected, err.exception(), &err)
                         .map_err(|err| TestError::case(path, name, err))?;
                     continue;
                 }
@@ -253,6 +253,7 @@ fn validate_result(
     let error = match (&post.expect_exception, result) {
         (Some(expected), Err(failure)) => {
             let error = check_exception(
+                name,
                 expected,
                 Exception::from_handler_error(&failure.error),
                 &failure.error,
@@ -301,13 +302,16 @@ fn validate_result(
 
 /// Checks that a transaction rejected with `exception` is one the fixture expects.
 fn check_exception(
+    test: &str,
     expected: &str,
     exception: Option<Exception>,
     error: &dyn fmt::Display,
 ) -> Result<(), TestErrorKind> {
-    exception::check(expected, exception, error).map_err(|got| TestErrorKind::UnexpectedException {
-        expected_exception: Some(expected.to_owned()),
-        got_exception: Some(got),
+    exception::check(test, expected, exception, error).map_err(|got| {
+        TestErrorKind::UnexpectedException {
+            expected_exception: Some(expected.to_owned()),
+            got_exception: Some(got),
+        }
     })
 }
 
@@ -710,19 +714,26 @@ mod tests {
         let exception = Exception::from_handler_error(&error);
 
         check_exception(
+            "test",
             "TransactionException.INTRINSIC_GAS_TOO_LOW|TransactionException.NONCE_IS_MAX",
             exception,
             &error,
         )
         .unwrap();
-        let err =
-            check_exception("TransactionException.INSUFFICIENT_ACCOUNT_FUNDS", exception, &error)
-                .unwrap_err();
+        let err = check_exception(
+            "test",
+            "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS",
+            exception,
+            &error,
+        )
+        .unwrap_err();
         assert_eq!(
             err.to_string(),
             "unexpected exception: got Some(\"TransactionException.NONCE_IS_MAX (nonce overflow in transaction)\"), expected Some(\"TransactionException.INSUFFICIENT_ACCOUNT_FUNDS\")"
         );
-        assert!(check_exception("TransactionException.NONCE_IS_MAX", None, &error).is_err());
+        assert!(
+            check_exception("test", "TransactionException.NONCE_IS_MAX", None, &error).is_err()
+        );
     }
 
     #[test]

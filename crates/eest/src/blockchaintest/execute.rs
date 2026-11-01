@@ -995,7 +995,7 @@ fn reject_block(
     let Some(expected) = expected else {
         return Err(TestError::case(path, name, kind));
     };
-    match exception::check(expected, kind.exception(), &kind) {
+    match exception::check(name, expected, kind.exception(), &kind) {
         Ok(()) => Ok(BlockResolution::Discard),
         Err(got) => Err(TestError::case(
             path,

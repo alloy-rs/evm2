@@ -207,19 +207,66 @@ impl fmt::Display for Exception {
     }
 }
 
-/// Checks that a rejection `error`, which execution-specs raises as `exception`, is one of the
-/// `|`-separated names in the fixture's `expected`.
+/// A fixture whose expected exception evm2 does not report, because of a difference in core.
 ///
-/// On a mismatch, returns the error described for a failure report, led by its exception name.
+/// A trial listed here passes only while it keeps failing exactly this way, so an entry that no
+/// longer mismatches fails the run.
+struct KnownMismatch {
+    /// Name of the test case in the fixture file.
+    test: &'static str,
+    /// The fixture's `expectException`.
+    expected: &'static str,
+    /// The exception evm2 reports.
+    got: Exception,
+    /// Why evm2 reports it.
+    reason: &'static str,
+}
+
+macro_rules! chain_id_after_authorization_list {
+    ($($test:literal),* $(,)?) => {
+        &[$(KnownMismatch {
+            test: concat!("tests/london/eip1559_fee_market_change/test_tx_type.py::test_invalid_chain_id[", $test, "]"),
+            expected: "TransactionException.INVALID_CHAINID",
+            got: Exception::Type4EmptyAuthorizationList,
+            reason: "evm2 checks the EIP-7702 authorization list before the chain id; execution-specs \
+                     checks the chain id first",
+        }),*]
+    };
+}
+
+const KNOWN_MISMATCHES: &[KnownMismatch] = chain_id_after_authorization_list![
+    "fork_Prague-tx_type_4-state_test",
+    "fork_Osaka-tx_type_4-state_test",
+    "fork_Amsterdam-tx_type_4-state_test",
+    "fork_Prague-tx_type_4-blockchain_test_from_state_test",
+    "fork_Osaka-tx_type_4-blockchain_test_from_state_test",
+    "fork_Amsterdam-tx_type_4-blockchain_test_from_state_test",
+];
+
+/// Checks that a rejection `error` in test case `test`, which execution-specs raises as
+/// `exception`, is one of the `|`-separated names in the fixture's `expected`.
+///
+/// A known mismatch passes while it still occurs and fails once it stops.
+///
+/// On a failure, returns the error described for a report, led by its exception name.
 pub(crate) fn check(
+    test: &str,
     expected: &str,
     exception: Option<Exception>,
     error: &dyn fmt::Display,
 ) -> Result<(), String> {
-    match exception {
-        Some(exception) if exception.is_expected(expected) => Ok(()),
-        Some(exception) => Err(format!("{exception} ({error})")),
-        None => Err(error.to_string()),
+    let known =
+        KNOWN_MISMATCHES.iter().find(|known| known.test == test && known.expected == expected);
+    let matches = exception.is_some_and(|exception| exception.is_expected(expected));
+    match (known, exception) {
+        (Some(known), _) if matches => Err(format!(
+            "known mismatch no longer occurs ({}); remove it from KNOWN_MISMATCHES",
+            known.reason
+        )),
+        (Some(known), Some(exception)) if exception == known.got => Ok(()),
+        (None, Some(_)) if matches => Ok(()),
+        (_, Some(exception)) => Err(format!("{exception} ({error})")),
+        (_, None) => Err(error.to_string()),
     }
 }
 
@@ -268,5 +315,24 @@ mod tests {
             Exception::from_handler_error(&error(2, 1)),
             Some(Exception::NonceMismatchTooLow)
         );
+    }
+
+    #[test]
+    fn known_mismatch_passes_only_while_it_occurs() {
+        let known = &KNOWN_MISMATCHES[0];
+        let error = HandlerError::EmptyAuthorizationList;
+        let run = |test, exception| check(test, known.expected, Some(exception), &error);
+
+        assert_eq!(run(known.test, known.got), Ok(()));
+        // The listed test failing another way fails.
+        assert!(run(known.test, Exception::NonceIsMax).is_err());
+        // The listed test no longer mismatching fails the run.
+        assert!(
+            run(known.test, Exception::InvalidChainid)
+                .unwrap_err()
+                .starts_with("known mismatch no longer occurs")
+        );
+        // The same failure in another test fails.
+        assert!(run("other", known.got).is_err());
     }
 }
