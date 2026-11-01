@@ -77,9 +77,6 @@ fn return_inner<T: EvmTypesHost>(
         let Some(end) = offset.checked_add(len) else {
             return Err(InstrStop::MemoryOOG);
         };
-        if end > u32::MAX as usize {
-            return Err(InstrStop::MemoryLimitOOG);
-        }
         cx.state.resize_memory(cx.gas, offset, len)?;
         offset as u32..end as u32
     } else {
