@@ -272,6 +272,24 @@ pub(crate) struct StepInfo<'a> {
     pub(crate) call_id: u64,
 }
 
+impl Default for StepInfo<'_> {
+    /// The log of a tracer whose step hook never ran: everything is zero.
+    fn default() -> Self {
+        static NO_INPUT: Bytes = Bytes::new();
+        Self {
+            cost: 0,
+            refund: 0,
+            depth: 0,
+            error: None,
+            caller: Address::ZERO,
+            contract: Address::ZERO,
+            value: U256::ZERO,
+            input: &NO_INPUT,
+            call_id: 0,
+        }
+    }
+}
+
 /// Revokes the JS log object's access to the interpreter's stack and memory when dropped.
 #[derive(Debug)]
 #[must_use]

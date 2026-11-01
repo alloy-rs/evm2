@@ -3,7 +3,7 @@ use crate::{
     bytecode::Bytecode,
     env::BlockEnvExt,
     ethereum::{
-        LazyAuthorization, LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope,
+        LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope,
         eip7702::{AuthRefunds, Eip7702Authorization, RuntimeAuthCharges, apply_auth_list},
         ethereum_tx_registry, prepare_initial_frame,
     },
@@ -15,7 +15,7 @@ use crate::{
 };
 use alloc::{vec, vec::Vec};
 use alloy_consensus::{TxEip7702, TxLegacy, transaction::Recovered};
-use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
+use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, Log, TxKind, U256, hex};
 
 type TestEvm = Evm<'static, BaseEvmTypes>;
@@ -274,11 +274,18 @@ fn eip2780_authorization_charges_no_state_gas_without_eip8037() {
     let gas_limit = 12_000 + 3_000 + 7_816 + 9_000;
     let tx = Recovered::new_unchecked(
         TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
-            TxEip7702 { chain_id, to: recipient, gas_limit, ..Default::default() },
-            vec![RecoveredAuthorization::new_unchecked(
-                Authorization { chain_id: U256::ZERO, address: delegate, nonce: 0 },
-                RecoveredAuthority::Valid(authority),
-            )],
+            TxEip7702 {
+                chain_id,
+                to: recipient,
+                gas_limit,
+                authorization_list: vec![unsigned(Authorization {
+                    chain_id: U256::ZERO,
+                    address: delegate,
+                    nonce: 0,
+                })],
+                ..Default::default()
+            },
+            vec![Some(authority)],
         )),
         caller,
     );
@@ -289,6 +296,11 @@ fn eip2780_authorization_charges_no_state_gas_without_eip8037() {
     let authority = result.pending_state.account_info(&authority).unwrap();
     assert_eq!(authority.nonce, 1);
     assert_eq!(authority.code_hash, Bytecode::new_eip7702(delegate).hash_slow());
+}
+
+/// Wraps an authorization with a placeholder signature, for use with a cached authority.
+fn unsigned(authorization: Authorization) -> SignedAuthorization {
+    SignedAuthorization::new_unchecked(authorization, 0, U256::ZERO, U256::ZERO)
 }
 
 fn absent_authority_evm(spec: SpecId, touched: Address) -> TestEvm {
@@ -303,12 +315,12 @@ fn absent_authority_evm(spec: SpecId, touched: Address) -> TestEvm {
     evm
 }
 
-fn auth_for(authority: Address) -> LazyAuthorization {
-    RecoveredAuthorization::new_unchecked(
-        Authorization { chain_id: U256::ZERO, address: Address::with_last_byte(0xdd), nonce: 0 },
-        RecoveredAuthority::Valid(authority),
-    )
-    .into()
+fn auth_for(authority: Address) -> CustomAuthorization {
+    CustomAuthorization {
+        nonce: 0,
+        address: Address::with_last_byte(0xdd),
+        authority: Some(authority),
+    }
 }
 
 #[test]
@@ -318,7 +330,7 @@ fn apply_auth_list_refunds_touched_absent_authority() {
     let mut evm = absent_authority_evm(SpecId::PRAGUE, touched);
     let mut refunds = AuthRefunds::new(evm.version());
 
-    apply_auth_list(&mut evm, 1, &[auth_for(touched), auth_for(untouched)], &mut refunds).unwrap();
+    apply_auth_list(&mut evm, 1, [auth_for(touched), auth_for(untouched)], &mut refunds).unwrap();
 
     // An authority is refunded unless it is absent and untouched.
     let per_auth = evm.version().gas_params.get(GasId::TxEip7702AuthRefund);
@@ -338,7 +350,7 @@ fn eip2780_touched_absent_authority_pays_no_new_account_state_gas() {
             Address::with_last_byte(0xc0),
             U256::ZERO,
         );
-        assert!(!apply_auth_list(&mut evm, 1, &[auth_for(authority)], &mut charges).unwrap());
+        assert!(!apply_auth_list(&mut evm, 1, [auth_for(authority)], &mut charges).unwrap());
         (gas.state_gas_spent(), evm.version().gas_params.new_account_state_gas())
     };
 
@@ -634,7 +646,7 @@ fn apply_auth_list_accepts_custom_filtered_authorizations() {
     let oog = apply_auth_list(
         &mut evm,
         1,
-        list.iter().filter(|auth| auth.authority != Some(skipped)),
+        list.into_iter().filter(|auth| auth.authority != Some(skipped)),
         &mut refunds,
     )
     .unwrap();
