@@ -28,13 +28,15 @@ use crate::{
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
 use alloy_eips::{
+    eip2718::Typed2718,
+    eip4844::DATA_GAS_PER_BLOB,
     eip6110::{DEPOSIT_REQUEST_TYPE, MAINNET_DEPOSIT_CONTRACT_ADDRESS},
     eip7002::WITHDRAWAL_REQUEST_TYPE,
     eip7251::CONSOLIDATION_REQUEST_TYPE,
     eip7685::Requests,
+    eip7840::BlobParams,
 };
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, U256, aliases::U512, b256};
-use alloy_eips::{eip2718::Typed2718, eip4844::DATA_GAS_PER_BLOB, eip7840::BlobParams};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
