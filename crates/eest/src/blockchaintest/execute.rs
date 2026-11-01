@@ -27,8 +27,6 @@ use crate::{
 };
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
-use alloy_eips::{};
-use alloy_primitives::{Address, B256, Bytes, U256, aliases::U512};
 use alloy_eips::{
     eip2718::Typed2718,
     eip4844::DATA_GAS_PER_BLOB,
@@ -38,7 +36,7 @@ use alloy_eips::{
     eip7685::Requests,
     eip7840::BlobParams,
 };
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, U256, aliases::U512, b256};
+use alloy_primitives::{Address, B256, Bytes, Log, U256, aliases::U512, b256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
