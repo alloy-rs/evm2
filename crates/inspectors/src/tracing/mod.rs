@@ -15,7 +15,7 @@ use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use alloy_rpc_types_trace::parity::StorageDelta;
 use core::{mem, ops::Range};
 use evm2::{
-    Evm, EvmFeatures, EvmTypes, Inspector, SpecId, TxResultExt,
+    Evm, EvmFeatures, EvmTypes, Inspector, SpecId,
     interpreter::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
