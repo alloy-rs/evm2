@@ -158,18 +158,6 @@ const IGNORED_TESTS: &[&str] = &[
     "eip7928_block_level_access_lists/fork_transition/invalid_post_fork_block_without_bal_hash_field.json",
     "eip7928_block_level_access_lists/fork_transition/invalid_pre_fork_block_with_bal_hash_field.json",
 
-    // These expect the block to be rejected for a request list that does not match the header, a
-    // malformed deposit event layout, or an undeployed system contract. The harness neither
-    // extracts EL requests nor validates the header's requests hash.
-    "prague/eip6110_deposits/deposits/deposit_negative.json",
-    "prague/eip6110_deposits/modified_contract/invalid_layout.json",
-    "prague/eip6110_deposits/modified_contract/invalid_layout_with_swapped_decodable_offsets.json",
-    "prague/eip6110_deposits/modified_contract/invalid_log_length.json",
-    "prague/eip7002_el_triggerable_withdrawals/contract_deployment/system_contract_deployment.json",
-    "prague/eip7002_el_triggerable_withdrawals/withdrawal_requests/withdrawal_requests_negative.json",
-    "prague/eip7251_consolidations/consolidations/consolidation_requests_negative.json",
-    "prague/eip7251_consolidations/contract_deployment/system_contract_deployment.json",
-    "prague/eip7685_general_purpose_el_requests/multi_type_requests/invalid_multi_type_requests.json",
 ];
 
 /// Fixtures from the `main` roots, which name the tests above `test_*` in flat directories.
@@ -177,12 +165,4 @@ const IGNORED_TESTS: &[&str] = &[
 const MAIN_IGNORED_TESTS: &[&str] = &[
     "cancun/eip4844_blobs/test_invalid_blob_tx_contract_creation.json",
     "cancun/eip4844_blobs/test_reject_valid_full_blob_in_block_rlp.json",
-    "prague/eip6110_deposits/test_deposit_negative.json",
-    "prague/eip6110_deposits/test_invalid_layout.json",
-    "prague/eip6110_deposits/test_invalid_log_length.json",
-    "prague/eip7002_el_triggerable_withdrawals/test_system_contract_deployment.json",
-    "prague/eip7002_el_triggerable_withdrawals/test_withdrawal_requests_negative.json",
-    "prague/eip7251_consolidations/test_consolidation_requests_negative.json",
-    "prague/eip7251_consolidations/test_system_contract_deployment.json",
-    "prague/eip7685_general_purpose_el_requests/test_invalid_multi_type_requests.json",
 ];
