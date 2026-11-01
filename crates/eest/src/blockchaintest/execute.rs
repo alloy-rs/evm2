@@ -2019,10 +2019,6 @@ mod tests {
             ShanghaiToCancunAtTime15k,
             CancunToPragueAtTime15k,
             PragueToOsakaAtTime15k,
-            OsakaToBPO1AtTime15k,
-            BPO1ToBPO2AtTime15k,
-            BPO2ToBPO3AtTime15k,
-            BPO3ToBPO4AtTime15k,
             BPO2ToAmsterdamAtTime15k,
         ] {
             let schedule = fork_schedule(fork).unwrap();

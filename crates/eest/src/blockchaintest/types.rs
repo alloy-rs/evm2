@@ -387,6 +387,9 @@ impl ForkSpec {
     ///
     /// A state test runs one transaction under one spec, so a transition fork maps to the spec
     /// after the transition. The blockchain runner instead runs both specs of a transition.
+    ///
+    /// The BPO forks and the transitions to them are unsupported: they keep the Osaka spec and
+    /// differ only in the blob parameters, which a state test derives from the spec alone.
     pub const fn to_state_spec_id(self) -> Option<SpecId> {
         Some(match self {
             Self::FrontierToHomesteadAt5 => SpecId::HOMESTEAD,
@@ -399,12 +402,14 @@ impl ForkSpec {
             Self::ParisToShanghaiAtTime15k => SpecId::SHANGHAI,
             Self::ShanghaiToCancunAtTime15k => SpecId::CANCUN,
             Self::CancunToPragueAtTime15k => SpecId::PRAGUE,
-            Self::PragueToOsakaAtTime15k
+            Self::PragueToOsakaAtTime15k => SpecId::OSAKA,
+            Self::BPO2ToAmsterdamAtTime15k => SpecId::AMSTERDAM,
+            Self::BPO1
+            | Self::BPO2
             | Self::OsakaToBPO1AtTime15k
             | Self::BPO1ToBPO2AtTime15k
             | Self::BPO2ToBPO3AtTime15k
-            | Self::BPO3ToBPO4AtTime15k => SpecId::OSAKA,
-            Self::BPO2ToAmsterdamAtTime15k => SpecId::AMSTERDAM,
+            | Self::BPO3ToBPO4AtTime15k => return None,
             fork => return fork.to_spec_id(),
         })
     }
@@ -575,5 +580,7 @@ mod tests {
         assert_eq!(ForkSpec::BPO2ToAmsterdamAtTime15k.to_spec_id(), None);
         assert_eq!(ForkSpec::Constantinople.to_spec_id(), None);
         assert_eq!(ForkSpec::Constantinople.to_state_spec_id(), None);
+        assert_eq!(ForkSpec::BPO1.to_state_spec_id(), None);
+        assert_eq!(ForkSpec::OsakaToBPO1AtTime15k.to_state_spec_id(), None);
     }
 }
