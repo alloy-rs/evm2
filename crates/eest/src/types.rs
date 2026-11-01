@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::tx::{AccessListItem, TestAuthorization};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use evm2::SpecId;
@@ -231,7 +229,8 @@ pub struct Test {
     /// Optional full expected state.
     #[serde(default)]
     pub state: BTreeMap<Address, AccountInfo>,
-    /// Optional encoded transaction bytes.
+    /// Signed EIP-2718 transaction bytes. When present they replace the indexed `transaction`
+    /// fields and the sender is recovered from their signature.
     pub txbytes: Option<Bytes>,
 }
 
