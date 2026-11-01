@@ -1,6 +1,7 @@
 use crate::tracing::{
-    FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MuxInspector,
-    TracingInspector, TracingInspectorConfig, TransactionContext, utils::transaction_info,
+    Erc7562Inspector, FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
+    MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
+    utils::transaction_info,
 };
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, transaction::Recovered};
@@ -46,7 +47,7 @@ pub enum DebugInspector {
     /// FlatCallTracer
     FlatCallTracer(TracingInspector),
     /// Erc7562Tracer
-    Erc7562Tracer(TracingInspector, Erc7562Config),
+    Erc7562Tracer(Erc7562Inspector),
     /// Keccak256PreimageTracer
     Keccak256Preimage(Keccak256PreimageInspector),
     /// Default tracer
@@ -69,9 +70,7 @@ impl DebugInspector {
             Self::StateGasTracer(inspector) => Self::StateGasTracer(inspector.clone()),
             Self::Mux(inspector, config) => Self::Mux(inspector.try_clone()?, config.clone()),
             Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
-            Self::Erc7562Tracer(inspector, config) => {
-                Self::Erc7562Tracer(inspector.clone(), config.clone())
-            }
+            Self::Erc7562Tracer(inspector) => Self::Erc7562Tracer(inspector.clone()),
             Self::Keccak256Preimage(inspector) => Self::Keccak256Preimage(inspector.clone()),
             Self::Default(inspector, config) => Self::Default(inspector.clone(), *config),
             #[cfg(feature = "js-tracer")]
@@ -148,12 +147,7 @@ impl DebugInspector {
                                 .map_err(|_| DebugInspectorError::InvalidTracerConfig)?
                         };
 
-                        Self::Erc7562Tracer(
-                            TracingInspector::new(
-                                TracingInspectorConfig::from_geth_erc7562_config(&config),
-                            ),
-                            config,
-                        )
+                        Self::Erc7562Tracer(Erc7562Inspector::new(config))
                     }
                     _ => {
                         // Note: this match is non-exhaustive in case we need to add support for
@@ -200,8 +194,8 @@ impl DebugInspector {
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
-            | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => inspector.fuse(),
+            Self::Erc7562Tracer(inspector) => inspector.fuse(),
             Self::Keccak256Preimage(inspector) => inspector.clear(),
             Self::Noop(_) | Self::StateGasTracer(_) => {}
             Self::Mux(inspector, _) => inspector.fuse()?,
@@ -230,8 +224,8 @@ impl DebugInspector {
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
-            | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => inspector.set_next_log_index(index),
+            Self::Erc7562Tracer(inspector) => inspector.set_next_log_index(index),
             Self::Mux(inspector, _) => inspector.set_next_log_index(index),
             _ => {}
         }
@@ -296,15 +290,7 @@ impl DebugInspector {
                     .into_localized_transaction_traces(tx_info)
                     .into()
             }
-            Self::Erc7562Tracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx.gas_limit());
-                inspector.set_transaction_caller(tx.signer());
-                inspector
-                    .geth_builder()
-                    .geth_erc7562_traces(config.clone(), res.result.tx_gas_used(), db)
-                    .map_err(DebugInspectorError::Database)?
-                    .into()
-            }
+            Self::Erc7562Tracer(inspector) => inspector.frame(tx, &res.result)?.into(),
             Self::Keccak256Preimage(inspector) => GethTrace::JS(inspector.json_result()?),
             Self::Default(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
@@ -355,7 +341,7 @@ macro_rules! delegate {
             Self::CallTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::PreStateTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::FlatCallTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
-            Self::Erc7562Tracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::Erc7562Tracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Default($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Keccak256Preimage($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Noop($insp) => Inspector::<T>::$method($insp, $($arg),*),
@@ -447,6 +433,9 @@ pub enum DebugInspectorError {
     /// The keccak256 preimage tracer reached its limit of recorded bytes
     #[error(transparent)]
     Keccak256Preimage(#[from] crate::tracing::Keccak256PreimageLimitExceeded),
+    /// The erc7562 tracer reached its limit of recorded preimage bytes or failed to read the state
+    #[error(transparent)]
+    Erc7562(#[from] crate::tracing::Erc7562Error),
     /// Error from JS inspector
     #[cfg(feature = "js-tracer")]
     #[error(transparent)]
