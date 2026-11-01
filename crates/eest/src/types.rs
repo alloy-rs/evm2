@@ -4,7 +4,7 @@ use crate::{
 };
 use alloy_primitives::{Address, B256, Bytes, U256};
 use serde::{Deserialize, Deserializer, de};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 /// Top-level state test suite.
 #[derive(Debug, Deserialize)]
@@ -21,6 +21,7 @@ pub struct TestUnit {
     /// Pre-state accounts.
     pub pre: BTreeMap<Address, AccountInfo>,
     /// Expected post-state roots by fork.
+    #[serde(deserialize_with = "deserialize_post")]
     pub post: BTreeMap<ForkSpec, Vec<Test>>,
     /// Transaction parts indexed by each post entry.
     pub transaction: TransactionParts,
@@ -208,9 +209,54 @@ where
         .collect()
 }
 
+/// Deserializes the post entries, rejecting two keys that name the same fork, such as `Paris` and
+/// its alias `Merge`.
+fn deserialize_post<'de, D>(deserializer: D) -> Result<BTreeMap<ForkSpec, Vec<Test>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct PostVisitor;
+
+    impl<'de> de::Visitor<'de> for PostVisitor {
+        type Value = BTreeMap<ForkSpec, Vec<Test>>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a map of fork names to post entries")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: de::MapAccess<'de>,
+        {
+            let mut post = BTreeMap::new();
+            while let Some((fork, tests)) = map.next_entry::<ForkSpec, Vec<Test>>()? {
+                if post.insert(fork, tests).is_some() {
+                    return Err(de::Error::custom(format!("duplicate post entry for {fork:?}")));
+                }
+            }
+            Ok(post)
+        }
+    }
+
+    deserializer.deserialize_map(PostVisitor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Deserialize)]
+    struct Post(#[serde(deserialize_with = "deserialize_post")] BTreeMap<ForkSpec, Vec<Test>>);
+
+    #[test]
+    fn post_rejects_two_keys_for_one_fork() {
+        assert!(serde_json::from_str::<Post>(r#"{"Paris": [], "Merge": []}"#).is_err());
+        assert!(serde_json::from_str::<Post>(r#"{"Merge": [], "Paris": []}"#).is_err());
+        assert_eq!(
+            serde_json::from_str::<Post>(r#"{"Paris": [], "Cancun": []}"#).unwrap().0.len(),
+            2
+        );
+    }
 
     #[test]
     fn transaction_value_allows_bigint_marker() {
