@@ -224,7 +224,11 @@ impl Bytecode {
     /// valid designator is accepted as legacy, since it may have been deployed before EIP-3541.
     #[inline]
     pub fn from_stored(bytes: Bytes) -> Self {
-        Self::new_eip7702_raw(bytes.clone()).unwrap_or_else(|_| Self::new_legacy(bytes))
+        if Self::check_eip7702(&bytes).is_ok() {
+            Self::from_valid_eip7702(bytes)
+        } else {
+            Self::new_legacy(bytes)
+        }
     }
 
     /// Creates a new EIP-7702 [`Bytecode`] from raw bytes.
@@ -232,6 +236,12 @@ impl Bytecode {
     /// Returns an error if the bytes are not valid EIP-7702 bytecode.
     #[inline]
     pub fn new_eip7702_raw(bytes: Bytes) -> Result<Self, Eip7702DecodeError> {
+        Self::check_eip7702(&bytes)?;
+        Ok(Self::from_valid_eip7702(bytes))
+    }
+
+    /// Checks that `bytes` is a valid EIP-7702 delegation designator.
+    fn check_eip7702(bytes: &[u8]) -> Result<(), Eip7702DecodeError> {
         if bytes.len() != EIP7702_BYTECODE_LEN {
             return Err(Eip7702DecodeError::InvalidLength);
         }
@@ -241,13 +251,18 @@ impl Bytecode {
         if bytes[2] != EIP7702_VERSION {
             return Err(Eip7702DecodeError::UnsupportedVersion);
         }
-        Ok(Self(Some(Arc::new(BytecodeInner {
+        Ok(())
+    }
+
+    /// Wraps `bytes`, which [`Self::check_eip7702`] accepted, as EIP-7702 bytecode.
+    fn from_valid_eip7702(bytes: Bytes) -> Self {
+        Self(Some(Arc::new(BytecodeInner {
             kind: BytecodeKind::Eip7702,
             original_len: bytes.len(),
             bytecode: bytes,
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
-        }))))
+        })))
     }
 
     /// Create new checked bytecode from pre-analyzed components.
