@@ -51,7 +51,9 @@ from utils import (
     cargo_build,
     cargo_env,
     eprint,
+    geomean_pct,
     get_benches,
+    pct,
     perf_available,
     perf_counts,
     repo_root,
@@ -138,17 +140,13 @@ def fmt_rel(pct: float) -> str:
 
 
 def fmt_pct(base: float | int, current: float | int) -> str:
-    if base == 0:
-        return "-"
-    return fmt_rel((current - base) / base * 100)
+    change = pct(base, current)
+    return "-" if change is None else fmt_rel(change)
 
 
 def fmt_geomean(pairs: list[tuple[float, float]]) -> str:
-    """Geometric mean of the current/base ratios, so every benchmark weighs the same."""
-    ratios = [c / b for b, c in pairs if b > 0 and c > 0]
-    if not ratios:
-        return "-"
-    return fmt_rel((statistics.geometric_mean(ratios) - 1) * 100)
+    change = geomean_pct(pairs)
+    return "-" if change is None else fmt_rel(change)
 
 
 def fmt_detail(current: str | int, base: str | int, diff: str) -> str:
@@ -1227,20 +1225,15 @@ METRICS = {
 }
 ARTIFACT_FILES = ["bytecode.txt", "bytecode.dot", "opt.ll", "opt.s"]
 TARGET_CPU_RE = re.compile(r'"target-cpu"="([^"]+)"')
-BENCH_FIXTURE_RE = re.compile(r'Bench::\w+\(\s*"([^"]+)",[^"]*"([^"]+)"')
 
 
-def source_links(root: str, rev: str) -> dict[str, list[dict[str, str]]]:
-    """Link each built-in benchmark to its fixture in the benchmark catalog."""
-    try:
-        with open(os.path.join(root, "crates/cli/src/evm_bench.rs")) as f:
-            catalog = f.read()
-    except FileNotFoundError:
-        return {}
+def source_links(binary: str, rev: str) -> dict[str, list[dict[str, str]]]:
+    """Link each built-in benchmark to the fixture that ``binary`` lists for it."""
     repo = os.environ.get("GITHUB_REPOSITORY", "alloy-rs/evm2")
     return {
         name: [{"label": path, "url": f"https://github.com/{repo}/blob/{rev}/{path}"}]
-        for name, path in BENCH_FIXTURE_RE.findall(catalog)
+        for name, path in get_benches(binary).items()
+        if path
     }
 
 
@@ -1259,7 +1252,7 @@ def write_results(out_dir: str, benches: list[str], side: Side, perf: bool):
     """Write ``results.json`` and normalized artifacts for the perf site and ``compare.py``."""
     codegen = CodegenLines()._collect(benches, side.dump_dir)
     times = CompileTime()._collect(benches, side)
-    links = source_links(side.root, side.rev)
+    links = source_links(side.binary, side.rev)
     artifacts = os.path.join(out_dir, "artifacts")
     if os.path.isdir(artifacts):
         shutil.rmtree(artifacts)
@@ -1457,7 +1450,7 @@ def main():
         base_root = os.path.join(base_dump, ".worktree")
         base = Side("base", base_sha, base_binary(root, base_sha, base_dump), base_dump, base_root)
     head = Side("head", head_sha, cargo_build(root), args.dump_dir, root)
-    builtin = args.benches or get_benches(head.binary)
+    builtin = args.benches or list(get_benches(head.binary))
     extra_dirs = (
         args.extra_dir if args.extra_dir is not None else ([] if args.benches else ["tmp/mainnet"])
     )

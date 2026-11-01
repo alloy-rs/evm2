@@ -30,9 +30,13 @@ use alloy_eip7928::{BlockAccessList, validate_block_access_list};
 use alloy_eips::{
     eip2718::Typed2718,
     eip4844::DATA_GAS_PER_BLOB,
-    eip7840::{BLOB_BASE_COST, BlobParams},
+    eip6110::{DEPOSIT_REQUEST_TYPE, MAINNET_DEPOSIT_CONTRACT_ADDRESS},
+    eip7002::WITHDRAWAL_REQUEST_TYPE,
+    eip7251::CONSOLIDATION_REQUEST_TYPE,
+    eip7685::Requests,
+    eip7840::BlobParams,
 };
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, aliases::U512};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, U256, aliases::U512, b256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
@@ -58,6 +62,25 @@ const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 /// EIP-7934 maximum RLP-encoded block size: `MAX_BLOCK_SIZE` (10 MiB) minus `SAFETY_MARGIN`
 /// (2 MiB).
 const MAX_RLP_BLOCK_SIZE: usize = 10 * 1024 * 1024 - 2 * 1024 * 1024;
+
+/// First topic of the deposit contract's `DepositEvent`.
+const DEPOSIT_EVENT_SIGNATURE_HASH: B256 =
+    b256!("0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5");
+
+/// ABI layout of a `DepositEvent` payload: the offset of each dynamic field's length word and
+/// the field's size, in the order the consensus layer consumes them (public key, withdrawal
+/// credentials, amount, signature, index).
+const DEPOSIT_EVENT_FIELDS: [(usize, usize); 5] =
+    [(160, 48), (256, 32), (320, 8), (384, 96), (512, 8)];
+
+/// Length of an ABI-encoded `DepositEvent` payload.
+const DEPOSIT_EVENT_LENGTH: usize = 576;
+
+/// EIP-8282 builder deposit request type.
+const BUILDER_DEPOSIT_REQUEST_TYPE: u8 = 0x03;
+
+/// EIP-8282 builder exit request type.
+const BUILDER_EXIT_REQUEST_TYPE: u8 = 0x04;
 
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug)]
@@ -443,15 +466,7 @@ fn execute_block<'a>(
             .map_err(|err| TestError::case(path, name, err))?;
         blob_params = schedule
             .blob_params(header.number, header.timestamp)
-            .map_err(|err| TestError::case(path, name, err))?
-            // The reserve price of EIP-7918 comes from the spec, not from the fixture's schedule.
-            .map(|params| {
-                if spec.enables(SpecId::OSAKA) {
-                    params.with_blob_base_cost(BLOB_BASE_COST)
-                } else {
-                    params
-                }
-            });
+            .map_err(|err| TestError::case(path, name, err))?;
         expected_state_root = Some(header.state_root);
     }
     // The blob checks multiply the blob counts by the blob gas, which must not overflow.
@@ -555,6 +570,8 @@ fn execute_block<'a>(
         let mut block_state_gas_used = 0u64;
         let mut block_blob_gas_used = 0u64;
         let mut receipts = Vec::with_capacity(transactions.len());
+        let mut requests = Requests::default();
+        let mut deposit_requests = Vec::new();
         for (transaction_index, raw_tx) in transactions.iter().enumerate() {
             hook.transaction_started(TransactionStarted {
                 block_index,
@@ -658,6 +675,12 @@ fn execute_block<'a>(
                         success: result.status,
                         logs: &result.logs,
                     });
+                    if spec.enables(SpecId::PRAGUE)
+                        && let Err(reason) =
+                            collect_deposit_requests(&result.logs, &mut deposit_requests)
+                    {
+                        return reject_block(should_fail, path, name, reason);
+                    }
                     if compare_receipt_root {
                         let status = if spec.enables(SpecId::BYZANTIUM) {
                             Eip658Value::Eip658(result.status)
@@ -756,6 +779,7 @@ fn execute_block<'a>(
             evm.state_mut().bump_bal_index();
         }
 
+        requests.push_request_with_type(DEPOSIT_REQUEST_TYPE, deposit_requests);
         if let Err(err) = post_block_transition(
             &mut evm,
             &mut block_state,
@@ -764,6 +788,7 @@ fn execute_block<'a>(
             block_ommers(block),
             block_withdrawals(block),
             captured,
+            &mut requests,
         ) {
             // A failed post-block system call (e.g. SYSTEM_CONTRACT_CALL_FAILED) invalidates the
             // block, mirroring execution-specs raising `InvalidBlock`.
@@ -771,6 +796,23 @@ fn execute_block<'a>(
                 return Ok(BlockResolution::Discard);
             }
             return Err(TestError::case(path, name, err));
+        }
+
+        if spec.enables(SpecId::PRAGUE)
+            && let Some(header) = block_header(block)
+        {
+            let computed = requests.requests_hash();
+            if header.requests_hash != Some(computed) {
+                return reject_block(
+                    should_fail,
+                    path,
+                    name,
+                    format!(
+                        "requests hash mismatch: header {:?}, computed {computed}",
+                        header.requests_hash
+                    ),
+                );
+            }
         }
 
         if let Some(expected_bal) = block_access_list(block) {
@@ -1087,6 +1129,7 @@ fn pre_block_system_calls(
     Ok(())
 }
 
+#[expect(clippy::too_many_arguments)]
 fn post_block_transition(
     evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
@@ -1095,6 +1138,7 @@ fn post_block_transition(
     ommers: &[BlockHeader],
     withdrawals: &[Withdrawal],
     captured: bool,
+    requests: &mut Requests,
 ) -> Result<(), TestErrorKind> {
     // A captured case keeps only the accounts its blocks touch, so the system contracts are absent.
     let check = if captured { SystemCallCheck::Outcome } else { SystemCallCheck::OutcomeAndCode };
@@ -1133,7 +1177,7 @@ fn post_block_transition(
     }
 
     if spec.enables(SpecId::PRAGUE) {
-        run_system_call(
+        let output = run_system_call(
             evm,
             block_state,
             WITHDRAWAL_REQUEST_ADDRESS,
@@ -1141,7 +1185,8 @@ fn post_block_transition(
             "eip7002",
             check,
         )?;
-        run_system_call(
+        requests.push_request_with_type(WITHDRAWAL_REQUEST_TYPE, output);
+        let output = run_system_call(
             evm,
             block_state,
             evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
@@ -1149,11 +1194,12 @@ fn post_block_transition(
             "eip7251",
             check,
         )?;
+        requests.push_request_with_type(CONSOLIDATION_REQUEST_TYPE, output);
     }
 
     // EIP-8282: builder deposit (request type 0x03) and builder exit (0x04) requests, Amsterdam+.
     if spec.enables(SpecId::AMSTERDAM) {
-        run_system_call(
+        let output = run_system_call(
             evm,
             block_state,
             evm2::evm::BUILDER_DEPOSIT_REQUEST_ADDRESS,
@@ -1161,7 +1207,8 @@ fn post_block_transition(
             "eip8282_deposit",
             check,
         )?;
-        run_system_call(
+        requests.push_request_with_type(BUILDER_DEPOSIT_REQUEST_TYPE, output);
+        let output = run_system_call(
             evm,
             block_state,
             evm2::evm::BUILDER_EXIT_REQUEST_ADDRESS,
@@ -1169,6 +1216,7 @@ fn post_block_transition(
             "eip8282_exit",
             check,
         )?;
+        requests.push_request_with_type(BUILDER_EXIT_REQUEST_TYPE, output);
     }
     Ok(())
 }
@@ -1192,7 +1240,7 @@ fn run_system_call(
     data: Bytes,
     label: &'static str,
     check: SystemCallCheck,
-) -> Result<(), TestErrorKind> {
+) -> Result<Bytes, TestErrorKind> {
     // A checked call to a target without code is an invalid block (execution-specs
     // `SYSTEM_CONTRACT_EMPTY`); the EVM itself treats it as a successful no-op.
     if check == SystemCallCheck::OutcomeAndCode {
@@ -1210,12 +1258,45 @@ fn run_system_call(
         // A failed unchecked call keeps the state accesses it recorded, which a BAL lists as reads.
         if check == SystemCallCheck::None {
             let _ = executed.commit_to(block_state);
-            return Ok(());
+            return Ok(Bytes::new());
         }
         let _ = executed.discard();
         return Err(TestErrorKind::SystemCall(label));
     }
-    let _ = executed.commit_to(block_state);
+    Ok(executed.commit_to(block_state).output)
+}
+
+/// Appends the unframed fields of every deposit event in `logs` to `deposit_requests`
+/// (execution-specs `parse_deposit_requests`).
+fn collect_deposit_requests(logs: &[Log], deposit_requests: &mut Vec<u8>) -> Result<(), String> {
+    for log in logs {
+        if log.address == MAINNET_DEPOSIT_CONTRACT_ADDRESS
+            && log.topics().first() == Some(&DEPOSIT_EVENT_SIGNATURE_HASH)
+        {
+            extract_deposit_data(&log.data.data, deposit_requests)?;
+        }
+    }
+    Ok(())
+}
+
+/// Strips the ABI framing from a `DepositEvent` payload, appending the fields to `out`
+/// (execution-specs `extract_deposit_data`).
+fn extract_deposit_data(data: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
+    if data.len() != DEPOSIT_EVENT_LENGTH {
+        return Err("invalid deposit event data length".to_string());
+    }
+    let word = |offset: usize| U256::from_be_slice(&data[offset..offset + 32]);
+    for (index, (offset, _)) in DEPOSIT_EVENT_FIELDS.into_iter().enumerate() {
+        if word(index * 32) != U256::from(offset) {
+            return Err(format!("invalid offset for deposit field {index}"));
+        }
+    }
+    for (index, (offset, size)) in DEPOSIT_EVENT_FIELDS.into_iter().enumerate() {
+        if word(offset) != U256::from(size) {
+            return Err(format!("invalid size for deposit field {index}"));
+        }
+        out.extend_from_slice(&data[offset + 32..offset + 32 + size]);
+    }
     Ok(())
 }
 
@@ -1685,7 +1766,8 @@ impl ForkSchedule {
         number: U256,
         timestamp: U256,
     ) -> Result<Option<BlobParams>, TestErrorKind> {
-        let Some(blob_fork) = self.stage_at(number, timestamp).blob_fork else { return Ok(None) };
+        let stage = self.stage_at(number, timestamp);
+        let Some(blob_fork) = stage.blob_fork else { return Ok(None) };
         let entry = self
             .blob_schedule
             .get(&blob_fork)
@@ -1693,7 +1775,7 @@ impl ForkSchedule {
         if entry.base_fee_update_fraction.is_zero() {
             return Err(TestErrorKind::ZeroBlobUpdateFraction(blob_fork));
         }
-        Ok(Some(entry.params()))
+        Ok(Some(entry.params(stage.spec)))
     }
 
     /// Returns whether any spec of the fork is skipped.
@@ -1741,28 +1823,8 @@ const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
     const AT_15K: Activation = Timestamp(15_000);
 
     Some(match fork {
-        ForkSpec::Frontier => ForkSchedule::fixed(SpecId::FRONTIER),
-        ForkSpec::Homestead => ForkSchedule::fixed(SpecId::HOMESTEAD),
-        ForkSpec::EIP150 => ForkSchedule::fixed(SpecId::TANGERINE),
-        ForkSpec::EIP158 => ForkSchedule::fixed(SpecId::SPURIOUS_DRAGON),
-        ForkSpec::Byzantium => ForkSchedule::fixed(SpecId::BYZANTIUM),
-        ForkSpec::Constantinople | ForkSpec::ConstantinopleFix => {
-            ForkSchedule::fixed(SpecId::PETERSBURG)
-        }
-        ForkSpec::Istanbul => ForkSchedule::fixed(SpecId::ISTANBUL),
-        ForkSpec::Berlin => ForkSchedule::fixed(SpecId::BERLIN),
-        ForkSpec::London => ForkSchedule::fixed(SpecId::LONDON),
-        ForkSpec::Paris
-        | ForkSpec::MergeEOF
-        | ForkSpec::MergeMeterInitCode
-        | ForkSpec::MergePush0 => ForkSchedule::fixed(SpecId::MERGE),
-        ForkSpec::Shanghai => ForkSchedule::fixed(SpecId::SHANGHAI),
-        ForkSpec::Cancun => ForkSchedule::fixed(SpecId::CANCUN),
-        ForkSpec::Prague => ForkSchedule::fixed(SpecId::PRAGUE),
-        ForkSpec::Osaka => ForkSchedule::fixed(SpecId::OSAKA),
         ForkSpec::BPO1 => ForkSchedule::new(ForkStage::bpo(BlobFork::Bpo1), None),
         ForkSpec::BPO2 => ForkSchedule::new(ForkStage::bpo(BlobFork::Bpo2), None),
-        ForkSpec::Amsterdam => ForkSchedule::fixed(SpecId::AMSTERDAM),
         ForkSpec::FrontierToHomesteadAt5 => {
             ForkSchedule::transition(SpecId::FRONTIER, AT_5, SpecId::HOMESTEAD)
         }
@@ -1810,7 +1872,10 @@ const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
             ForkStage::bpo(BlobFork::Bpo2),
             Some((AT_15K, ForkStage::new(SpecId::AMSTERDAM))),
         ),
-        ForkSpec::HomesteadToDaoAt5 => return None,
+        fixed => match fixed.to_spec_id() {
+            Some(spec) => ForkSchedule::fixed(spec),
+            None => return None,
+        },
     })
 }
 
@@ -1820,6 +1885,9 @@ mod tests {
         super::types::{ChainConfig, SealEngine, State},
         *,
     };
+    use alloy_eips::eip7840::BLOB_BASE_COST;
+    use std::collections::BTreeMap;
+
     #[cfg(feature = "jit")]
     use crate::tx::recover_address;
     #[cfg(feature = "jit")]
@@ -1828,7 +1896,6 @@ mod tests {
     use alloy_primitives::{TxKind, to_eip155_v};
     #[cfg(feature = "jit")]
     use evm2::interpreter::op;
-    use std::collections::BTreeMap;
 
     #[cfg(feature = "jit")]
     const BYTECODE_STORE42: &[u8] = &[op::PUSH1, 0x42, op::PUSH0, op::SSTORE, op::STOP];
@@ -1874,6 +1941,23 @@ mod tests {
         };
         assert_eq!(blob_params(14_999).update_fraction, BlobParams::bpo1().update_fraction);
         assert_eq!(blob_params(15_000).update_fraction, BlobParams::bpo2().update_fraction);
+    }
+
+    #[test]
+    fn blob_params_carry_the_reserve_price_from_osaka() {
+        let config = |fork, entry| ChainConfig {
+            chainid: U256::ONE,
+            blob_schedule: BTreeMap::from([(fork, BlobScheduleEntry::from(entry))]),
+        };
+        let header = BlockHeader::default();
+        let osaka_config = config(BlobFork::Osaka, BlobParams::osaka());
+        let osaka = test_case(ForkSpec::Osaka, Some(osaka_config));
+        let params = blob_params(Path::new("test.json"), "test", &osaka, &header);
+        assert_eq!(params.unwrap().unwrap().blob_base_cost, BLOB_BASE_COST);
+        let prague_config = config(BlobFork::Prague, BlobParams::prague());
+        let prague = test_case(ForkSpec::Prague, Some(prague_config));
+        let params = blob_params(Path::new("test.json"), "test", &prague, &header);
+        assert_eq!(params.unwrap().unwrap().blob_base_cost, 0);
     }
 
     #[test]

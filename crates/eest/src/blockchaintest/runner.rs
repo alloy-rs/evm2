@@ -170,12 +170,6 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "eip7928_block_level_access_lists/fork_transition/invalid_post_fork_block_without_bal_hash_field.json",
     "eip7928_block_level_access_lists/fork_transition/invalid_pre_fork_block_with_bal_hash_field.json",
 
-    // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
-    "prague/eip6110_deposits",
-    "prague/eip7002_el_triggerable_withdrawals",
-    "prague/eip7251_consolidations",
-    "prague/eip7685_general_purpose_el_requests",
-
     // This fixture has a block gas limit below the transaction intrinsic gas and belongs to block validation.
     "static/state_tests/stEIP1559/lowGasLimit.json",
 ];

@@ -750,7 +750,7 @@ mod spec_serde {
     where
         S: Serializer,
     {
-        serializer.serialize_str(name(*spec))
+        serializer.serialize_str(spec.name())
     }
 
     pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<SpecId, D::Error>
@@ -758,49 +758,7 @@ mod spec_serde {
         D: Deserializer<'de>,
     {
         let name = String::deserialize(deserializer)?;
-        from_name(&name).ok_or_else(|| de::Error::custom(format!("unknown spec id {name:?}")))
-    }
-
-    const fn name(spec: SpecId) -> &'static str {
-        match spec {
-            SpecId::FRONTIER => "FRONTIER",
-            SpecId::HOMESTEAD => "HOMESTEAD",
-            SpecId::TANGERINE => "TANGERINE",
-            SpecId::SPURIOUS_DRAGON => "SPURIOUS_DRAGON",
-            SpecId::BYZANTIUM => "BYZANTIUM",
-            SpecId::PETERSBURG => "PETERSBURG",
-            SpecId::ISTANBUL => "ISTANBUL",
-            SpecId::BERLIN => "BERLIN",
-            SpecId::LONDON => "LONDON",
-            SpecId::MERGE => "MERGE",
-            SpecId::SHANGHAI => "SHANGHAI",
-            SpecId::CANCUN => "CANCUN",
-            SpecId::PRAGUE => "PRAGUE",
-            SpecId::OSAKA => "OSAKA",
-            SpecId::AMSTERDAM => "AMSTERDAM",
-            _ => "CANCUN",
-        }
-    }
-
-    fn from_name(name: &str) -> Option<SpecId> {
-        match name {
-            "FRONTIER" => Some(SpecId::FRONTIER),
-            "HOMESTEAD" => Some(SpecId::HOMESTEAD),
-            "TANGERINE" => Some(SpecId::TANGERINE),
-            "SPURIOUS_DRAGON" => Some(SpecId::SPURIOUS_DRAGON),
-            "BYZANTIUM" => Some(SpecId::BYZANTIUM),
-            "PETERSBURG" => Some(SpecId::PETERSBURG),
-            "ISTANBUL" => Some(SpecId::ISTANBUL),
-            "BERLIN" => Some(SpecId::BERLIN),
-            "LONDON" => Some(SpecId::LONDON),
-            "MERGE" => Some(SpecId::MERGE),
-            "SHANGHAI" => Some(SpecId::SHANGHAI),
-            "CANCUN" => Some(SpecId::CANCUN),
-            "PRAGUE" => Some(SpecId::PRAGUE),
-            "OSAKA" => Some(SpecId::OSAKA),
-            "AMSTERDAM" => Some(SpecId::AMSTERDAM),
-            _ => None,
-        }
+        name.parse().map_err(|_| de::Error::custom(format!("unknown spec id {name:?}")))
     }
 }
 
