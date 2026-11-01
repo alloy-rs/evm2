@@ -154,19 +154,19 @@ fn modexp_big(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
 /// See: <https://eips.ethereum.org/EIPS/eip-198>
 /// See: <https://etherscan.io/address/0000000000000000000000000000000000000005>
 pub fn run_byzantium(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    run_inner(input, gas, false, byzantium_gas_calc)
+    run_inner(input, gas, BYZANTIUM_PARAMS, false, byzantium_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-2565>
 /// Gas cost of berlin is modified from byzantium.
 pub fn run_berlin(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    run_inner(input, gas, false, berlin_gas_calc)
+    run_inner(input, gas, BERLIN_PARAMS, false, berlin_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-7823>
 /// See: <https://eips.ethereum.org/EIPS/eip-7883>
 pub fn run_osaka(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    run_inner(input, gas, true, osaka_gas_calc)
+    run_inner(input, gas, OSAKA_PARAMS, true, osaka_gas_calc)
 }
 
 /// Calculate the iteration count for the modexp precompile.
@@ -186,12 +186,16 @@ pub(crate) fn calculate_iteration_count(exp_length: u64, exp_highp: &U256, multi
 }
 
 /// Run the modexp precompile.
-pub fn run_inner(
+fn run_inner(
     input: &[u8],
     gas: &mut GasTracker,
+    params: GasCalcParams,
     osaka: bool,
     calc_gas: fn(u64, u64, u64, &U256) -> u64,
 ) -> PrecompileResult {
+    // Fail before parsing the lengths when the minimum price is unaffordable.
+    gas.spend(params.min_price)?;
+
     // The format of input is:
     // <length_of_BASE> <length_of_EXPONENT> <length_of_MODULUS> <BASE> <EXPONENT> <MODULUS>
     // Where every length is a 32-byte left-padded integer representing the number of bytes
@@ -226,7 +230,7 @@ pub fn run_inner(
 
     // Check if we have enough gas.
     let gas_cost = calc_gas(base_len64, exp_len64, mod_len64, &exp_highp);
-    gas.spend(gas_cost)?;
+    gas.spend(gas_cost - params.min_price)?;
 
     // EIP-7823 limits the size of the inputs, after the gas is charged.
     if osaka
@@ -266,7 +270,7 @@ pub(crate) fn byzantium_gas_calc(
         exp_len,
         mod_len,
         exp_highp,
-        GasCalcParams { min_price: 0, multiplier: 8, divisor: 20 },
+        BYZANTIUM_PARAMS,
         byzantium_multiplication_complexity,
     )
 }
@@ -274,14 +278,7 @@ pub(crate) fn byzantium_gas_calc(
 /// Calculate gas cost according to EIP 2565:
 /// <https://eips.ethereum.org/EIPS/eip-2565>
 pub(crate) fn berlin_gas_calc(base_len: u64, exp_len: u64, mod_len: u64, exp_highp: &U256) -> u64 {
-    gas_calc(
-        base_len,
-        exp_len,
-        mod_len,
-        exp_highp,
-        GasCalcParams { min_price: 200, multiplier: 8, divisor: 3 },
-        berlin_multiplication_complexity,
-    )
+    gas_calc(base_len, exp_len, mod_len, exp_highp, BERLIN_PARAMS, berlin_multiplication_complexity)
 }
 
 /// Calculate gas cost according to EIP-7883:
@@ -292,14 +289,7 @@ pub(crate) fn berlin_gas_calc(base_len: u64, exp_len: u64, mod_len: u64, exp_hig
 /// 2. Increase cost when exponent is larger than 32 bytes
 /// 3. Increase cost when base or modulus is larger than 32 bytes
 pub(crate) fn osaka_gas_calc(base_len: u64, exp_len: u64, mod_len: u64, exp_highp: &U256) -> u64 {
-    gas_calc(
-        base_len,
-        exp_len,
-        mod_len,
-        exp_highp,
-        GasCalcParams { min_price: 500, multiplier: 16, divisor: 1 },
-        osaka_multiplication_complexity,
-    )
+    gas_calc(base_len, exp_len, mod_len, exp_highp, OSAKA_PARAMS, osaka_multiplication_complexity)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -308,6 +298,10 @@ pub(crate) struct GasCalcParams {
     multiplier: u64,
     divisor: u64,
 }
+
+const BYZANTIUM_PARAMS: GasCalcParams = GasCalcParams { min_price: 0, multiplier: 8, divisor: 20 };
+const BERLIN_PARAMS: GasCalcParams = GasCalcParams { min_price: 200, multiplier: 8, divisor: 3 };
+const OSAKA_PARAMS: GasCalcParams = GasCalcParams { min_price: 500, multiplier: 16, divisor: 1 };
 
 /// Calculate gas cost.
 #[inline]
