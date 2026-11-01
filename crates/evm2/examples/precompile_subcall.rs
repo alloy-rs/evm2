@@ -91,7 +91,7 @@ fn staticcall_precompile(
 
     match result.stop {
         stop if stop.is_success() => Ok(PrecompileOutput::new(result.output)),
-        stop if stop.is_revert() => Err(PrecompileError::Revert(result.output)),
+        stop if stop.is_frame_revert() => Err(PrecompileError::Revert(result.output)),
         stop => Err(PrecompileHalt::Other(format!("subcall halted with {stop:?}").into()).into()),
     }
 }

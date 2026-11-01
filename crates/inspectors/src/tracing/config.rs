@@ -1,9 +1,7 @@
+use crate::tracing::builder::geth::MIN_STRUCT_LOG_JSON_LEN;
 use alloy_primitives::{U256, map::HashSet};
 use alloy_rpc_types_trace::{
-    geth::{
-        CallConfig, FlatCallConfig, GethDefaultTracingOptions, PreStateConfig,
-        erc7562::Erc7562Config,
-    },
+    geth::{CallConfig, FlatCallConfig, GethDefaultTracingOptions, PreStateConfig},
     parity::TraceType,
 };
 use core::num::NonZeroU64;
@@ -221,7 +219,12 @@ impl TracingInspectorConfig {
     #[inline]
     pub fn from_geth_config(config: &GethDefaultTracingOptions) -> Self {
         Self {
-            step_limit: config.limit.and_then(NonZeroU64::new),
+            // The limit counts bytes of JSON, and a struct log takes at least that many, so the
+            // trace never needs more steps.
+            step_limit: config
+                .limit
+                .filter(|limit| *limit != 0)
+                .and_then(|limit| NonZeroU64::new(limit / MIN_STRUCT_LOG_JSON_LEN + 1)),
             record_memory_snapshots: config.is_memory_enabled(),
             record_stack_snapshots: if config.disable_stack.unwrap_or_default() {
                 StackSnapshotType::None
@@ -244,23 +247,6 @@ impl TracingInspectorConfig {
             .set_record_inputs(true)
             // call tracer is similar parity tracer with optional support for logs
             .set_record_logs(config.with_log.unwrap_or_default())
-    }
-
-    /// Returns a config for geth's
-    /// [Erc7562Frame](alloy_rpc_types_trace::geth::erc7562::Erc7562Frame).
-    #[inline]
-    pub fn from_geth_erc7562_config(config: &Erc7562Config) -> Self {
-        Self::none()
-            .set_record_inputs(true)
-            // call tracer is similar parity tracer with optional support for logs
-            .set_record_logs(config.with_log.unwrap_or_default())
-            // need memory snapshots for keccak preimages
-            .set_memory_snapshots(true)
-            // need stack snapshots for keccak preimages
-            .set_stack_snapshots(StackSnapshotType::Full)
-            // need state diffs to capture SLOAD values in accessedSlots.reads
-            .set_state_diffs(true)
-            .steps()
     }
 
     /// Returns a config for geth's
@@ -537,7 +523,6 @@ mod tests {
             TracingInspectorConfig::all(),
             TracingInspectorConfig::default_parity(),
             TracingInspectorConfig::from_geth_call_config(&CallConfig::default()),
-            TracingInspectorConfig::from_geth_erc7562_config(&Erc7562Config::default()),
             TracingInspectorConfig::from_flat_call_config(&FlatCallConfig::default()),
         ] {
             assert!(config.record_inputs);
@@ -569,7 +554,7 @@ mod tests {
     #[test]
     fn merge_step_limits_preserves_each_consumers_capture() {
         let limited = TracingInspectorConfig::from_geth_config(&GethDefaultTracingOptions {
-            limit: Some(2),
+            limit: Some(2 * MIN_STRUCT_LOG_JSON_LEN - 1),
             ..Default::default()
         });
         let larger = TracingInspectorConfig { step_limit: NonZeroU64::new(4), ..limited };

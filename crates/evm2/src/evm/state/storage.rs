@@ -1,6 +1,6 @@
 //! Transaction-scoped persistent storage overlay.
 
-use super::{DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
+use super::{DbResult, JournalEntry, StateInner, Tracked};
 use crate::{LoadError, interpreter::Word};
 use alloy_primitives::{
     Address,
@@ -23,24 +23,6 @@ pub struct StorageOverlay {
 }
 
 impl StorageOverlay {
-    /// Applies an isolated execution's slots, retaining parent originals and combining warmth.
-    #[cfg(test)]
-    pub(crate) fn merge_isolated(&mut self, child: Self) {
-        self.wiped |= child.wiped;
-        for (key, slot) in child.slots {
-            match self.slots.entry(key) {
-                hash_map::Entry::Vacant(entry) => {
-                    entry.insert(slot);
-                }
-                hash_map::Entry::Occupied(mut entry) => {
-                    let parent = entry.get_mut();
-                    parent.value.current = slot.value.current;
-                    parent.is_warm |= slot.is_warm;
-                }
-            }
-        }
-    }
-
     /// Returns the changed storage slots.
     ///
     /// A slot is changed when its current value differs from its transaction-boundary original,
@@ -57,23 +39,6 @@ impl StorageOverlay {
     #[inline]
     pub fn is_changed(&self) -> bool {
         self.wiped || self.changed_slots().next().is_some()
-    }
-
-    /// Rereads the slots that hold zero in the overlay after the account's creation was rolled
-    /// back.
-    ///
-    /// A slot first loaded under the creation cached zero instead of its backing value, and the
-    /// rollback restores its zero current value. A slot that fails to reload is evicted, so its
-    /// next load reports the error.
-    pub(super) fn reload_zeroed(&mut self, address: &Address, database: &mut dyn DynDatabase) {
-        self.slots.retain(|key, slot| {
-            if !slot.value.original.is_zero() || !slot.value.current.is_zero() {
-                return true;
-            }
-            let Ok(value) = database.get_storage(address, key) else { return false };
-            slot.value = Tracked::new(value);
-            true
-        });
     }
 }
 
@@ -124,8 +89,9 @@ pub struct StorageHandle<'a, 'db> {
     address: &'a Address,
     /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
     storage: &'a mut StorageOverlay,
-    /// Whether the account was created in this transaction, so its unloaded slots read as zero.
-    created: bool,
+    /// Whether the account's creation discarded its old storage, so its unloaded slots read as
+    /// zero.
+    discards_storage: bool,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner<'db>,
@@ -138,10 +104,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub(crate) const fn new(
         address: &'a Address,
         storage: &'a mut StorageOverlay,
-        created: bool,
+        discards_storage: bool,
         inner: &'a mut StateInner<'db>,
     ) -> Self {
-        Self { address, storage, created, inner }
+        Self { address, storage, discards_storage, inner }
     }
 
     /// Returns the account address.
@@ -203,8 +169,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     /// slot's [`StorageSlot::is_warm`] is seeded from the base warm set (EIP-2930 access list),
     /// mirroring how [`account_raw`](super::State) seeds an account's warmth. The load itself
     /// records no revert entry: the cached value's original equals its current, so it is left in
-    /// place by [`State::rollback`](super::State::rollback) as a harmless cache, except that a
-    /// creation's rollback reloads the slots it read as zero. Used by
+    /// place by [`State::rollback`](super::State::rollback) as a harmless cache. Used by
     /// [`State::storage_slot`](super::State::storage_slot) to reach a single slot directly.
     #[inline]
     pub fn into_slot_with_skip(
@@ -234,7 +199,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         key: Word,
         skip_cold_load: bool,
     ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
-        let Self { address, storage, created, inner } = self;
+        let Self { address, storage, discards_storage, inner } = self;
         let (slot, is_cold) = match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded slot has no cold database read to skip, so the skip only
@@ -257,15 +222,8 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && !is_warm {
                     return Err(LoadError::ColdLoadSkipped);
                 }
-                // Like revm, an unloaded slot of a created account reads zero without a database
-                // read, since the creation discards the address's old storage.
-                let value = if storage.wiped || created {
-                    // The zero needs no database read, but a strict BAL must still cover the slot.
-                    inner.database.check_bal_storage(address, &key)?;
-                    Word::ZERO
-                } else {
-                    inner.database.get_storage(address, &key)?
-                };
+                let value =
+                    inner.read_unloaded_slot(address, &key, storage.wiped || discards_storage)?;
                 (entry.insert(StorageSlot::loaded(value, is_warm)), !is_warm)
             }
         };
@@ -280,10 +238,11 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     ///
     /// Only called during transaction finalization (selfdestruct and EIP-161 dead-account
     /// deletion), after the last revertible scope, so the wipe is not journaled. Loaded slot
-    /// entries are kept with their values reset to zero: wiped slots resolve to zero on re-load,
-    /// and resetting `original` alongside `current` turns the transaction's prior writes into
-    /// unchanged reads, which keeps a destroyed account's storage accesses visible to the EIP-7928
-    /// block access list (execution-specs `destroy_storage` converts writes to reads).
+    /// entries are kept with their `current` value reset to zero and their `original` value kept:
+    /// wiped slots resolve to zero on re-load, and the reset turns the transaction's prior writes
+    /// into unchanged reads of the slot's original value, which keeps a destroyed account's storage
+    /// accesses visible to the EIP-7928 block access list (execution-specs `destroy_storage`
+    /// converts writes to reads).
     #[inline]
     pub fn wipe(&mut self) {
         self.storage.wiped = true;

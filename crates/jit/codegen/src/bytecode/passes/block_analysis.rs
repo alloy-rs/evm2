@@ -2230,7 +2230,7 @@ impl Bytecode<'_> {
             }
             // Unknown, disabled, or an invalid immediate.
             op::DUP1..=op::DUP16 | op::SWAP1..=op::SWAP16 | op::DUPN | op::SWAPN | op::EXCHANGE
-                if inp == 0 =>
+                if inst.is_diverging() =>
             {
                 return false;
             }

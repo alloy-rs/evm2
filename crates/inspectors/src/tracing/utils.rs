@@ -1,14 +1,16 @@
 //! Utility functions for evm2 related ops.
-use crate::tracing::config::TraceStyle;
+use crate::tracing::{TransactionContext, config::TraceStyle};
 use alloc::{
     format,
     string::{String, ToString},
     vec::Vec,
 };
 use alloy_primitives::{Bytes, hex};
+use alloy_rpc_types_eth::TransactionInfo;
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
-    AccountInfo, SpecId,
+    AccountInfo, EvmTypesHost,
+    env::BlockEnv,
     evm::{DbResult, DynDatabase},
     interpreter::InstrStop,
 };
@@ -127,13 +129,6 @@ pub(crate) fn convert_memory(data: &[u8]) -> Vec<String> {
     memory
 }
 
-/// Get the gas used, accounting for refunds
-#[inline]
-pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
-    let refund_quotient = if spec.enables(SpecId::LONDON) { 5 } else { 2 };
-    spent - (refunded).min(spent / refund_quotient)
-}
-
 /// Loads the code for the given account from the account itself or the database
 ///
 /// Returns None if the code hash is the KECCAK_EMPTY hash
@@ -173,6 +168,22 @@ pub(crate) fn maybe_revert_reason(output: &[u8]) -> Option<String> {
             }
         }
         _ => None,
+    }
+}
+
+/// Returns the [`TransactionInfo`] of a traced transaction.
+pub(crate) fn transaction_info<T: EvmTypesHost>(
+    tx_context: Option<&TransactionContext>,
+    block_env: &BlockEnv<T>,
+) -> TransactionInfo {
+    #[allow(clippy::needless_update)]
+    TransactionInfo {
+        hash: tx_context.and_then(|c| c.tx_hash),
+        index: tx_context.and_then(|c| c.tx_index.map(|i| i as u64)),
+        block_hash: tx_context.and_then(|c| c.block_hash),
+        block_number: Some(block_env.number.saturating_to()),
+        base_fee: Some(block_env.basefee.saturating_to()),
+        ..Default::default()
     }
 }
 

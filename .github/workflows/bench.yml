@@ -68,7 +68,7 @@ jobs:
           fi
 
       # The CLI reads fixtures from its source tree, so check out the old code in place and
-      # keep only this ref's benchmark scripts.
+      # keep only this ref's benchmark scripts and the helpers they share.
       - name: Check out backfill commit
         if: inputs.commit != ''
         env:
@@ -78,15 +78,17 @@ jobs:
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "commit must be a full SHA" >&2; exit 1; }
           git merge-base --is-ancestor "$COMMIT" HEAD || { echo "$COMMIT is not in this ref's history" >&2; exit 1; }
           # bench.py builds against the LLVM version the old code requires.
-          llvm="$(git show "$COMMIT:crates/jit/llvm/Cargo.toml" | sed -nE 's/.*"llvm([0-9]+)-[0-9]+".*/\1/p')"
+          llvm="$(git show "$COMMIT:crates/jit/llvm/Cargo.toml" | sed -nE -e 's/.*"llvm([0-9]+)-[0-9]+".*/\1/p' -e 's/^llvm-sys = "([0-9]+)[0-9]"$/\1/p')"
           if ! command -v "llvm-config-$llvm" >/dev/null; then
             sudo .github/scripts/install_llvm_ubuntu.sh "$llvm" dev
           fi
           scripts="$RUNNER_TEMP/jit-scripts"
-          cp -R scripts/jit "$scripts"
+          mkdir "$scripts"
+          cp -R scripts/common.py scripts/jit "$scripts"
           git checkout --quiet --detach "$COMMIT"
           rm -rf scripts/jit
-          cp -R "$scripts" scripts/jit
+          cp -R "$scripts/jit" scripts/jit
+          cp "$scripts/common.py" scripts/common.py
 
       - name: Resolve and download exact baseline
         id: baseline
@@ -176,7 +178,7 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" && "$BASELINE_FOUND" != "true" ]]; then
             args+=(--diff "$BASE_SHA" --base-output target/jit-bench/baseline)
             # bench.py builds each side against the LLVM version it requires.
-            base_llvm="$(git show "$BASE_SHA:crates/jit/llvm/Cargo.toml" | sed -nE 's/.*"llvm([0-9]+)-[0-9]+".*/\1/p')"
+            base_llvm="$(git show "$BASE_SHA:crates/jit/llvm/Cargo.toml" | sed -nE -e 's/.*"llvm([0-9]+)-[0-9]+".*/\1/p' -e 's/^llvm-sys = "([0-9]+)[0-9]"$/\1/p')"
             if ! command -v "llvm-config-$base_llvm" >/dev/null; then
               sudo .github/scripts/install_llvm_ubuntu.sh "$base_llvm" dev
             fi

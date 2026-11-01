@@ -47,8 +47,8 @@ pub struct CompiledProgram {
     pub key: RuntimeCacheKey,
     /// Whether this is an AOT or JIT program.
     pub kind: ProgramKind,
-    /// Keeps the backing memory (shared library / JIT module) alive.
-    _backing: ProgramBacking,
+    /// Keeps the linked machine code alive.
+    _backing: Arc<JitCodeBacking>,
 }
 
 impl std::fmt::Debug for CompiledProgram {
@@ -62,13 +62,13 @@ impl std::fmt::Debug for CompiledProgram {
 }
 
 impl CompiledProgram {
-    /// Creates a new compiled program backed by a loaded shared library.
+    /// Creates a new compiled program backed by a linked AOT object.
     pub(crate) const fn new_aot(
         key: RuntimeCacheKey,
         func: EvmCompilerFn,
-        library: Arc<LoadedLibrary>,
+        backing: Arc<JitCodeBacking>,
     ) -> Self {
-        Self { key, kind: ProgramKind::Aot, func, _backing: ProgramBacking::LoadedLibrary(library) }
+        Self { key, kind: ProgramKind::Aot, func, _backing: backing }
     }
 
     /// Creates a new compiled program backed by a JIT module's
@@ -78,7 +78,7 @@ impl CompiledProgram {
         func: EvmCompilerFn,
         backing: Arc<JitCodeBacking>,
     ) -> Self {
-        Self { key, kind: ProgramKind::Jit, func, _backing: ProgramBacking::JitModule(backing) }
+        Self { key, kind: ProgramKind::Jit, func, _backing: backing }
     }
 }
 
@@ -100,29 +100,4 @@ pub enum ProgramKind {
     Aot,
     /// Compiled at runtime by the JIT.
     Jit,
-}
-
-/// Backing storage that keeps compiled code alive.
-#[expect(dead_code, reason = "variant fields are held alive for Drop")]
-enum ProgramBacking {
-    /// A dynamically loaded shared library (AOT).
-    LoadedLibrary(Arc<LoadedLibrary>),
-    /// An ORCv2 ResourceTracker that owns JIT machine code.
-    /// Dropping the last reference calls `tracker.remove()`, freeing the code.
-    JitModule(Arc<JitCodeBacking>),
-}
-
-/// Owns a loaded shared library.
-///
-/// Dropping this unloads the library.
-pub(crate) struct LoadedLibrary {
-    /// The loaded library.
-    _library: libloading::Library,
-}
-
-impl LoadedLibrary {
-    /// Creates a new loaded library wrapper.
-    pub(crate) const fn new(library: libloading::Library) -> Self {
-        Self { _library: library }
-    }
 }
