@@ -13,7 +13,7 @@ mod bytecode;
 pub use bytecode::*;
 
 mod compiler;
-pub use compiler::{CompileTimings, EvmCompiler, EvmCompilerInput, HostLayout};
+pub use compiler::{CompileTimings, EvmCompiler, HostLayout};
 
 mod linker;
 pub use linker::{Linker, shared_library_path};
