@@ -1,7 +1,7 @@
 //! Geth trace builder
 use crate::tracing::{
     tx_state::TxState,
-    types::{CallKind, CallTraceNode, CallTraceStepStackItem},
+    types::{CallKind, CallTraceNode, CallTraceStepStackItem, StorageChange},
     utils::load_account_code,
 };
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, format, vec, vec::Vec};
@@ -183,7 +183,8 @@ impl<'a> GethTraceBuilder<'a> {
             // SLOADs and SSTOREs, unless the opcode fails before it runs.
             if opts.is_storage_enabled()
                 && !step.is_error()
-                && let Some((key, value)) = step.storage_slot.as_deref().copied()
+                && let Some(StorageChange { key, value, .. }) =
+                    step.storage_change.as_deref().copied()
             {
                 let contract_storage = storage.entry(trace_node.execution_address()).or_default();
                 contract_storage.insert(key.into(), value.into());
@@ -597,19 +598,15 @@ impl<'a> GethTraceBuilder<'a> {
                 // Accessed storage slots
                 match op {
                     op::SLOAD => {
-                        if let Some(stack) = &step.stack
-                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
+                        // geth records the first read of each slot, unless the opcode fails before
+                        // it runs.
+                        if !step.is_error()
+                            && let Some(change) = &step.storage_change
+                            && let slot = B256::from(change.key)
+                            && !accessed_slots.reads.contains_key(&slot)
+                            && !accessed_slots.writes.contains_key(&slot)
                         {
-                            let slot: B256 = (*slot).into();
-                            let already_read = accessed_slots.reads.contains_key(&slot);
-                            let already_written = accessed_slots.writes.contains_key(&slot);
-                            if !already_read
-                                && !already_written
-                                && let Some(change) = &step.storage_change
-                            {
-                                let value: B256 = change.value.into();
-                                accessed_slots.reads.entry(slot).or_default().push(value);
-                            }
+                            accessed_slots.reads.entry(slot).or_default().push(change.value.into());
                         }
                     }
                     op::SSTORE => {

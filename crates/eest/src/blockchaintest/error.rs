@@ -1,3 +1,4 @@
+use super::types::{BlobFork, ForkSpec};
 use crate::{execution::ExecutionResourceError, tx::TxBuildError};
 use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
@@ -46,9 +47,29 @@ pub(crate) enum TestErrorKind {
     /// Numeric value overflowed the target type.
     #[error("value overflows {0}")]
     Overflow(&'static str),
-    /// Sender is required in blockchain tests.
+    /// The runner does not support the test's fork.
+    #[error("unsupported fork: {0:?}")]
+    UnsupportedFork(ForkSpec),
+    /// The test's chain configuration has no blob parameters for the active fork.
+    #[error("blob schedule has no entry for {0:?}")]
+    MissingBlobSchedule(BlobFork),
+    /// The test's blob schedule has a zero base fee update fraction for the active fork.
+    #[error("blob schedule entry for {0:?} has a zero base fee update fraction")]
+    ZeroBlobUpdateFraction(BlobFork),
+    /// Sender is required when signatures are not validated.
     #[error("transaction sender is required")]
     MissingSender,
+    /// Signed transaction has an invalid signature.
+    #[error("{0}")]
+    InvalidSignedTransaction(String),
+    /// Sender recovered from the signature differs from the fixture's sender.
+    #[error("sender mismatch: recovered {recovered}, fixture {expected}")]
+    SenderMismatch {
+        /// Sender recovered from the signature.
+        recovered: alloy_primitives::Address,
+        /// Sender declared by the fixture.
+        expected: alloy_primitives::Address,
+    },
     /// An ommer is not old enough, or is too old, to receive a block reward.
     #[error("invalid ommer age: block {block_number}, ommer {ommer_number}")]
     InvalidOmmerAge {
@@ -131,6 +152,10 @@ impl From<TxBuildError> for TestErrorKind {
             TxBuildError::Overflow(name) => Self::Overflow(name),
             TxBuildError::BuildTransaction(error) => Self::BuildTransaction(error),
             TxBuildError::SerdeDeserialize(error) => Self::SerdeDeserialize(error),
+            error @ (TxBuildError::Decode(_)
+            | TxBuildError::InvalidV(_)
+            | TxBuildError::ProtectedLegacy
+            | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error.to_string()),
         }
     }
 }
