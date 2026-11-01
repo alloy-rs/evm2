@@ -1642,6 +1642,49 @@ mod tests {
     }
 
     #[test]
+    fn test_db_get_state_result_of_created_account_over_stored_slot_is_zero() {
+        // A transaction creates a contract at an address whose database entry holds a balance and
+        // a storage slot. The creation discards that storage, so an unloaded slot reads zero.
+        let caller = Address::ZERO;
+        let created = caller.create(0);
+        let tracer = format!(
+            "{{ fault: function() {{}}, result: function(ctx, db) {{ return Number(BigInt(toHex(db.getState(toAddress('{}'), toWord('0x01'))))); }} }}",
+            hex::encode(created)
+        );
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            &caller,
+            AccountInfo { balance: U256::from(1e18), ..Default::default() },
+        );
+        db.insert_account_info(
+            &created,
+            AccountInfo { balance: U256::from(1), ..Default::default() },
+        );
+        db.insert_account_storage(&created, &U256::from(1), &U256::from(9));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            evm2::env::BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            db,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        evm.set_inspector(JsInspector::new(tracer, serde_json::Value::Null).unwrap());
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 1_000_000,
+                to: TxKind::Create,
+                ..Default::default()
+            }),
+            caller,
+        );
+        let res = evm.transact(&tx).expect("pass without error").detach();
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        let block = *evm.block_env();
+        let res = inspector.json_result(&res, &tx, &block, evm.database_mut()).unwrap();
+        assert_eq!(res, json!(0));
+    }
+
+    #[test]
     fn test_db_get_state_result_of_wiped_account_is_zero() {
         // SLOAD(0), POP, SSTORE(2, 4), SELFDESTRUCT(0): before Cancun the account's storage is
         // wiped, including the slot only read and the slot written.

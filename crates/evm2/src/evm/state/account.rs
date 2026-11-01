@@ -283,6 +283,7 @@ impl Account {
             original: self.original.as_ref(),
             current: self.present.as_ref(),
             created: self.is_created(),
+            discards_storage: self.discards_storage(),
             selfdestructed: self.flags.contains(AccountFlags::DESTROYED),
             touched: self.flags.contains(AccountFlags::TOUCHED),
             code: self.changed_code(),

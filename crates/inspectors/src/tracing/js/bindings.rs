@@ -600,13 +600,9 @@ impl EvmDbReader for ChangesDbReader<'_> {
             if let Some(loaded) = account.storage.slots.get(slot) {
                 return Ok(loaded.value.current);
             }
-            // A deleted or wiped account has only the storage it wrote. So does one created from
-            // nothing: an account that existed before, such as one an embedder resumed on a fresh
-            // overlay, keeps the database as its storage baseline.
-            if account.current.is_none()
-                || account.storage.wiped
-                || (account.created && account.original.is_none())
-            {
+            // A deleted or wiped account has only the storage it wrote. So does one whose creation
+            // discarded its storage; a resumed account keeps the database as its baseline.
+            if account.current.is_none() || account.storage.wiped || account.discards_storage {
                 return Ok(Word::ZERO);
             }
         }
