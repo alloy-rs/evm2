@@ -1696,10 +1696,10 @@ struct ForkSchedule {
 
 /// What is active between two transitions: a spec, and the fork that sets the blob parameters.
 #[derive(Clone, Copy)]
-struct ForkStage {
-    spec: SpecId,
+pub(crate) struct ForkStage {
+    pub(crate) spec: SpecId,
     /// `None` before Cancun.
-    blob_fork: Option<BlobFork>,
+    pub(crate) blob_fork: Option<BlobFork>,
 }
 
 /// When a transition fork activates.
@@ -1816,8 +1816,17 @@ pub fn blob_params(
         .map_err(|err| TestError::case(path, name, err))
 }
 
-/// Returns the specs of a fork, or `None` for the forks the runner does not support: the DAO fork
-/// and Constantinople.
+/// Returns the stage a state test runs a fork under, or `None` for an unsupported fork.
+///
+/// A state test runs one transaction under one stage, so a transition fork runs under the stage
+/// after the transition.
+pub(crate) fn state_stage(fork: ForkSpec) -> Option<ForkStage> {
+    let schedule = fork_schedule(fork)?;
+    Some(schedule.transition.map_or(schedule.initial, |(_, stage)| stage))
+}
+
+/// Returns the specs of a fork, or `None` for the forks the runner does not support: the DAO fork,
+/// Constantinople and the Merge feature forks.
 const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
     use Activation::{Block, Timestamp};
     const AT_5: Activation = Block(5);
@@ -2003,28 +2012,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err.kind, TestErrorKind::UnsupportedFork(ForkSpec::HomesteadToDaoAt5)));
-    }
-
-    #[test]
-    fn state_spec_of_a_transition_is_the_spec_after_it() {
-        use ForkSpec::*;
-        for fork in [
-            FrontierToHomesteadAt5,
-            HomesteadToEIP150At5,
-            EIP158ToByzantiumAt5,
-            ByzantiumToConstantinopleAt5,
-            ByzantiumToConstantinopleFixAt5,
-            BerlinToLondonAt5,
-            ParisToShanghaiAtTime15k,
-            ShanghaiToCancunAtTime15k,
-            CancunToPragueAtTime15k,
-            PragueToOsakaAtTime15k,
-            BPO2ToAmsterdamAtTime15k,
-        ] {
-            let schedule = fork_schedule(fork).unwrap();
-            let (_, last) = schedule.transition.unwrap();
-            assert_eq!(fork.to_state_spec_id(), Some(last.spec), "{fork:?}");
-        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::{
-    blockchaintest::ForkSpec,
+    blockchaintest::{ChainConfig, ForkSpec},
     tx::{AccessListItem, TestAuthorization},
 };
 use alloy_primitives::{Address, B256, Bytes, U256};
@@ -27,6 +27,9 @@ pub struct TestUnit {
     /// Expected output.
     #[serde(default)]
     pub out: Option<Bytes>,
+    /// Chain configuration the test ran under.
+    #[serde(default)]
+    pub config: Option<ChainConfig>,
 }
 
 /// State test block environment.
