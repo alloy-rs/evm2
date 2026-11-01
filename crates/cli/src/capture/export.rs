@@ -94,7 +94,7 @@ fn blob_fork(blocks: &[CapturedBlock]) -> Result<Option<BlobFork>, CaptureError>
 }
 
 fn mainnet_blob_fork(header: &Header) -> Result<Option<BlobFork>, CaptureError> {
-    let spec = mainnet_spec_for_header(header);
+    let spec = mainnet_spec_for_header(header)?;
     if !spec.enables(SpecId::CANCUN) {
         return Ok(None);
     }
@@ -136,28 +136,7 @@ fn network(capture: &CapturedCase, blob_fork: Option<BlobFork>) -> Result<ForkSp
     }
     let spec =
         SpecId::try_from_u32(first.spec_id).ok_or(CaptureError::UnsupportedSpec(first.spec_id))?;
-    match spec {
-        SpecId::FRONTIER => Ok(ForkSpec::Frontier),
-        SpecId::HOMESTEAD => Ok(ForkSpec::Homestead),
-        SpecId::TANGERINE => Ok(ForkSpec::EIP150),
-        SpecId::SPURIOUS_DRAGON => Ok(ForkSpec::EIP158),
-        SpecId::BYZANTIUM => Ok(ForkSpec::Byzantium),
-        SpecId::PETERSBURG => Ok(ForkSpec::ConstantinopleFix),
-        SpecId::ISTANBUL => Ok(ForkSpec::Istanbul),
-        SpecId::BERLIN => Ok(ForkSpec::Berlin),
-        SpecId::LONDON => Ok(ForkSpec::London),
-        SpecId::MERGE => Ok(ForkSpec::Paris),
-        SpecId::SHANGHAI => Ok(ForkSpec::Shanghai),
-        SpecId::CANCUN => Ok(ForkSpec::Cancun),
-        SpecId::PRAGUE => Ok(ForkSpec::Prague),
-        SpecId::OSAKA => Ok(match blob_fork {
-            Some(BlobFork::Bpo1) => ForkSpec::BPO1,
-            Some(BlobFork::Bpo2) => ForkSpec::BPO2,
-            _ => ForkSpec::Osaka,
-        }),
-        SpecId::AMSTERDAM => Ok(ForkSpec::Amsterdam),
-        _ => Err(CaptureError::UnsupportedSpec(first.spec_id)),
-    }
+    ForkSpec::from_spec_id(spec, blob_fork).ok_or(CaptureError::UnsupportedSpec(first.spec_id))
 }
 
 fn export_state(capture: &CapturedCase, state: &CapturedState) -> EestState {
