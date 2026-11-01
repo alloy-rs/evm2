@@ -20,6 +20,12 @@ unsafe extern "C" {
         upper: i64,
     ) -> LLVMAttributeRef;
 
+    fn evm2_jit_llvm_create_arg_mem_only_attr(ctx: LLVMContextRef) -> LLVMAttributeRef;
+
+    fn evm2_jit_llvm_create_async_uwtable_attr(ctx: LLVMContextRef) -> LLVMAttributeRef;
+
+    fn evm2_jit_llvm_create_no_captures_attr(ctx: LLVMContextRef) -> LLVMAttributeRef;
+
     pub(crate) fn evm2_jit_llvm_jit_dylib_add_to_link_order(
         jd: LLVMOrcJITDylibRef,
         other: LLVMOrcJITDylibRef,
@@ -69,4 +75,16 @@ pub(crate) fn set_dso_local(f: Function) {
 
 pub(crate) fn create_initializes_attr(cx: &Context, lower: i64, upper: i64) -> Attribute {
     Attribute::new(unsafe { evm2_jit_llvm_create_initializes_attr(cx.raw(), lower, upper) })
+}
+
+pub(crate) fn create_arg_mem_only_attr(cx: &Context) -> Attribute {
+    Attribute::new(unsafe { evm2_jit_llvm_create_arg_mem_only_attr(cx.raw()) })
+}
+
+pub(crate) fn create_async_uwtable_attr(cx: &Context) -> Attribute {
+    Attribute::new(unsafe { evm2_jit_llvm_create_async_uwtable_attr(cx.raw()) })
+}
+
+pub(crate) fn create_no_captures_attr(cx: &Context) -> Attribute {
+    Attribute::new(unsafe { evm2_jit_llvm_create_no_captures_attr(cx.raw()) })
 }
