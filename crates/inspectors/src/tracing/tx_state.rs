@@ -44,7 +44,9 @@ pub(crate) struct TxAccount {
     pub(crate) created: bool,
     /// Whether the account was selfdestructed during the transaction.
     pub(crate) selfdestructed: bool,
-    /// Storage slots loaded during the transaction, changed and unchanged.
+    /// Storage slots loaded during the transaction, changed and unchanged. A loaded slot that the
+    /// transaction left unchanged, or that a storage wipe reset, has its value before the
+    /// transaction as both `original` and `current`.
     pub(crate) storage: U256Map<Tracked<Word>>,
 }
 

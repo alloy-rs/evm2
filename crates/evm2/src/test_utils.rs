@@ -54,7 +54,7 @@ pub(crate) struct TestHost {
     pub(crate) calls: Vec<Message<TestTypes>>,
     pub(crate) call_static_flags: Vec<bool>,
     pub(crate) selfdestructs: Vec<(Address, Address, bool)>,
-    pub(crate) new_account_checks: Vec<Address>,
+    pub(crate) account_loads: Vec<Address>,
 }
 
 impl Default for TestHost {
@@ -87,7 +87,7 @@ impl Default for TestHost {
             calls: Vec::new(),
             call_static_flags: Vec::new(),
             selfdestructs: Vec::new(),
-            new_account_checks: Vec::new(),
+            account_loads: Vec::new(),
         }
     }
 }
@@ -118,6 +118,8 @@ impl Host<TestTypes> for TestHost {
         if skip_cold_load && self.is_cold {
             return Err(InstrStop::OutOfGas.into());
         }
+        self.account_loads.push(*address);
+        let features = self.execution_config.version().features;
         Ok(AccountLoad {
             balance: address.into_word().into(),
             nonce: 0,
@@ -127,23 +129,15 @@ impl Host<TestTypes> for TestHost {
             } else {
                 Bytecode::default()
             },
-            exists: self.exists,
             is_empty: self.is_empty,
+            is_empty_for_new_account_gas: if features.contains(EvmFeatures::EIP161) {
+                !self.exists || self.is_empty
+            } else {
+                !self.exists && !self.is_touched
+            },
             is_cold: self.is_cold,
             _non_exhaustive: (),
         })
-    }
-
-    fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> Result<bool, DatabaseError> {
-        self.new_account_checks.push(*address);
-        if features.contains(EvmFeatures::EIP161) {
-            return Ok(!self.exists || self.is_empty);
-        }
-        Ok(!self.exists && !self.is_touched)
     }
 
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError> {

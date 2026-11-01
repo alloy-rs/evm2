@@ -208,12 +208,13 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// EXP base, exp => base ** exp.
     ///
-    /// Dynamic gas is folded into the section gas cost by `SectionsAnalysis` when the
-    /// exponent is a compile-time constant, so the section gas check already covers it.
-    /// For constant-base cases with a dynamic exponent, charge the dynamic gas and compute the
-    /// result inline.
+    /// A constant exponent (`Bytecode::exp_static_exponent`) has its dynamic gas folded into the
+    /// section gas cost by `SectionsAnalysis`, so it is lowered without charging gas. For
+    /// constant-base cases with a dynamic exponent, charge the dynamic gas and compute the result
+    /// inline.
     fn peephole_exp(&mut self) -> bool {
-        let [base, exponent] = self.const_operands();
+        let [base, _] = self.const_operands();
+        let exponent = self.bytecode.exp_static_exponent(self.current_inst.unwrap());
         match exponent {
             // x ** 0 => 1.
             Some(U256::ZERO) => self.fold_const(1),
@@ -228,7 +229,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 let r = self.bcx.imul(a, a);
                 self.push(r);
             }
-            Some(_) => return false,
+            // x ** e => x ** e, with the gas already paid.
+            Some(_) => {
+                let sp = self.sp_after_inputs();
+                let _ = self.call_builtin(Builtin::Pow, &[sp]);
+            }
             None => {}
         }
         if exponent.is_some() {

@@ -1,12 +1,13 @@
 use crate::fuzzer::{features::FuzzFeatures, precompile, rng::Gen};
 use alloy_primitives::{Address, Bytes, U256};
-use evm2::{SpecId, interpreter::op};
+use evm2::{BaseEvmTypes, OpcodeConfig, SpecId, interpreter::op};
 
 #[derive(Default)]
 pub(crate) struct Program {
     code: Vec<u8>,
     stack_height: usize,
     features: FuzzFeatures,
+    spec: SpecId,
 }
 
 impl Program {
@@ -20,6 +21,7 @@ impl Program {
         self.code.clear();
         self.stack_height = 0;
         self.features = FuzzFeatures::default();
+        self.spec = spec;
         let statements = rng.range_inclusive(1, 48);
         for _ in 0..statements {
             match rng.range(100) {
@@ -30,31 +32,16 @@ impl Program {
                 69..=73 => self.calldata(rng),
                 74..=79 => self.external_account(rng, spec, addresses),
                 80..=83 => self.log(rng),
-                84..=86 if self.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
-                    self.precompile_call(rng, spec)
-                }
-                84..=86 => self.literal(rng, spec),
-                87..=89 if self.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
-                    self.generic_call(rng, spec, call_addresses)
-                }
-                87..=89 => self.literal(rng, spec),
-                90..=91 if self.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
-                    self.returndata(rng, spec, call_addresses)
-                }
-                90..=91 => self.literal(rng, spec),
-                92..=93 if self.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
-                    self.create(rng, spec)
-                }
-                92..=93 => self.literal(rng, spec),
+                84..=86 => self.precompile_call(rng, spec),
+                87..=89 => self.generic_call(rng, spec, call_addresses),
+                90..=91 => self.returndata(rng, spec, call_addresses),
+                92..=93 => self.create(rng, spec),
                 94..=95 => self.cancun(rng, spec),
                 96 => self.jump(rng),
                 97 if rng.one_in(3) => self.stack_shuffle(rng, spec),
                 97 if rng.one_in(2) => self.selfdestruct(rng, addresses),
                 97 => self.stack_cleanup(),
-                98 if self.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
-                    self.raw_invalidish(rng)
-                }
-                98 => self.literal(rng, spec),
+                98 => self.raw_invalidish(rng),
                 _ => self.literal(rng, spec),
             }
             while self.stack_height > 16 {
@@ -63,21 +50,22 @@ impl Program {
         }
         match rng.range(10) {
             0 => self.finish_return(false),
-            1 if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => self.finish_return(true),
+            1 if self.allow_opcodes(rng, spec, &[op::REVERT]) => self.finish_return(true),
             _ => self.emit(op::STOP, 0, 0),
         }
         (Bytes::copy_from_slice(&self.code), self.features)
     }
 
-    fn allow_fork_feature(&mut self, rng: &mut Gen, spec: SpecId, since: SpecId) -> bool {
-        if spec.enables(since) {
+    /// Returns whether a snippet using `opcodes` may be emitted for `spec`.
+    ///
+    /// Opcodes the fork does not define are emitted once in 20 to cover their invalid-opcode
+    /// behavior.
+    fn allow_opcodes(&self, rng: &mut Gen, spec: SpecId, opcodes: &[u8]) -> bool {
+        let config = OpcodeConfig::<BaseEvmTypes>::base_for_spec(spec);
+        if opcodes.iter().all(|&opcode| config.is_defined(opcode)) {
             return true;
         }
-        if rng.one_in(20) {
-            self.mark(FuzzFeatures::FORK_INVALID_OPCODE);
-            return true;
-        }
-        false
+        rng.one_in(20)
     }
 
     fn mark(&mut self, feature: FuzzFeatures) {
@@ -109,14 +97,14 @@ impl Program {
                     op::XOR,
                     op::BYTE,
                 ];
-                if self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
+                if self.allow_opcodes(rng, spec, &[op::SHL, op::SHR, op::SAR]) {
                     ops.extend([op::SHL, op::SHR, op::SAR]);
                 }
                 self.emit(rng.pick(&ops), 2, 1);
             }
             17..=18 => {
                 self.push_word(rng.biased_word());
-                let opcode = if self.allow_fork_feature(rng, spec, SpecId::OSAKA) {
+                let opcode = if self.allow_opcodes(rng, spec, &[op::CLZ]) {
                     rng.pick(&[op::ISZERO, op::NOT, op::CLZ])
                 } else if rng.one_in(2) {
                     op::ISZERO
@@ -166,7 +154,7 @@ impl Program {
                 self.push_u64(offset);
                 self.emit(op::CODECOPY, 3, 0);
             }
-            6 if self.allow_fork_feature(rng, spec, SpecId::CANCUN) => {
+            6 if self.allow_opcodes(rng, spec, &[op::MCOPY]) => {
                 self.push_u64(rng.pick(&[0, 1, 31, 32, 64]));
                 self.push_u64(rng.pick(&[0, 32, 64, 96]));
                 self.push_u64(offset);
@@ -206,13 +194,13 @@ impl Program {
                     op::GASLIMIT,
                     op::GAS,
                 ];
-                if self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
+                if self.allow_opcodes(rng, spec, &[op::CHAINID]) {
                     ops.push(op::CHAINID);
                 }
-                if self.allow_fork_feature(rng, spec, SpecId::LONDON) {
+                if self.allow_opcodes(rng, spec, &[op::BASEFEE]) {
                     ops.push(op::BASEFEE);
                 }
-                if self.allow_fork_feature(rng, spec, SpecId::AMSTERDAM) {
+                if self.allow_opcodes(rng, spec, &[op::SLOTNUM]) {
                     ops.push(op::SLOTNUM);
                 }
                 self.emit(rng.pick(&ops), 0, 1);
@@ -251,7 +239,7 @@ impl Program {
                 self.push_address(address);
                 self.emit(op::EXTCODESIZE, 1, 1);
             }
-            2 if self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) => {
+            2 if self.allow_opcodes(rng, spec, &[op::EXTCODEHASH]) => {
                 self.push_address(address);
                 self.emit(op::EXTCODEHASH, 1, 1);
             }
@@ -262,7 +250,7 @@ impl Program {
                 self.push_address(address);
                 self.emit(op::EXTCODECOPY, 4, 0);
             }
-            _ if self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) => {
+            _ if self.allow_opcodes(rng, spec, &[op::SELFBALANCE]) => {
                 self.emit(op::SELFBALANCE, 0, 1)
             }
             _ => {
@@ -307,7 +295,7 @@ impl Program {
         let return_offset: u64 = rng.pick(&[0, 32, 64, 128]);
         let return_len: u64 = rng.pick(&[0, 1, 20, 32, 64, 96, 128, 256]);
         let gas: u64 = rng.pick(&[0, 1, 3_000, 10_000, 50_000, 200_000, 2_000_000]);
-        if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) && rng.one_in(2) {
+        if self.allow_opcodes(rng, spec, &[op::STATICCALL]) && rng.one_in(2) {
             self.mark(FuzzFeatures::PRECOMPILE_STATICCALL);
             self.push_u64(return_len);
             self.push_u64(return_offset);
@@ -343,7 +331,7 @@ impl Program {
         let return_len: u64 = rng.pick(&[0, 1, 4, 32, 64]);
         let gas: u64 = rng.pick(&[0, 1, 2_300, 10_000, 50_000, 200_000]);
         match rng.range(4) {
-            0 if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => {
+            0 if self.allow_opcodes(rng, spec, &[op::STATICCALL]) => {
                 self.push_u64(return_len);
                 self.push_u64(return_offset);
                 self.push_u64(input_len);
@@ -352,7 +340,7 @@ impl Program {
                 self.push_u64(gas);
                 self.emit(op::STATICCALL, 6, 1);
             }
-            1 if self.allow_fork_feature(rng, spec, SpecId::HOMESTEAD) => {
+            1 if self.allow_opcodes(rng, spec, &[op::DELEGATECALL]) => {
                 self.push_u64(return_len);
                 self.push_u64(return_offset);
                 self.push_u64(input_len);
@@ -385,7 +373,7 @@ impl Program {
     }
 
     fn returndata(&mut self, rng: &mut Gen, spec: SpecId, call_addresses: &[Address]) {
-        if !self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) {
+        if !self.allow_opcodes(rng, spec, &[op::RETURNDATASIZE, op::RETURNDATACOPY]) {
             self.literal(rng, spec);
             return;
         }
@@ -404,7 +392,7 @@ impl Program {
     }
 
     fn cancun(&mut self, rng: &mut Gen, spec: SpecId) {
-        if !self.allow_fork_feature(rng, spec, SpecId::CANCUN) {
+        if !self.allow_opcodes(rng, spec, &[op::TLOAD, op::TSTORE, op::BLOBHASH, op::BLOBBASEFEE]) {
             self.literal(rng, spec);
             return;
         }
@@ -431,7 +419,8 @@ impl Program {
             0 => Vec::new(),
             1 => vec![op::STOP],
             2 => vec![op::PUSH1, 0, op::PUSH1, 0, op::RETURN],
-            3 if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => {
+            3 if self.allow_opcodes(rng, spec, &[op::REVERT]) => {
+                self.mark_opcode(op::REVERT);
                 vec![op::PUSH1, 0, op::PUSH1, 0, op::REVERT]
             }
             _ => vec![
@@ -453,7 +442,7 @@ impl Program {
             self.push_u64(offset);
             self.emit(op::MSTORE, 2, 0);
         }
-        if rng.one_in(2) || !self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
+        if rng.one_in(2) || !self.allow_opcodes(rng, spec, &[op::CREATE2]) {
             self.push_u64(initcode.len() as u64);
             self.push_u64(offset);
             self.push_u64(rng.pick(&[0, 0, 0, 1]));
@@ -534,7 +523,7 @@ impl Program {
         while self.stack_height < 2 {
             self.push_word(rng.biased_word());
         }
-        if self.allow_fork_feature(rng, spec, SpecId::AMSTERDAM) && rng.one_in(3) {
+        if self.allow_opcodes(rng, spec, &[op::DUPN, op::SWAPN, op::EXCHANGE]) && rng.one_in(3) {
             self.relative_stack_shuffle(rng);
         } else if rng.one_in(2) {
             let n = rng.range_inclusive(1, self.stack_height.min(16));
@@ -601,7 +590,7 @@ impl Program {
     }
 
     fn literal(&mut self, rng: &mut Gen, spec: SpecId) {
-        if self.allow_fork_feature(rng, spec, SpecId::SHANGHAI) && rng.one_in(8) {
+        if self.allow_opcodes(rng, spec, &[op::PUSH0]) && rng.one_in(8) {
             self.emit(op::PUSH0, 0, 1);
         } else if rng.one_in(8) {
             self.push_random_width_word(rng);
@@ -721,6 +710,11 @@ impl Program {
             op::SELFDESTRUCT => self.mark(FuzzFeatures::SELFDESTRUCT),
             _ => {}
         }
+        if opcode != op::INVALID
+            && !OpcodeConfig::<BaseEvmTypes>::base_for_spec(self.spec).is_defined(opcode)
+        {
+            self.mark(FuzzFeatures::FORK_INVALID_OPCODE);
+        }
     }
 }
 
@@ -762,5 +756,38 @@ mod tests {
             assert_eq!(program.stack_height, 1);
             assert_eq!(program.features, FuzzFeatures::PUSH);
         }
+    }
+
+    #[test]
+    fn pre_spurious_dragon_programs_use_frontier_opcodes() {
+        let addresses = [Address::with_last_byte(1)];
+        let mut rng = Gen::new(1);
+        let mut program = Program::default();
+        let wanted = FuzzFeatures::CALL | FuzzFeatures::CREATE | FuzzFeatures::INVALID;
+        let mut seen = FuzzFeatures::default();
+        for _ in 0..256 {
+            let (_, features) =
+                program.generate(&mut rng, SpecId::FRONTIER, &addresses, &addresses);
+            if !features.contains(FuzzFeatures::FORK_INVALID_OPCODE) {
+                seen |= features;
+            }
+        }
+        assert!(seen.contains(wanted), "{seen:?}");
+    }
+
+    #[test]
+    fn initcode_with_undefined_opcode_is_tagged() {
+        let revert_initcode = [op::PUSH1, 0, op::PUSH1, 0, op::REVERT];
+        let mut rng = Gen::new(1);
+        let mut found = false;
+        for _ in 0..1024 {
+            let mut program = Program { spec: SpecId::FRONTIER, ..Default::default() };
+            program.create(&mut rng, SpecId::FRONTIER);
+            if program.code.windows(revert_initcode.len()).any(|code| code == revert_initcode) {
+                found = true;
+                assert!(program.features.contains(FuzzFeatures::FORK_INVALID_OPCODE));
+            }
+        }
+        assert!(found);
     }
 }
