@@ -57,8 +57,7 @@ impl PreparedBench {
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
         let (case_name, case) =
             self.suite.0.first_key_value().expect("fixture must contain a case");
-        let config =
-            BlockchainTestExecuteConfig { validate_post_state: false, ..Default::default() };
+        let config = BlockchainTestExecuteConfig { validate: false, ..Default::default() };
         group.bench_function(format!("{}/replay", self.name), |b| {
             b.iter_batched_ref(
                 || self.pre_state.clone(),

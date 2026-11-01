@@ -1,7 +1,6 @@
 use crate::tracing::{
     FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MuxInspector,
-    TracingInspector, TracingInspectorConfig, TransactionContext, final_refunded,
-    utils::transaction_info,
+    TracingInspector, TracingInspectorConfig, TransactionContext, utils::transaction_info,
 };
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, transaction::Recovered};
@@ -280,7 +279,7 @@ impl DebugInspector {
                 gas_used: res.result.tx_gas_used(),
                 execution_gas_used: res.result.execution_gas_spent(),
                 state_gas_used: res.result.state_gas_spent(),
-                gas_refund: final_refunded(&res.result),
+                gas_refund: res.result.final_refunded(),
             }
             .into(),
             Self::Mux(inspector, _) => {
@@ -330,7 +329,7 @@ impl DebugInspector {
                         Some((
                             gas.execution_gas_spent(),
                             gas.state_gas_spent(),
-                            final_refunded(gas),
+                            gas.final_refunded(),
                         )),
                         res.result.output.clone(),
                         *config,

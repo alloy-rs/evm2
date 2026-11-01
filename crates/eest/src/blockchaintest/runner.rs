@@ -141,25 +141,9 @@ pub(crate) fn ignored_tests() -> Vec<IgnoreList> {
 
 #[rustfmt::skip]
 const IGNORED_TESTS: &[&str] = &[
-    // Block header and blob-gas validation is consensus-level block validation, not EVM execution.
-    "cancun/eip4844_blobs/excess_blob_gas/invalid_blob_gas_used_in_header.json",
-    "cancun/eip4844_blobs/excess_blob_gas/invalid_excess_blob_gas_above_target_change.json",
-    "cancun/eip4844_blobs/excess_blob_gas/invalid_excess_blob_gas_change.json",
-    "cancun/eip4844_blobs/excess_blob_gas/invalid_excess_blob_gas_target_blobs_increase_from_zero.json",
-    "cancun/eip4844_blobs/excess_blob_gas/invalid_non_multiple_excess_blob_gas.json",
-    "cancun/eip4844_blobs/excess_blob_gas/invalid_static_excess_blob_gas.json",
-    "cancun/eip4844_blobs/excess_blob_gas/invalid_static_excess_blob_gas_from_zero_on_blobs_above_target.json",
-    "cancun/eip4844_blobs/excess_blob_gas/invalid_zero_excess_blob_gas_in_header.json",
-    "cancun/eip4844_blobs/excess_blob_gas_fork_transition/invalid_post_fork_block_without_blob_fields.json",
-    "cancun/eip4844_blobs/excess_blob_gas_fork_transition/invalid_pre_fork_block_with_blob_fields.json",
-
     // These validate block RLP encoding or full blob sidecar rejection, which this runner does not decode/validate.
     "cancun/eip4844_blobs/blob_txs/invalid_blob_tx_contract_creation.json",
     "cancun/eip4844_blobs/blob_txs_full/reject_valid_full_blob_in_block_rlp.json",
-
-    // The harness does not validate Osaka block RLP size limits.
-    "osaka/eip7934_block_rlp_limit/max_block_rlp_size/block_at_rlp_size_limit_boundary.json",
-    "osaka/eip7934_block_rlp_limit/max_block_rlp_size/fork_transition_block_rlp_limit.json",
 
     // These validate block header fields/roots and belong to consensus-level block validation.
     // Amsterdam's `block_gas_limit_below_minimum` passes but shares this name.
@@ -191,20 +175,8 @@ const IGNORED_TESTS: &[&str] = &[
 /// Fixtures from the `main` roots, which name the tests above `test_*` in flat directories.
 #[rustfmt::skip]
 const MAIN_IGNORED_TESTS: &[&str] = &[
-    "cancun/eip4844_blobs/test_invalid_blob_gas_used_in_header.json",
-    "cancun/eip4844_blobs/test_invalid_excess_blob_gas_above_target_change.json",
-    "cancun/eip4844_blobs/test_invalid_excess_blob_gas_change.json",
-    "cancun/eip4844_blobs/test_invalid_excess_blob_gas_target_blobs_increase_from_zero.json",
-    "cancun/eip4844_blobs/test_invalid_non_multiple_excess_blob_gas.json",
-    "cancun/eip4844_blobs/test_invalid_post_fork_block_without_blob_fields.json",
-    "cancun/eip4844_blobs/test_invalid_pre_fork_block_with_blob_fields.json",
-    "cancun/eip4844_blobs/test_invalid_static_excess_blob_gas.json",
-    "cancun/eip4844_blobs/test_invalid_static_excess_blob_gas_from_zero_on_blobs_above_target.json",
-    "cancun/eip4844_blobs/test_invalid_zero_excess_blob_gas_in_header.json",
     "cancun/eip4844_blobs/test_invalid_blob_tx_contract_creation.json",
     "cancun/eip4844_blobs/test_reject_valid_full_blob_in_block_rlp.json",
-    "osaka/eip7934_block_rlp_limit/test_block_at_rlp_size_limit_boundary.json",
-    "osaka/eip7934_block_rlp_limit/test_fork_transition_block_rlp_limit.json",
     "prague/eip6110_deposits/test_deposit_negative.json",
     "prague/eip6110_deposits/test_invalid_layout.json",
     "prague/eip6110_deposits/test_invalid_log_length.json",

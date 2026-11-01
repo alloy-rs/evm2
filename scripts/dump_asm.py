@@ -27,7 +27,7 @@ from rich.console import Console
 from rich.highlighter import NullHighlighter
 from rich.logging import RichHandler
 
-from utils import cargo_env, repo_root
+from common import cargo_env, repo_root
 
 ROOT = Path(repo_root())
 OPCODE_RS = ROOT / "crates" / "evm2" / "src" / "interpreter" / "opcode.rs"

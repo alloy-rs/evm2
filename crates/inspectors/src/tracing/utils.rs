@@ -9,7 +9,7 @@ use alloy_primitives::{Bytes, hex};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
-    AccountInfo, EvmTypesHost, SpecId,
+    AccountInfo, EvmTypesHost,
     env::BlockEnv,
     evm::{DbResult, DynDatabase},
     interpreter::InstrStop,
@@ -127,13 +127,6 @@ pub(crate) fn convert_memory(data: &[u8]) -> Vec<String> {
         memory.push(hex::encode_prefixed(last_chunk));
     }
     memory
-}
-
-/// Get the gas used, accounting for refunds
-#[inline]
-pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
-    let refund_quotient = if spec.enables(SpecId::LONDON) { 5 } else { 2 };
-    spent - (refunded).min(spent / refund_quotient)
 }
 
 /// Loads the code for the given account from the account itself or the database

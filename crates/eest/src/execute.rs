@@ -11,7 +11,10 @@ use crate::{
         insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
     },
     trace::{self, Eip3155Tracer},
-    tx::{TxFields, build_recovered_tx, recover_address, rpc_access_list, signed_authorizations},
+    tx::{
+        TxFields, TxSigner, build_recovered_tx, decode_recovered_tx, recover_address,
+        rpc_access_list, signed_authorizations,
+    },
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
 use alloy_eips::{eip4844, eip7691};
@@ -204,7 +207,11 @@ fn execute_unit(
         }
         let block = parse_block(&unit.env, spec);
         for post in posts {
-            let tx = match build_tx(&unit.transaction, &post.indexes, unit.env.current_chain_id) {
+            let tx = match &post.txbytes {
+                Some(bytes) => decode_recovered_tx(bytes, spec).map_err(Into::into),
+                None => build_tx(&unit.transaction, &post.indexes, unit.env.current_chain_id),
+            };
+            let tx = match tx {
                 Ok(tx) => tx,
                 Err(_) if post.expect_exception.is_some() => {
                     continue;
@@ -602,23 +609,25 @@ fn build_tx(
     let value = *raw.value.get(indexes.value).ok_or(TestErrorKind::BadIndex("value"))?;
     let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
 
-    Ok(build_recovered_tx(TxFields {
-        tx_type: raw.tx_type,
-        caller,
-        kind: TxKind::from(raw.to),
-        data,
-        gas_limit,
-        nonce,
-        value,
-        chain_id: raw.chain_id.or(chain_id),
-        gas_price: raw.gas_price,
-        max_fee_per_gas: raw.max_fee_per_gas,
-        max_priority_fee_per_gas: raw.max_priority_fee_per_gas,
-        access_list: access_list(raw, indexes.data)?,
-        authorization_list: signed_authorizations(raw.authorization_list.as_deref())?,
-        blob_versioned_hashes: raw.blob_versioned_hashes.clone(),
-        max_fee_per_blob_gas: raw.max_fee_per_blob_gas,
-    })?)
+    Ok(build_recovered_tx(
+        TxFields {
+            tx_type: raw.tx_type,
+            kind: TxKind::from(raw.to),
+            data,
+            gas_limit,
+            nonce,
+            value,
+            chain_id: raw.chain_id.or(chain_id),
+            gas_price: raw.gas_price,
+            max_fee_per_gas: raw.max_fee_per_gas,
+            max_priority_fee_per_gas: raw.max_priority_fee_per_gas,
+            access_list: access_list(raw, indexes.data)?,
+            authorization_list: signed_authorizations(raw.authorization_list.as_deref())?,
+            blob_versioned_hashes: raw.blob_versioned_hashes.clone(),
+            max_fee_per_blob_gas: raw.max_fee_per_blob_gas,
+        },
+        TxSigner::Fixture(caller),
+    )?)
 }
 
 fn access_list(
