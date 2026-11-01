@@ -122,7 +122,7 @@ async fn capture(
         }
         overlay.apply_withdrawals(&consensus_block);
 
-        let spec = ethereum::mainnet_spec_for_header(&consensus_block.header);
+        let spec = ethereum::mainnet_spec_for_header(&consensus_block.header)?;
         let _version_index = builder.version_index(spec)?;
         let block_transaction_count = transactions.len();
         transaction_count += block_transaction_count;

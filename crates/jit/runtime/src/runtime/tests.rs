@@ -306,6 +306,60 @@ fn zero_workers_fails_sync_compile_without_blocking() {
     let stats = tb.stats();
     assert_eq!(stats.resident_entries, 0);
     assert_eq!(stats.compilations_dispatched, 0);
+    assert_eq!(stats.interpreter_fallbacks, 1);
+}
+
+#[test]
+fn blocking_pending_job_cap_counts_fallback() {
+    let tb = TestBackend::new(RuntimeConfig {
+        blocking: true,
+        tuning: RuntimeTuning { jit_max_pending_jobs: 0, ..Default::default() },
+        ..Default::default()
+    });
+
+    let decision = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+    assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::JitFailed)));
+    assert_eq!(tb.stats().interpreter_fallbacks, 1);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn blocking_sync_compile_timeout_counts_fallback() {
+    // The callback runs before the waiting caller is notified, so the caller times out first.
+    let tb = TestBackend::new(RuntimeConfig {
+        blocking: true,
+        tuning: RuntimeTuning {
+            jit_worker_count: 1,
+            sync_compile_timeout: std::time::Duration::from_millis(20),
+            ..Default::default()
+        },
+        on_compilation: Some(Arc::new(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(500))
+        })),
+        ..Default::default()
+    });
+
+    let decision = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+    assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::JitFailed)));
+    assert_eq!(tb.stats().interpreter_fallbacks, 1);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn blocking_mode_compiles_bytecode_over_max_len() {
+    let tb = TestBackend::new(RuntimeConfig {
+        blocking: true,
+        tuning: RuntimeTuning {
+            jit_worker_count: 1,
+            jit_max_bytecode_len: 4,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let decision = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+    assert!(matches!(decision, LookupDecision::Compiled(_)));
+    assert_eq!(tb.stats().interpreter_fallbacks, 0);
 }
 
 #[test]
@@ -818,6 +872,7 @@ fn blocking_mode() {
     // Empty bytecodes return Ineligible (nothing to compile).
     let decision = tb.lookup(TestBackend::req_cancun(&[]));
     assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::Ineligible)));
+    assert_eq!(tb.stats().interpreter_fallbacks, 1);
 }
 
 #[test]
