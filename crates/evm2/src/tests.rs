@@ -334,17 +334,19 @@ fn eip7702_without_eip2780_refunds_only_existing_authority_execution_gas() {
         database,
         Precompiles::base(SpecId::PRAGUE),
     );
-    let authorization = |authority, nonce| {
-        RecoveredAuthorization::new_unchecked(
-            Authorization { chain_id: U256::ZERO, address: delegate, nonce },
-            RecoveredAuthority::Valid(authority),
-        )
-    };
+    let authorization =
+        |nonce| unsigned(Authorization { chain_id: U256::ZERO, address: delegate, nonce });
     let tx = Recovered::new_unchecked(
         TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
-            TxEip7702 { chain_id, to: recipient, gas_limit: 100_000, ..Default::default() },
-            // The second authorization is rejected: the authority's nonce is 1, not 0.
-            vec![authorization(existing, 0), authorization(stale, 0)],
+            TxEip7702 {
+                chain_id,
+                to: recipient,
+                gas_limit: 100_000,
+                // The second authorization is rejected: the authority's nonce is 1, not 0.
+                authorization_list: vec![authorization(0), authorization(0)],
+                ..Default::default()
+            },
+            vec![Some(existing), Some(stale)],
         )),
         caller,
     );
