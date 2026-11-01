@@ -1636,7 +1636,7 @@ mod tests {
         let code = "6003600155";
         let first = Address::repeat_byte(1);
         let res = result_storage(SpecId::CANCUN, code, |evm| {
-            evm.state_mut().account(&first).unwrap().mark_created_keeping_storage();
+            evm.state_mut().account(&first).unwrap().mark_created();
         });
         assert_eq!(res, json!([5, 3, 0, 9]));
     }
