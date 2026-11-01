@@ -5,7 +5,7 @@ import os
 
 def repo_root() -> str:
     """Return the repository root."""
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 
 def cargo_env() -> dict[str, str]:

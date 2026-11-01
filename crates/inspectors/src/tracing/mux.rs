@@ -1,6 +1,6 @@
 use crate::tracing::{
     DebugInspector, DebugInspectorError, FourByteInspector, TracingInspector,
-    TracingInspectorConfig, TransactionContext, final_refunded, utils::transaction_info,
+    TracingInspectorConfig, TransactionContext, utils::transaction_info,
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_consensus::{Transaction, transaction::Recovered};
@@ -236,7 +236,7 @@ impl MuxInspector {
                     gas_used: result.result.tx_gas_used(),
                     execution_gas_used: result.result.execution_gas_spent(),
                     state_gas_used: result.result.state_gas_spent(),
-                    gas_refund: final_refunded(&result.result),
+                    gas_refund: result.result.final_refunded(),
                 }
                 .into(),
             };

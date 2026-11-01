@@ -1,3 +1,5 @@
+use core::{fmt, str::FromStr};
+
 /// Specification IDs and their activation points.
 ///
 /// Information was obtained from the [Ethereum Execution Specifications](https://github.com/ethereum/execution-specs).
@@ -119,6 +121,47 @@ impl SpecId {
     }
 }
 
+macro_rules! spec_names {
+    ([] $($spec:ident $lower:ident,)*) => {
+        impl SpecId {
+            /// Returns the upper-case variant name, such as `"SPURIOUS_DRAGON"`.
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $(Self::$spec => stringify!($spec),)*
+                }
+            }
+        }
+
+        impl FromStr for SpecId {
+            type Err = ParseSpecIdError;
+
+            /// Parses a variant name, ignoring ASCII case.
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                $(
+                    if s.eq_ignore_ascii_case(stringify!($spec)) {
+                        return Ok(Self::$spec);
+                    }
+                )*
+                Err(ParseSpecIdError)
+            }
+        }
+    };
+}
+
+crate::for_each_spec!([] spec_names);
+
+/// Error returned when parsing a [`SpecId`] from an unknown name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseSpecIdError;
+
+impl fmt::Display for ParseSpecIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unknown spec id")
+    }
+}
+
+impl core::error::Error for ParseSpecIdError {}
+
 impl From<SpecId> for u32 {
     #[inline]
     fn from(spec_id: SpecId) -> Self {
@@ -192,5 +235,16 @@ mod tests {
     #[test]
     fn defaults() {
         assert_eq!(SpecId::DEFAULT, SpecId::default());
+    }
+
+    #[test]
+    fn names_round_trip() {
+        for value in 0..SpecId::COUNT as u32 {
+            let spec = SpecId::try_from_u32(value).unwrap();
+            assert_eq!(spec.name().parse(), Ok(spec));
+            assert_eq!(spec.name().to_ascii_lowercase().parse(), Ok(spec));
+        }
+        assert_eq!("SPURIOUS_DRAGON".parse(), Ok(SpecId::SPURIOUS_DRAGON));
+        assert_eq!("CONSTANTINOPLE".parse::<SpecId>(), Err(ParseSpecIdError));
     }
 }
