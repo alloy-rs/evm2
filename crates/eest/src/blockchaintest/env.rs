@@ -11,9 +11,6 @@ use std::{env, path::PathBuf};
 /// Environment variable for the blockchain test root.
 pub(crate) const BLOCKCHAIN_TEST_ROOT_ENV: &str = "EVM2_BLOCKCHAINTEST_ROOT";
 
-/// Environment variable for selecting stable EEST fixtures instead of develop.
-pub(crate) const BLOCKCHAINTEST_STABLE_ENV: &str = "EVM2_BLOCKCHAINTEST_STABLE";
-
 /// Optional environment variable for selecting a subdirectory under the test root.
 pub(crate) const BLOCKCHAIN_TEST_SUBDIR_ENV: &str = "SUBDIR";
 
@@ -53,7 +50,7 @@ pub(crate) fn blockchain_test_roots() -> Vec<BlockchainTestRoot> {
 /// Returns the default repo-relative blockchain-test roots. The `main` root is optional.
 pub(crate) fn default_blockchain_test_roots() -> Vec<BlockchainTestRoot> {
     let fixtures = fixtures_root();
-    let main_path = if env_flag(BLOCKCHAINTEST_STABLE_ENV) || env_flag(EEST_STABLE_ENV) {
+    let main_path = if env_flag(EEST_STABLE_ENV) {
         fixtures.join("main/stable/blockchain_tests")
     } else {
         fixtures.join("main/develop/blockchain_tests")

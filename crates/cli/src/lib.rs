@@ -2,5 +2,6 @@
 
 #[allow(missing_docs)]
 pub mod evm_bench;
+pub mod reference;
 pub mod replay_bench;
 pub mod t8n;

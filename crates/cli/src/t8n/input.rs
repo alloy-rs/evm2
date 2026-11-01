@@ -166,7 +166,6 @@ impl TxJson {
         let kind = TxKind::from(self.to);
         let typed = build_typed_tx(TxFields {
             tx_type: Some(tx_type),
-            caller,
             kind,
             data: self.input.clone(),
             gas_limit: u64::try_from(self.gas).map_err(|_| "gas overflows u64")?,
@@ -278,7 +277,7 @@ pub fn parse_fork(name: &str) -> Result<SpecId, Error> {
         "MuirGlacier" => Some(SpecId::ISTANBUL),
         "ArrowGlacier" | "GrayGlacier" => Some(SpecId::LONDON),
         "Paris" => Some(SpecId::MERGE),
-        _ => evm2_eest::parse_fork(name),
+        _ => name.parse::<SpecId>().ok(),
     };
     spec.ok_or_else(|| Error::UnsupportedFork(name.to_string()))
 }

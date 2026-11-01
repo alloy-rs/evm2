@@ -1,5 +1,5 @@
 use alloy_consensus::{TxEip7702, transaction::Recovered};
-use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
+use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, U64, U256, hex, map::HashSet};
 use alloy_rpc_types_trace::parity::{Delta, TraceType};
 use evm2::{
@@ -46,11 +46,19 @@ fn authorization_code_changes() {
             evm.set_inspector(&mut inspector);
             let tx = Recovered::new_unchecked(
                 TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
-                    TxEip7702 { chain_id: 1, to: target, gas_limit: 100_000, ..Default::default() },
-                    vec![RecoveredAuthorization::new_unchecked(
-                        Authorization { chain_id: U256::from(1), address: delegate, nonce: 1 },
-                        RecoveredAuthority::Valid(authority),
-                    )],
+                    TxEip7702 {
+                        chain_id: 1,
+                        to: target,
+                        gas_limit: 100_000,
+                        authorization_list: vec![SignedAuthorization::new_unchecked(
+                            Authorization { chain_id: U256::from(1), address: delegate, nonce: 1 },
+                            0,
+                            U256::ZERO,
+                            U256::ZERO,
+                        )],
+                        ..Default::default()
+                    },
+                    vec![Some(authority)],
                 )),
                 Address::ZERO,
             );
