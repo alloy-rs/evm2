@@ -119,23 +119,11 @@ jobs:
                 | select(.display_title | startswith("Benchmark backfill ") | not)
                 | {createdAt: .created_at, databaseId: .id, status}]'
           }
-          runs_json="$(list_runs 2>/dev/null || echo '[]')"
-          latest_run_id="$(
-            jq -r --argjson current "$CURRENT_RUN_ID" \
-              '[.[] | select(.databaseId != $current)] | max_by(.createdAt).databaseId // empty' \
-              <<< "$runs_json"
-          )"
-          if [[ -n "$latest_run_id" ]]; then
-            latest_status="$(
-              jq -r --argjson run_id "$latest_run_id" \
-                '.[] | select(.databaseId == $run_id) | .status' \
-                <<< "$runs_json"
-            )"
-            if [[ "$latest_status" != "completed" ]]; then
-              echo "Waiting for exact-base benchmark run $latest_run_id"
-              gh run watch "$latest_run_id" --interval 10 || true
-              runs_json="$(list_runs)"
-            fi
+          # A base run that is still in progress is not waited for: polling it from every
+          # PR run exhausts the API rate limit, so such a PR benchmarks the base itself.
+          if ! runs_json="$(list_runs)"; then
+            echo "::warning::Could not list benchmark runs for $base_sha"
+            runs_json='[]'
           fi
           run_ids="$(
             jq -r --argjson current "$CURRENT_RUN_ID" \
