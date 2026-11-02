@@ -49,7 +49,7 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
     /// Whether the dispatch wrote the pc and stack length before the running instruction.
-    pc_synced: bool,
+    pc_published: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
     #[derive_where(skip)]
@@ -115,7 +115,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             host: None,
             inspector: None,
             steps: OpcodeSet::EMPTY,
-            pc_synced: false,
+            pc_published: false,
             inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
@@ -726,7 +726,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline(never)]
     fn reload_if_config_changed(&mut self) {
-        assert!(self.0.pc_synced, "an instruction that runs a message must set `sync_pc`");
+        assert!(self.0.pc_published, "an instruction that runs a message must set `needs_pc`");
         if self.0.result.is_ok()
             && let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
@@ -738,8 +738,8 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     /// Records whether the dispatch wrote the pc and stack length for the running instruction.
     #[inline]
-    pub(crate) const fn set_pc_synced(&mut self, synced: bool) {
-        self.0.pc_synced = synced;
+    pub(crate) const fn set_pc_published(&mut self, published: bool) {
+        self.0.pc_published = published;
     }
 
     #[inline]

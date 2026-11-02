@@ -113,18 +113,18 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     let instruction = C::OPCODE_CONFIG.instruction(op);
     let instr = instruction.instr;
     let dynamic_gas = instruction.flags.contains(InstructionFlags::DYNAMIC_GAS);
-    let sync_pc = instruction.flags.contains(InstructionFlags::SYNC_PC);
+    let needs_pc = instruction.flags.contains(InstructionFlags::NEEDS_PC);
     let r;
     match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
             gas.sync_before_exec(state, dynamic_gas);
-            if sync_pc {
+            if needs_pc {
                 state.set_pc_stack_len(pc.as_ptr(), *stack.len);
-                state.set_pc_synced(true);
+                state.set_pc_published(true);
             }
             r = instr(&mut pc, stack.reborrow(), state);
-            if sync_pc {
-                state.set_pc_synced(false);
+            if needs_pc {
+                state.set_pc_published(false);
             }
             if r.is_ok() {
                 inc_pc(&mut pc, op);

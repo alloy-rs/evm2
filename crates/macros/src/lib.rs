@@ -39,10 +39,10 @@ use syn::{
 ///   checks.
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
-/// - `#[instruction(sync_pc)]`: Before the instruction runs, the dispatch writes the current pc and
-///   stack length to the interpreter, as `dynamic_gas` does for gas. Set it on an instruction that
-///   runs a child message, or otherwise hands the interpreter to host code such as an inspector
-///   hook, so that the host sees the instruction's pc, opcode and stack.
+/// - `#[instruction(needs_pc)]`: Before the instruction runs, the dispatch writes the current pc
+///   and stack length to the interpreter, as `dynamic_gas` does for gas. Set it on an instruction
+///   that runs a child message, or otherwise hands the interpreter to host code such as an
+///   inspector hook, so that the host sees the instruction's pc, opcode and stack.
 /// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete EVM type
 ///   family instead of generating a generic implementation.
 /// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic EVM
@@ -144,7 +144,7 @@ impl Parse for InstructionAttr {
 struct InstructionAttrs {
     no_stack_preamble: bool,
     dynamic_gas: bool,
-    sync_pc: bool,
+    needs_pc: bool,
     evm_types: Option<Type>,
     evm_types_span: Option<proc_macro2::Span>,
     evm_types_bounds: Vec<Punctuated<TypeParamBound, Token![+]>>,
@@ -162,8 +162,8 @@ impl InstructionAttrs {
                 InstructionAttr::Flag(arg) if arg == "dynamic_gas" => {
                     attrs.dynamic_gas = true;
                 }
-                InstructionAttr::Flag(arg) if arg == "sync_pc" => {
-                    attrs.sync_pc = true;
+                InstructionAttr::Flag(arg) if arg == "needs_pc" => {
+                    attrs.needs_pc = true;
                 }
                 InstructionAttr::Flag(arg) => {
                     return Err(syn::Error::new_spanned(
@@ -344,9 +344,9 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
                 #flags.union(evm2::interpreter::private::InstructionFlags::DYNAMIC_GAS)
             };
         }
-        if instruction_attrs.sync_pc {
+        if instruction_attrs.needs_pc {
             flags = quote! {
-                #flags.union(evm2::interpreter::private::InstructionFlags::SYNC_PC)
+                #flags.union(evm2::interpreter::private::InstructionFlags::NEEDS_PC)
             };
         }
         flags

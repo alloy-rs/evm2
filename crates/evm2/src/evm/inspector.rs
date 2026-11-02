@@ -1109,9 +1109,9 @@ mod tests {
         };
     }
 
-    /// A call that does not set `sync_pc`, so the inspector hooks would see a stale pc.
+    /// A call that does not set `needs_pc`, so a config reload would resume from a stale pc.
     #[instruction(no_stack_preamble, dynamic_gas, EvmTypes = BaseEvmTypes)]
-    fn unsynced_call(cx: _) -> Result {
+    fn unflagged_call(cx: _) -> Result {
         instr::call_with(
             stack,
             cx.gas,
@@ -1122,15 +1122,15 @@ mod tests {
         )
     }
 
-    /// The base config with the unsynced call installed at [`CUSTOM_CALL`].
-    struct UnsyncedCallConfig;
+    /// The base config with the call without the flag installed at [`CUSTOM_CALL`].
+    struct UnflaggedCallConfig;
 
-    impl EvmConfig<BaseEvmTypes> for UnsyncedCallConfig {
+    impl EvmConfig<BaseEvmTypes> for UnflaggedCallConfig {
         const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
         const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
             let mut config =
                 OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
-            config.set_instruction::<unsynced_call>(CUSTOM_CALL, 100);
+            config.set_instruction::<unflagged_call>(CUSTOM_CALL, 100);
             config
         };
     }
@@ -1181,9 +1181,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "an instruction that runs a message must set `sync_pc`")]
-    fn message_instruction_without_sync_pc_is_rejected() {
-        run_custom_call::<UnsyncedCallConfig>(
+    #[should_panic(expected = "an instruction that runs a message must set `needs_pc`")]
+    fn message_instruction_without_needs_pc_is_rejected() {
+        run_custom_call::<UnflaggedCallConfig>(
             ConfigInspector::new(OpcodeSet::EMPTY),
             CUSTOM_CALL,
             &[],

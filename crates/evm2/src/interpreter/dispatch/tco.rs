@@ -56,7 +56,7 @@ extern_table! {
         let instruction = C::OPCODE_CONFIG.instruction(OP);
         let instr: InstructionImplFn<T> = instruction.instr;
         let dynamic_gas = instruction.flags.contains(InstructionFlags::DYNAMIC_GAS);
-        let sync_pc = instruction.flags.contains(InstructionFlags::SYNC_PC);
+        let needs_pc = instruction.flags.contains(InstructionFlags::NEEDS_PC);
         if M::INSPECT {
             // Handlers that skip the hooks keep the gas in a register.
             state.gas_mut().set_remaining(remaining_gas.get());
@@ -80,9 +80,9 @@ extern_table! {
         if M::INSPECT || dynamic_gas {
             state.gas_mut().set_remaining(remaining_gas.get());
         }
-        if sync_pc {
+        if needs_pc {
             state.set_pc_stack_len(pc.as_ptr(), stack.len());
-            state.set_pc_synced(true);
+            state.set_pc_published(true);
         }
         let (r, stack_len) = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
@@ -91,8 +91,8 @@ extern_table! {
             (r, stack_view.len)
         };
         stack.set_len(stack_len);
-        if sync_pc {
-            state.set_pc_synced(false);
+        if needs_pc {
+            state.set_pc_published(false);
         }
         if dynamic_gas {
             remaining_gas.set(state.gas_mut().remaining());
