@@ -98,12 +98,12 @@ impl<E> TxResultExt<E> {
 
     /// Returns whether execution ended with the `REVERT` opcode.
     ///
-    /// Unlike [`InstrStop::is_revert`], this does not count [`InstrStop::CallTooDeep`] or
-    /// [`InstrStop::OutOfFunds`]. Those are call-frame failures that the interpreter treats as
-    /// reverts, but a transaction result reports them as halts.
+    /// Unlike [`InstrStop::is_frame_revert`], this does not count [`InstrStop::CallTooDeep`],
+    /// [`InstrStop::OutOfFunds`] or [`InstrStop::NonceOverflow`]. Those are call-frame failures
+    /// that the interpreter treats as reverts, but a transaction result reports them as halts.
     #[inline]
     pub const fn is_revert(&self) -> bool {
-        !self.status && matches!(self.stop, InstrStop::Revert)
+        !self.status && self.stop.is_revert()
     }
 
     /// Returns whether execution failed for a reason other than the `REVERT` opcode.
@@ -428,8 +428,13 @@ mod tests {
         let revert = with_stop(false, InstrStop::Revert);
         assert!(!revert.is_success() && revert.is_revert() && !revert.is_halt());
 
-        // Counted by `InstrStop::is_revert`, but not a top-level `REVERT`.
-        for stop in [InstrStop::OutOfFunds, InstrStop::CallTooDeep, InstrStop::OutOfGas] {
+        // Counted by `InstrStop::is_frame_revert`, but not a top-level `REVERT`.
+        for stop in [
+            InstrStop::OutOfFunds,
+            InstrStop::CallTooDeep,
+            InstrStop::NonceOverflow,
+            InstrStop::OutOfGas,
+        ] {
             let halt = with_stop(false, stop);
             assert!(!halt.is_success() && !halt.is_revert() && halt.is_halt(), "{stop:?}");
         }

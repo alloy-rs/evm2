@@ -279,14 +279,23 @@ impl CallTraceNode {
         if self.trace.kind.is_delegate() { self.trace.caller } else { self.trace.address }
     }
 
-    /// Iterates over steps in execution order, matching call opcodes to recorded children.
+    /// Iterates over steps in execution order, pairing each step with the child it called.
+    ///
+    /// A child is recorded right after the step that called it, so the node's `ordering` locates
+    /// it. A call opcode without a following child either failed before entering a frame, e.g. due
+    /// to out of gas (<https://github.com/paradigmxyz/reth/issues/3915>), or called an excluded
+    /// precompile that was not attached to this node.
     pub(crate) fn steps_with_children(&self) -> impl Iterator<Item = CallTraceStepStackItem<'_>> {
-        let mut children = self.children.iter();
-        self.trace.steps.iter().map(move |step| {
-            // A call opcode can fail before a child is recorded, e.g. due to out of gas:
-            // <https://github.com/paradigmxyz/reth/issues/3915>.
-            let call_child_id =
-                if step.is_call_like_op() { children.next().copied() } else { None };
+        let mut ordering = self.ordering.iter().peekable();
+        self.trace.steps.iter().enumerate().map(move |(step_idx, step)| {
+            ordering
+                .find(|member| matches!(member, TraceMemberOrder::Step(idx) if *idx == step_idx));
+            let call_child_id = match ordering.next_if(|member| {
+                step.is_call_like_op() && matches!(member, TraceMemberOrder::Call(_))
+            }) {
+                Some(TraceMemberOrder::Call(child)) => self.children.get(*child).copied(),
+                _ => None,
+            };
             CallTraceStepStackItem { trace_node: self, step, call_child_id }
         })
     }
@@ -443,14 +452,6 @@ impl CallTraceNode {
         if !self.trace.success {
             if self.kind().is_any_create() {
                 call_frame.to = None;
-            }
-
-            if !self
-                .status()
-                .is_some_and(|status| status.is_revert() || status == InstrStop::NonceOverflow)
-            {
-                call_frame.gas_used = U256::from(self.trace.gas_limit);
-                call_frame.output = None;
             }
 
             call_frame.revert_reason = utils::maybe_revert_reason(self.trace.output.as_ref());
@@ -664,8 +665,8 @@ pub struct CallTraceStep {
     pub gas_remaining: u64,
     /// Gas refund counter before step execution
     pub gas_refund_counter: u64,
-    /// Total gas used before step execution
-    pub gas_used: u64,
+    /// The storage access of an SLOAD/SSTORE. Only set if state diffs are recorded.
+    pub storage_change: Option<Box<StorageChange>>,
     // Fields filled in `step_end`
     /// Gas cost of step execution
     pub gas_cost: u64,
@@ -676,8 +677,6 @@ pub struct CallTraceStep {
     /// State-gas spent before this step, used to calculate `state_gas_cost`.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub state_gas_spent: i64,
-    /// Change of the contract state after step execution (effect of the SLOAD/SSTORE instructions)
-    pub storage_change: Option<Box<StorageChange>>,
     /// Final status of the step
     ///
     /// This is set after the step was executed.
@@ -711,10 +710,14 @@ impl CallTraceStep {
                 format!("opcode {:#x} not defined", self.op.get()).into()
             },
             pc: self.pc as u64,
-            refund_counter: Some(self.gas_refund_counter),
+            // geth omits a zero refund and empty memory and return data.
+            refund_counter: (self.gas_refund_counter != 0).then_some(self.gas_refund_counter),
             stack,
             memory: if opts.is_memory_enabled() {
-                self.memory.as_ref().map(RecordedMemory::memory_chunks)
+                self.memory
+                    .as_ref()
+                    .map(RecordedMemory::memory_chunks)
+                    .filter(|memory| !memory.is_empty())
             } else {
                 None
             },
@@ -777,7 +780,8 @@ pub struct StepDelta {
     /// The storage written by an `SSTORE`, taken from its operands, so it is also set when the
     /// value does not change.
     pub store: Option<StorageDelta>,
-    /// The remaining gas after a call-like step or an instruction that gained gas.
+    /// The remaining gas after a call-like step or a step whose remaining gas after execution is
+    /// not `gas_remaining - gas_cost`, such as one that gained gas or drew state gas from it.
     ///
     /// For all other steps the remaining gas after execution is `gas_remaining - gas_cost`.
     pub gas_remaining_after: Option<u64>,
@@ -815,20 +819,18 @@ pub enum StorageChangeReason {
     SSTORE,
 }
 
-/// Represents a storage change during execution.
+/// Represents the storage access of an SLOAD or SSTORE step, read before the opcode runs.
 ///
-/// This maps to evm storage journal entries.
-///
-/// It is used to track both storage change and warm load of a storage slot. For warm load in regard
-/// to EIP-2929 AccessList had_value will be None.
+/// For an SLOAD, `value` is the value the slot holds and `had_value` is `None`. For an SSTORE,
+/// `value` is the value written and `had_value` is the value the slot held before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StorageChange {
     /// key of the storage slot
     pub key: U256,
-    /// Current value of the storage slot
+    /// The value read by an SLOAD, or written by an SSTORE
     pub value: U256,
-    /// The previous value of the storage slot, if any
+    /// The value an SSTORE overwrites, `None` for an SLOAD
     pub had_value: Option<U256>,
     /// How this storage was accessed
     pub reason: StorageChangeReason,

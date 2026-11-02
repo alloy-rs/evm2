@@ -21,6 +21,11 @@ pub const MAX_CODE_SIZE_AMSTERDAM: usize = 0x10000;
 /// Maximum contract creation initcode size since Amsterdam.
 pub const MAX_INITCODE_SIZE_AMSTERDAM: usize = 2 * MAX_CODE_SIZE_AMSTERDAM;
 
+/// Maximum transaction gas limit, including the state-gas reservoir, since Amsterdam.
+///
+/// EIP-8037 caps `tx.gas` at `2^32 - 1` (execution-specs `TX_MAX_TOTAL_GAS_LIMIT`).
+pub const MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM: u64 = (1 << 32) - 1;
+
 /// Amsterdam blob base fee update fraction (BPO2 blob schedule).
 pub const BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM: u64 = 11_684_671;
 

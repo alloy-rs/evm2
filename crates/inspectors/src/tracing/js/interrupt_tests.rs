@@ -105,8 +105,9 @@ fn interrupt_during_enter_and_exit_aborts() {
             // SELFDESTRUCT invokes enter/exit outside of step_end.
             &hex!("6043ff")[..],
         ] {
+            let other = if callback == "enter" { "exit" } else { "enter" };
             let script = format!(
-                "{{ {callback}: function() {{ interrupt(); }},
+                "{{ {callback}: function() {{ interrupt(); }}, {other}: function() {{}},
                     fault: function() {{}}, result: function() {{ return 42; }} }}"
             );
             let (_, result) = run(interruptible(&script), code, TxKind::Call(TARGET));

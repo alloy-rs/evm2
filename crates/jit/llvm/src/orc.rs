@@ -1,4 +1,4 @@
-//! Safe wrappers for LLVM ORC and LLJIT, which are not yet implemented in [`inkwell`].
+//! Safe wrappers for LLVM ORC and LLJIT.
 //!
 //! Header files implemented:
 //! - `LLJIT.h`
@@ -13,21 +13,15 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::too_many_arguments)]
 
-use crate::llvm_string;
-use inkwell::{
-    context::Context,
-    llvm_sys::{
-        core::{
-            LLVMContextCreate, LLVMCreateMemoryBufferWithMemoryRangeCopy,
-            LLVMModuleCreateWithNameInContext,
-        },
-        error::*,
-        orc2::{lljit::*, *},
-        prelude::*,
+use crate::wrap::{Context, LLVMString, Module, TargetMachine};
+use llvm_sys::{
+    core::{
+        LLVMContextCreate, LLVMCreateMemoryBufferWithMemoryRangeCopy,
+        LLVMModuleCreateWithNameInContext,
     },
-    module::Module,
-    support::LLVMString,
-    targets::TargetMachine,
+    error::*,
+    orc2::{lljit::*, *},
+    prelude::*,
 };
 use std::{
     ffi::{CStr, CString, c_char, c_void},
@@ -82,7 +76,7 @@ impl ThreadSafeContext {
     }
 
     /// Create a ThreadSafeModule wrapper around the given LLVM module.
-    pub fn create_module<'ctx>(&'ctx self, module: Module<'ctx>) -> ThreadSafeModule {
+    pub fn create_module(&self, module: Module) -> ThreadSafeModule {
         ThreadSafeModule::create_in_context(module, self)
     }
 }
@@ -121,9 +115,8 @@ impl ThreadSafeModule {
     }
 
     /// Create a ThreadSafeModule wrapper around the given LLVM module.
-    pub fn create_in_context<'ctx>(module: Module<'ctx>, ctx: &'ctx ThreadSafeContext) -> Self {
-        let module = mem::ManuallyDrop::new(module);
-        let ptr = unsafe { LLVMOrcCreateNewThreadSafeModule(module.as_mut_ptr(), ctx.as_inner()) };
+    pub fn create_in_context(module: Module, ctx: &ThreadSafeContext) -> Self {
+        let ptr = unsafe { LLVMOrcCreateNewThreadSafeModule(module.into_raw(), ctx.as_inner()) };
         Self { ptr }
     }
 
@@ -140,18 +133,18 @@ impl ThreadSafeModule {
     /// Runs the given closure with the module.
     ///
     /// This implicitly locks the associated context.
-    pub fn with_module<'tsm>(
-        &'tsm self,
-        mut f: impl FnMut(&Module<'tsm>) -> Result<(), String>,
+    pub fn with_module(
+        &self,
+        mut f: impl FnMut(&Module) -> Result<(), String>,
     ) -> Result<(), LLVMString> {
         extern "C" fn shim(ctx: *mut c_void, m: LLVMModuleRef) -> LLVMErrorRef {
-            let f = ctx.cast::<&mut dyn FnMut(&Module<'_>) -> Result<(), String>>();
+            let f = ctx.cast::<&mut dyn FnMut(&Module) -> Result<(), String>>();
             let m = mem::ManuallyDrop::new(unsafe { Module::new(m) });
             let res = std::panic::catch_unwind(AssertUnwindSafe(|| unsafe { (*f)(&m) }));
             cvt_cb_res(res)
         }
 
-        let mut f = &mut f as &mut dyn FnMut(&Module<'tsm>) -> Result<(), String>;
+        let mut f = &mut f as &mut dyn FnMut(&Module) -> Result<(), String>;
         let ctx = &mut f as *mut _ as *mut c_void;
         cvt(unsafe { LLVMOrcThreadSafeModuleWithModuleDo(self.as_inner(), shim, ctx) })
     }
@@ -1207,7 +1200,9 @@ impl JITTargetMachineBuilder {
 
     /// Returns the target triple for the given JITTargetMachineBuilder as a string.
     pub fn get_target_triple(&self) -> LLVMString {
-        unsafe { llvm_string(LLVMOrcJITTargetMachineBuilderGetTargetTriple(self.as_inner())) }
+        unsafe {
+            LLVMString::from_raw(LLVMOrcJITTargetMachineBuilderGetTargetTriple(self.as_inner()))
+        }
     }
 
     /// Sets the target triple for the given JITTargetMachineBuilder to the given string.
@@ -1575,7 +1570,7 @@ impl ObjectTransformLayerRef {
     /// Returning `Err` aborts materialization.
     pub fn set_transform(&self, f: ObjTransformFn) {
         extern "C" fn shim(ctx: *mut c_void, obj_in_out: *mut LLVMMemoryBufferRef) -> LLVMErrorRef {
-            use inkwell::llvm_sys::core::{
+            use llvm_sys::core::{
                 LLVMCreateMemoryBufferWithMemoryRangeCopy, LLVMDisposeMemoryBuffer,
                 LLVMGetBufferSize, LLVMGetBufferStart,
             };
@@ -1707,7 +1702,11 @@ unsafe impl Send for LLJITBuilder {}
 
 /// Converts an `LLVMErrorRef` to a `Result`.
 pub(crate) fn cvt(ptr: LLVMErrorRef) -> Result<(), LLVMString> {
-    if ptr.is_null() { Ok(()) } else { Err(unsafe { llvm_string(LLVMGetErrorMessage(ptr)) }) }
+    if ptr.is_null() {
+        Ok(())
+    } else {
+        Err(unsafe { LLVMString::from_raw(LLVMGetErrorMessage(ptr)) })
+    }
 }
 
 fn cvt_cb_res(res: Result<Result<(), String>, Box<dyn std::any::Any + Send>>) -> LLVMErrorRef {
@@ -1796,13 +1795,18 @@ impl<T> Drop for ManuallyDropElements<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use inkwell::{passes::PassBuilderOptions, targets::Target};
+    use crate::wrap::{PassBuilderOptions, Target};
+    use llvm_sys::{
+        LLVMIntPredicate, LLVMLinkage,
+        core::LLVMGetModuleContext,
+        target_machine::{LLVMCodeGenOptLevel, LLVMCodeModel, LLVMRelocMode},
+    };
 
     #[test]
     fn e2e_with_tsc() {
         use mem::ManuallyDrop;
 
-        Target::initialize_native(&Default::default()).unwrap();
+        Target::initialize_native().unwrap();
         let triple = TargetMachine::get_default_triple();
         let cpu = TargetMachine::get_host_cpu_name();
         let features = TargetMachine::get_host_cpu_features();
@@ -1819,9 +1823,9 @@ mod tests {
                 &triple,
                 &cpu.to_string_lossy(),
                 &features.to_string_lossy(),
-                inkwell::OptimizationLevel::None,
-                inkwell::targets::RelocMode::Static,
-                inkwell::targets::CodeModel::JITDefault,
+                LLVMCodeGenOptLevel::LLVMCodeGenLevelNone,
+                LLVMRelocMode::LLVMRelocStatic,
+                LLVMCodeModel::LLVMCodeModelJITDefault,
             )
             .unwrap();
 
@@ -1839,9 +1843,8 @@ mod tests {
         extern "C" fn my_external(x: i64) -> i64 {
             x + 100
         }
-        let ext_ty = cx.i64_type().fn_type(&[cx.i64_type().into()], false);
-        let _ext_fn =
-            m.add_function("my_external", ext_ty, Some(inkwell::module::Linkage::External));
+        let ext_ty = cx.i64_type().fn_type(&[cx.i64_type()], false);
+        let _ext_fn = m.add_function("my_external", ext_ty, Some(LLVMLinkage::LLVMExternalLinkage));
         let ext_name = CString::new("my_external").unwrap();
         let sym = SymbolMapPair::new(
             jit.mangle_and_intern(&ext_name),
@@ -1856,10 +1859,10 @@ mod tests {
             .unwrap();
 
         let ty = cx.i64_type().fn_type(&[], false);
-        let f = m.add_function(fn_name, ty, Some(inkwell::module::Linkage::External));
+        let f = m.add_function(fn_name, ty, Some(LLVMLinkage::LLVMExternalLinkage));
         let bb = cx.append_basic_block(f, "entry");
         bcx.position_at_end(bb);
-        bcx.build_return(Some(&cx.i64_type().const_int(142, false))).unwrap();
+        bcx.build_return(Some(cx.i64_type().const_int(142, false)));
 
         eprintln!("module:\n{}", m.print_to_string().to_string_lossy());
         m.verify().unwrap();
@@ -1894,7 +1897,7 @@ mod tests {
     fn lookup_in_custom_jd() {
         use mem::ManuallyDrop;
 
-        Target::initialize_native(&Default::default()).unwrap();
+        Target::initialize_native().unwrap();
         let triple = TargetMachine::get_default_triple();
         let cpu = TargetMachine::get_host_cpu_name();
         let features = TargetMachine::get_host_cpu_features();
@@ -1911,9 +1914,9 @@ mod tests {
                 &triple,
                 &cpu.to_string_lossy(),
                 &features.to_string_lossy(),
-                inkwell::OptimizationLevel::None,
-                inkwell::targets::RelocMode::Static,
-                inkwell::targets::CodeModel::JITDefault,
+                LLVMCodeGenOptLevel::LLVMCodeGenLevelNone,
+                LLVMRelocMode::LLVMRelocStatic,
+                LLVMCodeModel::LLVMCodeModelJITDefault,
             )
             .unwrap();
 
@@ -1931,16 +1934,13 @@ mod tests {
             let fn_name = "test_fn";
             let bcx = cx.create_builder();
             let ty = cx.i64_type().fn_type(&[], false);
-            let f = m.add_function(fn_name, ty, Some(inkwell::module::Linkage::External));
+            let f = m.add_function(fn_name, ty, Some(LLVMLinkage::LLVMExternalLinkage));
             let bb = cx.append_basic_block(f, "entry");
             bcx.position_at_end(bb);
-            bcx.build_return(Some(&cx.i64_type().const_int(value, false))).unwrap();
+            bcx.build_return(Some(cx.i64_type().const_int(value, false)));
             m.verify().unwrap();
 
-            let module = ManuallyDrop::new(m);
-            let tsm = unsafe {
-                ThreadSafeModule::create_in_context(Module::new(module.as_mut_ptr()), &tscx)
-            };
+            let tsm = ThreadSafeModule::create_in_context(m, &tscx);
             jit.add_module_with_dylib(tsm, unsafe {
                 JITDylibRef::from_inner_unchecked(jd.as_inner())
             })
@@ -1967,28 +1967,29 @@ mod tests {
         let tsm = ThreadSafeModule::create("test");
         let fn_name = "my_fn";
         tsm.with_module(|m| {
-            let cx = m.get_context();
+            let cx = mem::ManuallyDrop::new(unsafe {
+                Context::new(LLVMGetModuleContext(m.as_mut_ptr()))
+            });
             let bcx = cx.create_builder();
             let ty = cx.i64_type().fn_type(&[], false);
 
-            let f = m.add_function(fn_name, ty, Some(inkwell::module::Linkage::External));
+            let f = m.add_function(fn_name, ty, Some(LLVMLinkage::LLVMExternalLinkage));
             let bb = cx.append_basic_block(f, "entry");
             bcx.position_at_end(bb);
             bcx.build_int_compare(
-                inkwell::IntPredicate::EQ,
-                cx.i64_type().const_zero(),
-                cx.i64_type().const_all_ones(),
+                LLVMIntPredicate::LLVMIntEQ,
+                cx.i64_type().const_null(),
+                cx.i64_type().const_int(u64::MAX, false),
                 "a",
-            )
-            .unwrap();
-            bcx.build_return(Some(&cx.i64_type().const_int(69, false))).unwrap();
+            );
+            bcx.build_return(Some(cx.i64_type().const_int(69, false)));
 
             eprintln!("--before--");
             eprintln!("{}", m.print_to_string().to_string_lossy());
 
             m.verify().map_err(|e| e.to_string())?;
 
-            Target::initialize_native(&Default::default()).unwrap();
+            Target::initialize_native().unwrap();
             let triple = TargetMachine::get_default_triple();
             let cpu = TargetMachine::get_host_cpu_name();
             let features = TargetMachine::get_host_cpu_features();
@@ -1998,13 +1999,13 @@ mod tests {
                     &triple,
                     &cpu.to_string_lossy(),
                     &features.to_string_lossy(),
-                    Default::default(),
-                    inkwell::targets::RelocMode::Default,
-                    inkwell::targets::CodeModel::Default,
+                    LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault,
+                    LLVMRelocMode::LLVMRelocDefault,
+                    LLVMCodeModel::LLVMCodeModelDefault,
                 )
                 .ok_or_else(|| String::from("failed to create target machine"))?;
 
-            m.run_passes("default<O3>", &machine, PassBuilderOptions::create()).unwrap();
+            m.run_passes("default<O3>", &machine, &PassBuilderOptions::create()).unwrap();
 
             eprintln!("--after--");
             eprintln!("{}", m.print_to_string().to_string_lossy());

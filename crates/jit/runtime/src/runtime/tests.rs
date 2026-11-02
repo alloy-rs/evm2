@@ -164,7 +164,7 @@ impl ArtifactStore for EmptyStore {
         &self,
         _key: &ArtifactKey,
         _manifest: &ArtifactManifest,
-        _dylib_bytes: &[u8],
+        _object_bytes: &[u8],
     ) -> eyre::Result<()> {
         Ok(())
     }
@@ -194,7 +194,7 @@ impl ArtifactStore for FailingStore {
         &self,
         _key: &ArtifactKey,
         _manifest: &ArtifactManifest,
-        _dylib_bytes: &[u8],
+        _object_bytes: &[u8],
     ) -> eyre::Result<()> {
         Ok(())
     }
@@ -226,7 +226,7 @@ impl ArtifactStore for CountingStore {
         &self,
         _key: &ArtifactKey,
         _manifest: &ArtifactManifest,
-        _dylib_bytes: &[u8],
+        _object_bytes: &[u8],
     ) -> eyre::Result<()> {
         Ok(())
     }
@@ -306,6 +306,60 @@ fn zero_workers_fails_sync_compile_without_blocking() {
     let stats = tb.stats();
     assert_eq!(stats.resident_entries, 0);
     assert_eq!(stats.compilations_dispatched, 0);
+    assert_eq!(stats.interpreter_fallbacks, 1);
+}
+
+#[test]
+fn blocking_pending_job_cap_counts_fallback() {
+    let tb = TestBackend::new(RuntimeConfig {
+        blocking: true,
+        tuning: RuntimeTuning { jit_max_pending_jobs: 0, ..Default::default() },
+        ..Default::default()
+    });
+
+    let decision = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+    assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::JitFailed)));
+    assert_eq!(tb.stats().interpreter_fallbacks, 1);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn blocking_sync_compile_timeout_counts_fallback() {
+    // The callback runs before the waiting caller is notified, so the caller times out first.
+    let tb = TestBackend::new(RuntimeConfig {
+        blocking: true,
+        tuning: RuntimeTuning {
+            jit_worker_count: 1,
+            sync_compile_timeout: std::time::Duration::from_millis(20),
+            ..Default::default()
+        },
+        on_compilation: Some(Arc::new(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(500))
+        })),
+        ..Default::default()
+    });
+
+    let decision = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+    assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::JitFailed)));
+    assert_eq!(tb.stats().interpreter_fallbacks, 1);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn blocking_mode_compiles_bytecode_over_max_len() {
+    let tb = TestBackend::new(RuntimeConfig {
+        blocking: true,
+        tuning: RuntimeTuning {
+            jit_worker_count: 1,
+            jit_max_bytecode_len: 4,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let decision = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+    assert!(matches!(decision, LookupDecision::Compiled(_)));
+    assert_eq!(tb.stats().interpreter_fallbacks, 0);
 }
 
 #[test]
@@ -818,6 +872,7 @@ fn blocking_mode() {
     // Empty bytecodes return Ineligible (nothing to compile).
     let decision = tb.lookup(TestBackend::req_cancun(&[]));
     assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::Ineligible)));
+    assert_eq!(tb.stats().interpreter_fallbacks, 1);
 }
 
 #[test]
@@ -1130,6 +1185,31 @@ fn memory_budget_eviction() {
         let _ = tb.lookup(req.clone());
         if tb.stats().evictions >= 1 { Some(()) } else { None }
     });
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn memory_budget_evicts_aot_entries() {
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        store: Some(Arc::new(RuntimeArtifactStore::new().unwrap())),
+        tuning: RuntimeTuning {
+            jit_worker_count: 1,
+            resident_code_cache_bytes: 1,
+            eviction_sweep_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    tb.prepare_aot_sync(AotRequest {
+        code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
+        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        spec_id: SpecId::CANCUN,
+    })
+    .unwrap();
+
+    poll_until(std::time::Duration::from_secs(10), || (tb.stats().evictions >= 1).then_some(()));
 }
 
 // ===========================================================================
@@ -1519,7 +1599,7 @@ fn preload_aot_skips_stale_abi_version() {
     let stale_manifest = ArtifactManifest { artifact_key: stale_key, ..stored.manifest.clone() };
     let stale_store = Arc::new(RuntimeArtifactStore::new().unwrap());
     stale_store
-        .store(&stale_key, &stale_manifest, &std::fs::read(&stored.dylib_path).unwrap())
+        .store(&stale_key, &stale_manifest, &std::fs::read(&stored.object_path).unwrap())
         .unwrap();
 
     let tb = TestBackend::new(RuntimeConfig {
@@ -1557,7 +1637,7 @@ fn preload_aot_skips_manifest_key_mismatch() {
     let stale_key = ArtifactKey { abi_version: crate::ABI_VERSION - 1, ..key };
     let manifest = ArtifactManifest { artifact_key: stale_key, ..stored.manifest.clone() };
     let mismatched_store = Arc::new(RuntimeArtifactStore::new().unwrap());
-    mismatched_store.store(&key, &manifest, &std::fs::read(&stored.dylib_path).unwrap()).unwrap();
+    mismatched_store.store(&key, &manifest, &std::fs::read(&stored.object_path).unwrap()).unwrap();
 
     let tb = TestBackend::new(RuntimeConfig {
         enabled: true,

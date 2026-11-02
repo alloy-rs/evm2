@@ -7,9 +7,15 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ResultAndState, SpecId, TestDbExt,
     TransactTo, TxEnv, deploy_contract,
 };
-use alloy_primitives::{Address, U256, address, hex};
-use alloy_rpc_types_trace::geth::{GethDebugTracingOptions, GethTrace};
-use evm2_inspectors::tracing::{DebugInspector, js::JsInspector};
+use alloy_primitives::{Address, U256, address, hex, map::HashMap};
+use alloy_rpc_types_trace::geth::{
+    GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
+    mux::MuxConfig,
+};
+use evm2_inspectors::tracing::{
+    DebugInspector, MuxInspector,
+    js::{JsInspector, JsInspectorInterrupt},
+};
 use serde_json::json;
 
 fn js_result(
@@ -471,10 +477,9 @@ fn test_geth_debug_inspector_jstracer() {
             exists: db.exists(ctx.to),
             codeLength: db.getCode(ctx.to).length,
             gas: ctx.gas,
-            gasPrice: ctx.gasPrice,
+            gasPrice: ctx.gasPrice.toString(),
             value: ctx.value.toString(),
             block: ctx.block,
-            time: ctx.time,
             coinbase: toHex(ctx.coinbase),
             error: !!ctx.error
         };
@@ -500,10 +505,134 @@ fn test_geth_debug_inspector_jstracer() {
     assert_eq!(result["exists"], json!(true));
     assert_eq!(result["codeLength"], json!(5));
     assert_eq!(result["gas"], json!(1_000_000));
-    assert_eq!(result["gasPrice"], json!(17));
+    assert_eq!(result["gasPrice"], json!("17"));
     assert_eq!(result["value"], json!("3"));
     assert_eq!(result["block"], json!(42));
-    assert_eq!(result["time"], json!("1234"));
     assert_eq!(result["coinbase"], json!(coinbase));
     assert_eq!(result["error"], json!(false));
+}
+
+#[test]
+fn test_geth_jstracer_get_code_does_not_load_the_account() {
+    let target = address!("1000000000000000000000000000000000000001");
+    let observed = address!("1000000000000000000000000000000000000002");
+    let caller = address!("1000000000000000000000000000000000000003");
+
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            db.insert_account_info(
+                &caller,
+                AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+            );
+            db.insert_account_info(
+                &target,
+                AccountInfo {
+                    code: Some(Bytecode::new_legacy(hex!("00").into())),
+                    ..Default::default()
+                },
+            );
+            db.insert_account_info(
+                &observed,
+                AccountInfo {
+                    code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
+                    ..Default::default()
+                },
+            );
+        });
+    let context = context.modify_tx_chained(|tx| {
+        tx.gas_limit = 1_000_000;
+        tx.gas_price = 1;
+        tx.kind = TransactTo::Call(target);
+    });
+
+    let code = r#"
+{
+    codeLength: -1,
+    step: function(log, db) {
+        this.codeLength = db.getCode(toAddress("1000000000000000000000000000000000000002")).length;
+    },
+    fault: function() {},
+    result: function() { return this.codeLength; }
+}"#;
+    let mut inspector = DebugInspector::new(GethDebugTracingOptions::js_tracer(code)).unwrap();
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+
+    let tx = evm.ctx().tx().clone();
+    let res = evm.inspect_tx(TxEnv { caller, ..tx }).unwrap();
+    assert!(res.result.is_success());
+
+    let (context, inspector) = evm.ctx_inspector();
+    let tx_env = context.tx().envelope();
+    let block_env = *context.block();
+    let trace =
+        inspector.get_result(None, &tx_env, &block_env, &res.tx_result, context.db_mut()).unwrap();
+    let GethTrace::JS(result) = trace else { panic!("expected JS trace") };
+    assert_eq!(result, json!(5));
+
+    // The transaction loads its caller and target. The code read does not add `observed`.
+    let pending = &res.tx_result.pending_state;
+    assert!(pending.account_changes_for(&observed).is_none());
+    assert!(pending.account_changes_for(&target).is_some());
+}
+
+#[test]
+fn mux_runs_a_js_tracer_next_to_a_built_in_tracer() {
+    let code = "{ steps: 0, step: function() { this.steps++; }, fault: function() {}, \
+                result: function() { return this.steps; } }";
+    let contract = address!("0000000000000000000000000000000000000042");
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &contract,
+        AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f00").into())),
+    );
+    let js_key = GethDebugTracerType::JsTracer(code.to_string());
+    let call_key = GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer);
+    let config = MuxConfig(HashMap::from_iter([(js_key.clone(), None), (call_key.clone(), None)]));
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(MuxInspector::try_from_config(config).unwrap());
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
+
+    let GethTrace::JS(steps) = &frame.0[&js_key] else { panic!("expected a JS result") };
+    assert_eq!(steps.as_u64(), Some(3));
+    assert!(matches!(frame.0[&call_key], GethTrace::CallTracer(_)));
+}
+
+#[test]
+fn mux_interrupts_its_js_tracers() {
+    let code = "{ fault: function() {}, result: function() { return 1; } }";
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(&Address::ZERO, AccountInfo::default());
+    let config =
+        MuxConfig(HashMap::from_iter([(GethDebugTracerType::JsTracer(code.into()), None)]));
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(MuxInspector::try_from_config(config).unwrap());
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(Address::ZERO),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let interrupt = JsInspectorInterrupt::new();
+    let (ctx, inspector) = evm.ctx_inspector();
+    inspector.set_js_interrupt(&interrupt);
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    assert!(inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).is_ok());
+
+    interrupt.interrupt();
+    assert!(inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).is_err());
 }
