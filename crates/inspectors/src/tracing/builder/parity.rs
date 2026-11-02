@@ -1,5 +1,4 @@
 use crate::tracing::{
-    tx_state::TxState,
     types::{CallKind, CallTraceNode, CallTraceStep, StepDelta, TraceMemberOrder},
     utils::load_account_code,
 };
@@ -545,9 +544,9 @@ pub fn populate_state_diff(
     db: &mut dyn DynDatabase,
     pending: &PendingState,
 ) -> DbResult<()> {
-    let state = TxState::from_pending(pending);
     let absent = AccountInfo::default();
-    for (addr, changed_acc) in state.accounts.iter() {
+    for changed_acc in pending.account_changes() {
+        let addr = &changed_acc.address;
         // An account created and destroyed in this transaction has no net change unless it
         // already existed, for example with a prefunded balance.
         if changed_acc.current.is_none() && changed_acc.original.is_none() {
@@ -555,7 +554,7 @@ pub fn populate_state_diff(
         }
 
         let existed = changed_acc.original.is_some();
-        let original = changed_acc.original.as_ref().unwrap_or(&absent);
+        let original = changed_acc.original.unwrap_or(&absent);
         let entry = state_diff.entry(*addr).or_default();
 
         // Use the finalized account state: selfdestruct can preserve a balance-only account.
@@ -568,7 +567,7 @@ pub fn populate_state_diff(
             continue;
         }
 
-        let info = changed_acc.current.as_ref().expect("deleted accounts handled above");
+        let info = changed_acc.current.expect("deleted accounts handled above");
 
         // An absent prestate account is added if it has nonempty final state or
         // the EVM marked it created (which can preserve an empty account).
@@ -581,7 +580,7 @@ pub fn populate_state_diff(
             entry.code = Delta::Added(account_code);
 
             // Only changed slots are added; unchanged zero-valued slots are omitted.
-            for (key, slot) in changed_acc.changed_storage() {
+            for (key, slot) in changed_acc.storage.changed_slots() {
                 entry.storage.insert((*key).into(), Delta::Added(slot.current.into()));
             }
         } else {
@@ -593,7 +592,7 @@ pub fn populate_state_diff(
             }
 
             // update _changed_ storage values
-            for (key, slot) in changed_acc.changed_storage() {
+            for (key, slot) in changed_acc.storage.changed_slots() {
                 entry.storage.insert(
                     (*key).into(),
                     Delta::changed(slot.original.into(), slot.current.into()),

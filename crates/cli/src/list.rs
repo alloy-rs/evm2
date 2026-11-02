@@ -3,9 +3,10 @@ use crate::{
     error::{Error, Result},
     fixture,
 };
+use evm2_eest::FixtureKind;
 
 pub(crate) fn run(command: List) -> Result<()> {
-    if fixture::is_binary_path(&command.path) {
+    if FixtureKind::from_path(&command.path).is_some() {
         let suite = fixture::read_blockchain(&command.path)?;
         let mut names = suite.0.keys().map(String::as_str).collect::<Vec<_>>();
         names.sort_unstable();
@@ -15,14 +16,11 @@ pub(crate) fn run(command: List) -> Result<()> {
         return Ok(());
     }
 
-    let input = fixture::read(&command.path)?;
-    if fixture::detect(&input.json).is_none() {
+    let input = fixture::read_text(&command.path)?;
+    if fixture::detect_str(&command.path, &input)?.is_none() {
         return Err(Error::UnknownFixtureKind { path: command.path });
     }
-    let Some(names) = fixture::test_names(&input.json) else {
-        return Err(Error::UnknownFixtureKind { path: command.path });
-    };
-    for name in names {
+    for name in fixture::test_names(&command.path, &input)? {
         println!("{name}");
     }
     Ok(())
