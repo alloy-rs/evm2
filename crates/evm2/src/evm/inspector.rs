@@ -241,9 +241,14 @@ impl<T: EvmTypesHost> Inspector<T> for NoopInspector {
 
 /// Runs both inspectors, `L` first.
 ///
-/// Every hook is forwarded to both. When both `call` or `create` hooks return a result, the result
-/// from `L` wins.
+/// Every hook is forwarded to both, and the steps are those of either inspector. When both `call`
+/// or `create` hooks return a result, the result from `L` wins.
 impl<T: EvmTypesHost, L: Inspector<T>, R: Inspector<T>> Inspector<T> for (L, R) {
+    #[inline]
+    fn inspector_config(&self) -> InspectorConfig {
+        self.0.inspector_config().union(self.1.inspector_config())
+    }
+
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         self.0.initialize_interp(interp);
@@ -326,8 +331,13 @@ impl<T: EvmTypesHost, L: Inspector<T>, R: Inspector<T>> Inspector<T> for (L, R) 
 }
 
 /// Forwards every hook to the inner inspector when present; `None` behaves like
-/// [`NoopInspector`].
+/// [`NoopInspector`] and steps nothing.
 impl<T: EvmTypesHost, I: Inspector<T>> Inspector<T> for Option<I> {
+    #[inline]
+    fn inspector_config(&self) -> InspectorConfig {
+        self.as_ref().map_or_else(InspectorConfig::without_steps, I::inspector_config)
+    }
+
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if let Some(inspector) = self {
@@ -2648,6 +2658,65 @@ mod tests {
         let (result, inspector, _) =
             run_evm_with_inspector(code, &MessageExt::default(), 50_000, None::<HookInspector>);
         assert_matches!(result.stop, InstrStop::Stop);
+        assert!(inspector.is_none());
+    }
+
+    #[test]
+    fn tuple_and_option_inspectors_step_the_union_of_their_sets() {
+        let (db, code) = config_test_code();
+        let (expected, expected_logs) = run_evm_uninspected(db.clone(), code.clone(), 1_000_000);
+        let config = |inspector: &dyn Inspector<BaseEvmTypes>| inspector.inspector_config().steps();
+        let stepped = |inspector: &ConfigInspector| {
+            let mut opcodes = inspector.steps.iter().map(|step| step.0).collect::<Vec<_>>();
+            opcodes.sort_unstable();
+            opcodes.dedup();
+            opcodes
+        };
+        let sload = || ConfigInspector::new(opcode_set([op::SLOAD]));
+        let call = || ConfigInspector::new(opcode_set([op::CALL]));
+
+        assert_eq!(config(&(sload(), call())), opcode_set([op::SLOAD, op::CALL]));
+        assert_eq!(
+            config(&(sload(), ConfigInspector::new(OpcodeSet::EMPTY))),
+            opcode_set([op::SLOAD])
+        );
+        assert_eq!(config(&(sload(), NoopInspector::default())), opcode_set([op::SLOAD]));
+        assert_eq!(config(&(sload(), HookInspector::default())), OpcodeSet::ALL);
+        assert_eq!(config(&Some(sload())), opcode_set([op::SLOAD]));
+        assert_eq!(config(&None::<ConfigInspector>), OpcodeSet::EMPTY);
+
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db.clone(),
+            code.clone(),
+            &MessageExt::default(),
+            1_000_000,
+            (sload(), call()),
+        );
+        assert_eq!(result, expected);
+        assert_eq!(inspector.0.logs, expected_logs);
+        // Each member also sees the steps of the other, and both see every message.
+        assert_eq!(stepped(&inspector.0), [op::SLOAD, op::CALL]);
+        assert_eq!(inspector.0.steps, inspector.1.steps);
+        assert_eq!((inspector.0.calls, inspector.1.calls), (2, 2));
+
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db.clone(),
+            code.clone(),
+            &MessageExt::default(),
+            1_000_000,
+            Some(sload()),
+        );
+        assert_eq!(result, expected);
+        assert_eq!(stepped(&inspector.unwrap()), [op::SLOAD]);
+
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db,
+            code,
+            &MessageExt::default(),
+            1_000_000,
+            None::<ConfigInspector>,
+        );
+        assert_eq!(result, expected);
         assert!(inspector.is_none());
     }
 }
