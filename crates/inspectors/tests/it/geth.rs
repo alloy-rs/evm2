@@ -9,25 +9,27 @@ use crate::utils::{
 };
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
+use alloy_primitives::{
+    Address, B256, Bytes, Log, TxKind, U256, address, hex, keccak256, map::HashMap,
+};
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
     GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
     PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, ExecutionConfig, Inspector, OpcodeSet,
-    Precompiles, Version,
+    AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, EvmTypesHost, ExecutionConfig,
+    Inspector, InspectorConfig, OpcodeSet, Precompiles, Version,
     ethereum::ethereum_tx_registry,
     evm::{DbResult, DynDatabase},
-    interpreter::Word,
+    interpreter::{Interpreter, Message, MessageResult, Word},
 };
 use evm2_inspectors::tracing::{
     DebugInspector, Erc7562Error, Erc7562Inspector, KECCAK256_PREIMAGE_TRACER,
-    Keccak256PreimageInspector, MEMORY_PAD_LIMIT, MuxInspector, TraceLimits, TracingInspector,
-    TracingInspectorConfig,
+    Keccak256PreimageInspector, MEMORY_PAD_LIMIT, MuxInspector, TraceLimitBehavior, TraceLimits,
+    TracingInspector, TracingInspectorConfig,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
 fn test_calltracer_invalid_opcode_errors() {
@@ -2808,15 +2810,16 @@ fn mux_and_debug_inspector_forward_the_steps_of_their_members() {
         MuxInspector::try_from_config(config).unwrap()
     };
 
-    // The 4byte tracer only needs message hooks, and the keccak tracer steps every opcode.
+    // The 4byte tracer only needs message hooks, and the keccak tracer steps `KECCAK256`.
+    let keccak_steps: OpcodeSet = [op::KECCAK256].into_iter().collect();
     assert_eq!(steps(&mux(&[&four_byte])), OpcodeSet::EMPTY);
-    assert_eq!(steps(&mux(&[&four_byte, &keccak])), OpcodeSet::ALL);
+    assert_eq!(steps(&mux(&[&four_byte, &keccak])), keccak_steps);
     let options: GethDebugTracingOptions =
         serde_json::from_value(serde_json::json!({"tracer": "4byteTracer"})).unwrap();
     assert_eq!(steps(&DebugInspector::new(options).unwrap()), OpcodeSet::EMPTY);
     let options: GethDebugTracingOptions =
         serde_json::from_value(serde_json::json!({"tracer": "keccak256PreimageTracer"})).unwrap();
-    assert_eq!(steps(&DebugInspector::new(options).unwrap()), OpcodeSet::ALL);
+    assert_eq!(steps(&DebugInspector::new(options).unwrap()), keccak_steps);
 }
 
 #[test]
@@ -3260,4 +3263,200 @@ fn test_geth_prestate_selfdestruct_reports_slots_before_the_wipe() {
             }
         })
     );
+}
+
+/// Forwards every hook to `inner` and records the opcodes it steps. Steps every opcode if `all`.
+struct SteppedSpy<I> {
+    inner: I,
+    all: bool,
+    stepped: BTreeSet<u8>,
+}
+
+impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for SteppedSpy<I> {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.inner.initialize_interp(interp);
+    }
+
+    fn inspector_config(&self) -> InspectorConfig {
+        if self.all { InspectorConfig::new() } else { self.inner.inspector_config() }
+    }
+
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.stepped.insert(interp.opcode());
+        self.inner.step(interp);
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.inner.step_end(interp);
+    }
+
+    fn log(&mut self, log: &Log, host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>) {
+        self.inner.log(log, host);
+    }
+
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &mut Message<BaseEvmTypes>,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.inner.call(interp, message)
+    }
+
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &Message<BaseEvmTypes>,
+        result: &mut MessageResult<BaseEvmTypes>,
+    ) {
+        self.inner.call_end(interp, message, result);
+    }
+
+    fn create(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &mut Message<BaseEvmTypes>,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.inner.create(interp, message)
+    }
+
+    fn create_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &Message<BaseEvmTypes>,
+        result: &mut MessageResult<BaseEvmTypes>,
+    ) {
+        self.inner.create_end(interp, message, result);
+    }
+
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>,
+    ) {
+        self.inner.selfdestruct(contract, target, value, host);
+    }
+}
+
+/// Traces a contract that stores, loads, writes memory, logs and calls a second contract that
+/// stores and loads.
+fn run_spy(config: TracingInspectorConfig, all: bool) -> SteppedSpy<TracingInspector> {
+    let (contract, mut db) = contract_with_code(&hex!(
+        // SSTORE(0, 5), SLOAD(0), MSTORE8(0, 0xaa), LOG0(0, 1), CALL(0x2000, 0x43), STOP.
+        "6005" "5f55" "5f54" "50" "60aa" "5f53" "6001" "5f" "a0"
+        "5f5f5f5f5f" "6043" "612000" "f1" "50" "00"
+    ));
+    db.insert_account_info(
+        &Address::with_last_byte(0x43),
+        AccountInfo::default().with_code(Bytecode::new_raw(
+            // SSTORE(1, 7), SLOAD(0), STOP.
+            hex!("6007" "6001" "55" "5f54" "50" "00").to_vec().into(),
+        )),
+    );
+    let mut spy =
+        SteppedSpy { inner: TracingInspector::new(config), all, stepped: BTreeSet::new() };
+    Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(&mut spy)
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+    spy
+}
+
+#[test]
+fn tracing_inspector_steps_only_what_its_config_records() {
+    let steps = |config: TracingInspectorConfig| {
+        Inspector::<BaseEvmTypes>::inspector_config(&TracingInspector::new(config)).steps()
+    };
+    let filter: OpcodeSet = [op::SLOAD, op::SSTORE, op::CALL].into_iter().collect();
+    let filtered = TracingInspectorConfig {
+        record_opcodes_filter: Some(filter),
+        ..TracingInspectorConfig::default_geth()
+    };
+
+    // The call tracer, the prestate tracer and the parity traces other than `vmTrace` record no
+    // steps, and the struct logger, `vmTrace` and an unfiltered config step every opcode.
+    for config in [
+        TracingInspectorConfig::none(),
+        TracingInspectorConfig::from_geth_call_config(&CallConfig {
+            with_log: Some(true),
+            ..Default::default()
+        }),
+        TracingInspectorConfig::from_geth_prestate_config(&PreStateConfig::default()),
+        TracingInspectorConfig::from_flat_call_config(&FlatCallConfig::default()),
+        TracingInspectorConfig::default_parity(),
+        TracingInspectorConfig::parity_statediff(),
+        TracingInspectorConfig { record_opcodes_filter: Some(filter), ..Default::default() },
+    ] {
+        assert_eq!(steps(config), OpcodeSet::EMPTY, "{config:?}");
+    }
+    for config in [
+        TracingInspectorConfig::all(),
+        TracingInspectorConfig::default_geth(),
+        TracingInspectorConfig::parity_vm_trace(),
+    ] {
+        assert_eq!(steps(config), OpcodeSet::ALL, "{config:?}");
+    }
+    assert_eq!(steps(filtered), filter);
+
+    // Exceeding a halting budget in any hook halts the next step, so every opcode steps.
+    let halting = TraceLimits::default()
+        .set_max_recorded_bytes(Some(1024))
+        .set_behavior(TraceLimitBehavior::Halt);
+    for config in [TracingInspectorConfig::none(), filtered] {
+        let inspector = TracingInspector::new(config).with_limits(halting);
+        assert_eq!(Inspector::<BaseEvmTypes>::inspector_config(&inspector).steps(), OpcodeSet::ALL);
+    }
+}
+
+#[test]
+fn tracing_inspector_traces_the_same_with_the_steps_it_asks_for_and_with_every_step() {
+    let filter: OpcodeSet = [op::SLOAD, op::SSTORE, op::CALL].into_iter().collect();
+    for (config, stepped) in [
+        (TracingInspectorConfig::none(), Some(OpcodeSet::EMPTY)),
+        (
+            TracingInspectorConfig::from_geth_call_config(&CallConfig {
+                with_log: Some(true),
+                ..Default::default()
+            }),
+            Some(OpcodeSet::EMPTY),
+        ),
+        (TracingInspectorConfig::default_parity(), Some(OpcodeSet::EMPTY)),
+        (TracingInspectorConfig::parity_statediff(), Some(OpcodeSet::EMPTY)),
+        (TracingInspectorConfig::default_geth(), None),
+        (TracingInspectorConfig::parity_vm_trace(), None),
+        (
+            TracingInspectorConfig {
+                record_opcodes_filter: Some(filter),
+                record_memory_snapshots: true,
+                ..TracingInspectorConfig::default_geth()
+            },
+            Some(filter),
+        ),
+    ] {
+        let asked = run_spy(config, false);
+        let every = run_spy(config, true);
+        assert_eq!(
+            format!("{:?}", asked.inner.traces()),
+            format!("{:?}", every.inner.traces()),
+            "{config:?}"
+        );
+        let expected: OpcodeSet = match stepped {
+            Some(set) => {
+                assert!(every.stepped.len() > set_len(set), "{config:?}");
+                set
+            }
+            None => every.stepped.iter().copied().collect(),
+        };
+        assert_eq!(asked.stepped.iter().copied().collect::<OpcodeSet>(), expected, "{config:?}");
+    }
+}
+
+fn set_len(set: OpcodeSet) -> usize {
+    (0..=u8::MAX).filter(|op| set.contains(*op)).count()
 }
