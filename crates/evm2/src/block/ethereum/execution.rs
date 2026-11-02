@@ -73,11 +73,15 @@ impl InvalidTxError for EthInvalidTxError {
             self.0,
             HandlerError::GasLimitMoreThanBlock { .. }
                 | HandlerError::TxGasLimitGreaterThanCap { .. }
+                | HandlerError::IntrinsicGasGreaterThanCap { .. }
         )
     }
 
     fn is_gas_limit_too_low(&self) -> bool {
-        matches!(self.0, HandlerError::IntrinsicGasTooLow { .. })
+        matches!(
+            self.0,
+            HandlerError::IntrinsicGasTooLow { .. } | HandlerError::GasLimitBelowFloor { .. }
+        )
     }
 
     /// Exposes the wrapped [`HandlerError`] so RPC layers can recover the structured error.
@@ -100,6 +104,8 @@ impl TryFrom<HandlerError> for EthInvalidTxError {
             | HandlerError::InvalidChainId { .. }
             | HandlerError::MissingChainId
             | HandlerError::IntrinsicGasTooLow { .. }
+            | HandlerError::GasLimitBelowFloor { .. }
+            | HandlerError::IntrinsicGasGreaterThanCap { .. }
             | HandlerError::InsufficientFunds { .. }
             | HandlerError::RejectCallerWithCode
             | HandlerError::NonceOverflow
