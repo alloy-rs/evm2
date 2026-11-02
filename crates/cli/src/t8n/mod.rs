@@ -264,7 +264,8 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
             continue;
         }
         let tx_blob_gas = signed.recovered.inner().blob_gas_used().unwrap_or_default();
-        let max_blob_gas = max_blob_gas(spec);
+        let max_blob_gas =
+            mainnet_blob_params(spec).map_or(0, |params| params.max_blob_gas_per_block());
         if blob_gas_used + tx_blob_gas > max_blob_gas {
             output.reject(
                 index,
@@ -523,18 +524,6 @@ fn credit_withdrawal(
     pending.insert_account(address, original, (!current.is_empty()).then_some(current));
     post.commit_source(&pending);
     bal.commit(BlockAccessIndex(bal_index), pending);
-}
-
-/// The block's blob gas limit: six blobs from Cancun, nine from Prague and 21 from Amsterdam, as
-/// go-ethereum's `evm t8n` configures them.
-const fn max_blob_gas(spec: SpecId) -> u64 {
-    const BLOB_GAS: u64 = 1 << 17;
-    BLOB_GAS
-        * match spec {
-            spec if spec.enables(SpecId::AMSTERDAM) => 21,
-            spec if spec.enables(SpecId::PRAGUE) => 9,
-            _ => 6,
-        }
 }
 
 /// The EIP-6110 deposit requests of the logs the deposit contract emitted, in order.
