@@ -1,6 +1,7 @@
 #[cfg(feature = "jit")]
 use crate::compiled::{self, FileSummary};
 use crate::{
+    blockchaintest::{BlobFork, BlobScheduleEntry, ChainConfig, ForkSpec, state_stage},
     dump,
     error::{TestError, TestErrorKind},
     execution::ExecutionResources,
@@ -15,7 +16,7 @@ use crate::{
     },
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
-use alloy_eips::{eip4844, eip7691};
+use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use alloy_trie::{
@@ -196,14 +197,22 @@ fn execute_unit(
     db_stats_counts: &mut DbStatsCounts,
 ) -> Result<(), TestError> {
     let state = parse_state(&unit.pre).map_err(|err| TestError::case(path, name, err))?;
-    for (spec_name, posts) in &unit.post {
-        let Some(spec) = spec_name.to_spec_id() else {
-            continue;
+    for (&fork, posts) in &unit.post {
+        let Some(stage) = state_stage(fork) else {
+            // Legacy fixtures run each test under Constantinople and Petersburg, and evm2 only
+            // supports Petersburg.
+            if fork == ForkSpec::Constantinople {
+                continue;
+            }
+            return Err(TestError::case(path, name, TestErrorKind::UnsupportedFork(fork)));
         };
+        let spec = stage.spec;
         if is_fork_skipped(spec) {
             continue;
         }
-        let block = parse_block(&unit.env, spec);
+        let blob_params = blob_params(stage.blob_fork, spec, unit.config.as_ref())
+            .map_err(|err| TestError::case(path, name, err))?;
+        let block = parse_block(&unit.env, blob_params.as_ref());
         for post in posts {
             let tx = match &post.txbytes {
                 Some(bytes) => decode_recovered_tx(bytes, spec).map_err(Into::into),
@@ -544,7 +553,7 @@ fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestE
     Ok(database)
 }
 
-fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
+fn parse_block(env: &Env, blob_params: Option<&BlobParams>) -> BlockEnv {
     BlockEnvExt {
         number: env.current_number,
         beneficiary: env.current_coinbase,
@@ -557,32 +566,36 @@ fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
             .map_or(U256::ZERO, |random| U256::from_be_slice(random.as_slice())),
         blob_basefee: env
             .current_excess_blob_gas
-            .map_or(U256::ONE, |excess| U256::from(blob_basefee(excess, spec))),
+            .zip(blob_params)
+            .map_or(U256::ONE, |(excess, params)| {
+                U256::from(params.calc_blob_fee(excess.saturating_to()))
+            }),
         slot_num: env.slot_number.unwrap_or_default(),
         ext: (),
         _non_exhaustive: (),
     }
 }
 
-fn blob_basefee(excess_blob_gas: U256, spec: SpecId) -> u128 {
-    let excess_blob_gas = excess_blob_gas.saturating_to::<u64>();
-    // EIP-4844 defines blob base fee with fake exponential; EIP-7691 changes the
-    // update fraction from Prague, and the Amsterdam (BPO2) blob schedule changes it again.
-    if spec.enables(SpecId::AMSTERDAM) {
-        eip4844::fake_exponential(
-            eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
-            excess_blob_gas as u128,
-            evm2::constants::BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM as u128,
+/// Returns the blob parameters of the fork that sets them, or `None` before Cancun.
+///
+/// They come from the test's `config.blobSchedule`. Fixtures without a configuration use the
+/// mainnet parameters.
+fn blob_params(
+    blob_fork: Option<BlobFork>,
+    spec: SpecId,
+    config: Option<&ChainConfig>,
+) -> Result<Option<BlobParams>, TestErrorKind> {
+    let Some(blob_fork) = blob_fork else { return Ok(None) };
+    let entry = config
+        .map_or_else(
+            || blob_fork.mainnet_params().map(BlobScheduleEntry::from),
+            |config| config.blob_schedule.get(&blob_fork).copied(),
         )
-    } else if spec.enables(SpecId::PRAGUE) {
-        eip7691::calc_blob_gasprice(excess_blob_gas)
-    } else {
-        eip4844::fake_exponential(
-            eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
-            excess_blob_gas as u128,
-            eip4844::BLOB_GASPRICE_UPDATE_FRACTION,
-        )
+        .ok_or(TestErrorKind::MissingBlobSchedule(blob_fork))?;
+    if entry.base_fee_update_fraction.is_zero() {
+        return Err(TestErrorKind::ZeroBlobUpdateFraction(blob_fork));
     }
+    Ok(Some(entry.params(spec)))
 }
 
 fn build_tx(
@@ -677,6 +690,24 @@ mod tests {
             op::SSTORE,
             op::STOP,
         ])
+    }
+
+    #[test]
+    fn bpo_state_tests_use_the_blob_parameters_of_their_fork() {
+        let config = ChainConfig {
+            chainid: U256::ONE,
+            blob_schedule: BTreeMap::from([
+                (BlobFork::Osaka, BlobParams::osaka().into()),
+                (BlobFork::Bpo1, BlobParams::bpo1().into()),
+            ]),
+        };
+        let stage = state_stage(ForkSpec::BPO1).unwrap();
+        let params = blob_params(stage.blob_fork, stage.spec, Some(&config)).unwrap().unwrap();
+        assert_eq!(params.update_fraction, BlobParams::bpo1().update_fraction);
+        assert!(matches!(
+            blob_params(Some(BlobFork::Bpo2), stage.spec, Some(&config)),
+            Err(TestErrorKind::MissingBlobSchedule(BlobFork::Bpo2))
+        ));
     }
 
     #[test]
@@ -833,7 +864,7 @@ mod tests {
         let resources = ExecutionResources::new(mode).unwrap();
         execute_spec(
             SpecId::CANCUN,
-            parse_block(&env, SpecId::CANCUN),
+            parse_block(&env, Some(&BlobParams::cancun())),
             parse_state(&pre).unwrap(),
             &tx,
             &env,
@@ -901,7 +932,7 @@ mod tests {
         let resources = ExecutionResources::new(mode).unwrap();
         execute_spec(
             SpecId::AMSTERDAM,
-            parse_block(&env, SpecId::AMSTERDAM),
+            parse_block(&env, Some(&BlobParams::bpo2())),
             parse_state(&pre).unwrap(),
             &tx,
             &env,

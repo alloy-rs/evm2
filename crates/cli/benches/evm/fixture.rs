@@ -62,7 +62,7 @@ impl Suite {
         let post = unit
             .post
             .iter()
-            .filter(|(spec_name, _)| spec_name.to_spec_id() == Some(spec))
+            .filter(|(spec_name, _)| spec_name.to_state_spec_id() == Some(spec))
             .flat_map(|(_, posts)| posts)
             .next()
             .unwrap_or_else(|| panic!("fixture suite does not contain {name} post for {spec:?}"));
