@@ -1,5 +1,5 @@
 use super::types::{BlobFork, ForkSpec};
-use crate::{execution::ExecutionResourceError, tx::TxBuildError};
+use crate::{exception::Exception, execution::ExecutionResourceError, tx::TxBuildError};
 use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
 use thiserror::Error;
@@ -59,9 +59,9 @@ pub(crate) enum TestErrorKind {
     /// Sender is required when signatures are not validated.
     #[error("transaction sender is required")]
     MissingSender,
-    /// Signed transaction has an invalid signature.
-    #[error("{0}")]
-    InvalidSignedTransaction(String),
+    /// Transaction could not be built, decoded, or its sender recovered.
+    #[error(transparent)]
+    Transaction(#[from] TxBuildError),
     /// Sender recovered from the signature differs from the fixture's sender.
     #[error("sender mismatch: recovered {recovered}, fixture {expected}")]
     SenderMismatch {
@@ -78,21 +78,37 @@ pub(crate) enum TestErrorKind {
         /// Ommer block number.
         ommer_number: alloy_primitives::U256,
     },
-    /// Transaction request could not be converted to a consensus transaction.
-    #[error("could not build consensus transaction: {0}")]
-    BuildTransaction(String),
     /// EVM execution failed.
     #[error(transparent)]
     Evm(#[from] HandlerError),
     /// EVM execution unexpectedly failed.
     #[error("unexpected execution failure: {0}")]
     UnexpectedFailure(String),
+    /// The block breaks a validity rule execution-specs names.
+    #[error("{reason}")]
+    InvalidBlock {
+        /// Exception execution-specs raises for the broken rule.
+        exception: Exception,
+        /// Human-readable description of the broken rule.
+        reason: String,
+    },
+    /// The block was rejected for a reason its fixture did not expect.
+    #[error("unexpected exception: got {got}, expected {expected}")]
+    UnexpectedException {
+        /// Exceptions the fixture expects, separated by `|`.
+        expected: String,
+        /// Actual error, led by its exception name when it has one.
+        got: String,
+    },
     /// EVM execution unexpectedly succeeded.
     #[error("execution succeeded, but expected exception: {0}")]
     UnexpectedSuccess(String),
     /// A system call failed.
     #[error("system call failed: {0}")]
     SystemCall(&'static str),
+    /// A system contract has no code at the end of block execution.
+    #[error("{0} system contract has no code")]
+    SystemContractEmpty(&'static str),
     /// Block gas used in the header does not match the executed transactions.
     #[error("block gas used mismatch: header {expected}, computed {actual}")]
     BlockGasUsedMismatch {
@@ -146,16 +162,24 @@ pub(crate) enum TestErrorKind {
     },
 }
 
-impl From<TxBuildError> for TestErrorKind {
-    fn from(error: TxBuildError) -> Self {
-        match error {
-            TxBuildError::Overflow(name) => Self::Overflow(name),
-            TxBuildError::BuildTransaction(error) => Self::BuildTransaction(error),
-            TxBuildError::SerdeDeserialize(error) => Self::SerdeDeserialize(error),
-            error @ (TxBuildError::Decode(_)
-            | TxBuildError::InvalidV(_)
-            | TxBuildError::ProtectedLegacy
-            | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error.to_string()),
+impl TestErrorKind {
+    /// Returns the exception execution-specs raises for a block with this error, if it is a
+    /// block or transaction validity failure.
+    pub(crate) fn exception(&self) -> Option<Exception> {
+        match self {
+            Self::Transaction(error) => error.exception(),
+            Self::Evm(error) => Exception::from_handler_error(error),
+            Self::InvalidBlock { exception, .. } => Some(*exception),
+            Self::SystemCall(_) => Some(Exception::SystemContractCallFailed),
+            Self::SystemContractEmpty(_) => Some(Exception::SystemContractEmpty),
+            Self::BlockGasUsedMismatch { .. } => Some(Exception::InvalidGasUsed),
+            Self::BlockAccessListMismatch { .. } => Some(Exception::InvalidBlockAccessList),
+            Self::ParentBlockHashMismatch { got, .. } if got.is_zero() => {
+                Some(Exception::UnknownParentZero)
+            }
+            Self::ParentBlockHashMismatch { .. } => Some(Exception::UnknownParent),
+            Self::ReceiptRootMismatch { .. } => Some(Exception::InvalidReceiptsRoot),
+            _ => None,
         }
     }
 }
