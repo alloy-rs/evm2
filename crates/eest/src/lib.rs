@@ -38,7 +38,7 @@ pub use blockchaintest::{
     TransactionStarted as BlockchainTestTransactionStarted,
     execute_case_on as execute_blockchain_test_case_on,
     execute_str as execute_blockchain_tests_str, execute_suite as execute_blockchain_tests_suite,
-    pre_state as blockchain_test_pre_state, run as run_blockchaintests,
+    mainnet_blob_params, pre_state as blockchain_test_pre_state, run as run_blockchaintests,
 };
 pub use error::TestError as StateTestError;
 pub use execute::{

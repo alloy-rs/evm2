@@ -17,7 +17,7 @@ use alloy_consensus::{
     Eip658Value, Receipt, ReceiptEnvelope, Transaction, TxType, Typed2718,
     proofs::{calculate_receipt_root, calculate_transaction_root, calculate_withdrawals_root},
 };
-use alloy_eips::{eip7685::Requests, eip7840::BlobParams};
+use alloy_eips::eip7685::Requests;
 use alloy_primitives::{Address, B256, Bloom, Bytes, Log, U256, address, b256, keccak256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId, TxResultWithState,
@@ -31,7 +31,8 @@ use evm2::{
     registry::HandlerError,
 };
 use evm2_eest::{
-    insert_account_with_storage, parse_bytecode, state_root_from_database, system_contract_has_code,
+    insert_account_with_storage, mainnet_blob_params, parse_bytecode, state_root_from_database,
+    system_contract_has_code,
 };
 use evm2_inspectors::tracing::DebugInspector;
 use std::path::PathBuf;
@@ -589,17 +590,6 @@ fn check_env(env: &Env, spec: SpecId) -> Result<(), Error> {
     Ok(())
 }
 
-/// Blob parameters that set the blob base fee at `spec`.
-fn blob_params(spec: SpecId) -> BlobParams {
-    if spec.enables(SpecId::AMSTERDAM) {
-        BlobParams::bpo2()
-    } else if spec.enables(SpecId::PRAGUE) {
-        BlobParams::prague()
-    } else {
-        BlobParams::cancun()
-    }
-}
-
 fn block_env(env: &Env, spec: SpecId) -> BlockEnv {
     BlockEnvExt {
         number: env.current_number,
@@ -609,9 +599,12 @@ fn block_env(env: &Env, spec: SpecId) -> BlockEnv {
         basefee: env.current_base_fee.unwrap_or_default(),
         difficulty: env.current_difficulty.unwrap_or_default(),
         prevrandao: env.current_random.unwrap_or_default(),
-        blob_basefee: env.current_excess_blob_gas.map_or(U256::ZERO, |excess| {
-            U256::from(blob_params(spec).calc_blob_fee(excess.saturating_to()))
-        }),
+        blob_basefee: env
+            .current_excess_blob_gas
+            .zip(mainnet_blob_params(spec))
+            .map_or(U256::ZERO, |(excess, params)| {
+                U256::from(params.calc_blob_fee(excess.saturating_to()))
+            }),
         slot_num: env.slot_number.unwrap_or_default(),
         ext: (),
         _non_exhaustive: (),
