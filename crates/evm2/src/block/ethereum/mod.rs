@@ -45,7 +45,7 @@ pub struct EthBlockExecutionCtx<'a> {
     /// Parent beacon block root.
     pub parent_beacon_block_root: Option<B256>,
     /// Ommer headers.
-    pub ommers: &'a [Header],
+    pub ommers: Cow<'a, [Header]>,
     /// Withdrawals.
     pub withdrawals: Option<Cow<'a, [Withdrawal]>>,
 }
@@ -57,7 +57,8 @@ pub struct EthBlockRules {
     pub base_block_reward: Option<u128>,
     /// Whether the block is the DAO fork block.
     pub dao_fork_transition: bool,
-    /// EIP-6110 deposit contract, Ethereum mainnet's when `None`.
+    /// EIP-6110 deposit contract. `None` means Ethereum mainnet's, which is wrong for other chains
+    /// with deposits, such as Sepolia or Hoodi.
     pub deposit_contract_address: Option<Address>,
 }
 
@@ -79,6 +80,9 @@ impl EthBlockRules {
 }
 
 /// Builds [`ReceiptEnvelope`]s for Ethereum transactions without blob sidecars.
+///
+/// Receipts carry an EIP-658 status, so their root matches headers only from Byzantium on; earlier
+/// receipts carry the intermediate state root instead.
 #[derive(Clone, Copy, Debug, Default)]
 #[non_exhaustive]
 pub struct EthReceiptBuilder;
@@ -266,6 +270,10 @@ where
     /// one: reads the spec and gas rules from the EVM's current configuration, installs `ctx`
     /// and `rules`, offsets the block access indices by `bal_index_offset`, and resets the gas
     /// counters. Receipts and block state carry over.
+    ///
+    /// Finish each block with [`Self::apply_post_execution_changes`] from its first receipt and the
+    /// last one with [`BlockExecutor::into_state`]: [`BlockExecutor::finish`] applies
+    /// post-execution changes again, over every receipt.
     pub fn start_block(
         &mut self,
         ctx: EthBlockExecutionCtx<'a>,
@@ -301,7 +309,7 @@ where
             self.rules.deposit_contract_address,
             self.ctx.parent_hash,
             self.ctx.parent_beacon_block_root,
-            self.ctx.ommers,
+            &self.ctx.ommers,
             None,
         );
         let mut requests =
@@ -323,7 +331,7 @@ where
             self.rules.deposit_contract_address,
             self.ctx.parent_hash,
             self.ctx.parent_beacon_block_root,
-            self.ctx.ommers,
+            &self.ctx.ommers,
             withdrawals.as_deref(),
         );
         let block_number = self.evm.block_env().number.to::<u64>();
@@ -430,7 +438,7 @@ where
             self.rules.deposit_contract_address,
             self.ctx.parent_hash,
             self.ctx.parent_beacon_block_root,
-            self.ctx.ommers,
+            &self.ctx.ommers,
             None,
         );
         let block_number = self.evm.block_env().number.to::<u64>();

@@ -40,7 +40,6 @@ wincode = { workspace = true, optional = true }
 
 # "block"
 alloy-hardforks = { workspace = true, optional = true }
-alloy-sol-types = { workspace = true, optional = true }
 
 # "async"
 corosensei = { workspace = true, optional = true }
@@ -129,7 +128,6 @@ std = [
     "alloy-eip7928/std",
     "alloy-eips/std",
     "alloy-primitives/std",
-    "alloy-sol-types?/std",
     "ark-bls12-381/std",
     "ark-bn254/std",
     "ark-ec/std",
@@ -154,7 +152,7 @@ std = [
 async = ["std", "dep:corosensei"]
 
 # Block execution: `evm2::block`.
-block = ["dep:alloy-hardforks", "dep:alloy-sol-types"]
+block = ["dep:alloy-hardforks"]
 
 wincode = ["dep:wincode"]
 

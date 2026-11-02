@@ -90,9 +90,6 @@ pub(crate) enum TestErrorKind {
     /// EVM execution unexpectedly succeeded.
     #[error("execution succeeded, but expected exception: {0}")]
     UnexpectedSuccess(String),
-    /// A system call failed.
-    #[error("system call failed: {0}")]
-    SystemCall(&'static str),
     /// Block gas used in the header does not match the executed transactions.
     #[error("block gas used mismatch: header {expected}, computed {actual}")]
     BlockGasUsedMismatch {

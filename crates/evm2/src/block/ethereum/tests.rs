@@ -163,7 +163,7 @@ fn discards_uncommitted_transaction() {
 fn pays_block_and_ommer_rewards() {
     let ommer_beneficiary = Address::repeat_byte(0x04);
     let ommers = [Header { beneficiary: ommer_beneficiary, number: 0, ..Header::default() }];
-    let ctx = EthBlockExecutionCtx { ommers: &ommers, ..ctx() };
+    let ctx = EthBlockExecutionCtx { ommers: Cow::Borrowed(&ommers), ..ctx() };
     let reward = 2 * ETH_TO_WEI;
     let rules = EthBlockRules { base_block_reward: Some(reward), ..EthBlockRules::default() };
     let mut executor = executor(SpecId::PETERSBURG, 30_000_000, ctx, rules);

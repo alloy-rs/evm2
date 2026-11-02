@@ -16,7 +16,11 @@ use crate::{
     interpreter::InstrStop,
     registry::HandlerError,
 };
-use alloc::{boxed::Box, string::ToString, vec::Vec};
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    vec::Vec,
+};
 use alloy_consensus::{
     BlockHeader, Header, TxReceipt, constants::ETH_TO_WEI, transaction::Recovered,
 };
@@ -29,8 +33,7 @@ use alloy_eips::{
     eip7685::Requests,
 };
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::{Address, B256, Bytes, Log, U256, map::AddressMap};
-use alloy_sol_types::{SolEvent, sol};
+use alloy_primitives::{Address, B256, Bytes, Log, U256, b256, map::AddressMap};
 use core::any::Any;
 
 /// Size of one encoded EIP-6110 deposit request.
@@ -40,16 +43,18 @@ pub const BUILDER_DEPOSIT_REQUEST_TYPE: u8 = 0x03;
 /// EIP-8282 builder exit request type.
 pub const BUILDER_EXIT_REQUEST_TYPE: u8 = 0x04;
 
-sol! {
-    #[allow(missing_docs)]
-    event DepositEvent(
-        bytes pubkey,
-        bytes withdrawal_credentials,
-        bytes amount,
-        bytes signature,
-        bytes index
-    );
-}
+/// First topic of the deposit contract's `DepositEvent`.
+const DEPOSIT_EVENT_SIGNATURE_HASH: B256 =
+    b256!("0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5");
+
+/// ABI layout of a `DepositEvent` payload: the offset of each dynamic field's length word and
+/// the field's size, in the order the consensus layer consumes them (public key, withdrawal
+/// credentials, amount, signature, index).
+const DEPOSIT_EVENT_FIELDS: [(usize, usize); 5] =
+    [(160, 48), (256, 32), (320, 8), (384, 96), (512, 8)];
+
+/// Length of an ABI-encoded `DepositEvent` payload.
+const DEPOSIT_EVENT_LENGTH: usize = 576;
 
 /// Ethereum transaction validation error returned by evm2 handlers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +78,6 @@ impl InvalidTxError for EthInvalidTxError {
             self.0,
             HandlerError::GasLimitMoreThanBlock { .. }
                 | HandlerError::TxGasLimitGreaterThanCap { .. }
-                | HandlerError::IntrinsicGasGreaterThanCap { .. }
         )
     }
 
@@ -345,23 +349,38 @@ where
     for receipt in receipts {
         for log in receipt.logs() {
             if log.address != deposit_contract_address
-                || log.topics().first() != Some(&DepositEvent::SIGNATURE_HASH)
+                || log.topics().first() != Some(&DEPOSIT_EVENT_SIGNATURE_HASH)
             {
                 continue;
             }
-
-            let decoded = DepositEvent::decode_log(log)
-                .map_err(|err| BlockValidationError::DepositRequestDecode(err.to_string()))?;
-            out.reserve(DEPOSIT_BYTES_SIZE);
-            out.extend_from_slice(decoded.pubkey.as_ref());
-            out.extend_from_slice(decoded.withdrawal_credentials.as_ref());
-            out.extend_from_slice(decoded.amount.as_ref());
-            out.extend_from_slice(decoded.signature.as_ref());
-            out.extend_from_slice(decoded.index.as_ref());
+            extract_deposit_data(&log.data.data, &mut out)
+                .map_err(BlockValidationError::DepositRequestDecode)?;
         }
     }
 
     Ok(out)
+}
+
+/// Strips the ABI framing from a `DepositEvent` payload, appending its fields to `out`. A payload
+/// that is not the canonical encoding makes the block invalid (EIP-6110).
+fn extract_deposit_data(data: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
+    if data.len() != DEPOSIT_EVENT_LENGTH {
+        return Err("invalid deposit event data length".to_string());
+    }
+    let word = |offset: usize| U256::from_be_slice(&data[offset..offset + 32]);
+    for (index, (offset, _)) in DEPOSIT_EVENT_FIELDS.into_iter().enumerate() {
+        if word(index * 32) != U256::from(offset) {
+            return Err(alloc::format!("invalid offset for deposit field {index}"));
+        }
+    }
+    out.reserve(DEPOSIT_BYTES_SIZE);
+    for (index, (offset, size)) in DEPOSIT_EVENT_FIELDS.into_iter().enumerate() {
+        if word(offset) != U256::from(size) {
+            return Err(alloc::format!("invalid size for deposit field {index}"));
+        }
+        out.extend_from_slice(&data[offset + 32..offset + 32 + size]);
+    }
+    Ok(())
 }
 
 /// Runs the EIP-7002, EIP-7251 and EIP-8282 request system calls.
@@ -615,3 +634,70 @@ impl core::fmt::Display for SystemCallFailed {
 }
 
 impl core::error::Error for SystemCallFailed {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use alloy_primitives::LogData;
+
+    fn deposit_log(data: Vec<u8>) -> Log {
+        Log {
+            address: MAINNET_DEPOSIT_CONTRACT_ADDRESS,
+            data: LogData::new_unchecked(vec![DEPOSIT_EVENT_SIGNATURE_HASH], data.into()),
+        }
+    }
+
+    /// Encodes a canonical `DepositEvent` payload whose fields are filled with `fill`.
+    fn deposit_data(fill: u8) -> Vec<u8> {
+        let mut data = vec![0; DEPOSIT_EVENT_LENGTH];
+        for (index, (offset, size)) in DEPOSIT_EVENT_FIELDS.into_iter().enumerate() {
+            data[index * 32..index * 32 + 32]
+                .copy_from_slice(&U256::from(offset).to_be_bytes::<32>());
+            data[offset..offset + 32].copy_from_slice(&U256::from(size).to_be_bytes::<32>());
+            data[offset + 32..offset + 32 + size].fill(fill);
+        }
+        data
+    }
+
+    fn requests(log: Log) -> Result<Vec<u8>, BlockExecutionError> {
+        let receipt = alloy_consensus::Receipt {
+            status: true.into(),
+            cumulative_gas_used: 0,
+            logs: vec![log],
+        };
+        parse_deposit_requests_from_receipts(MAINNET_DEPOSIT_CONTRACT_ADDRESS, &[receipt])
+    }
+
+    #[test]
+    fn parses_canonical_deposit() {
+        assert_eq!(requests(deposit_log(deposit_data(7))).unwrap(), vec![7; DEPOSIT_BYTES_SIZE]);
+    }
+
+    #[test]
+    fn rejects_non_canonical_deposits() {
+        let mut short = deposit_data(7);
+        short.pop();
+        let mut bad_offset = deposit_data(7);
+        bad_offset[31] = 0;
+        let mut bad_size = deposit_data(7);
+        bad_size[160 + 31] = 47;
+        for data in [short, bad_offset, bad_size] {
+            assert!(matches!(
+                requests(deposit_log(data)),
+                Err(BlockExecutionError::Validation(BlockValidationError::DepositRequestDecode(_)))
+            ));
+        }
+    }
+
+    #[test]
+    fn classifies_gas_errors() {
+        let floor = EthInvalidTxError(HandlerError::GasLimitBelowFloor { required: 2, got: 1 });
+        assert!(floor.is_gas_limit_too_low());
+        assert!(!floor.is_gas_limit_too_high());
+        let cap =
+            EthInvalidTxError(HandlerError::IntrinsicGasGreaterThanCap { required: 2, cap: 1 });
+        assert!(!cap.is_gas_limit_too_low());
+        assert!(!cap.is_gas_limit_too_high());
+    }
+}

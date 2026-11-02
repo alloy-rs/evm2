@@ -2583,7 +2583,6 @@ dependencies = [
  "alloy-eips",
  "alloy-hardforks",
  "alloy-primitives",
- "alloy-sol-types",
  "ark-bls12-381",
  "ark-bn254",
  "ark-ec",
