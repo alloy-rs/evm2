@@ -2,7 +2,7 @@
 
 use crate::fixture_io;
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, Visitor};
-use std::{fmt, path::Path};
+use std::{borrow::Cow, fmt, path::Path};
 
 /// Case fields only blockchain tests have.
 const BLOCKCHAIN_FIELDS: &[&str] = &["blocks", "genesisBlockHeader", "lastblockhash", "network"];
@@ -83,9 +83,9 @@ impl<'de> Visitor<'de> for CaseSeed {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let mut blockchain = false;
         let mut state = false;
-        while let Some(field) = map.next_key::<&str>()? {
-            blockchain |= BLOCKCHAIN_FIELDS.contains(&field);
-            state |= STATE_FIELDS.contains(&field);
+        while let Some(field) = map.next_key::<Cow<'_, str>>()? {
+            blockchain |= BLOCKCHAIN_FIELDS.contains(&&*field);
+            state |= STATE_FIELDS.contains(&&*field);
             map.next_value::<IgnoredAny>()?;
         }
         Ok(if blockchain {
@@ -130,6 +130,12 @@ mod tests {
         assert_eq!(FixtureKind::from_json(r#"{"case": {"pre": {}}}"#).unwrap(), None);
         assert!(FixtureKind::from_json("[]").is_err());
         assert!(FixtureKind::from_json("not json").is_err());
+    }
+
+    #[test]
+    fn decodes_escaped_field_names() {
+        let input = r#"{"case": {"\u0062locks": []}}"#;
+        assert_eq!(FixtureKind::from_json(input).unwrap(), Some(FixtureKind::Blockchain));
     }
 
     #[test]
