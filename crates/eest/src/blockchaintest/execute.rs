@@ -30,7 +30,9 @@ use alloy_consensus::{
 };
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
 use alloy_eips::{
-    eip4844::DATA_GAS_PER_BLOB, eip4895::Withdrawal as AlloyWithdrawal, eip7840::BlobParams,
+    eip4844::DATA_GAS_PER_BLOB, eip4895::Withdrawal as AlloyWithdrawal,
+    eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_CODE, eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_CODE,
+    eip7840::BlobParams,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, aliases::U512};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
@@ -44,8 +46,7 @@ use evm2::{
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountInfo as EvmAccountInfo, BUILDER_DEPOSIT_REQUEST_ADDRESS,
-        BUILDER_EXIT_REQUEST_ADDRESS, Bal, CONSOLIDATION_REQUEST_ADDRESS, DbStats, DbStatsCounts,
+        AccountInfo as EvmAccountInfo, Bal, CONSOLIDATION_REQUEST_ADDRESS, DbStats, DbStatsCounts,
         InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
     },
 };
@@ -192,10 +193,29 @@ pub fn pre_state(
     name: &str,
     test_case: &BlockchainTestCase,
 ) -> Result<InMemoryDB, TestError> {
-    let mut database =
-        parse_state(&test_case.pre.0).map_err(|err| TestError::case(path, name, err))?;
+    let mut pre = Cow::Borrowed(&test_case.pre.0);
+    if is_captured(test_case) {
+        // A capture holds only the accounts its transactions touch, but the blocks' system calls
+        // read the request contracts, which must have code.
+        for (address, code) in [
+            (WITHDRAWAL_REQUEST_ADDRESS, WITHDRAWAL_REQUEST_PREDEPLOY_CODE.clone()),
+            (CONSOLIDATION_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_PREDEPLOY_CODE.clone()),
+        ] {
+            pre.to_mut().entry(address).or_insert_with(|| Account {
+                code,
+                nonce: U256::ONE,
+                ..Account::default()
+            });
+        }
+    }
+    let mut database = parse_state(&pre).map_err(|err| TestError::case(path, name, err))?;
     seed_block_hashes(&mut database, test_case);
     Ok(database)
+}
+
+/// Returns whether the case comes from `evm2 capture`, which zeroes the genesis state root.
+fn is_captured(test_case: &BlockchainTestCase) -> bool {
+    test_case.genesis_block_header.state_root.is_zero()
 }
 
 /// Executes a blockchain test case on `database`, which must hold the case's [`pre_state`].
@@ -285,7 +305,7 @@ fn execute_case(
     let mut db_stats_counts = DbStatsCounts::default();
     // `evm2 capture` keeps only the accounts the blocks touch and zeroes the genesis state
     // root, so its blocks' state roots can't be reproduced. Receipt roots still check them.
-    let captured = test_case.genesis_block_header.state_root.is_zero();
+    let captured = is_captured(test_case);
     let compare_state_root = config.compare_state_root && !captured;
 
     hook.case_started(CaseStarted { name, total_blocks, network: test_case.network });
@@ -517,6 +537,7 @@ fn execute_block<'a>(
     let reward = base_block_reward(spec);
     let rules = EthBlockRules {
         base_block_reward: (reward != 0).then_some(reward),
+        max_blob_gas_per_block: blob_params.as_ref().map(BlobParams::max_blob_gas_per_block),
         ..EthBlockRules::default()
     };
     let mut executor = EthBlockExecutor::new(evm, ctx, rules, EthReceiptBuilder::default());
@@ -558,7 +579,6 @@ fn execute_block<'a>(
         }
 
         let transactions = block_transactions(block);
-        let mut block_blob_gas_used = 0u64;
         let mut post_state_roots = Vec::new();
         for (transaction_index, raw_tx) in transactions.iter().enumerate() {
             hook.transaction_started(TransactionStarted {
@@ -585,26 +605,6 @@ fn execute_block<'a>(
                     return Err(TestError::case(path, name, err));
                 }
             };
-
-            // EIP-4844: the transaction's blobs must fit the block blob gas remaining
-            // (execution-specs `check_transaction`).
-            if let Some(blob_params) = &blob_params {
-                let blob_gas = blob_gas_used(raw_tx);
-                let blob_gas_available =
-                    blob_params.max_blob_gas_per_block().saturating_sub(block_blob_gas_used);
-                if blob_gas > blob_gas_available {
-                    return reject_block(
-                        should_fail,
-                        path,
-                        name,
-                        format!(
-                            "transaction blob gas {blob_gas} exceeds available block blob gas \
-                             {blob_gas_available}"
-                        ),
-                    );
-                }
-                block_blob_gas_used += blob_gas;
-            }
 
             match executor.execute_transaction((tx_env, &tx)) {
                 Ok(gas) => {
@@ -659,34 +659,6 @@ fn execute_block<'a>(
                     return Ok(BlockResolution::Discard);
                 }
                 return Err(TestError::case(path, name, err));
-            }
-        }
-
-        // A checked system call to a target without code is an invalid block (execution-specs
-        // `SYSTEM_CONTRACT_EMPTY`); the EVM itself treats it as a successful no-op. A captured case
-        // keeps only the accounts its blocks touch, so its system contracts are absent.
-        if !captured {
-            let mut system_contracts = Vec::new();
-            if spec.enables(SpecId::PRAGUE) {
-                system_contracts.push(("eip7002", WITHDRAWAL_REQUEST_ADDRESS));
-                system_contracts.push(("eip7251", CONSOLIDATION_REQUEST_ADDRESS));
-            }
-            if spec.enables(SpecId::AMSTERDAM) {
-                system_contracts.push(("eip8282_deposit", BUILDER_DEPOSIT_REQUEST_ADDRESS));
-                system_contracts.push(("eip8282_exit", BUILDER_EXIT_REQUEST_ADDRESS));
-            }
-            for (label, address) in system_contracts {
-                let info = executor.evm.read_account_info(&address).map_err(|err| {
-                    TestError::case(path, name, TestErrorKind::UnexpectedFailure(err.to_string()))
-                })?;
-                if info.is_none_or(|info| info.is_empty_code_hash()) {
-                    return reject_block(
-                        should_fail,
-                        path,
-                        name,
-                        format!("{label} system contract has no code"),
-                    );
-                }
             }
         }
 
@@ -1053,11 +1025,6 @@ fn reject_block(
     } else {
         Err(TestError::case(path, name, TestErrorKind::UnexpectedFailure(reason)))
     }
-}
-
-/// Returns the blob gas a transaction consumes (EIP-4844).
-const fn blob_gas_used(tx: &Transaction) -> u64 {
-    tx.blob_versioned_hashes.len() as u64 * DATA_GAS_PER_BLOB
 }
 
 fn parse_state(
