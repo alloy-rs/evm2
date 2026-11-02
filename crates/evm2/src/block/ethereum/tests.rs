@@ -10,6 +10,7 @@ use crate::{
         InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
     },
 };
+use alloc::vec;
 use alloy_consensus::{Signed, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered};
 use alloy_eips::{
     eip2935::HISTORY_STORAGE_CODE, eip4788::BEACON_ROOTS_CODE,
