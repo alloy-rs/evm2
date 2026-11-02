@@ -7,7 +7,7 @@ use alloy_consensus::{
     EthereumTxEnvelope, Header, TxEip4844,
     transaction::{Transaction as _, to_eip155_value},
 };
-use alloy_eips::{eip2930::AccessList, eip7702::SignedAuthorization, eip7840::BlobParams};
+use alloy_eips::{eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use evm2::SpecId;
@@ -116,16 +116,16 @@ fn mainnet_blob_fork(header: &Header) -> Result<Option<BlobFork>, CaptureError> 
 /// Returns the mainnet blob parameters of every fork up to `last`, or none before Cancun.
 fn mainnet_blob_schedule(last: Option<BlobFork>) -> BTreeMap<BlobFork, BlobScheduleEntry> {
     [
-        (BlobFork::Cancun, BlobParams::cancun()),
-        (BlobFork::Prague, BlobParams::prague()),
-        (BlobFork::Osaka, BlobParams::osaka()),
-        (BlobFork::Bpo1, BlobParams::bpo1()),
-        (BlobFork::Bpo2, BlobParams::bpo2()),
-        (BlobFork::Amsterdam, BlobParams::bpo2()),
+        BlobFork::Cancun,
+        BlobFork::Prague,
+        BlobFork::Osaka,
+        BlobFork::Bpo1,
+        BlobFork::Bpo2,
+        BlobFork::Amsterdam,
     ]
     .into_iter()
-    .filter(|(fork, _)| Some(*fork) <= last)
-    .map(|(fork, params)| (fork, params.into()))
+    .filter(|fork| Some(*fork) <= last)
+    .filter_map(|fork| Some((fork, fork.mainnet_params()?.into())))
     .collect()
 }
 
