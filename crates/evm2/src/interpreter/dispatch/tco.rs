@@ -82,9 +82,8 @@ extern_table! {
         }
         if sync_pc {
             state.set_pc_stack_len(pc.as_ptr(), stack.len());
+            state.set_pc_synced(true);
         }
-        #[cfg(debug_assertions)]
-        state.set_pc_synced(sync_pc);
         let (r, stack_len) = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
             let mut stack_view = unsafe { stack.borrow() };
@@ -92,6 +91,9 @@ extern_table! {
             (r, stack_view.len)
         };
         stack.set_len(stack_len);
+        if sync_pc {
+            state.set_pc_synced(false);
+        }
         if dynamic_gas {
             remaining_gas.set(state.gas_mut().remaining());
         }

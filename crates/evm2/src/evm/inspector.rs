@@ -267,8 +267,8 @@ mod tests {
         ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
-            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageResult,
-            MessageResultExt, Word, instructions as instr, op,
+            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageKind,
+            MessageResult, MessageResultExt, Result, Word, instructions as instr, op,
         },
         registry::TxRegistry,
         test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
@@ -278,6 +278,7 @@ mod tests {
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
     use core::assert_matches;
+    use evm2_macros::instruction;
 
     #[derive(Default)]
     struct SelfdestructInspector {
@@ -925,6 +926,32 @@ mod tests {
         };
     }
 
+    /// A call that does not set `sync_pc`, so the inspector hooks would see a stale pc.
+    #[instruction(no_stack_preamble, dynamic_gas, EvmTypes = BaseEvmTypes)]
+    fn unsynced_call(cx: _) -> Result {
+        instr::call_with(
+            stack,
+            cx.gas,
+            cx.state,
+            MessageKind::Call,
+            |_, _, _| Ok(()),
+            |_, _, _, _| Ok(()),
+        )
+    }
+
+    /// The base config with the unsynced call installed at [`CUSTOM_CALL`].
+    struct UnsyncedCallConfig;
+
+    impl EvmConfig<BaseEvmTypes> for UnsyncedCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<unsynced_call>(CUSTOM_CALL, 100);
+            config
+        };
+    }
+
     /// Runs a call to a child through `message_op`, which `C` installs as a call, followed by
     /// `immediates`.
     fn run_custom_call<C: EvmConfig<BaseEvmTypes>>(
@@ -968,6 +995,16 @@ mod tests {
         assert_eq!(result, expected);
         let gas = full.steps.iter().position(|record| record.0 == op::GAS).unwrap();
         assert_eq!(inspector.steps, [full.steps[gas].clone()]);
+    }
+
+    #[test]
+    #[should_panic(expected = "an instruction that runs a message must set `sync_pc`")]
+    fn message_instruction_without_sync_pc_is_rejected() {
+        run_custom_call::<UnsyncedCallConfig>(
+            ConfigInspector::new(OpcodeSet::EMPTY),
+            CUSTOM_CALL,
+            &[],
+        );
     }
 
     #[test]

@@ -120,10 +120,12 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
             gas.sync_before_exec(state, dynamic_gas);
             if sync_pc {
                 state.set_pc_stack_len(pc.as_ptr(), *stack.len);
+                state.set_pc_synced(true);
             }
-            #[cfg(debug_assertions)]
-            state.set_pc_synced(sync_pc);
             r = instr(&mut pc, stack.reborrow(), state);
+            if sync_pc {
+                state.set_pc_synced(false);
+            }
             if r.is_ok() {
                 inc_pc(&mut pc, op);
             }

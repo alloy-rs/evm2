@@ -49,7 +49,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
     /// Whether the dispatch wrote the pc and stack length before the running instruction.
-    #[cfg(debug_assertions)]
     pc_synced: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
@@ -116,7 +115,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             host: None,
             inspector: None,
             steps: OpcodeSet::EMPTY,
-            #[cfg(debug_assertions)]
             pc_synced: false,
             inspect_table: None,
             spec: SpecId::DEFAULT,
@@ -636,12 +634,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         &raw const table.instructions
     }
 
-    /// Returns whether the dispatch wrote the pc and stack length before the running instruction.
-    #[cfg(debug_assertions)]
-    pub(crate) const fn pc_synced(&self) -> bool {
-        self.pc_synced
-    }
-
     /// Takes an owned error recorded by an instruction or inspector hook.
     pub(crate) const fn take_error(&mut self) -> Option<ExecutionError> {
         self.error.take()
@@ -722,6 +714,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline(never)]
     fn reload_if_config_changed(&mut self) {
+        assert!(self.0.pc_synced, "an instruction that runs a message must set `sync_pc`");
         if self.0.result.is_ok()
             && let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
@@ -732,7 +725,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     }
 
     /// Records whether the dispatch wrote the pc and stack length for the running instruction.
-    #[cfg(debug_assertions)]
     #[inline]
     pub(crate) const fn set_pc_synced(&mut self, synced: bool) {
         self.0.pc_synced = synced;
