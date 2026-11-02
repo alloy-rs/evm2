@@ -15,6 +15,7 @@ mod execute;
 mod execution;
 mod filter;
 mod fixture_io;
+mod fixture_kind;
 mod fixtures;
 mod forks;
 mod harness;
@@ -47,10 +48,10 @@ pub use execute::{
 };
 pub use filter::NameFilter;
 pub use fixture_io::{
-    FixtureReadError, FixtureWriteError, is_binary_path as is_binary_fixture_path,
-    read_blockchain as read_blockchain_fixture, read_to_string as read_fixture_text,
-    write_blockchain as write_blockchain_fixture,
+    FixtureReadError, FixtureWriteError, read_blockchain as read_blockchain_fixture,
+    read_to_string as read_fixture_text, write_blockchain as write_blockchain_fixture,
 };
+pub use fixture_kind::FixtureKind;
 pub use runner::run as run_statetests;
 pub use tx::{AccessListItem, TestAuthorization};
 pub use types::{
