@@ -1104,7 +1104,7 @@ mod tests {
             AccountStatus::InMemoryChange,
         );
 
-        let mut merged = block_bundle(&[destroy.clone()]);
+        let mut merged = block_bundle(std::slice::from_ref(&destroy));
         merged.extend(block_bundle(&[recreate.clone(), change.clone()]));
 
         // A single bundle built over every block tracks the status across them.
