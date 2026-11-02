@@ -33,7 +33,7 @@ use core::{
 };
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, DbResult, DynDatabase, State, TxStateChanges},
+    evm::{AccountInfo, DbResult, DynDatabase, PendingState, State},
     interpreter::{
         Word,
         opcode::{
@@ -480,10 +480,10 @@ impl ReusableEvmDb {
         self.with_scope(&mut StateDbReader { state }, f)
     }
 
-    /// Borrows a transaction's changes and backing database during a callback.
+    /// Borrows a transaction's pending state and backing database during a callback.
     pub(crate) fn with_changes_scope<R>(
         &self,
-        changes: TxStateChanges<'_>,
+        changes: &PendingState,
         db: &mut dyn DynDatabase,
         f: impl FnOnce() -> R,
     ) -> R {
@@ -551,7 +551,7 @@ impl EvmDbReader for StateDbReader<'_, '_> {
     }
 
     fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.account(address)?.load_code()
+        self.state.code_untracked(address)
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
@@ -560,7 +560,7 @@ impl EvmDbReader for StateDbReader<'_, '_> {
 }
 
 struct ChangesDbReader<'a> {
-    changes: TxStateChanges<'a>,
+    changes: &'a PendingState,
     db: &'a mut dyn DynDatabase,
 }
 
@@ -588,6 +588,9 @@ impl EvmDbReader for ChangesDbReader<'_> {
     }
 
     fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
+        if let Some((_, code)) = self.changes.account_changes_for(address).and_then(|a| a.code) {
+            return Ok(code.clone());
+        }
         let Some(info) = self.read_basic(address)? else {
             return Ok(Bytecode::default());
         };
@@ -1253,7 +1256,7 @@ mod tests {
         {
             let addr = JsValue::from(js_string!(Address::default().to_string()));
             let db_value = reusable_db.value();
-            reusable_db.with_changes_scope(state.changes(), &mut db, || {
+            reusable_db.with_changes_scope(&state, &mut db, || {
                 let res = f.call(&result, &[db_value.clone(), addr.clone()], &mut context).unwrap();
                 assert!(!res.as_boolean().unwrap());
             });
@@ -1267,7 +1270,7 @@ mod tests {
         {
             let addr = JsValue::from(js_string!(addr.to_string()));
             let db_value = reusable_db.value();
-            reusable_db.with_changes_scope(state.changes(), &mut db, || {
+            reusable_db.with_changes_scope(&state, &mut db, || {
                 let res = f.call(&result, &[db_value.clone(), addr.clone()], &mut context).unwrap();
 
                 // account exists
@@ -1305,7 +1308,7 @@ mod tests {
         {
             let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
             let addr = JsValue::from(js_string!(Address::default().to_string()));
-            reusable_db.with_changes_scope(state.changes(), &mut db, || {
+            reusable_db.with_changes_scope(&state, &mut db, || {
                 let _res = setup_fn
                     .call(&(obj.clone().into()), &[reusable_db.value()], &mut context)
                     .unwrap();
@@ -1371,7 +1374,7 @@ mod tests {
         let mut db = Db::new(BackingDb { address, account, slot, value });
         let changes = PendingState::default();
         let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
-        reusable_db.with_changes_scope(changes.changes(), &mut db, || {
+        reusable_db.with_changes_scope(&changes, &mut db, || {
             let js_db = reusable_db.value().as_object().unwrap();
             let js_addr = JsValue::from(js_string!(address.to_string()));
             let js_slot = JsValue::from(js_string!(B256::from(slot).to_string()));
@@ -1551,7 +1554,7 @@ mod tests {
             let state = PendingState::default();
             let mut database = CacheDB::new(EmptyDB::default());
             let result = catch_unwind(AssertUnwindSafe(|| {
-                db.with_changes_scope(state.changes(), &mut database, || {
+                db.with_changes_scope(&state, &mut database, || {
                     with_step(&log, opcode::STOP, &stack, &memory, &contract, || {
                         assert!(ctx.eval(Source::from_bytes(
                             "savedLog.stack.peek(0) === 42n && savedLog.memory.getUint(0) >> 248n === 7n && savedDb.getBalance('00') === 0n"

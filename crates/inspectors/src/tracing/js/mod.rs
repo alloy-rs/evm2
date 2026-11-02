@@ -375,7 +375,7 @@ impl JsInspector {
             error,
         };
         let ctx = ctx.into_js_object(&mut self.ctx)?;
-        let result = self.reusable_db.with_changes_scope(pending_state.changes(), db, || {
+        let result = self.reusable_db.with_changes_scope(pending_state, db, || {
             self.result_fn.call(&self.this, &[ctx.into(), self.reusable_db.value()], &mut self.ctx)
         });
         self.ensure_not_interrupted()?;
