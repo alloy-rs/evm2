@@ -12,6 +12,9 @@ bitflags! {
     pub struct InstructionFlags: u64 {
         /// The instruction needs mutable gas state.
         const DYNAMIC_GAS = 1 << 0;
+        /// The instruction needs the current pc and stack length in the interpreter, because it
+        /// runs a child message or otherwise hands the interpreter to host code.
+        const SYNC_PC = 1 << 1;
     }
 }
 

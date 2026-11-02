@@ -48,6 +48,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
+    /// Whether the dispatch wrote the pc and stack length before the running instruction.
+    #[cfg(debug_assertions)]
+    pc_synced: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
     #[derive_where(skip)]
@@ -113,6 +116,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             host: None,
             inspector: None,
             steps: OpcodeSet::EMPTY,
+            #[cfg(debug_assertions)]
+            pc_synced: false,
             inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
@@ -631,6 +636,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         &raw const table.instructions
     }
 
+    /// Returns whether the dispatch wrote the pc and stack length before the running instruction.
+    #[cfg(debug_assertions)]
+    pub(crate) const fn pc_synced(&self) -> bool {
+        self.pc_synced
+    }
+
     /// Takes an owned error recorded by an instruction or inspector hook.
     pub(crate) const fn take_error(&mut self) -> Option<ExecutionError> {
         self.error.take()
@@ -699,26 +710,32 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.steps
     }
 
-    /// Stops the instruction at `pc` with [`InstrStop::Reload`] if the inspector's config no
-    /// longer matches the table this frame runs on. A message instruction calls it after its
-    /// child message and returns the result.
+    /// Stops the instruction with [`InstrStop::Reload`] if the inspector's config no longer
+    /// matches the table this frame runs on. A message instruction calls it after its child
+    /// message and returns the result.
     #[inline(always)]
-    pub(crate) fn note_inspector_config_change(&mut self, pc: Pc) {
+    pub(crate) fn note_inspector_config_change(&mut self) {
         if self.0.inspector.is_some() {
-            self.reload_if_config_changed(pc);
+            self.reload_if_config_changed();
         }
     }
 
     #[inline(never)]
-    fn reload_if_config_changed(&mut self, pc: Pc) {
+    fn reload_if_config_changed(&mut self) {
         if self.0.result.is_ok()
             && let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
             && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
         {
-            self.0.pc = pc.as_ptr();
             self.0.result = Err(InstrStop::Reload);
         }
+    }
+
+    /// Records whether the dispatch wrote the pc and stack length for the running instruction.
+    #[cfg(debug_assertions)]
+    #[inline]
+    pub(crate) const fn set_pc_synced(&mut self, synced: bool) {
+        self.0.pc_synced = synced;
     }
 
     #[inline]

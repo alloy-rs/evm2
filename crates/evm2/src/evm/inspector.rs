@@ -151,8 +151,7 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called before a call message executes.
     ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
-    /// the top-level message it is a frame initialized with the message itself. Its program
-    /// counter and stack are only current if the inspector steps that instruction.
+    /// the top-level message it is a frame initialized with the message itself.
     #[inline]
     fn call(
         &mut self,
@@ -180,8 +179,7 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called before a create message executes.
     ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
-    /// the top-level message it is a frame initialized with the message itself. Its program
-    /// counter and stack are only current if the inspector steps that instruction.
+    /// the top-level message it is a frame initialized with the message itself.
     #[inline]
     fn create(
         &mut self,
@@ -614,6 +612,8 @@ mod tests {
         step_ends: Vec<(u8, u64, Vec<Word>)>,
         calls: usize,
         creates: usize,
+        /// The pc, opcode and stack that the call and create hooks of child messages see.
+        views: Vec<(usize, u8, Vec<Word>)>,
         logs: Vec<Log>,
         /// Stops the parent frame when a child message ends.
         stop_after_child: bool,
@@ -670,10 +670,13 @@ mod tests {
 
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.calls += 1;
+            if message.depth > 0 {
+                self.views.push((interp.pc(), interp.opcode(), interp.stack().to_vec()));
+            }
             // Like a cheatcode that changes what its caller's inspector wants to see.
             self.switched |= message.depth > 0;
             None
@@ -692,10 +695,13 @@ mod tests {
 
         fn create(
             &mut self,
-            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
-            _message: &mut Message<BaseEvmTypes>,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.creates += 1;
+            if message.depth > 0 {
+                self.views.push((interp.pc(), interp.opcode(), interp.stack().to_vec()));
+            }
             None
         }
     }
@@ -852,6 +858,29 @@ mod tests {
         assert_eq!(result, full);
         // The frame stopped at the CALL, before the later CREATE.
         assert_eq!(inspector.creates, 0);
+    }
+
+    #[test]
+    fn message_hooks_see_the_message_instruction_whatever_the_steps() {
+        let (db, code) = config_test_code();
+        let views = |steps| {
+            run_evm_with_inspector_db(
+                db.clone(),
+                code.clone(),
+                &MessageExt::default(),
+                1_000_000,
+                ConfigInspector::new(steps),
+            )
+            .1
+            .views
+        };
+        let full = views(OpcodeSet::ALL);
+        assert_eq!(full.iter().map(|view| view.1).collect::<Vec<_>>(), [op::CALL, op::CREATE]);
+        assert_eq!(full[0].2.len(), 7);
+        assert_eq!(full[1].2.len(), 3);
+        for steps in [OpcodeSet::EMPTY, opcode_set([op::SLOAD]), opcode_set([op::CALL])] {
+            assert_eq!(views(steps), full, "{steps:?}");
+        }
     }
 
     #[test]

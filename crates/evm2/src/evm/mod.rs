@@ -1405,6 +1405,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             // SAFETY: The parent frame is suspended on this call stack for the duration of the
             // message execution.
             Some(mut frame) => unsafe {
+                #[cfg(debug_assertions)]
+                debug_assert!(
+                    frame.as_ref().pc_synced(),
+                    "an instruction that runs a message must set `sync_pc`"
+                );
                 core::mem::transmute::<
                     &mut Interpreter<'static, 'static, T>,
                     &mut Interpreter<'frame, 'a, T>,
