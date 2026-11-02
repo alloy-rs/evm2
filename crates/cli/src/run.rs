@@ -673,7 +673,7 @@ fn parse_fixture_bench(bench: &Bench, fixture_path: &str) -> eyre::Result<Prepar
     let mut db = InMemoryDB::default();
     let mut accounts = Vec::new();
     for (address, account) in &unit.pre {
-        let bytecode = Bytecode::new_legacy(account.code.clone());
+        let bytecode = Bytecode::from_stored(account.code.clone());
         let code_hash = bytecode.hash_slow();
         let info = AccountInfo::default()
             .with_balance(account.balance)
@@ -739,7 +739,7 @@ fn select_case<'a>(
     let post = unit
         .post
         .iter()
-        .filter(|(spec_name, _)| spec_name.to_spec_id() == Some(spec_id))
+        .filter(|(spec_name, _)| spec_name.to_state_spec_id() == Some(spec_id))
         .flat_map(|(_, posts)| posts)
         .next()
         .ok_or_else(|| {

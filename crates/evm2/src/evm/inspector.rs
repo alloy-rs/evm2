@@ -131,6 +131,179 @@ pub struct NoopInspector(());
 
 impl<T: EvmTypesHost> Inspector<T> for NoopInspector {}
 
+/// Runs both inspectors, `L` first.
+///
+/// Every hook is forwarded to both. When both `call` or `create` hooks return a result, the result
+/// from `L` wins.
+impl<T: EvmTypesHost, L: Inspector<T>, R: Inspector<T>> Inspector<T> for (L, R) {
+    #[inline]
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        self.0.initialize_interp(interp);
+        self.1.initialize_interp(interp);
+    }
+
+    #[inline]
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        self.0.step(interp);
+        self.1.step(interp);
+    }
+
+    #[inline]
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        self.0.step_end(interp);
+        self.1.step_end(interp);
+    }
+
+    #[inline]
+    fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
+        self.0.log(log, host);
+        self.1.log(log, host);
+    }
+
+    #[inline]
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        let first = self.0.call(interp, message);
+        let second = self.1.call(interp, message);
+        first.or(second)
+    }
+
+    #[inline]
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        self.0.call_end(interp, message, result);
+        self.1.call_end(interp, message, result);
+    }
+
+    #[inline]
+    fn create(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        let first = self.0.create(interp, message);
+        let second = self.1.create(interp, message);
+        first.or(second)
+    }
+
+    #[inline]
+    fn create_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        self.0.create_end(interp, message, result);
+        self.1.create_end(interp, message, result);
+    }
+
+    #[inline]
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut T::Host<'_>,
+    ) {
+        self.0.selfdestruct(contract, target, value, host);
+        self.1.selfdestruct(contract, target, value, host);
+    }
+}
+
+/// Forwards every hook to the inner inspector when present; `None` behaves like
+/// [`NoopInspector`].
+impl<T: EvmTypesHost, I: Inspector<T>> Inspector<T> for Option<I> {
+    #[inline]
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if let Some(inspector) = self {
+            inspector.initialize_interp(interp);
+        }
+    }
+
+    #[inline]
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if let Some(inspector) = self {
+            inspector.step(interp);
+        }
+    }
+
+    #[inline]
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if let Some(inspector) = self {
+            inspector.step_end(interp);
+        }
+    }
+
+    #[inline]
+    fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
+        if let Some(inspector) = self {
+            inspector.log(log, host);
+        }
+    }
+
+    #[inline]
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        self.as_mut()?.call(interp, message)
+    }
+
+    #[inline]
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        if let Some(inspector) = self {
+            inspector.call_end(interp, message, result);
+        }
+    }
+
+    #[inline]
+    fn create(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        self.as_mut()?.create(interp, message)
+    }
+
+    #[inline]
+    fn create_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        if let Some(inspector) = self {
+            inspector.create_end(interp, message, result);
+        }
+    }
+
+    #[inline]
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut T::Host<'_>,
+    ) {
+        if let Some(inspector) = self {
+            inspector.selfdestruct(contract, target, value, host);
+        }
+    }
+}
+
 impl<'a, T: EvmTypesHost> core::ops::Deref for dyn Inspector<T> + 'a {
     type Target = dyn NonStaticAny + 'a;
 
@@ -1894,5 +2067,66 @@ mod tests {
             assert_eq!(stop, Ok(expected));
             assert_eq!(interp.gas().remaining(), 1000);
         }
+    }
+
+    #[test]
+    fn tuple_inspector_forwards_hooks_and_prefers_first_override() {
+        let target = Address::from([0x22; 20]);
+        let mut code = call_code(target);
+        code.extend([op::CALL, op::POP, op::RETURNDATASIZE]);
+        return_top_word(&mut code);
+        let override_inspector = |output: &'static [u8]| OverrideCallInspector {
+            result: MessageResultExt {
+                stop: InstrStop::Return,
+                output: Bytes::from_static(output),
+                ..Default::default()
+            },
+            min_depth: 1,
+            call_depth: None,
+            call_end_stop: None,
+        };
+
+        let (result, inspector, _) = run_evm_with_inspector(
+            code.clone(),
+            &MessageExt::default(),
+            50_000,
+            (HookInspector::default(), override_inspector(&[0xaa, 0xbb, 0xcc])),
+        );
+        assert_matches!(result.stop, InstrStop::Return);
+        assert_eq!(Word::from_be_slice(&result.output), Word::from(3));
+        assert_eq!(inspector.0.call_depths, [0, 1]);
+        assert_eq!(inspector.0.call_end_stops, [InstrStop::Return, InstrStop::Return]);
+        assert_eq!(inspector.1.call_depth, Some(1));
+        assert_eq!(inspector.1.call_end_stop, Some(InstrStop::Return));
+
+        let (result, ..) = run_evm_with_inspector(
+            code,
+            &MessageExt::default(),
+            50_000,
+            (override_inspector(&[0xaa]), override_inspector(&[0xaa, 0xbb, 0xcc])),
+        );
+        assert_eq!(Word::from_be_slice(&result.output), Word::from(1));
+    }
+
+    #[test]
+    fn option_inspector_forwards_hooks_only_when_present() {
+        let target = Address::from([0x22; 20]);
+        let mut code = call_code(target);
+        code.extend([op::CALL, op::STOP]);
+
+        let (_, inspector, _) = run_evm_with_inspector(
+            code.clone(),
+            &MessageExt::default(),
+            50_000,
+            Some(HookInspector::default()),
+        );
+        let inspector = inspector.unwrap();
+        assert_eq!(inspector.call_depths, [0, 1]);
+        assert_eq!(inspector.call_end_stops, [InstrStop::Stop, InstrStop::Stop]);
+
+        let (result, inspector, _) =
+            run_evm_with_inspector(code, &MessageExt::default(), 50_000, None::<HookInspector>);
+        assert_matches!(result.stop, InstrStop::Stop);
+        assert!(inspector.is_none());
     }
 }

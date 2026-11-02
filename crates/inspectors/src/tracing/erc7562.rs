@@ -18,7 +18,6 @@
 use crate::tracing::{
     DEFAULT_MAX_RECORDED_BYTES, GethTraceBuilder, TraceLimits, TracingInspector,
     TracingInspectorConfig, keccak::memory_copy_padded, limits::TraceBudget,
-    utils::load_account_code,
 };
 use alloc::{borrow::Cow, collections::BTreeSet, format, vec::Vec};
 use alloy_consensus::{Transaction, transaction::Recovered};
@@ -245,10 +244,7 @@ impl Erc7562Inspector {
         interp: &mut Interpreter<'_, '_, T>,
         address: &Address,
     ) -> DbResult<u64> {
-        let state = interp.host().state_mut();
-        let Some(info) = state.account_info_untracked(address)? else { return Ok(0) };
-        let code = load_account_code(state.overlay_db_mut(), &info)?;
-        Ok(code.map_or(0, |code| code.len() as u64))
+        Ok(interp.host().state_mut().code_untracked(address)?.len() as u64)
     }
 }
 

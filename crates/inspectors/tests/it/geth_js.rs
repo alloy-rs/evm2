@@ -513,6 +513,69 @@ fn test_geth_debug_inspector_jstracer() {
 }
 
 #[test]
+fn test_geth_jstracer_get_code_does_not_load_the_account() {
+    let target = address!("1000000000000000000000000000000000000001");
+    let observed = address!("1000000000000000000000000000000000000002");
+    let caller = address!("1000000000000000000000000000000000000003");
+
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            db.insert_account_info(
+                &caller,
+                AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+            );
+            db.insert_account_info(
+                &target,
+                AccountInfo {
+                    code: Some(Bytecode::new_legacy(hex!("00").into())),
+                    ..Default::default()
+                },
+            );
+            db.insert_account_info(
+                &observed,
+                AccountInfo {
+                    code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
+                    ..Default::default()
+                },
+            );
+        });
+    let context = context.modify_tx_chained(|tx| {
+        tx.gas_limit = 1_000_000;
+        tx.gas_price = 1;
+        tx.kind = TransactTo::Call(target);
+    });
+
+    let code = r#"
+{
+    codeLength: -1,
+    step: function(log, db) {
+        this.codeLength = db.getCode(toAddress("1000000000000000000000000000000000000002")).length;
+    },
+    fault: function() {},
+    result: function() { return this.codeLength; }
+}"#;
+    let mut inspector = DebugInspector::new(GethDebugTracingOptions::js_tracer(code)).unwrap();
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+
+    let tx = evm.ctx().tx().clone();
+    let res = evm.inspect_tx(TxEnv { caller, ..tx }).unwrap();
+    assert!(res.result.is_success());
+
+    let (context, inspector) = evm.ctx_inspector();
+    let tx_env = context.tx().envelope();
+    let block_env = *context.block();
+    let trace =
+        inspector.get_result(None, &tx_env, &block_env, &res.tx_result, context.db_mut()).unwrap();
+    let GethTrace::JS(result) = trace else { panic!("expected JS trace") };
+    assert_eq!(result, json!(5));
+
+    // The transaction loads its caller and target. The code read does not add `observed`.
+    let pending = &res.tx_result.pending_state;
+    assert!(pending.account_changes_for(&observed).is_none());
+    assert!(pending.account_changes_for(&target).is_some());
+}
+
+#[test]
 fn mux_runs_a_js_tracer_next_to_a_built_in_tracer() {
     let code = "{ steps: 0, step: function() { this.steps++; }, fault: function() {}, \
                 result: function() { return this.steps; } }";

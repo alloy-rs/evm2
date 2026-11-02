@@ -339,7 +339,12 @@ pub enum ForkSpec {
 
 impl ForkSpec {
     /// Returns the spec ID a fork runs under, or `None` for a transition fork, which runs under
-    /// several specs, and for the DAO fork.
+    /// several specs, and for the forks no runner supports.
+    ///
+    /// evm2 has no `CONSTANTINOPLE` spec. Constantinople differs from Petersburg by EIP-1283 net
+    /// gas metering for `SSTORE`, so running it under Petersburg would charge the wrong gas. The
+    /// Merge feature forks enable single EIPs on top of Merge, which no spec ID expresses, and the
+    /// DAO fork applies an irregular state change.
     pub const fn to_spec_id(self) -> Option<SpecId> {
         Some(match self {
             Self::Frontier => SpecId::FRONTIER,
@@ -347,19 +352,21 @@ impl ForkSpec {
             Self::EIP150 => SpecId::TANGERINE,
             Self::EIP158 => SpecId::SPURIOUS_DRAGON,
             Self::Byzantium => SpecId::BYZANTIUM,
-            Self::Constantinople | Self::ConstantinopleFix => SpecId::PETERSBURG,
+            Self::ConstantinopleFix => SpecId::PETERSBURG,
             Self::Istanbul => SpecId::ISTANBUL,
             Self::Berlin => SpecId::BERLIN,
             Self::London => SpecId::LONDON,
-            Self::Paris | Self::MergeEOF | Self::MergeMeterInitCode | Self::MergePush0 => {
-                SpecId::MERGE
-            }
+            Self::Paris => SpecId::MERGE,
             Self::Shanghai => SpecId::SHANGHAI,
             Self::Cancun => SpecId::CANCUN,
             Self::Prague => SpecId::PRAGUE,
             Self::Osaka | Self::BPO1 | Self::BPO2 => SpecId::OSAKA,
             Self::Amsterdam => SpecId::AMSTERDAM,
-            Self::FrontierToHomesteadAt5
+            Self::Constantinople
+            | Self::MergeEOF
+            | Self::MergeMeterInitCode
+            | Self::MergePush0
+            | Self::FrontierToHomesteadAt5
             | Self::HomesteadToDaoAt5
             | Self::HomesteadToEIP150At5
             | Self::EIP158ToByzantiumAt5
@@ -376,6 +383,14 @@ impl ForkSpec {
             | Self::BPO3ToBPO4AtTime15k
             | Self::BPO2ToAmsterdamAtTime15k => return None,
         })
+    }
+
+    /// Returns the spec ID a state test runs a fork under, or `None` for an unsupported fork.
+    ///
+    /// A state test runs one transaction under one spec, so a transition fork maps to the spec
+    /// after the transition. The blockchain runner instead runs both specs of a transition.
+    pub fn to_state_spec_id(self) -> Option<SpecId> {
+        super::execute::state_stage(self).map(|stage| stage.spec)
     }
 
     /// Returns the fork that runs under `spec`, or `None` if no fork does.
@@ -451,6 +466,21 @@ pub enum BlobFork {
     Bpo4,
     /// Amsterdam.
     Amsterdam,
+}
+
+impl BlobFork {
+    /// Returns the mainnet blob parameters of this fork, or `None` for BPO3 and BPO4, which
+    /// mainnet has not scheduled.
+    pub const fn mainnet_params(self) -> Option<BlobParams> {
+        Some(match self {
+            Self::Cancun => BlobParams::cancun(),
+            Self::Prague => BlobParams::prague(),
+            Self::Osaka => BlobParams::osaka(),
+            Self::Bpo1 => BlobParams::bpo1(),
+            Self::Bpo2 | Self::Amsterdam => BlobParams::bpo2(),
+            Self::Bpo3 | Self::Bpo4 => return None,
+        })
+    }
 }
 
 /// Blob parameters of one fork.
@@ -542,5 +572,10 @@ mod tests {
             Some(ForkSpec::BPO2)
         );
         assert_eq!(ForkSpec::BPO2ToAmsterdamAtTime15k.to_spec_id(), None);
+        assert_eq!(ForkSpec::Constantinople.to_spec_id(), None);
+        assert_eq!(ForkSpec::Constantinople.to_state_spec_id(), None);
+        assert_eq!(ForkSpec::MergePush0.to_state_spec_id(), None);
+        assert_eq!(ForkSpec::BPO1.to_state_spec_id(), Some(SpecId::OSAKA));
+        assert_eq!(ForkSpec::BerlinToLondonAt5.to_state_spec_id(), Some(SpecId::LONDON));
     }
 }
