@@ -131,13 +131,18 @@ impl BlockState {
                     account.storage.extend(storage);
                     account.storage_was_destroyed = true;
                 } else {
+                    // After a wipe, every nonzero value is reinserted, so a slot that returns to
+                    // its original value stays.
+                    let wiped_lifetime = account.storage_was_destroyed || status.was_destroyed();
                     for (key, slot) in storage {
                         match account.storage.entry(key) {
                             Entry::Vacant(entry) => {
                                 entry.insert(slot);
                             }
                             Entry::Occupied(mut entry) => {
-                                if entry.get().original_value() == slot.present_value() {
+                                if !wiped_lifetime
+                                    && entry.get().original_value() == slot.present_value()
+                                {
                                     entry.remove();
                                 } else {
                                     entry.get_mut().present_value = slot.present_value();
@@ -473,6 +478,34 @@ mod tests {
         changes.account_read(address, Some(&info)).unwrap();
         let mut block = BlockState::new();
         block.commit(&changes);
+        let bundle = block.into_bundle();
+        assert_eq!(bundle.storage(&address, U256::from(3)), Some(U256::from(5)));
+    }
+
+    #[test]
+    fn slot_returning_to_original_after_wipe_is_reinserted() {
+        let address = Address::with_last_byte(1);
+        let info = AccountInfo { nonce: 1, ..Default::default() };
+        let mut block = BlockState::new();
+        for (wiped, slot) in [
+            (true, (U256::from(3), U256::from(5), U256::from(6))),
+            (false, (U256::from(3), U256::from(6), U256::from(5))),
+        ] {
+            let storage = overlay(wiped, &[slot]);
+            block.commit_account_changes(
+                AccountChanges {
+                    address,
+                    original: Some(&info),
+                    current: Some(&info),
+                    created: false,
+                    selfdestructed: false,
+                    touched: false,
+                    code: None,
+                    storage: &storage,
+                },
+                None,
+            );
+        }
         let bundle = block.into_bundle();
         assert_eq!(bundle.storage(&address, U256::from(3)), Some(U256::from(5)));
     }
