@@ -582,7 +582,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             }
             let instructions = self.select_inspect_table();
             // SAFETY: The table is a static one, or the one `self` holds until the next selection.
-            let stop = dispatch::run(self, unsafe { &*instructions });
+            let instructions = unsafe { &*instructions };
+            let stop = if self.steps == OpcodeSet::ALL {
+                dispatch::run(self, instructions)
+            } else {
+                self.run_inspected_table(instructions)
+            };
             if stop != InstrStop::Reload {
                 return stop;
             }
@@ -591,6 +596,13 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             // SAFETY: The stop left the pc at the message instruction, which a next one follows.
             self.pc = unsafe { self.pc.add(dispatch::instruction_len(*self.pc)) };
         }
+    }
+
+    /// Runs a frame that steps some opcodes, or none. Behind a call, so that its loops are not
+    /// copies inlined into `run_inner`, where they compile worse than the loop for no inspector.
+    #[inline(never)]
+    fn run_inspected_table(&mut self, instructions: &InstrTable<T>) -> InstrStop {
+        dispatch::run(self, instructions)
     }
 
     /// Records the opcodes the inspector steps now and returns the table for them. Not inlined, so
