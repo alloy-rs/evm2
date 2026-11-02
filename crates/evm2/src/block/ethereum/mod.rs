@@ -27,8 +27,8 @@ pub mod dao_fork;
 pub mod execution;
 use execution::{
     BlockExecutionContext, BlockSystemCalls, block_requests_from_receipts,
-    commit_detached_transaction, commit_pending_state, execute_transaction_without_commit,
-    map_transaction_error, post_block_balance_state_changes,
+    commit_detached_transaction, commit_pending_state, dao_fork_state_changes,
+    execute_transaction_without_commit, map_transaction_error, post_block_balance_state_changes,
     post_execution_system_call_state_changes, pre_execution_system_call_state_changes,
 };
 
@@ -60,6 +60,8 @@ pub struct EthBlockRules {
     /// EIP-6110 deposit contract. `None` means Ethereum mainnet's, which is wrong for other chains
     /// with deposits, such as Sepolia or Hoodi.
     pub deposit_contract_address: Option<Address>,
+    /// Blob gas the block's transactions may use in total (EIP-4844). `None` leaves it unchecked.
+    pub max_blob_gas_per_block: Option<u64>,
 }
 
 impl EthBlockRules {
@@ -75,6 +77,7 @@ impl EthBlockRules {
                 .ethereum_fork_activation(EthereumHardfork::Dao)
                 .transitions_at_block(block_number),
             deposit_contract_address,
+            max_blob_gas_per_block: None,
         }
     }
 }
@@ -216,7 +219,7 @@ where
     }
 
     const fn block_context<'ctx>(
-        deposit_contract_address: Option<Address>,
+        rules: &EthBlockRules,
         parent_hash: B256,
         parent_beacon_block_root: Option<B256>,
         ommers: &'ctx [Header],
@@ -226,7 +229,7 @@ where
             system_calls: Some(BlockSystemCalls { parent_hash, parent_beacon_block_root }),
             ommers: Some(ommers),
             withdrawals,
-            deposit_contract_address,
+            deposit_contract_address: rules.deposit_contract_address,
         }
     }
 
@@ -307,7 +310,7 @@ where
     ) -> Result<EthPostExecutionOutput, BlockExecutionError> {
         self.set_transaction_block_access_index();
         let context = Self::block_context(
-            self.rules.deposit_contract_address,
+            &self.rules,
             self.ctx.parent_hash,
             self.ctx.parent_beacon_block_root,
             &self.ctx.ommers,
@@ -317,13 +320,13 @@ where
             block_requests_from_receipts(self.spec_id, context, &self.receipts[receipts_start..])?;
         let stream_state = self.state_update_hook.is_some();
         let withdrawals =
-            self.ctx.withdrawals.clone().filter(|_| self.spec_id.enables(SpecId::SHANGHAI));
+            self.ctx.withdrawals.as_deref().filter(|_| self.spec_id.enables(SpecId::SHANGHAI));
         let context = Self::block_context(
-            self.rules.deposit_contract_address,
+            &self.rules,
             self.ctx.parent_hash,
             self.ctx.parent_beacon_block_root,
             &self.ctx.ommers,
-            withdrawals.as_deref(),
+            withdrawals,
         );
         let block_number = self.evm.block_env().number.to::<u64>();
         let block_beneficiary = self.evm.block_env().beneficiary;
@@ -332,8 +335,8 @@ where
             &mut self.block_state,
             stream_state,
             &mut |state| emit_state(&mut self.state_update_hook, state),
+            self.spec_id,
             self.rules.base_block_reward,
-            self.rules.dao_fork_transition,
             block_number,
             block_beneficiary,
             context.ommers,
@@ -360,6 +363,23 @@ where
             ),
             blob_gas_used: self.blob_gas_used,
         })
+    }
+
+    /// Validates that a transaction's blobs fit the block's remaining blob gas.
+    fn validate_transaction_blob_gas(
+        &self,
+        transaction_blob_gas: u64,
+    ) -> Result<(), BlockExecutionError> {
+        let Some(max_blob_gas) = self.rules.max_blob_gas_per_block else { return Ok(()) };
+        let block_available_blob_gas = max_blob_gas.saturating_sub(self.blob_gas_used);
+        if transaction_blob_gas > block_available_blob_gas {
+            return Err(BlockValidationError::TransactionBlobGasMoreThanAvailableBlockBlobGas {
+                transaction_blob_gas,
+                block_available_blob_gas,
+            }
+            .into());
+        }
+        Ok(())
     }
 
     #[inline]
@@ -436,7 +456,7 @@ where
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         let context = Self::block_context(
-            self.rules.deposit_contract_address,
+            &self.rules,
             self.ctx.parent_hash,
             self.ctx.parent_beacon_block_root,
             &self.ctx.ommers,
@@ -444,6 +464,15 @@ where
         );
         let block_number = self.evm.block_env().number.to::<u64>();
         let stream_state = self.state_update_hook.is_some();
+        if self.rules.dao_fork_transition {
+            core::hint::cold_path();
+            dao_fork_state_changes(
+                &mut self.evm,
+                &mut self.block_state,
+                stream_state,
+                &mut |state| emit_state(&mut self.state_update_hook, state),
+            )?;
+        }
         pre_execution_system_call_state_changes(
             &mut self.evm,
             &mut self.block_state,
@@ -464,10 +493,10 @@ where
         transaction_gas_limit: u64,
     ) -> Result<(), BlockExecutionError> {
         let block_gas_limit = self.evm.block_env().gas_limit.to::<u64>();
+        let regular_limit = transaction_gas_limit.min(self.evm.version().tx_gas_limit_cap);
         let unavailable = if self.separate_block_gas {
             let regular_available = block_gas_limit.saturating_sub(self.block_regular_gas_used);
             let state_available = block_gas_limit.saturating_sub(self.block_state_gas_used);
-            let regular_limit = transaction_gas_limit.min(self.evm.version().tx_gas_limit_cap);
             if regular_limit > regular_available {
                 Some((transaction_gas_limit, regular_available))
             } else if transaction_gas_limit > state_available {
@@ -477,7 +506,6 @@ where
             }
         } else {
             let available = block_gas_limit.saturating_sub(self.cumulative_gas_used);
-            let regular_limit = transaction_gas_limit.min(self.evm.version().tx_gas_limit_cap);
             (regular_limit > available).then_some((transaction_gas_limit, available))
         };
         if let Some((transaction_gas_limit, block_available_gas)) = unavailable {
@@ -500,6 +528,7 @@ where
         self.set_transaction_block_access_index();
         self.validate_transaction_gas_limit(tx.gas_limit())?;
         let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
+        self.validate_transaction_blob_gas(blob_gas_used)?;
         let tx_type = tx.tx_type();
         let Some(outcome) = execution::execute_transaction_with_condition(
             &mut self.evm,
@@ -525,6 +554,7 @@ where
         self.set_transaction_block_access_index();
         self.validate_transaction_gas_limit(tx.gas_limit())?;
         let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
+        self.validate_transaction_blob_gas(blob_gas_used)?;
         let tx_type = tx.tx_type();
         let result = execute_transaction_without_commit(&mut self.evm, &transaction)
             .map_err(|err| map_transaction_error(err, *tx.tx_hash()))?;

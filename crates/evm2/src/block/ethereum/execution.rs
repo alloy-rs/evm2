@@ -2,7 +2,7 @@
 
 use super::dao_fork;
 use crate::{
-    Evm, EvmTypes, SpecId, TxResult, TxResultWithState, TxStateChanges,
+    AnyError, Evm, EvmTypes, SpecId, TxResult, TxResultWithState, TxStateChanges,
     block::{
         BlockExecutionError, BlockState, BlockValidationError, CommitChanges,
         InternalBlockExecutionError, InvalidTxError, StateUpdate, map_database_error,
@@ -160,9 +160,9 @@ pub fn map_transaction_error(error: HandlerError, hash: B256) -> BlockExecutionE
     if let HandlerError::Database(database_error) = &error
         && !database_error.is_fatal()
     {
-        BlockValidationError::EVM { hash, error: Box::new(error) }.into()
+        BlockValidationError::EVM { hash, error: AnyError::new(error) }.into()
     } else {
-        InternalBlockExecutionError::EVM { hash, error: Box::new(error) }.into()
+        InternalBlockExecutionError::EVM { hash, error: AnyError::new(error) }.into()
     }
 }
 
@@ -185,21 +185,17 @@ where
     T::Tx: Typed2718,
 {
     let mut update = StateUpdate::default();
-    let result = match evm.transact(transaction) {
-        Ok(executed) => {
-            if commit(executed.result(), executed.changes()).should_commit() {
-                for changes in executed.account_changes() {
-                    block_state
-                        .commit_account_changes(changes, stream_state.then_some(&mut update));
-                }
-                Ok(Some(executed.commit()))
-            } else {
-                let _ = executed.discard();
-                Ok(None)
+    let result = evm.transact(transaction).map(|executed| {
+        if commit(executed.result(), executed.changes()).should_commit() {
+            for changes in executed.account_changes() {
+                block_state.commit_account_changes(changes, stream_state.then_some(&mut update));
             }
+            Some(executed.commit())
+        } else {
+            let _ = executed.discard();
+            None
         }
-        Err(error) => Err(error),
-    };
+    });
     if stream_state {
         send_state_update(update, on_state_update);
     }
@@ -397,26 +393,24 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
         return Ok(());
     }
 
-    let withdrawal_requests = execute_system_call(
+    let withdrawal_requests = execute_request_system_call(
         evm,
         block_state,
         stream_state,
         on_state_update,
         WITHDRAWAL_REQUEST_ADDRESS,
-        Bytes::new(),
     )?;
     requests.push_request_with_type(
         WITHDRAWAL_REQUEST_TYPE,
         withdrawal_requests.output.iter().copied(),
     );
 
-    let consolidation_requests = execute_system_call(
+    let consolidation_requests = execute_request_system_call(
         evm,
         block_state,
         stream_state,
         on_state_update,
         CONSOLIDATION_REQUEST_ADDRESS,
-        Bytes::new(),
     )?;
     requests.push_request_with_type(
         CONSOLIDATION_REQUEST_TYPE,
@@ -424,26 +418,24 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     );
 
     if spec_id.enables(SpecId::AMSTERDAM) {
-        let builder_deposit_requests = execute_system_call(
+        let builder_deposit_requests = execute_request_system_call(
             evm,
             block_state,
             stream_state,
             on_state_update,
             BUILDER_DEPOSIT_REQUEST_ADDRESS,
-            Bytes::new(),
         )?;
         requests.push_request_with_type(
             BUILDER_DEPOSIT_REQUEST_TYPE,
             builder_deposit_requests.output.iter().copied(),
         );
 
-        let builder_exit_requests = execute_system_call(
+        let builder_exit_requests = execute_request_system_call(
             evm,
             block_state,
             stream_state,
             on_state_update,
             BUILDER_EXIT_REQUEST_ADDRESS,
-            Bytes::new(),
         )?;
         requests.push_request_with_type(
             BUILDER_EXIT_REQUEST_TYPE,
@@ -452,6 +444,22 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     }
 
     Ok(())
+}
+
+/// Runs a request system call. A target without code makes the block invalid: the EVM itself
+/// treats a call to it as a successful no-op.
+fn execute_request_system_call<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
+    block_state: &mut BlockState,
+    stream_state: bool,
+    on_state_update: &mut impl FnMut(StateUpdate),
+    address: Address,
+) -> Result<TxResult<T>, BlockExecutionError> {
+    let info = evm.read_account_info(&address).map_err(map_database_error)?;
+    if info.is_none_or(|info| info.is_empty_code_hash()) {
+        return Err(BlockValidationError::SystemContractEmpty { address }.into());
+    }
+    execute_system_call(evm, block_state, stream_state, on_state_update, address, Bytes::new())
 }
 
 fn execute_system_call<T: EvmTypes>(
@@ -478,7 +486,7 @@ fn execute_system_call<T: EvmTypes>(
                     message: alloc::format!("{reason:?}"),
                 }
             }
-            _ => BlockValidationError::Other(Box::new(SystemCallFailed { address, reason })),
+            _ => BlockValidationError::Other(AnyError::new(SystemCallFailed { address, reason })),
         }
         .into());
     }
@@ -508,15 +516,50 @@ fn commit_state_changes<T: EvmTypes>(
     accumulate_pending_state(block_state, stream_state, on_state_update, &pending_state);
 }
 
-/// Applies block and ommer rewards, the DAO fork drain and withdrawals.
+/// Drains the DAO accounts into the refund beneficiary. Runs before the block's transactions.
+///
+/// The fork predates EIP-161, so drained accounts stay, empty or absent ones included.
+pub fn dao_fork_state_changes<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
+    block_state: &mut BlockState,
+    stream_state: bool,
+    on_state_update: &mut impl FnMut(StateUpdate),
+) -> Result<(), BlockExecutionError> {
+    let mut drained_balance = U256::ZERO;
+    let mut changes = Vec::new();
+    for address in dao_fork::DAO_HARDFORK_ACCOUNTS {
+        let original = evm.read_account_info(&address).map_err(map_database_error)?;
+        let mut current = original.clone().unwrap_or_else(AccountInfo::empty);
+        drained_balance = drained_balance.saturating_add(current.balance);
+        current.balance = U256::ZERO;
+        if original.as_ref() != Some(&current) {
+            changes.push((address, original, Some(current)));
+        }
+    }
+    commit_state_changes(evm, block_state, stream_state, on_state_update, &changes);
+
+    // The beneficiary may also be drained, so read its balance after the drain.
+    let mut balance_increments = AddressMap::default();
+    balance_increments.insert(dao_fork::DAO_HARDFORK_BENEFICIARY, drained_balance);
+    apply_balance_increments(
+        evm,
+        block_state,
+        stream_state,
+        on_state_update,
+        false,
+        balance_increments,
+    )
+}
+
+/// Applies block and ommer rewards and withdrawals.
 #[expect(clippy::too_many_arguments)]
 pub fn post_block_balance_state_changes<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
     stream_state: bool,
     on_state_update: &mut impl FnMut(StateUpdate),
+    spec_id: SpecId,
     base_block_reward: Option<u128>,
-    dao_fork_transition: bool,
     block_number: u64,
     block_beneficiary: Address,
     ommers: Option<&[Header]>,
@@ -538,48 +581,39 @@ pub fn post_block_balance_state_changes<T: EvmTypes>(
         *balance_increments.entry(withdrawal.address).or_default() += withdrawal.amount_wei();
     }
 
-    let mut changes = Vec::new();
+    apply_balance_increments(
+        evm,
+        block_state,
+        stream_state,
+        on_state_update,
+        spec_id.enables(SpecId::SPURIOUS_DRAGON),
+        balance_increments,
+    )
+}
 
-    if dao_fork_transition {
-        core::hint::cold_path();
-        let mut drained_balance = U256::ZERO;
-        // Absent accounts stay absent, and an account that is empty once drained is removed, even
-        // before EIP-161.
-        for address in dao_fork::DAO_HARDFORK_ACCOUNTS {
-            let original = evm.read_account_info(&address).map_err(map_database_error)?;
-            let Some(original) = original else { continue };
-
-            drained_balance = drained_balance.saturating_add(original.balance);
-            let mut current = original.clone();
-            current.balance = U256::ZERO;
-            let current = (!current.is_empty()).then_some(current);
-            if current.as_ref() == Some(&original) {
-                continue;
-            }
-            changes.push((address, Some(original), current));
-        }
-
-        *balance_increments.entry(dao_fork::DAO_HARDFORK_BENEFICIARY).or_default() +=
-            drained_balance;
-        // Reward recipients may also be drained accounts. Read their balances after the drain.
-        commit_state_changes(evm, block_state, stream_state, on_state_update, &changes);
-        changes.clear();
-    }
-
-    if balance_increments.is_empty() {
-        return Ok(());
-    }
-
+/// Adds each increment to its account's balance. With `eip161`, a zero increment removes an empty
+/// account.
+fn apply_balance_increments<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
+    block_state: &mut BlockState,
+    stream_state: bool,
+    on_state_update: &mut impl FnMut(StateUpdate),
+    eip161: bool,
+    balance_increments: AddressMap<U256>,
+) -> Result<(), BlockExecutionError> {
+    let mut changes = Vec::with_capacity(balance_increments.len());
     for (address, increment) in balance_increments {
         let original = evm.read_account_info(&address).map_err(map_database_error)?;
-        let current = if increment.is_zero() && original.as_ref().is_none_or(AccountInfo::is_empty)
-        {
-            None
-        } else {
-            let mut current = original.clone().unwrap_or_else(AccountInfo::empty);
-            current.balance = current.balance.saturating_add(increment);
-            Some(current)
-        };
+        let current =
+            if eip161 && increment.is_zero() && original.as_ref().is_none_or(AccountInfo::is_empty)
+            {
+                // The increment only touches the account, which EIP-161 removes when empty.
+                None
+            } else {
+                let mut current = original.clone().unwrap_or_else(AccountInfo::empty);
+                current.balance = current.balance.saturating_add(increment);
+                Some(current)
+            };
         if original == current {
             // Zero-value withdrawals still count as account accesses in the BAL.
             let Ok(()) = evm.overlay_db_mut().account_read(address, original.as_ref());
@@ -587,9 +621,7 @@ pub fn post_block_balance_state_changes<T: EvmTypes>(
         }
         changes.push((address, original, current));
     }
-
     commit_state_changes(evm, block_state, stream_state, on_state_update, &changes);
-
     Ok(())
 }
 

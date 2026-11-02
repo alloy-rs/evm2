@@ -40,6 +40,10 @@ fn database() -> InMemoryDB {
 }
 
 fn evm(spec: SpecId, gas_limit: u64) -> Evm<'static, BaseEvmTypes> {
+    evm_with(spec, gas_limit, database())
+}
+
+fn evm_with(spec: SpecId, gas_limit: u64, database: InMemoryDB) -> Evm<'static, BaseEvmTypes> {
     let block = BlockEnvExt {
         number: U256::from(1),
         timestamp: U256::from(12),
@@ -47,7 +51,7 @@ fn evm(spec: SpecId, gas_limit: u64) -> Evm<'static, BaseEvmTypes> {
         gas_limit: U256::from(gas_limit),
         ..BlockEnvExt::default()
     };
-    Evm::new(spec, block, ethereum_tx_registry(spec), database(), Precompiles::base(spec))
+    Evm::new(spec, block, ethereum_tx_registry(spec), database, Precompiles::base(spec))
 }
 
 fn ctx<'a>() -> EthBlockExecutionCtx<'a> {
@@ -80,6 +84,20 @@ fn transfer(gas_limit: u64) -> Recovered<EthereumTxEnvelope<TxEip4844>> {
     let signature = Signature::new(U256::from(1), U256::from(1), false);
     Recovered::new_unchecked(
         EthereumTxEnvelope::Legacy(Signed::new_unhashed(tx, signature)),
+        SENDER,
+    )
+}
+
+fn blob_transfer() -> Recovered<EthereumTxEnvelope<TxEip4844>> {
+    let tx = TxEip4844 {
+        gas_limit: 21_000,
+        to: RECIPIENT,
+        blob_versioned_hashes: vec![B256::ZERO],
+        ..TxEip4844::default()
+    };
+    let signature = Signature::new(U256::from(1), U256::from(1), false);
+    Recovered::new_unchecked(
+        EthereumTxEnvelope::Eip4844(Signed::new_unhashed(tx, signature)),
         SENDER,
     )
 }
@@ -199,4 +217,70 @@ fn reads_rules_from_hardforks() {
     assert!(dao.dao_fork_transition);
     let merged = EthBlockRules::new(&mainnet, 15_537_394, None);
     assert_eq!(merged, EthBlockRules::default());
+}
+
+#[test]
+fn rejects_request_contract_without_code() {
+    let mut database = database();
+    database.insert_account_info(&WITHDRAWAL_REQUEST_ADDRESS, AccountInfo::default());
+    let evm = evm_with(SpecId::PRAGUE, 30_000_000, database);
+    let mut executor =
+        EthBlockExecutor::new(evm, ctx(), EthBlockRules::default(), EthReceiptBuilder);
+    executor.apply_pre_execution_changes().unwrap();
+    let error = executor.finish().unwrap_err();
+    assert!(matches!(
+        error,
+        BlockExecutionError::Validation(BlockValidationError::SystemContractEmpty { address })
+            if address == WITHDRAWAL_REQUEST_ADDRESS
+    ));
+}
+
+#[test]
+fn rejects_transaction_over_block_blob_gas() {
+    let rules = EthBlockRules { max_blob_gas_per_block: Some(0), ..EthBlockRules::default() };
+    let mut executor = executor(SpecId::CANCUN, 30_000_000, ctx(), rules);
+    executor.apply_pre_execution_changes().unwrap();
+    let error = executor.execute_transaction(&blob_transfer()).unwrap_err();
+    assert!(matches!(
+        error,
+        BlockExecutionError::Validation(
+            BlockValidationError::TransactionBlobGasMoreThanAvailableBlockBlobGas {
+                transaction_blob_gas: 131_072,
+                block_available_blob_gas: 0,
+            }
+        )
+    ));
+}
+
+#[test]
+fn drains_dao_accounts_before_transactions() {
+    let drained = dao_fork::DAO_HARDFORK_ACCOUNTS[0];
+    let mut database = database();
+    let balance_before = AccountInfo { balance: U256::from(7), nonce: 1, ..AccountInfo::default() };
+    database.insert_account_info(&drained, balance_before);
+    let evm = evm_with(SpecId::HOMESTEAD, 30_000_000, database);
+    let rules = EthBlockRules { dao_fork_transition: true, ..EthBlockRules::default() };
+    let mut executor = EthBlockExecutor::new(evm, ctx(), rules, EthReceiptBuilder);
+    executor.apply_pre_execution_changes().unwrap();
+
+    let state = executor.into_state();
+    assert_eq!(balance(&state, drained), Some(U256::ZERO));
+    assert_eq!(balance(&state, dao_fork::DAO_HARDFORK_BENEFICIARY), Some(U256::from(7)));
+    // Drained accounts stay, empty ones and absent ones included.
+    assert_eq!(balance(&state, dao_fork::DAO_HARDFORK_ACCOUNTS[1]), Some(U256::ZERO));
+}
+
+#[test]
+fn zero_reward_removes_empty_account_from_spurious_dragon() {
+    let mut database = database();
+    database.insert_account_info(&BENEFICIARY, AccountInfo::default());
+    let rules = EthBlockRules { base_block_reward: Some(0), ..EthBlockRules::default() };
+    let run = |spec| {
+        let evm = evm_with(spec, 30_000_000, database.clone());
+        let mut executor = EthBlockExecutor::new(evm, ctx(), rules, EthReceiptBuilder);
+        executor.apply_pre_execution_changes().unwrap();
+        executor.finish().unwrap().state
+    };
+    assert!(run(SpecId::SPURIOUS_DRAGON).account(&BENEFICIARY).unwrap().info.is_none());
+    assert!(run(SpecId::TANGERINE).account(&BENEFICIARY).is_none());
 }

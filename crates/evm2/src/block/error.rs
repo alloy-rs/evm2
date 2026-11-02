@@ -1,11 +1,11 @@
 //! Block execution errors.
 
-use crate::{DatabaseError, registry::HandlerError};
+use crate::{AnyError, DatabaseError, registry::HandlerError};
 use alloc::{
     boxed::Box,
     string::{String, ToString},
 };
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use core::{any::Any, error::Error};
 
 /// Abstraction over transaction validation errors.
@@ -46,7 +46,7 @@ pub enum BlockValidationError {
         /// The hash of the transaction.
         hash: B256,
         /// The EVM error.
-        error: Box<dyn Error + Send + Sync + 'static>,
+        error: AnyError,
     },
     /// Error when incrementing balance in post execution.
     #[error("incrementing balance in post execution failed")]
@@ -60,6 +60,16 @@ pub enum BlockValidationError {
         transaction_gas_limit: u64,
         /// The available block gas.
         block_available_gas: u64,
+    },
+    /// Error when transaction blob gas exceeds available block blob gas.
+    #[error(
+        "transaction blob gas {transaction_blob_gas} is more than blocks available blob gas {block_available_blob_gas}"
+    )]
+    TransactionBlobGasMoreThanAvailableBlockBlobGas {
+        /// The transaction's blob gas.
+        transaction_blob_gas: u64,
+        /// The available block blob gas.
+        block_available_blob_gas: u64,
     },
     /// Error for EIP-4788 when parent beacon block root is missing.
     #[error("EIP-4788 parent beacon block root missing for active Cancun block")]
@@ -98,6 +108,12 @@ pub enum BlockValidationError {
         /// The error message.
         message: String,
     },
+    /// A request system contract has no code, so the block cannot produce its requests.
+    #[error("system contract {address} has no code")]
+    SystemContractEmpty {
+        /// The address of the system contract.
+        address: Address,
+    },
     /// Error when decoding deposit requests from receipts.
     #[error("failed to decode deposit requests from receipts: {_0}")]
     DepositRequestDecode(String),
@@ -106,7 +122,7 @@ pub enum BlockValidationError {
     BlockGasExceeded,
     /// Arbitrary block validation error.
     #[error(transparent)]
-    Other(Box<dyn Error + Send + Sync + 'static>),
+    Other(AnyError),
 }
 
 impl BlockValidationError {
@@ -115,12 +131,12 @@ impl BlockValidationError {
     where
         E: Error + Send + Sync + 'static,
     {
-        Self::Other(Box::new(error))
+        Self::Other(AnyError::new(error))
     }
 
     /// Create a new [`BlockValidationError::Other`] variant from a message.
     pub fn msg(msg: impl core::fmt::Display) -> Self {
-        Self::Other(msg.to_string().into())
+        Self::Other(AnyError::from(msg.to_string()))
     }
 }
 
@@ -175,11 +191,11 @@ pub enum InternalBlockExecutionError {
         /// The hash of the transaction.
         hash: B256,
         /// The EVM error.
-        error: Box<dyn Error + Send + Sync + 'static>,
+        error: AnyError,
     },
     /// Arbitrary block executor error.
     #[error(transparent)]
-    Other(Box<dyn Error + Send + Sync + 'static>),
+    Other(AnyError),
 }
 
 impl InternalBlockExecutionError {
@@ -188,27 +204,19 @@ impl InternalBlockExecutionError {
     where
         E: Error + Send + Sync + 'static,
     {
-        Self::Other(Box::new(error))
+        Self::Other(AnyError::new(error))
     }
 
     /// Create a new [`InternalBlockExecutionError::Other`] from a message.
     pub fn msg(msg: impl core::fmt::Display) -> Self {
-        Self::Other(msg.to_string().into())
+        Self::Other(AnyError::from(msg.to_string()))
     }
 
     /// Returns the arbitrary error if this is [`InternalBlockExecutionError::Other`].
-    pub fn as_other(&self) -> Option<&(dyn Error + Send + Sync + 'static)> {
+    pub const fn as_other(&self) -> Option<&AnyError> {
         match self {
-            Self::Other(err) => Some(&**err),
+            Self::Other(err) => Some(err),
             _ => None,
-        }
-    }
-
-    /// Attempts to downcast the [`InternalBlockExecutionError::Other`] variant to a concrete type.
-    pub fn downcast<T: Error + 'static>(self) -> Result<Box<T>, Self> {
-        match self {
-            Self::Other(err) => err.downcast().map_err(Self::Other),
-            err => Err(err),
         }
     }
 
@@ -219,13 +227,13 @@ impl InternalBlockExecutionError {
 
     /// Returns true if this is an [`InternalBlockExecutionError::Other`] of type `T`.
     pub fn is_other<T: Error + 'static>(&self) -> bool {
-        self.as_other().is_some_and(|err| err.is::<T>())
+        self.downcast_other::<T>().is_some()
     }
 
     /// Returns the EVM error and transaction hash if this is [`InternalBlockExecutionError::EVM`].
-    pub fn as_evm(&self) -> Option<(&B256, &(dyn Error + Send + Sync + 'static))> {
+    pub const fn as_evm(&self) -> Option<(&B256, &AnyError)> {
         match self {
-            Self::EVM { hash, error } => Some((hash, &**error)),
+            Self::EVM { hash, error } => Some((hash, error)),
             _ => None,
         }
     }
@@ -238,7 +246,7 @@ impl InternalBlockExecutionError {
 
     /// Returns true if this is an [`InternalBlockExecutionError::EVM`] error of type `T`.
     pub fn is_evm<T: Error + 'static>(&self) -> bool {
-        self.as_evm().is_some_and(|(_, err)| err.is::<T>())
+        self.downcast_evm::<T>().is_some()
     }
 }
 
@@ -250,7 +258,7 @@ pub fn map_handler_error(error: HandlerError) -> BlockExecutionError {
         HandlerError::Fatal(_) | HandlerError::WrongTransactionType { .. } => {
             BlockExecutionError::other(error)
         }
-        error => BlockValidationError::Other(Box::new(error)).into(),
+        error => BlockValidationError::Other(AnyError::new(error)).into(),
     }
 }
 
@@ -259,6 +267,6 @@ pub fn map_database_error(error: DatabaseError) -> BlockExecutionError {
     if error.is_fatal() {
         BlockExecutionError::other(error)
     } else {
-        BlockValidationError::Other(Box::new(error)).into()
+        BlockValidationError::Other(AnyError::new(error)).into()
     }
 }

@@ -834,14 +834,15 @@ impl BundleState {
     ///
     /// It adds changes from the given state but does not override any existing changes.
     ///
-    /// Reverts are not updated.
+    /// The given state's reverts are discarded; this bundle keeps its own.
     pub fn prepend_state(&mut self, mut other: BundleState) {
+        let other_reverts = other.reverts.len();
         // Take this bundle
         let this_bundle = mem::take(self);
-        // Extend other bundle state with this
-        other.extend_state(this_bundle.state);
-        // Extend other contracts
-        other.contracts.extend(this_bundle.contracts);
+        // Extend other bundle with this
+        other.extend(this_bundle);
+        // Discard other's reverts, which come first
+        other.take_n_reverts(other_reverts);
         // Swap bundles
         mem::swap(self, &mut other)
     }
@@ -1243,11 +1244,14 @@ mod tests {
 
         let present_state = BundleState::builder(2..=2)
             .state_present_account_info(address1, account1_changed.clone())
+            .revert_account_info(2, address1, Some(None))
             .build();
         assert_eq!(present_state.reverts.len(), 1);
+        let present_reverts = present_state.reverts.clone();
         let previous_state = BundleState::builder(1..=1)
             .state_present_account_info(address1, account1)
             .state_present_account_info(address2, account2.clone())
+            .revert_account_info(1, address2, Some(None))
             .build();
         assert_eq!(previous_state.reverts.len(), 1);
 
@@ -1256,8 +1260,8 @@ mod tests {
         test.prepend_state(previous_state);
 
         assert_eq!(test.state.len(), 2);
-        // Reverts num should stay the same.
-        assert_eq!(test.reverts.len(), 1);
+        // The receiver keeps its own reverts.
+        assert_eq!(test.reverts, present_reverts);
         // Account1 is not overwritten.
         assert_eq!(test.state.get(&address1).unwrap().info, Some(account1_changed));
         // Account2 got inserted

@@ -60,8 +60,8 @@ impl BlockState {
         let address = changes.address;
         let created = changes.created;
         let wiped = changes.storage.wiped;
-        let original = changes.original.map(without_code);
-        let current = changes.current.map(without_code);
+        let original = changes.original.map(AccountInfo::clone_no_code);
+        let current = changes.current.map(AccountInfo::clone_no_code);
         let slots = changes
             .storage
             .changed_slots()
@@ -122,8 +122,10 @@ impl BlockState {
                 let account = entry.get_mut();
                 account.info = current;
                 account.status = status;
-                // Deletion starts a new storage lifetime.
-                if matches!(status, AccountStatus::Destroyed | AccountStatus::DestroyedAgain) {
+                // A deletion or wipe starts a new storage lifetime.
+                if wiped
+                    || matches!(status, AccountStatus::Destroyed | AccountStatus::DestroyedAgain)
+                {
                     account.storage.clear();
                     account.storage.extend(storage);
                     account.storage_was_destroyed = true;
@@ -194,8 +196,9 @@ impl Default for TransactionAccount {
 
 impl TransactionAccount {
     fn update(&mut self, change: crate::evm::AccountChangeRef<'_>) {
-        self.original = change.original.map(without_code);
-        self.info = change.current.map(without_code).unwrap_or_else(AccountInfo::empty);
+        self.original = change.original.map(AccountInfo::clone_no_code);
+        self.info =
+            change.current.map(AccountInfo::clone_no_code).unwrap_or_else(AccountInfo::empty);
         self.created |= change.created;
         self.selfdestructed |= change.current.is_none();
     }
@@ -280,10 +283,6 @@ pub struct AccountUpdate {
     pub wiped: bool,
     /// Storage slots whose value changed.
     pub storage: Vec<(U256, StorageSlot)>,
-}
-
-fn without_code(info: &AccountInfo) -> AccountInfo {
-    AccountInfo { code: None, ..info.clone() }
 }
 
 /// Visits a persisted bundle as native changes when seeding an execution cache.
@@ -454,6 +453,36 @@ mod tests {
         assert!(native.revert_latest());
         assert!(converted.revert_latest());
         assert_eq!(native, converted);
+    }
+
+    #[test]
+    fn live_account_wipe_drops_earlier_slots() {
+        let address = Address::with_last_byte(1);
+        let info = AccountInfo { nonce: 1, ..Default::default() };
+        let mut block = BlockState::new();
+        for (wiped, slots) in [
+            (false, &[(U256::from(3), U256::ZERO, U256::from(1))][..]),
+            (true, &[(U256::from(4), U256::ZERO, U256::from(2))][..]),
+        ] {
+            let storage = overlay(wiped, slots);
+            block.commit_account_changes(
+                AccountChanges {
+                    address,
+                    original: Some(&info),
+                    current: Some(&info),
+                    created: false,
+                    selfdestructed: false,
+                    touched: false,
+                    code: None,
+                    storage: &storage,
+                },
+                None,
+            );
+        }
+        let bundle = block.into_bundle();
+        let account = bundle.account(&address).unwrap();
+        assert_eq!(account.storage_slot(U256::from(3)), Some(U256::ZERO));
+        assert_eq!(account.storage_slot(U256::from(4)), Some(U256::from(2)));
     }
 
     #[test]
