@@ -99,7 +99,7 @@ impl BlockState {
         };
         let status = if current.is_none() {
             previous_status.on_selfdestructed()
-        } else if wiped && !created {
+        } else if wiped {
             AccountStatus::DestroyedChanged
         } else if created {
             previous_status.on_created()
@@ -336,9 +336,12 @@ fn loaded_status(info: Option<&AccountInfo>) -> AccountStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evm::{
-        AccountChangeRef, AccountChanges, StateChangeSink, StorageChange, StorageOverlay,
-        StorageSlot as NativeSlot, Tracked,
+    use crate::{
+        block::bundle_state::OriginalValuesKnown,
+        evm::{
+            AccountChangeRef, AccountChanges, StateChangeSink, StorageChange, StorageOverlay,
+            StorageSlot as NativeSlot, Tracked,
+        },
     };
 
     /// Builds a storage overlay from `(key, original, current)` slots.
@@ -480,6 +483,31 @@ mod tests {
         block.commit(&changes);
         let bundle = block.into_bundle();
         assert_eq!(bundle.storage(&address, U256::from(3)), Some(U256::from(5)));
+    }
+
+    #[test]
+    fn created_account_keeps_its_storage_wipe() {
+        let address = Address::with_last_byte(1);
+        let info = AccountInfo { balance: U256::from(1), ..Default::default() };
+        let storage = overlay(true, &[]);
+        let mut block = BlockState::new();
+        block.commit_account_changes(
+            AccountChanges {
+                address,
+                original: None,
+                current: Some(&info),
+                created: true,
+                selfdestructed: true,
+                touched: false,
+                code: None,
+                storage: &storage,
+            },
+            None,
+        );
+        let bundle = block.into_bundle();
+        assert!(bundle.account(&address).unwrap().was_destroyed());
+        let changeset = bundle.to_plain_state(OriginalValuesKnown::Yes);
+        assert!(changeset.storage.iter().any(|storage| storage.wipe_storage));
     }
 
     #[test]
