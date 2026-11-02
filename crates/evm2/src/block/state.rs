@@ -33,10 +33,11 @@ impl BlockState {
                 (!account.selfdestructed).then(|| account.info.clone()),
                 account.created,
                 account.wiped,
-                account
-                    .storage
-                    .iter()
-                    .filter_map(|(key, slot)| slot.is_changed().then_some((*key, *slot))),
+                account.storage.iter().filter_map(|(key, slot)| {
+                    // A wipe reinserts every nonzero value that follows it.
+                    (slot.is_changed() || account.wiped && !slot.present_value().is_zero())
+                        .then_some((*key, *slot))
+                }),
             );
         }
     }
@@ -453,6 +454,27 @@ mod tests {
         assert!(native.revert_latest());
         assert!(converted.revert_latest());
         assert_eq!(native, converted);
+    }
+
+    #[test]
+    fn stream_commit_keeps_unchanged_slot_after_wipe() {
+        let address = Address::with_last_byte(1);
+        let info = AccountInfo { nonce: 1, ..Default::default() };
+        let mut changes = TransactionChanges::default();
+        changes.storage_wipe(address).unwrap();
+        changes
+            .storage(StorageChange {
+                address,
+                key: U256::from(3),
+                original: U256::from(5),
+                current: U256::from(5),
+            })
+            .unwrap();
+        changes.account_read(address, Some(&info)).unwrap();
+        let mut block = BlockState::new();
+        block.commit(&changes);
+        let bundle = block.into_bundle();
+        assert_eq!(bundle.storage(&address, U256::from(3)), Some(U256::from(5)));
     }
 
     #[test]
