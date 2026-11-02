@@ -275,17 +275,6 @@ pub fn pre_execution_system_call_state_changes<T: EvmTypes>(
         return Ok(());
     };
 
-    if spec_id.enables(SpecId::PRAGUE) && block_number != 0 {
-        let _ = execute_system_call(
-            evm,
-            block_state,
-            stream_state,
-            on_state_update,
-            HISTORY_STORAGE_ADDRESS,
-            system_calls.parent_hash.0.into(),
-        )?;
-    }
-
     if spec_id.enables(SpecId::CANCUN) {
         let parent_beacon_block_root = system_calls
             .parent_beacon_block_root
@@ -308,6 +297,17 @@ pub fn pre_execution_system_call_state_changes<T: EvmTypes>(
                 parent_beacon_block_root.0.into(),
             )?;
         }
+    }
+
+    if spec_id.enables(SpecId::PRAGUE) && block_number != 0 {
+        let _ = execute_system_call(
+            evm,
+            block_state,
+            stream_state,
+            on_state_update,
+            HISTORY_STORAGE_ADDRESS,
+            system_calls.parent_hash.0.into(),
+        )?;
     }
 
     Ok(())

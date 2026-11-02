@@ -1950,6 +1950,7 @@ mod tests {
                 },
                 blocks: vec![Block {
                     block_header: Some(BlockHeader {
+                        parent_beacon_block_root: Some(B256::ZERO),
                         parent_hash: genesis_hash,
                         hash: B256::with_last_byte(2),
                         number: U256::ONE,
@@ -2149,6 +2150,7 @@ mod tests {
                 },
                 blocks: vec![Block {
                     block_header: Some(BlockHeader {
+                        parent_beacon_block_root: Some(B256::ZERO),
                         parent_hash: genesis_hash,
                         hash: block_hash,
                         number: U256::ONE,
@@ -2257,6 +2259,7 @@ mod tests {
                 genesis_rlp: None,
                 blocks: vec![Block {
                     block_header: Some(BlockHeader {
+                        parent_beacon_block_root: Some(B256::ZERO),
                         parent_hash: genesis_hash,
                         hash: block_hash,
                         number: U256::ONE,

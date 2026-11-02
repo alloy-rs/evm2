@@ -299,7 +299,8 @@ where
     }
 
     /// Applies the block's post-execution changes without consuming the executor: requests from
-    /// the receipts from `receipts_start` on, the request system calls, rewards and withdrawals.
+    /// the receipts from `receipts_start` on, rewards and withdrawals, then the request system
+    /// calls (execution-specs order).
     pub fn apply_post_execution_changes(
         &mut self,
         receipts_start: usize,
@@ -315,16 +316,6 @@ where
         let mut requests =
             block_requests_from_receipts(self.spec_id, context, &self.receipts[receipts_start..])?;
         let stream_state = self.state_update_hook.is_some();
-        post_execution_system_call_state_changes(
-            &mut self.evm,
-            &mut self.block_state,
-            stream_state,
-            &mut |state| emit_state(&mut self.state_update_hook, state),
-            self.spec_id,
-            context,
-            &mut requests,
-        )?;
-
         let withdrawals =
             self.ctx.withdrawals.clone().filter(|_| self.spec_id.enables(SpecId::SHANGHAI));
         let context = Self::block_context(
@@ -347,6 +338,16 @@ where
             block_beneficiary,
             context.ommers,
             context.withdrawals,
+        )?;
+
+        post_execution_system_call_state_changes(
+            &mut self.evm,
+            &mut self.block_state,
+            stream_state,
+            &mut |state| emit_state(&mut self.state_update_hook, state),
+            self.spec_id,
+            context,
+            &mut requests,
         )?;
 
         Ok(EthPostExecutionOutput {
