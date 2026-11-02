@@ -11,7 +11,6 @@ use crate::tracing::{
         },
         builtins::{PrecompileList, register_builtins, to_serde_value},
     },
-    tx_state::TxState,
     types::CallKind,
     utils,
 };
@@ -332,7 +331,6 @@ impl JsInspector {
         }
         self.ensure_not_interrupted()?;
         let TxResultWithState { result, pending_state, .. } = res;
-        let state = TxState::from_pending(pending_state);
 
         let mut output_bytes = None;
         let mut error = None;
@@ -377,7 +375,7 @@ impl JsInspector {
             error,
         };
         let ctx = ctx.into_js_object(&mut self.ctx)?;
-        let result = self.reusable_db.with_changes_scope(&state, db, || {
+        let result = self.reusable_db.with_changes_scope(pending_state, db, || {
             self.result_fn.call(&self.this, &[ctx.into(), self.reusable_db.value()], &mut self.ctx)
         });
         self.ensure_not_interrupted()?;
