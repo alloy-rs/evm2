@@ -708,10 +708,15 @@ impl BundleState {
         for (address, revert) in other.reverts.iter_mut().flatten() {
             // `other` was built on a fresh bundle, so its first revert for an account records the
             // account as freshly loaded. Revert to the status this bundle accumulated instead.
-            if seen.insert(*address)
-                && let Some(this_account) = self.state.get(address)
-            {
-                revert.previous_status = this_account.status;
+            // Later reverts record statuses local to `other`, so they combine with it.
+            if let Some(this_account) = self.state.get(address) {
+                if seen.insert(*address) {
+                    revert.previous_status = this_account.status;
+                } else {
+                    let mut status = this_account.status;
+                    status.transition(revert.previous_status);
+                    revert.previous_status = status;
+                }
             }
 
             if revert.wipe_storage {
@@ -1050,6 +1055,80 @@ mod tests {
         let account = &merged.state[&address];
         assert_eq!(account.status, AccountStatus::Destroyed);
         assert!(account.was_destroyed());
+        assert_eq!(merged, cumulative);
+    }
+
+    /// Every block of an extending bundle reverts to the status accumulated over the earlier
+    /// blocks, not only the first one.
+    #[test]
+    fn extend_reverts_later_blocks_to_accumulated_status() {
+        let address = Address::new([0x71; 20]);
+        let info = AccountInfo { nonce: 1, balance: U256::from(10), ..Default::default() };
+        let changed = AccountInfo { balance: U256::from(11), ..info.clone() };
+        let transition = |previous: &AccountInfo, next: &AccountInfo, from, to| TransitionAccount {
+            info: Some(next.clone()),
+            status: to,
+            previous_info: Some(previous.clone()),
+            previous_status: from,
+            storage: HashMap::default(),
+            storage_was_destroyed: false,
+        };
+        let block_bundle = |transitions: &[TransitionAccount]| {
+            let mut bundle = BundleState::default();
+            for transition in transitions {
+                bundle.apply_transitions_and_create_reverts(
+                    TransitionState::single(address, transition.clone()),
+                    BundleRetention::Reverts,
+                );
+            }
+            bundle
+        };
+        let destroy = TransitionAccount {
+            info: None,
+            previous_info: Some(info.clone()),
+            ..transition(&info, &info, AccountStatus::Loaded, AccountStatus::Destroyed)
+        };
+        let recreate = TransitionAccount {
+            previous_info: None,
+            ..transition(
+                &info,
+                &info,
+                AccountStatus::LoadedNotExisting,
+                AccountStatus::InMemoryChange,
+            )
+        };
+        let change = transition(
+            &info,
+            &changed,
+            AccountStatus::InMemoryChange,
+            AccountStatus::InMemoryChange,
+        );
+
+        let mut merged = block_bundle(&[destroy.clone()]);
+        merged.extend(block_bundle(&[recreate.clone(), change.clone()]));
+
+        // A single bundle built over every block tracks the status across them.
+        let mut cumulative = block_bundle(&[destroy]);
+        for (previous, transition) in
+            [(AccountStatus::Destroyed, recreate), (AccountStatus::DestroyedChanged, change)]
+        {
+            cumulative.apply_transitions_and_create_reverts(
+                TransitionState::single(
+                    address,
+                    TransitionAccount {
+                        status: AccountStatus::DestroyedChanged,
+                        previous_status: previous,
+                        ..transition
+                    },
+                ),
+                BundleRetention::Reverts,
+            );
+        }
+        assert_eq!(merged.reverts, cumulative.reverts);
+
+        merged.revert(1);
+        cumulative.revert(1);
+        assert_eq!(merged.state[&address].status, AccountStatus::DestroyedChanged);
         assert_eq!(merged, cumulative);
     }
 
