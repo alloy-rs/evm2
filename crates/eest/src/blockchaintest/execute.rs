@@ -194,7 +194,9 @@ pub fn pre_state(
     test_case: &BlockchainTestCase,
 ) -> Result<InMemoryDB, TestError> {
     let mut pre = Cow::Borrowed(&test_case.pre.0);
-    if is_captured(test_case) {
+    if is_captured(test_case)
+        && fork_schedule(test_case.network).is_some_and(|fork| fork.runs_prague())
+    {
         // A capture holds only the accounts its transactions touch, but the blocks' system calls
         // read the request contracts, which must have code.
         for (address, code) in [
@@ -1445,6 +1447,12 @@ impl ForkSchedule {
             return Err(TestErrorKind::ZeroBlobUpdateFraction(blob_fork));
         }
         Ok(Some(entry.params(stage.spec)))
+    }
+
+    /// Returns whether any block of the fork runs Prague or later.
+    fn runs_prague(&self) -> bool {
+        self.initial.spec.enables(SpecId::PRAGUE)
+            || self.transition.is_some_and(|(_, stage)| stage.spec.enables(SpecId::PRAGUE))
     }
 
     /// Returns whether any spec of the fork is skipped.
