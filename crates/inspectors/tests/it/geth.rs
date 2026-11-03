@@ -606,9 +606,6 @@ fn test_geth_erc7562_accessed_slots_and_ignored_opcodes() {
             transient_writes: HashMap::from_iter([(slot(4), 1)]),
         }
     );
-    assert_eq!(slots.writes, HashMap::from_iter([(slot(1), 1), (slot(3), 1)]));
-    assert_eq!(slots.transient_reads, HashMap::from_iter([(slot(4), 1)]));
-    assert_eq!(slots.transient_writes, HashMap::from_iter([(slot(4), 1)]));
     // The opcodes of the config are not counted, and every other opcode is, including `PUSH1`.
     assert_eq!(
         frame.used_opcodes,
