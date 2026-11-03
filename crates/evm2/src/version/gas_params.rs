@@ -299,8 +299,7 @@ impl GasParams {
     /// Calculates dynamic `CREATE2` gas for `len` bytes.
     #[inline]
     pub const fn create2_cost(&self, len: usize) -> u64 {
-        self.get(GasId::Create)
-            .saturating_add(self.get(GasId::Keccak256PerWord).saturating_mul(num_words(len) as u64))
+        self.get(GasId::Create).saturating_add(self.keccak256_word_cost(len))
     }
 
     /// Returns `CALL` stipend reduction.

@@ -196,13 +196,7 @@ impl Bytecode {
     #[inline]
     pub fn new_eip7702(address: Address) -> Self {
         let raw: Bytes = [EIP7702_MAGIC_BYTES, &[EIP7702_VERSION], &address[..]].concat().into();
-        Self(Some(Arc::new(BytecodeInner {
-            kind: BytecodeKind::Eip7702,
-            original_len: raw.len(),
-            bytecode: raw,
-            jump_table: OnceLock::new(),
-            hash: OnceLock::new(),
-        })))
+        Self::from_valid_eip7702(raw)
     }
 
     /// Creates a new raw [`Bytecode`].

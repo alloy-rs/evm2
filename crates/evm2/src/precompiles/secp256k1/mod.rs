@@ -27,11 +27,12 @@ use crate::{
 };
 use alloy_primitives::Bytes;
 
+/// `ecrecover` precompile base gas cost.
+pub(crate) const ECRECOVER_BASE: u64 = 3_000;
+
 /// `ecrecover` precompile function. Read more about input and output format in [this module
 /// docs](self).
 pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    const ECRECOVER_BASE: u64 = 3_000;
-
     gas.spend(ECRECOVER_BASE)?;
 
     let input = right_pad::<128>(input);

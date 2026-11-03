@@ -3,6 +3,7 @@
 #![allow(missing_docs)]
 
 use super::{InstrStop, Result};
+use crate::precompiles::secp256k1::ECRECOVER_BASE;
 use core::hint::cold_path;
 
 pub const ZERO: u32 = 0;
@@ -43,8 +44,6 @@ pub const COLD_SLOAD_COST: u32 = 2100;
 pub const COLD_ACCOUNT_ACCESS_COST: u32 = 2600;
 pub const COLD_ACCOUNT_ACCESS_COST_ADDITIONAL: u32 =
     COLD_ACCOUNT_ACCESS_COST - WARM_STORAGE_READ_COST;
-pub(crate) const EIP2930_ACCESS_LIST_ADDRESS: u32 = 2400;
-pub(crate) const EIP2930_ACCESS_LIST_STORAGE_KEY: u32 = 1900;
 pub(crate) const EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE: u32 = 64;
 pub(crate) const EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER: u32 = 4;
 pub const WARM_STORAGE_READ_COST: u32 = 100;
@@ -101,8 +100,8 @@ pub(crate) const EIP8038_CALL_VALUE: u32 = EIP8038_ACCOUNT_WRITE + CALL_STIPEND;
 /// the two signature scalars. Charged at the calldata floor rate.
 pub(crate) const EIP7702_AUTH_TUPLE_BYTES: u32 = 101;
 /// ecRecover precompile base cost, charged once per EIP-7702 authorization to
-/// recover the authority. Matches `secp256k1::ECRECOVER_BASE`.
-pub(crate) const EIP7702_ECRECOVER_COST: u32 = 3000;
+/// recover the authority.
+pub(crate) const EIP7702_ECRECOVER_COST: u32 = ECRECOVER_BASE as u32;
 /// `REGULAR_PER_AUTH_BASE_COST`: the state-independent execution-gas base charged per EIP-7702
 /// authorization at the intrinsic phase under EIP-2780 (ethereum/EIPs#11844).
 ///
