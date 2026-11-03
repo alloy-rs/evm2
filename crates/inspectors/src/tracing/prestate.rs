@@ -6,27 +6,33 @@
 //! after the transaction when the result is built.
 //!
 //! Like geth, it names the accounts of the sender, the recipient, the coinbase and the EIP-7702
-//! authorities, and every account and slot that an opcode addresses. geth skips an opcode that
-//! fails before its body, because it passes the failure to the hook, and this inspector skips a
-//! lookup opcode whose step ends in a halt. The two agree for the failures geth raises before the
-//! body: stack bounds, gas, and write protection for `SSTORE`, `CREATE`, `CREATE2`, `SELFDESTRUCT`
-//! and a `CALL` with value, which geth checks in the gas function.
+//! authorities, and every account and slot that an opcode addresses. It takes the slots and the
+//! accounts of `SLOAD`, `SSTORE`, `BALANCE`, `EXTCODE*` and `SELFDESTRUCT` from their steps, and
+//! the targets of calls and creates from the call and create hooks, which run for the same
+//! opcodes.
 //!
-//! The inspector only asks for the steps of the opcodes it looks at.
+//! geth skips an opcode that fails before its body, because it passes the failure to the hook, and
+//! this inspector skips an opcode whose step ends in a halt, and a call or create that does not
+//! start. The two agree for the failures geth raises before the body: stack bounds, gas, and write
+//! protection for `SSTORE`, `CREATE`, `CREATE2`, `SELFDESTRUCT` and a `CALL` with value, which
+//! geth checks in the gas function.
+//!
+//! The inspector only asks for the steps of the opcodes it looks at in them.
 //!
 //! See also <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/eth/tracers/native/prestate.go>
 
-use crate::tracing::{keccak::memory_copy_padded, utils::load_account_code};
+use crate::tracing::utils::load_account_code;
 use alloc::{collections::BTreeMap, vec::Vec};
 use alloy_consensus::{Transaction, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256, map::AddressSet};
+use alloy_primitives::{Address, B256, Bytes, U256, map::AddressSet};
 use alloy_rpc_types_trace::geth::{
     AccountState, DiffMode, PreStateConfig, PreStateFrame, PreStateMode,
 };
 use evm2::{
-    EvmTypes, EvmTypesHost, Inspector, InspectorConfig, OpcodeSet, SpecId, TxResultWithState,
+    AccountInfo, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, OpcodeSet, SpecId,
+    TxResultWithState,
     env::BlockEnv,
-    evm::{DbResult, DynDatabase, PendingState},
+    evm::{AccountChanges, DbResult, DynDatabase, PendingState},
     interpreter::{Interpreter, Message, MessageResult, opcode::op},
 };
 
@@ -43,19 +49,12 @@ pub struct PrestateInspector {
     created: AddressSet,
     /// The accounts that executed `SELFDESTRUCT` and that geth deletes.
     deleted: AddressSet,
-    /// The fork the transaction ran in, known once a frame runs.
-    spec: Option<SpecId>,
-    /// What the opcodes that are running address, one per frame that is inside a call or create.
-    pending: Vec<Pending>,
-    /// The depth of the last of `pending`, or [`NO_DEPTH`].
-    pending_depth: u16,
+    /// What the opcode that is running addresses, kept until its step ends.
+    pending: Option<Lookup>,
 }
 
-/// The depth that no frame has, kept in `PrestateInspector::pending_depth` while nothing is
-/// pending.
-const NO_DEPTH: u16 = u16::MAX;
-
-/// The opcodes that address an account or a slot.
+/// The opcodes whose steps the inspector looks at: they address an account or a slot, and the
+/// ones that call or create are left to the call and create hooks.
 const LOOKUP_OPCODES: OpcodeSet = {
     let mut set = OpcodeSet::EMPTY;
     set.insert(op::SLOAD);
@@ -65,25 +64,11 @@ const LOOKUP_OPCODES: OpcodeSet = {
     set.insert(op::EXTCODESIZE);
     set.insert(op::BALANCE);
     set.insert(op::SELFDESTRUCT);
-    set.insert(op::CALL);
-    set.insert(op::CALLCODE);
-    set.insert(op::DELEGATECALL);
-    set.insert(op::STATICCALL);
-    set.insert(op::CREATE);
-    set.insert(op::CREATE2);
     set
 };
 
-/// What an opcode addresses, taken before it runs and kept if its step does not end in a halt.
-#[derive(Clone, Copy, Debug)]
-struct Pending {
-    /// The depth of the frame that runs the opcode.
-    depth: u16,
-    /// What the opcode addresses.
-    lookup: Lookup,
-}
-
-/// An account or slot an opcode addresses.
+/// An account or slot an opcode addresses, taken before it runs and kept if its step does not end
+/// in a halt.
 #[derive(Clone, Copy, Debug)]
 enum Lookup {
     /// A storage slot of the executing account.
@@ -92,8 +77,6 @@ enum Lookup {
     Account(Address),
     /// The beneficiary of a `SELFDESTRUCT` in the given account.
     SelfDestruct(Address, Address),
-    /// The address a `CREATE` or `CREATE2` is going to create.
-    Create(Address),
 }
 
 impl PrestateInspector {
@@ -105,15 +88,8 @@ impl PrestateInspector {
             slots: Vec::new(),
             created: AddressSet::default(),
             deleted: AddressSet::default(),
-            spec: None,
-            pending: Vec::new(),
-            pending_depth: NO_DEPTH,
+            pending: None,
         }
-    }
-
-    /// Returns the tracer config.
-    pub const fn config(&self) -> &PreStateConfig {
-        &self.config
     }
 
     /// Clears what the inspector collected, to trace the next transaction.
@@ -122,9 +98,7 @@ impl PrestateInspector {
         self.slots.clear();
         self.created.clear();
         self.deleted.clear();
-        self.spec = None;
-        self.pending.clear();
-        self.pending_depth = NO_DEPTH;
+        self.pending = None;
     }
 
     /// Returns the result of the tracer for a transaction that ran with this inspector.
@@ -160,9 +134,9 @@ impl PrestateInspector {
         let from = tx.signer();
         let to = match tx.to() {
             Some(to) => {
-                // geth looks up the delegation target of the recipient from Prague.
-                if self.spec.is_some_and(|spec| spec.enables(SpecId::PRAGUE))
-                    && let Some(info) = db.get_account(&to)?
+                // geth looks up the delegation target of the recipient before the authorizations
+                // of the transaction apply. Only EIP-7702 makes such code.
+                if let Some(info) = db.get_account(&to)?
                     && let Some(code) = load_account_code(db, &info)?
                     && let Some(target) = parse_delegation(&code)
                 {
@@ -188,7 +162,8 @@ impl PrestateInspector {
     ) -> DbResult<PreStateFrame> {
         let mut prestate = BTreeMap::new();
         for addr in accounts {
-            let original = original_account(state, addr, db)?;
+            let changes = state.account_changes_for(addr);
+            let original = original_account(changes, addr, db)?;
             // Geth omits accounts that were empty before execution, even if fees fund them.
             // Check the original code hash before applying the disableCode output option.
             if original.is_empty() {
@@ -198,7 +173,7 @@ impl PrestateInspector {
                 if self.config.code_enabled() { load_account_code(db, &original)? } else { None };
             let mut account =
                 AccountState::from_account_info(original.nonce, original.balance, code);
-            self.insert_pre_slots(&mut account, addr, state, db)?;
+            self.insert_pre_slots(&mut account, addr, changes, db)?;
             prestate.insert(*addr, account);
         }
         Ok(PreStateFrame::Default(PreStateMode(prestate)))
@@ -216,7 +191,8 @@ impl PrestateInspector {
         let mut diff = DiffMode::default();
         let mut empty_before = AddressSet::default();
         for addr in accounts {
-            let original = original_account(state, addr, db)?;
+            let changes = state.account_changes_for(addr);
+            let original = original_account(changes, addr, db)?;
             let pre_code = if code_enabled { load_account_code(db, &original)? } else { None };
 
             let mut pre_state =
@@ -233,12 +209,11 @@ impl PrestateInspector {
             // Geth keeps the pre state of a deleted account as it looked it up, with every slot
             // an opcode addressed, unchanged and zero ones included, and reports no post state.
             if self.deleted.contains(addr) {
-                self.insert_pre_slots(&mut pre_state, addr, state, db)?;
+                self.insert_pre_slots(&mut pre_state, addr, changes, db)?;
                 diff.pre.insert(*addr, pre_state);
                 continue;
             }
 
-            let changes = state.account_changes_for(addr);
             // A deleted account is treated as drained: the post info is empty.
             let info = match changes {
                 Some(changes) => changes.current.cloned().unwrap_or_default(),
@@ -312,11 +287,10 @@ impl PrestateInspector {
         &self,
         account: &mut AccountState,
         addr: &Address,
-        state: &PendingState,
+        changes: Option<AccountChanges<'_>>,
         db: &mut dyn DynDatabase,
     ) -> DbResult<()> {
         if self.config.storage_enabled() {
-            let changes = state.account_changes_for(addr);
             for (_, key) in self.slots_of(addr) {
                 let slot = U256::from_be_bytes(key.0);
                 let value = match changes.and_then(|changes| changes.storage.slots.get(&slot)) {
@@ -331,61 +305,36 @@ impl PrestateInspector {
 
     /// Returns what the opcode about to run addresses.
     fn lookup<T: EvmTypes>(interp: &mut Interpreter<'_, '_, T>) -> Option<Lookup> {
-        let op = interp.opcode();
         let account = interp.message().destination;
-        if op == op::CREATE {
-            let nonce = interp
-                .host()
-                .state_mut()
-                .account_info_untracked(&account)
-                .ok()
-                .flatten()
-                .unwrap_or_default()
-                .nonce;
-            return Some(Lookup::Create(account.create(nonce)));
-        }
         let stack = interp.stack();
-        let stack = stack.as_slice();
-        // `back(0)` is the top of the stack.
-        let back = |index: usize| stack.len().checked_sub(index + 1).map(|at| stack[at]);
-        let address = |word: U256| Address::from_word(word.into());
-        match op {
-            op::SLOAD | op::SSTORE => Some(Lookup::Slot(account, back(0)?.into())),
-            op::SELFDESTRUCT => Some(Lookup::SelfDestruct(account, address(back(0)?))),
-            op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL => {
-                (stack.len() >= 5).then(|| Lookup::Account(address(stack[stack.len() - 2])))
-            }
-            op::CREATE2 => {
-                let (offset, size, salt) = (back(1)?, back(2)?, back(3)?);
-                // The operands are truncated to 64 bits, and geth fails on a negative one.
-                let (offset, size) = (offset.as_limbs()[0], size.as_limbs()[0]);
-                i64::try_from(offset).ok()?;
-                i64::try_from(size).ok()?;
-                let init_code = memory_copy_padded(interp.memory().as_slice(), offset, size)?;
-                Some(Lookup::Create(account.create2(B256::from(salt), keccak256(init_code))))
-            }
-            _ => Some(Lookup::Account(address(back(0)?))),
-        }
+        // The top of the stack.
+        let top = *stack.as_slice().last()?;
+        Some(match interp.opcode() {
+            op::SLOAD | op::SSTORE => Lookup::Slot(account, top.into()),
+            op::SELFDESTRUCT => Lookup::SelfDestruct(account, Address::from_word(top.into())),
+            _ => Lookup::Account(Address::from_word(top.into())),
+        })
+    }
+}
+
+impl<T: EvmTypes> Inspector<T> for PrestateInspector {
+    #[inline]
+    fn inspector_config(&self) -> InspectorConfig {
+        InspectorConfig::new().with_steps(LOOKUP_OPCODES)
     }
 
-    /// Takes what the opcode about to run addresses.
-    #[inline(never)]
-    fn start_step<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        if let Some(lookup) = Self::lookup(interp) {
-            // A call or create runs frames of its own before its `step_end`, so the opcodes that
-            // are running stack up, one per depth.
-            let depth = interp.message().depth;
-            self.pending.truncate(self.pending.iter().take_while(|p| p.depth < depth).count());
-            self.pending.push(Pending { depth, lookup });
-            self.pending_depth = depth;
-        }
+    #[inline]
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        // The EVM may step more opcodes than asked for. A step of another opcode drops a lookup
+        // whose `step_end` did not run.
+        self.pending =
+            LOOKUP_OPCODES.contains(interp.opcode()).then(|| Self::lookup(interp)).flatten();
     }
 
-    /// Adds what the opcode that ran addressed, unless its step ended in a halt.
-    #[inline(never)]
-    fn finish_step<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        let Some(Pending { lookup, .. }) = self.pending.pop() else { return };
-        self.pending_depth = self.pending.last().map_or(NO_DEPTH, |pending| pending.depth);
+    #[inline]
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        let Some(lookup) = self.pending.take() else { return };
+        // geth ignores an opcode that fails before its body runs.
         if interp.result().is_err_and(|stop| stop.is_halt()) {
             return;
         }
@@ -399,47 +348,21 @@ impl PrestateInspector {
                     self.deleted.insert(account);
                 }
             }
-            Lookup::Create(address) => {
-                self.accounts.push(address);
-                self.created.insert(address);
-            }
-        }
-    }
-}
-
-impl<T: EvmTypes> Inspector<T> for PrestateInspector {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        self.spec.get_or_insert_with(|| interp.spec());
-    }
-
-    #[inline]
-    fn inspector_config(&self) -> InspectorConfig {
-        InspectorConfig::without_steps().with_steps(LOOKUP_OPCODES)
-    }
-
-    #[inline]
-    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        if LOOKUP_OPCODES.contains(interp.opcode()) {
-            self.start_step(interp);
-        }
-    }
-
-    #[inline]
-    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        // While a call or create runs, only the steps at its depth can finish an opcode.
-        if self.pending_depth != NO_DEPTH && interp.message().depth == self.pending_depth {
-            self.finish_step(interp);
         }
     }
 
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        // geth looks up the delegation target of the callee of a call from Prague. evm2 resolves
-        // it when it builds the message.
-        if message.code_address != message.call_target {
+        self.accounts.push(message.call_target);
+        // geth looks up the delegation target of the callee of a call from Prague, and that of the
+        // recipient of the transaction before its authorizations apply, which `frame` takes from
+        // the state before the transaction. evm2 resolves the target when it builds the message.
+        if message.depth > interp.version().initial_call_depth
+            && message.code_address != message.call_target
+        {
             self.accounts.push(message.code_address);
         }
         None
@@ -451,6 +374,7 @@ impl<T: EvmTypes> Inspector<T> for PrestateInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // The transaction of a create names the address it creates.
+        self.accounts.push(message.destination);
         self.created.insert(message.destination);
         None
     }
@@ -459,11 +383,11 @@ impl<T: EvmTypes> Inspector<T> for PrestateInspector {
 /// Returns the account as it was before the transaction: from the state of the transaction if it
 /// loaded the account, otherwise from `db`.
 fn original_account(
-    state: &PendingState,
+    changes: Option<AccountChanges<'_>>,
     addr: &Address,
     db: &mut dyn DynDatabase,
-) -> DbResult<evm2::AccountInfo> {
-    match state.account_changes_for(addr) {
+) -> DbResult<AccountInfo> {
+    match changes {
         Some(changes) => Ok(changes.original.cloned().unwrap_or_default()),
         None => Ok(db.get_account(addr)?.unwrap_or_default()),
     }
@@ -550,9 +474,7 @@ mod tests {
         let mut db = CacheDB::new(EmptyDB::default());
         let accounts = AddressSet::from_iter([address]);
         let PreStateFrame::Diff(diff) =
-            PrestateInspector::new(PreStateConfig { diff_mode: Some(true), ..Default::default() })
-                .diff_frame(&accounts, &state, &mut db)
-                .unwrap()
+            diff_inspector().diff_frame(&accounts, &state, &mut db).unwrap()
         else {
             panic!("expected diff prestate frame");
         };

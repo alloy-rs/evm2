@@ -3483,7 +3483,8 @@ fn test_geth_prestate_skips_a_lookup_that_halts() {
     );
 }
 
-/// The prestate inspector asks for the steps of the opcodes that look an account or slot up.
+/// The prestate inspector asks for the steps of the opcodes that look an account or slot up, and
+/// leaves calls and creates to the call and create hooks.
 #[test]
 fn test_geth_prestate_inspector_steps_only_lookup_opcodes() {
     let inspector = PrestateInspector::new(PreStateConfig::default());
@@ -3496,14 +3497,141 @@ fn test_geth_prestate_inspector_steps_only_lookup_opcodes() {
         op::EXTCODESIZE,
         op::BALANCE,
         op::SELFDESTRUCT,
-        op::CALL,
-        op::CALLCODE,
-        op::DELEGATECALL,
-        op::STATICCALL,
-        op::CREATE,
-        op::CREATE2,
     ];
     assert_eq!(steps, lookups.into_iter().collect::<OpcodeSet>());
+}
+
+/// geth names the delegation target that the recipient of a transaction has before the
+/// authorizations apply, and the callee's target of a call, and it does not name the target that an
+/// authorization of the transaction sets.
+#[test]
+fn test_geth_prestate_names_delegation_targets() {
+    let (sender, root) = (
+        address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+        address!("1000000000000000000000000000000000000001"),
+    );
+    let authority = address!("7e5f4552091a69125d5dfcb7b8c2659029395bdf");
+    let (old_target, new_target, called, called_target) = (
+        address!("aaaa000000000000000000000000000000000001"),
+        address!("bbbb000000000000000000000000000000000002"),
+        address!("cccc000000000000000000000000000000000003"),
+        address!("dddd000000000000000000000000000000000004"),
+    );
+    let delegation_to = |target: Address| {
+        let mut code = vec![0xef, 0x01, 0x00];
+        code.extend_from_slice(target.as_slice());
+        Bytes::from(code)
+    };
+    let funded = AccountInfo { balance: U256::from(1), ..Default::default() };
+    let with_code = |code: Bytes| AccountInfo {
+        balance: U256::from(1),
+        code_hash: keccak256(&code),
+        code: Some(Bytecode::new_raw(code)),
+        ..Default::default()
+    };
+    // The root calls an account that delegates to `called_target`.
+    let mut root_code = hex!("60006000600060006000").to_vec();
+    root_code.push(op::PUSH20);
+    root_code.extend_from_slice(called.as_slice());
+    root_code.extend_from_slice(&[op::GAS, op::CALL, op::STOP]);
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(&authority, with_code(delegation_to(old_target)));
+    db.insert_account_info(&root, with_code(Bytes::from(root_code)));
+    db.insert_account_info(&called, with_code(delegation_to(called_target)));
+    for address in [old_target, new_target, called_target] {
+        db.insert_account_info(&address, funded.clone());
+    }
+
+    // Signed by the key of `authority`; moves its delegation to `new_target`.
+    let authorization = Authorization { chain_id: U256::from(1), address: new_target, nonce: 0 };
+    let signature = sign_message(B256::with_last_byte(1), authorization.signature_hash()).unwrap();
+    let authorization = authorization.into_signed(signature);
+    assert_eq!(authorization.recover_authority().unwrap(), authority);
+
+    for (to, expected) in [
+        (authority, [authority, old_target].as_slice()),
+        (root, [root, called, called_target].as_slice()),
+    ] {
+        let evm = Context::mainnet()
+            .with_db(db.clone())
+            .modify_cfg_chained(|cfg| cfg.spec = SpecId::PRAGUE)
+            .build_mainnet();
+        let (res, frame) = trace_prestate(
+            evm,
+            PreStateConfig::default(),
+            TxEnv {
+                caller: sender,
+                gas_limit: 200_000,
+                kind: TransactTo::Call(to),
+                authorization_list: vec![authorization.clone()],
+                ..Default::default()
+            },
+        );
+        assert!(res.result.is_success(), "{res:#?}");
+        let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+        let named: Vec<_> = prestate.0.keys().copied().filter(|a| *a != sender).collect();
+        let mut expected = expected.to_vec();
+        // The authority is named whoever the recipient is.
+        if !expected.contains(&authority) {
+            expected.push(authority);
+        }
+        expected.sort();
+        assert_eq!(named, expected, "to {to}");
+    }
+}
+
+/// The addresses that `CREATE` and `CREATE2` create are named, including ones that already hold a
+/// balance.
+#[test]
+fn test_geth_prestate_names_created_addresses() {
+    let (sender, root) = (
+        address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+        address!("1000000000000000000000000000000000000001"),
+    );
+    let created = root.create(1);
+    let created2 = root.create2(B256::ZERO, keccak256([]));
+    // CREATE and CREATE2 of empty init code, which stay empty.
+    let code = Bytes::from(hex!("5f5f5ff0505f5f5f5ff55000"));
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &root,
+        AccountInfo {
+            nonce: 1,
+            code_hash: keccak256(&code),
+            code: Some(Bytecode::new_raw(code)),
+            ..Default::default()
+        },
+    );
+    for (address, balance) in [(created, 5), (created2, 6)] {
+        db.insert_account_info(
+            &address,
+            AccountInfo { balance: U256::from(balance), ..Default::default() },
+        );
+    }
+    let evm = Context::mainnet().with_db(db).build_mainnet();
+    let (res, frame) = trace_prestate(
+        evm,
+        PreStateConfig::default(),
+        TxEnv {
+            caller: sender,
+            gas_limit: 200_000,
+            kind: TransactTo::Call(root),
+            ..Default::default()
+        },
+    );
+    assert!(res.result.is_success(), "{res:#?}");
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+    assert_eq!(prestate.0[&created].balance, Some(U256::from(5)));
+    assert_eq!(prestate.0[&created2].balance, Some(U256::from(6)));
 }
 
 /// Runs a transaction with a [`PrestateInspector`] and returns the result and the frame.
