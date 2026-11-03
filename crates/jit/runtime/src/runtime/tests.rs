@@ -70,6 +70,7 @@ impl TestBackend {
     }
 
     /// Creates a backend with `enabled: true`, the given store, and the given tuning overrides.
+    #[cfg(feature = "llvm")]
     fn with_store(store: Arc<dyn ArtifactStore>, tuning: RuntimeTuning) -> Self {
         Self::new(RuntimeConfig { enabled: true, store: Some(store), tuning, ..Default::default() })
     }

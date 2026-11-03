@@ -1,8 +1,8 @@
 //! EVM to IR translation.
 
 use crate::{
-    Backend, Builder, Bytecode, EvmContext, Inst, InstData, InstFlags, IntCC, Result, StackSection,
-    decode_pair, decode_single,
+    Backend, Builder, Bytecode, EvmContext, EvmStack, Inst, InstData, InstFlags, IntCC, Result,
+    StackSection, decode_pair, decode_single,
 };
 use alloy_primitives::U256;
 use evm2::{
@@ -12,7 +12,6 @@ use evm2::{
 };
 use evm2_jit_backend::{BackendTypes, Pointer, TypeMethods};
 use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
-use evm2_jit_context::EvmStack;
 use oxc_index::IndexVec;
 use std::{fmt::Write, mem, ops::Range};
 
