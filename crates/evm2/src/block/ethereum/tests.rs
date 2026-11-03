@@ -5,16 +5,15 @@ use crate::{
     bytecode::Bytecode,
     env::BlockEnvExt,
     ethereum::ethereum_tx_registry,
-    evm::{
-        AccountInfo, BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
-        InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
-    },
+    evm::{AccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB},
 };
 use alloc::vec;
 use alloy_consensus::{Signed, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered};
 use alloy_eips::{
-    eip2935::HISTORY_STORAGE_CODE, eip4788::BEACON_ROOTS_CODE,
-    eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_CODE, eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_CODE,
+    eip2935::HISTORY_STORAGE_CODE,
+    eip4788::BEACON_ROOTS_CODE,
+    eip7002::{WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, WITHDRAWAL_REQUEST_PREDEPLOY_CODE},
+    eip7251::{CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, CONSOLIDATION_REQUEST_PREDEPLOY_CODE},
 };
 use alloy_primitives::{Signature, TxKind, U256};
 
@@ -31,8 +30,8 @@ fn database() -> InMemoryDB {
     for (address, code) in [
         (HISTORY_STORAGE_ADDRESS, &HISTORY_STORAGE_CODE),
         (BEACON_ROOTS_ADDRESS, &BEACON_ROOTS_CODE),
-        (WITHDRAWAL_REQUEST_ADDRESS, &WITHDRAWAL_REQUEST_PREDEPLOY_CODE),
-        (CONSOLIDATION_REQUEST_ADDRESS, &CONSOLIDATION_REQUEST_PREDEPLOY_CODE),
+        (WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, &WITHDRAWAL_REQUEST_PREDEPLOY_CODE),
+        (CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, &CONSOLIDATION_REQUEST_PREDEPLOY_CODE),
     ] {
         let code = Bytecode::new_legacy(code.clone());
         database.insert_account_info(&address, AccountInfo::default().with_code(code));
@@ -223,7 +222,7 @@ fn reads_rules_from_hardforks() {
 #[test]
 fn rejects_request_contract_without_code() {
     let mut database = database();
-    database.insert_account_info(&WITHDRAWAL_REQUEST_ADDRESS, AccountInfo::default());
+    database.insert_account_info(&WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, AccountInfo::default());
     let evm = evm_with(SpecId::PRAGUE, 30_000_000, database);
     let mut executor =
         EthBlockExecutor::new(evm, ctx(), EthBlockRules::default(), EthReceiptBuilder);
@@ -232,7 +231,7 @@ fn rejects_request_contract_without_code() {
     assert!(matches!(
         error,
         BlockExecutionError::Validation(BlockValidationError::SystemContractEmpty { address })
-            if address == WITHDRAWAL_REQUEST_ADDRESS
+            if address == WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS
     ));
 }
 

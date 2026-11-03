@@ -2,7 +2,9 @@
 
 use crate::{
     interpreter::GasTracker,
-    precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult},
+    precompiles::{
+        PrecompileHalt, PrecompileOutput, PrecompileResult, bls12_381_const::SCALAR_LENGTH,
+    },
     utils::{bool_to_bytes32, right_pad},
 };
 use alloc::vec::Vec;
@@ -168,10 +170,6 @@ pub mod pair {
 /// Note: The base field is used to define G1 and G2 elements.
 const FQ_LEN: usize = 32;
 
-/// SCALAR_LEN specifies the number of bytes needed to represent an Fr element.
-/// This is an element in the scalar field of BN254.
-const SCALAR_LEN: usize = 32;
-
 /// FQ2_LEN specifies the number of bytes needed to represent an
 /// Fq^2 element.
 ///
@@ -194,7 +192,7 @@ pub(crate) const ADD_INPUT_LEN: usize = 2 * G1_LEN;
 
 /// Input length for the multiplication operation.
 /// `MUL` takes an uncompressed G1 point (64 bytes) and scalar (32 bytes).
-pub(crate) const MUL_INPUT_LEN: usize = G1_LEN + SCALAR_LEN;
+pub(crate) const MUL_INPUT_LEN: usize = G1_LEN + SCALAR_LENGTH;
 
 /// Pair element length.
 /// `PAIR` elements are composed of an uncompressed G1 point (64 bytes) and an uncompressed G2 point
@@ -221,7 +219,7 @@ pub fn run_mul(input: &[u8], gas_cost: u64, gas: &mut GasTracker) -> PrecompileR
     let input = right_pad::<MUL_INPUT_LEN>(input);
 
     let point_bytes = &input[..G1_LEN];
-    let scalar_bytes = &input[G1_LEN..G1_LEN + SCALAR_LEN];
+    let scalar_bytes = &input[G1_LEN..G1_LEN + SCALAR_LENGTH];
     let output = crate::precompiles::crypto().bn254_g1_mul(point_bytes, scalar_bytes)?;
 
     Ok(PrecompileOutput::new(output.into()))
