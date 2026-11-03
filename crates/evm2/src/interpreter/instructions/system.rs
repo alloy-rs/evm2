@@ -528,10 +528,10 @@ mod tests {
     use crate::{
         BaseEvmConfig, EvmConfig, ExecutionConfig, ExecutionError, SpecId,
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
-        evm::inspector::tests::create_code,
         interpreter::{Interpreter, MessageResultExt, op},
         test_utils::{
-            RunConfig, TestHost, TestInterpreter, TestTypes, legacy_bytecode, push, push_all, run,
+            RunConfig, TestHost, TestInterpreter, TestTypes, create_code, legacy_bytecode, push,
+            push_all, run,
         },
         utils::address_to_word,
         version::OpcodeConfig,
@@ -577,7 +577,7 @@ mod tests {
         let target = Address::from([0x22; 20]);
         let error = ExecutionError::Fatal("child call failed".into());
         let mut host = TestHost { execute_error: Some(error.clone()), ..Default::default() };
-        let mut code = crate::evm::inspector::tests::call_code(target);
+        let mut code = crate::test_utils::call_code(target);
         code.extend([op::CALL, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host));

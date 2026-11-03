@@ -490,3 +490,26 @@ pub(crate) fn return_top_word(code: &mut Vec<u8>) {
 pub(crate) fn storage_slot(original: Word, current: Word) -> StorageSlot {
     StorageSlot { value: Tracked::from_parts(original, current), ..Default::default() }
 }
+
+pub(crate) fn call_code(target: Address) -> Vec<u8> {
+    let mut code = Vec::new();
+    push_all(
+        &mut code,
+        [
+            Word::ZERO,
+            Word::ZERO,
+            Word::ZERO,
+            Word::ZERO,
+            Word::ZERO,
+            address_to_word(&target),
+            Word::from(1000),
+        ],
+    );
+    code
+}
+
+pub(crate) fn create_code() -> Vec<u8> {
+    let mut code = Vec::new();
+    push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+    code
+}

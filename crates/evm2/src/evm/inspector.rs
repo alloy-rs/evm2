@@ -439,7 +439,7 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use crate::{
         BaseEvmConfig, BaseEvmTypes, DatabaseError, Evm, EvmConfig, EvmTypesHost, ExecutionConfig,
@@ -454,7 +454,10 @@ pub(crate) mod tests {
             MessageResult, MessageResultExt, Word, instructions as instr, op,
         },
         registry::TxRegistry,
-        test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all, return_top_word},
+        test_utils::{
+            TestHost, TestTypes, call_code, create_code, legacy_bytecode, push, push_all,
+            return_top_word,
+        },
         utils::address_to_word,
     };
     use alloc::{boxed::Box, vec, vec::Vec};
@@ -697,29 +700,6 @@ pub(crate) mod tests {
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
-    }
-
-    pub(crate) fn call_code(target: Address) -> Vec<u8> {
-        let mut code = Vec::new();
-        push_all(
-            &mut code,
-            [
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                address_to_word(&target),
-                Word::from(1000),
-            ],
-        );
-        code
-    }
-
-    pub(crate) fn create_code() -> Vec<u8> {
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
-        code
     }
 
     #[test]

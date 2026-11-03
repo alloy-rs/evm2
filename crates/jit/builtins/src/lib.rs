@@ -917,7 +917,6 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let features = ecx.version().features;
     if create_empty_account
         && should_charge_new_account_gas(
             ecx.enables(EvmFeatures::EIP161),
@@ -926,7 +925,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         )
     {
         cost += version.gas_params.get(GasId::NewAccountCost);
-        if features.contains(EvmFeatures::EIP8037) && transfers_value {
+        if ecx.enables(EvmFeatures::EIP8037) && transfers_value {
             new_account_state_gas = version.gas_params.new_account_state_gas();
         }
     }
