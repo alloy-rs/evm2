@@ -6,7 +6,7 @@ use super::ReproContext;
 use crate::utils::{Context, SpecId, TransactTo, TxEnv};
 use alloy_primitives::{Bytes, address, hex};
 use alloy_rpc_types_trace::geth::{DiffMode, PreStateConfig, PreStateFrame};
-use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
+use evm2_inspectors::tracing::PrestateInspector;
 
 /// Raw prestate tracer RPC response for mainnet tx:
 /// 0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d
@@ -39,8 +39,7 @@ fn test_prestate_tracer_selfdestruct() {
     let tx_env = tx_selfdestruct_env();
     let prestate_config = PreStateConfig::default();
 
-    let mut inspector =
-        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut inspector = PrestateInspector::new(prestate_config);
     let mut db = ctx.db.clone();
 
     let mut evm = Context::mainnet()
@@ -50,14 +49,11 @@ fn test_prestate_tracer_selfdestruct() {
         .with_inspector(&mut inspector);
 
     let res = evm.inspect_tx(tx_env.clone()).expect("tx should execute");
+    let block = *evm.ctx.block();
     assert!(res.result.is_success(), "tx failed: {:?}", res.result);
 
     // Get the prestate trace
-    let frame = inspector
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
-        .unwrap();
+    let frame = inspector.frame(&tx_env.envelope(), &block, &res.tx_result, &mut db).unwrap();
 
     // Verify the trace contains expected accounts
     match frame {
@@ -79,8 +75,7 @@ fn test_prestate_tracer_selfdestruct_diff_mode() {
     let tx_env = tx_selfdestruct_env();
     let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
 
-    let mut inspector =
-        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut inspector = PrestateInspector::new(prestate_config);
     let mut db = ctx.db.clone();
 
     let mut evm = Context::mainnet()
@@ -90,13 +85,10 @@ fn test_prestate_tracer_selfdestruct_diff_mode() {
         .with_inspector(&mut inspector);
 
     let res = evm.inspect_tx(tx_env.clone()).expect("tx should execute");
+    let block = *evm.ctx.block();
     assert!(res.result.is_success(), "tx failed: {:?}", res.result);
 
-    let frame = inspector
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
-        .unwrap();
+    let frame = inspector.frame(&tx_env.envelope(), &block, &res.tx_result, &mut db).unwrap();
 
     // In diff mode, we should see the changes between pre and post state
     match frame {

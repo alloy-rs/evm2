@@ -1,7 +1,7 @@
 use crate::tracing::builder::geth::MIN_STRUCT_LOG_JSON_LEN;
 use alloy_primitives::map::HashSet;
 use alloy_rpc_types_trace::{
-    geth::{CallConfig, FlatCallConfig, GethDefaultTracingOptions, PreStateConfig},
+    geth::{CallConfig, FlatCallConfig, GethDefaultTracingOptions},
     parity::TraceType,
 };
 use core::num::NonZeroU64;
@@ -217,16 +217,6 @@ impl TracingInspectorConfig {
         Self::default_parity()
             // call tracer is similar parity tracer with optional support for logs
             .set_exclude_precompile_calls(!config.include_precompiles.unwrap_or_default())
-    }
-
-    /// Returns a config for geth's [PrestateTracer](alloy_rpc_types_trace::geth::PreStateFrame).
-    ///
-    /// Note: This currently returns [Self::none] because the prestate tracer result currently
-    /// relies on the execution result entirely, see
-    /// [GethTraceBuilder::geth_prestate_traces](crate::tracing::geth::GethTraceBuilder::geth_prestate_traces)
-    #[inline]
-    pub const fn from_geth_prestate_config(_config: &PreStateConfig) -> Self {
-        Self::none()
     }
 
     /// Merge another config into this one.
@@ -470,7 +460,6 @@ mod tests {
             TracingInspectorConfig::none(),
             TracingInspectorConfig::default_geth(),
             TracingInspectorConfig::from_geth_config(&GethDefaultTracingOptions::default()),
-            TracingInspectorConfig::from_geth_prestate_config(&PreStateConfig::default()),
             TracingInspectorConfig::parity_statediff(),
             TracingInspectorConfig::parity_vm_trace(),
         ] {

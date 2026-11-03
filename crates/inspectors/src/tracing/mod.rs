@@ -54,6 +54,9 @@ pub use limits::{TraceLimitBehavior, TraceLimits};
 mod opcount;
 pub use opcount::OpcodeCountInspector;
 
+mod prestate;
+pub use prestate::PrestateInspector;
+
 pub mod types;
 use types::{CallLog, CallTrace, CallTraceStep};
 

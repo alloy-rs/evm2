@@ -4,8 +4,8 @@ mod consistency;
 mod runtime_oog;
 
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
-    TxEnv, deploy_contract, op,
+    AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, ResultAndState,
+    SpecId, TestEvm, TransactTo, TxEnv, deploy_contract, op,
 };
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
@@ -26,8 +26,8 @@ use evm2::{
 };
 use evm2_inspectors::tracing::{
     DebugInspector, Erc7562Error, Erc7562Inspector, KECCAK256_PREIMAGE_TRACER,
-    Keccak256PreimageInspector, MEMORY_PAD_LIMIT, MuxInspector, TraceLimitBehavior, TraceLimits,
-    TracingInspector, TracingInspectorConfig,
+    Keccak256PreimageInspector, MEMORY_PAD_LIMIT, MuxInspector, PrestateInspector,
+    TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1499,31 +1499,19 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
         disable_storage: Some(false),
     };
 
-    let mut insp = TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(
-        &prestate_config_no_code,
-    ));
-    let mut db = evm.ctx.db.clone();
-
-    let res = {
-        let mut evm_with_insp = evm.with_inspector(&mut insp);
-        evm_with_insp
-            .inspect_tx(TxEnv {
-                caller: deployer,
-                gas_limit: 1000000,
-                kind: TransactTo::Call(addr),
-                data: hex!("8384a002").into(), // nestedEmitWithSuccess() selector
-                nonce: 1,
-                ..Default::default()
-            })
-            .unwrap()
-    };
+    let (res, frame) = trace_prestate(
+        evm,
+        prestate_config_no_code,
+        TxEnv {
+            caller: deployer,
+            gas_limit: 1000000,
+            kind: TransactTo::Call(addr),
+            data: hex!("8384a002").into(), // nestedEmitWithSuccess() selector
+            nonce: 1,
+            ..Default::default()
+        },
+    );
     assert!(res.result.is_success());
-
-    let frame = insp
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config_no_code, &mut db)
-        .unwrap();
 
     // Verify that code is not present in either pre or post states when disable_code=true
     match frame {
@@ -1555,33 +1543,21 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
         disable_storage: Some(false),
     };
 
-    let mut insp2 = TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(
-        &prestate_config_with_code,
-    ));
     let evm2 = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
-    let mut db2 = evm2.ctx.db.clone();
-
-    let res2 = {
-        let mut evm2_with_insp = evm2.with_inspector(&mut insp2);
-        // Deploy contract during traced transaction so code appears in diff
-        evm2_with_insp
-            .inspect_tx(TxEnv {
-                caller: deployer,
-                gas_limit: 1000000,
-                kind: TransactTo::Create,
-                data: code.into(),
-                nonce: 0,
-                ..Default::default()
-            })
-            .unwrap()
-    };
+    // Deploy contract during traced transaction so code appears in diff
+    let (res2, frame2) = trace_prestate(
+        evm2,
+        prestate_config_with_code,
+        TxEnv {
+            caller: deployer,
+            gas_limit: 1000000,
+            kind: TransactTo::Create,
+            data: code.into(),
+            nonce: 0,
+            ..Default::default()
+        },
+    );
     assert!(res2.result.is_success());
-
-    let frame2 = insp2
-        .with_transaction_gas_used(res2.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res2.tx_result, &prestate_config_with_code, &mut db2)
-        .unwrap();
 
     // Verify that code IS present when disable_code=false
     match frame2 {
@@ -1781,32 +1757,19 @@ fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
         disable_code: Some(false),
         disable_storage: Some(false),
     };
-    let insp =
-        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
-
-    let mut evm = evm.with_inspector(insp);
-
-    let res = evm
-        .inspect_tx(TxEnv {
+    let (res, frame) = trace_prestate(
+        evm,
+        prestate_config,
+        TxEnv {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
             data: hex!("43d726d6").into(),
             nonce: 1,
             ..Default::default()
-        })
-        .unwrap();
-
+        },
+    );
     assert!(res.result.is_success(), "{res:#?}");
-
-    // Get the prestate diff traces
-    let mut db = evm.ctx.db.clone();
-    let insp = evm.into_inspector();
-    let frame = insp
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
-        .unwrap();
 
     match frame {
         PreStateFrame::Diff(diff_mode) => {
@@ -3055,27 +3018,19 @@ fn test_geth_prestate_diff_omits_empty_accounts() {
         .build_mainnet();
 
     let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
-    let mut db = evm.ctx.db.clone();
-    let res = evm
-        .with_inspector(&mut insp)
-        .inspect_tx(TxEnv {
+    let (res, frame) = trace_prestate(
+        evm,
+        prestate_config,
+        TxEnv {
             caller: sender,
             gas_limit: 100_000,
             gas_price: 0x600,
             kind: TransactTo::Call(recipient),
             value: U256::from(5),
             ..Default::default()
-        })
-        .unwrap();
+        },
+    );
     assert!(res.result.is_success(), "{res:#?}");
-
-    let frame = insp
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
-        .unwrap();
 
     // Output of geth's `evm t8n --trace.tracer prestateTracer --trace.jsonconfig
     // '{"diffMode":true}'`.
@@ -3131,26 +3086,18 @@ fn test_geth_prestate_diff_reports_cleared_code() {
     assert_eq!(authorization.recover_authority().unwrap(), authority);
 
     let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
-    let mut db = evm.ctx.db.clone();
-    let res = evm
-        .with_inspector(&mut insp)
-        .inspect_tx(TxEnv {
+    let (res, frame) = trace_prestate(
+        evm,
+        prestate_config,
+        TxEnv {
             caller: sender,
             gas_limit: 100_000,
             kind: TransactTo::Call(address!("2222222222222222222222222222222222222222")),
             authorization_list: vec![authorization],
             ..Default::default()
-        })
-        .unwrap();
+        },
+    );
     assert!(res.result.is_success(), "{res:#?}");
-
-    let frame = insp
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
-        .unwrap();
     let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
 
     assert_eq!(diff.pre[&authority].code, Some(delegation));
@@ -3191,25 +3138,17 @@ fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreSt
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
         .build_mainnet();
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
-    let mut db = evm.ctx.db.clone();
-    let res = evm
-        .with_inspector(&mut insp)
-        .inspect_tx(TxEnv {
+    let (res, frame) = trace_prestate(
+        evm,
+        prestate_config,
+        TxEnv {
             caller: sender,
             gas_limit: 100_000,
             kind: TransactTo::Call(contract),
             ..Default::default()
-        })
-        .unwrap();
+        },
+    );
     assert!(res.result.is_success(), "{res:#?}");
-
-    let frame = insp
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
-        .unwrap();
     (contract, frame)
 }
 
@@ -3379,7 +3318,7 @@ fn tracing_inspector_steps_only_what_its_config_records() {
         ..TracingInspectorConfig::default_geth()
     };
 
-    // The call tracer, the prestate tracer and the parity traces other than `vmTrace` record no
+    // The call tracer and the parity traces other than `vmTrace` record no
     // steps, and the struct logger, `vmTrace` and an unfiltered config step every opcode.
     for config in [
         TracingInspectorConfig::none(),
@@ -3387,7 +3326,6 @@ fn tracing_inspector_steps_only_what_its_config_records() {
             with_log: Some(true),
             ..Default::default()
         }),
-        TracingInspectorConfig::from_geth_prestate_config(&PreStateConfig::default()),
         TracingInspectorConfig::from_flat_call_config(&FlatCallConfig::default()),
         TracingInspectorConfig::default_parity(),
         TracingInspectorConfig::parity_statediff(),
@@ -3459,4 +3397,125 @@ fn tracing_inspector_traces_the_same_with_the_steps_it_asks_for_and_with_every_s
 
 fn set_len(set: OpcodeSet) -> usize {
     (0..=u8::MAX).filter(|op| set.contains(*op)).count()
+}
+
+/// An opcode that looks an account or slot up adds it to the prestate when it completes, and adds
+/// nothing when its step ends in a halt, like geth, which skips an opcode that fails before its
+/// body.
+#[test]
+fn test_geth_prestate_skips_a_lookup_that_halts() {
+    let (caller, root, static_callee, poor_callee) = (
+        address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+        address!("1000000000000000000000000000000000000001"),
+        address!("1000000000000000000000000000000000000002"),
+        address!("1000000000000000000000000000000000000003"),
+    );
+    let (kept, dropped) = (
+        address!("2000000000000000000000000000000000000001"),
+        address!("2000000000000000000000000000000000000002"),
+    );
+    let push_address = |code: &mut Vec<u8>, address: Address| {
+        code.push(op::PUSH20);
+        code.extend_from_slice(address.as_slice());
+    };
+    // The root makes a static call, which reads slot 1 and then fails to write slot 2. It calls an
+    // account with too little gas for its `BALANCE` of a cold account, and then runs a `BALANCE`
+    // of its own.
+    let mut code = Vec::new();
+    code.extend_from_slice(&hex!("6000600060006000"));
+    push_address(&mut code, static_callee);
+    code.extend_from_slice(&[op::GAS, op::STATICCALL, op::POP]);
+    code.extend_from_slice(&hex!("60006000600060006000"));
+    push_address(&mut code, poor_callee);
+    code.extend_from_slice(&hex!("6064"));
+    code.extend_from_slice(&[op::CALL, op::POP]);
+    push_address(&mut code, kept);
+    code.extend_from_slice(&[op::BALANCE, op::STOP]);
+    let static_code = hex!("6001545060076002555b00");
+    let mut poor_code = Vec::new();
+    push_address(&mut poor_code, dropped);
+    poor_code.extend_from_slice(&[op::BALANCE, op::STOP]);
+
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &caller,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    for (address, code) in [
+        (root, Bytes::from(code)),
+        (static_callee, Bytes::from(static_code.to_vec())),
+        (poor_callee, Bytes::from(poor_code)),
+    ] {
+        db.insert_account_info(
+            &address,
+            AccountInfo {
+                nonce: 1,
+                code_hash: keccak256(&code),
+                code: Some(Bytecode::new_raw(code)),
+                ..Default::default()
+            },
+        );
+    }
+    for address in [kept, dropped] {
+        db.insert_account_info(
+            &address,
+            AccountInfo { balance: U256::from(1), ..Default::default() },
+        );
+    }
+    db.insert_account_storage(&static_callee, &U256::from(1), &U256::from(0x2a));
+    db.insert_account_storage(&static_callee, &U256::from(2), &U256::from(0x2b));
+    let evm = Context::mainnet().with_db(db).build_mainnet();
+    let (res, frame) = trace_prestate(
+        evm,
+        PreStateConfig::default(),
+        TxEnv { caller, gas_limit: 1_000_000, kind: TransactTo::Call(root), ..Default::default() },
+    );
+    assert!(res.result.is_success(), "{res:#?}");
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+
+    // The `BALANCE` that completed names its account, and the one that ran out of gas does not.
+    assert!(prestate.0.contains_key(&kept));
+    assert!(!prestate.0.contains_key(&dropped));
+    // The `SLOAD` that completed names its slot, and the `SSTORE` that failed does not.
+    assert_eq!(
+        prestate.0[&static_callee].storage,
+        BTreeMap::from([(B256::with_last_byte(1), B256::with_last_byte(0x2a))])
+    );
+}
+
+/// The prestate inspector asks for the steps of the opcodes that look an account or slot up.
+#[test]
+fn test_geth_prestate_inspector_steps_only_lookup_opcodes() {
+    let inspector = PrestateInspector::new(PreStateConfig::default());
+    let steps = Inspector::<BaseEvmTypes>::inspector_config(&inspector).steps();
+    let lookups = [
+        op::SLOAD,
+        op::SSTORE,
+        op::EXTCODECOPY,
+        op::EXTCODEHASH,
+        op::EXTCODESIZE,
+        op::BALANCE,
+        op::SELFDESTRUCT,
+        op::CALL,
+        op::CALLCODE,
+        op::DELEGATECALL,
+        op::STATICCALL,
+        op::CREATE,
+        op::CREATE2,
+    ];
+    assert_eq!(steps, lookups.into_iter().collect::<OpcodeSet>());
+}
+
+/// Runs a transaction with a [`PrestateInspector`] and returns the result and the frame.
+fn trace_prestate(
+    evm: TestEvm,
+    config: PreStateConfig,
+    tx: TxEnv,
+) -> (ResultAndState, PreStateFrame) {
+    let mut db = evm.ctx.db.clone();
+    let block = *evm.ctx.block();
+    let mut insp = PrestateInspector::new(config);
+    let res = evm.with_inspector(&mut insp).inspect_tx(tx.clone()).unwrap();
+    let frame = insp.frame(&tx.envelope(), &block, &res.tx_result, &mut db).unwrap();
+    (res, frame)
 }

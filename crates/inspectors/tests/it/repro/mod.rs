@@ -30,9 +30,7 @@
 //!         ..Default::default()
 //!     };
 //!
-//!     let mut inspector = TracingInspector::new(
-//!         TracingInspectorConfig::from_geth_prestate_config(&PreStateConfig::default())
-//!     );
+//!     let mut inspector = PrestateInspector::new(PreStateConfig::default());
 //!
 //!     let mut evm = Context::mainnet()
 //!         .with_db(ctx.db.clone())
