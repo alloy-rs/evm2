@@ -7,24 +7,24 @@
 //!
 //! Like geth, it names the accounts of the sender, the recipient, the coinbase and the EIP-7702
 //! authorities, and every account and slot that an opcode addresses. It takes the slots and the
-//! accounts of `SLOAD`, `SSTORE`, `BALANCE`, `EXTCODE*` and `SELFDESTRUCT` from their steps, and
-//! the targets of calls and creates from the call and create hooks, which run for the same
-//! opcodes.
+//! accounts of `SLOAD`, `SSTORE`, `BALANCE`, `EXTCODE*` and `SELFDESTRUCT`, and the addresses of
+//! `CREATE` and `CREATE2`, from their steps, and the targets of calls from the call hook, which
+//! runs for every call opcode that gets past its gas.
 //!
 //! geth skips an opcode that fails before its body, because it passes the failure to the hook, and
-//! this inspector skips an opcode whose step ends in a halt, and a call or create that does not
-//! start. The two agree for the failures geth raises before the body: stack bounds, gas, and write
-//! protection for `SSTORE`, `CREATE`, `CREATE2`, `SELFDESTRUCT` and a `CALL` with value, which
-//! geth checks in the gas function.
+//! this inspector skips an opcode whose step ends in a halt, and a call that does not start. The
+//! two agree for the failures geth raises before the body: stack bounds, gas, and write protection
+//! for `SSTORE`, `CREATE`, `CREATE2`, `SELFDESTRUCT` and a `CALL` with value, which geth checks in
+//! the gas function.
 //!
-//! The inspector only asks for the steps of the opcodes it looks at in them.
+//! The inspector only asks for the steps of the opcodes it looks at.
 //!
 //! See also <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/eth/tracers/native/prestate.go>
 
-use crate::tracing::utils::load_account_code;
+use crate::tracing::{keccak::memory_copy_padded, utils::load_account_code};
 use alloc::{collections::BTreeMap, vec::Vec};
 use alloy_consensus::{Transaction, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, U256, map::AddressSet};
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256, map::AddressSet};
 use alloy_rpc_types_trace::geth::{
     AccountState, DiffMode, PreStateConfig, PreStateFrame, PreStateMode,
 };
@@ -51,10 +51,13 @@ pub struct PrestateInspector {
     deleted: AddressSet,
     /// What the opcode that is running addresses, kept until its step ends.
     pending: Option<Lookup>,
+    /// The addresses that the `CREATE` and `CREATE2` that are running create, one per depth. They
+    /// run frames of their own before their steps end, which `pending` does not survive.
+    creates: Vec<(u16, Address)>,
 }
 
-/// The opcodes whose steps the inspector looks at: they address an account or a slot, and the
-/// ones that call or create are left to the call and create hooks.
+/// The opcodes whose steps the inspector looks at: they address an account or a slot, or create
+/// one. The call opcodes are left to the call hook.
 const LOOKUP_OPCODES: OpcodeSet = {
     let mut set = OpcodeSet::EMPTY;
     set.insert(op::SLOAD);
@@ -64,6 +67,8 @@ const LOOKUP_OPCODES: OpcodeSet = {
     set.insert(op::EXTCODESIZE);
     set.insert(op::BALANCE);
     set.insert(op::SELFDESTRUCT);
+    set.insert(op::CREATE);
+    set.insert(op::CREATE2);
     set
 };
 
@@ -89,6 +94,7 @@ impl PrestateInspector {
             created: AddressSet::default(),
             deleted: AddressSet::default(),
             pending: None,
+            creates: Vec::new(),
         }
     }
 
@@ -99,6 +105,7 @@ impl PrestateInspector {
         self.created.clear();
         self.deleted.clear();
         self.pending = None;
+        self.creates.clear();
     }
 
     /// Returns the result of the tracer for a transaction that ran with this inspector.
@@ -303,6 +310,34 @@ impl PrestateInspector {
         Ok(())
     }
 
+    /// Returns the address that the `CREATE` or `CREATE2` about to run creates.
+    fn created_address<T: EvmTypes>(interp: &mut Interpreter<'_, '_, T>) -> Option<Address> {
+        let account = interp.message().destination;
+        let stack = interp.stack();
+        let stack = stack.as_slice();
+        // `back(0)` is the top of the stack.
+        let back = |index: usize| stack.len().checked_sub(index + 1).map(|at| stack[at]);
+        if interp.opcode() == op::CREATE {
+            back(2)?;
+            let nonce = interp
+                .host()
+                .state_mut()
+                .account_info_untracked(&account)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+                .nonce;
+            return Some(account.create(nonce));
+        }
+        let (offset, size, salt) = (back(1)?, back(2)?, back(3)?);
+        // The operands are truncated to 64 bits, and geth fails on a negative one.
+        let (offset, size) = (offset.as_limbs()[0], size.as_limbs()[0]);
+        i64::try_from(offset).ok()?;
+        i64::try_from(size).ok()?;
+        let init_code = memory_copy_padded(interp.memory().as_slice(), offset, size)?;
+        Some(account.create2(B256::from(salt), keccak256(init_code)))
+    }
+
     /// Returns what the opcode about to run addresses.
     fn lookup<T: EvmTypes>(interp: &mut Interpreter<'_, '_, T>) -> Option<Lookup> {
         let account = interp.message().destination;
@@ -325,17 +360,43 @@ impl<T: EvmTypes> Inspector<T> for PrestateInspector {
 
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        let op = interp.opcode();
         // The EVM may step more opcodes than asked for. A step of another opcode drops a lookup
         // whose `step_end` did not run.
-        self.pending =
-            LOOKUP_OPCODES.contains(interp.opcode()).then(|| Self::lookup(interp)).flatten();
+        self.pending = None;
+        if !LOOKUP_OPCODES.contains(op) {
+            return;
+        }
+        if matches!(op, op::CREATE | op::CREATE2) {
+            let depth = interp.message().depth;
+            while self.creates.last().is_some_and(|(at, _)| *at >= depth) {
+                self.creates.pop();
+            }
+            if let Some(address) = Self::created_address(interp) {
+                self.creates.push((depth, address));
+            }
+        } else {
+            self.pending = Self::lookup(interp);
+        }
     }
 
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        let halted = interp.result().is_err_and(|stop| stop.is_halt());
+        // While a create runs its frames, only a step at its own depth can end its step.
+        if let Some(&(depth, address)) = self.creates.last()
+            && depth == interp.message().depth
+        {
+            self.creates.pop();
+            // geth ignores an opcode that fails before its body runs.
+            if !halted {
+                self.accounts.push(address);
+                self.created.insert(address);
+            }
+            return;
+        }
         let Some(lookup) = self.pending.take() else { return };
-        // geth ignores an opcode that fails before its body runs.
-        if interp.result().is_err_and(|stop| stop.is_halt()) {
+        if halted {
             return;
         }
         match lookup {
@@ -373,8 +434,8 @@ impl<T: EvmTypes> Inspector<T> for PrestateInspector {
         _interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        // The transaction of a create names the address it creates.
-        self.accounts.push(message.destination);
+        // The transaction of a create names the address it creates, and `frame` takes it from the
+        // sender's nonce.
         self.created.insert(message.destination);
         None
     }

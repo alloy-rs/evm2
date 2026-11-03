@@ -3483,8 +3483,8 @@ fn test_geth_prestate_skips_a_lookup_that_halts() {
     );
 }
 
-/// The prestate inspector asks for the steps of the opcodes that look an account or slot up, and
-/// leaves calls and creates to the call and create hooks.
+/// The prestate inspector asks for the steps of the opcodes that look an account or slot up, or
+/// create one, and leaves calls to the call hook.
 #[test]
 fn test_geth_prestate_inspector_steps_only_lookup_opcodes() {
     let inspector = PrestateInspector::new(PreStateConfig::default());
@@ -3497,6 +3497,8 @@ fn test_geth_prestate_inspector_steps_only_lookup_opcodes() {
         op::EXTCODESIZE,
         op::BALANCE,
         op::SELFDESTRUCT,
+        op::CREATE,
+        op::CREATE2,
     ];
     assert_eq!(steps, lookups.into_iter().collect::<OpcodeSet>());
 }
@@ -3632,6 +3634,89 @@ fn test_geth_prestate_names_created_addresses() {
     let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
     assert_eq!(prestate.0[&created].balance, Some(U256::from(5)));
     assert_eq!(prestate.0[&created2].balance, Some(U256::from(6)));
+}
+
+/// A `CREATE` that evm2 refuses for a balance too low for its value still names the address it
+/// would create, like geth, and a `CREATE` that runs init code names it along with what the init
+/// code looks up.
+#[test]
+fn test_geth_prestate_names_the_address_of_a_refused_create() {
+    let (sender, root, looked_up) = (
+        address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+        address!("1000000000000000000000000000000000000001"),
+        address!("2000000000000000000000000000000000000001"),
+    );
+    let created = root.create(1);
+    // Init code that looks `looked_up` up.
+    let mut init_code = vec![op::PUSH20];
+    init_code.extend_from_slice(looked_up.as_slice());
+    init_code.extend_from_slice(&[op::BALANCE, op::STOP]);
+
+    // `root` has no balance, so a value of one makes its `CREATE` fail and the init code never
+    // runs.
+    for (value, runs_init_code) in [(1u8, false), (0, true)] {
+        // `root` stores the init code in memory and runs a `CREATE` of it.
+        let mut code = vec![op::PUSH32];
+        code.extend_from_slice(&[&[0; 32 - 23][..], &init_code].concat());
+        code.extend_from_slice(&hex!("5f52"));
+        code.extend_from_slice(&[
+            op::PUSH1,
+            23,
+            op::PUSH1,
+            9,
+            op::PUSH1,
+            value,
+            op::CREATE,
+            op::STOP,
+        ]);
+        let code = Bytes::from(code);
+        for spec in [SpecId::PRAGUE, SpecId::AMSTERDAM] {
+            let mut db = CacheDB::new(EmptyDB::default());
+            db.insert_account_info(
+                &sender,
+                AccountInfo {
+                    balance: U256::from(100_000_000_000_000_000u64),
+                    ..Default::default()
+                },
+            );
+            db.insert_account_info(
+                &root,
+                AccountInfo {
+                    nonce: 1,
+                    code_hash: keccak256(&code),
+                    code: Some(Bytecode::new_raw(code.clone())),
+                    ..Default::default()
+                },
+            );
+            for (address, balance) in [(looked_up, 1), (created, 5)] {
+                db.insert_account_info(
+                    &address,
+                    AccountInfo { balance: U256::from(balance), ..Default::default() },
+                );
+            }
+            let evm = Context::mainnet()
+                .with_db(db)
+                .modify_cfg_chained(|cfg| cfg.spec = spec)
+                .build_mainnet();
+            let (res, frame) = trace_prestate(
+                evm,
+                PreStateConfig::default(),
+                TxEnv {
+                    caller: sender,
+                    gas_limit: 200_000,
+                    kind: TransactTo::Call(root),
+                    ..Default::default()
+                },
+            );
+            assert!(res.result.is_success(), "{spec:?}: {res:#?}");
+            let PreStateFrame::Default(prestate) = frame else {
+                panic!("expected a prestate frame")
+            };
+            let context = format!("{spec:?}, value {value}");
+            assert!(prestate.0.contains_key(&created), "{context}");
+            assert_eq!(prestate.0.contains_key(&looked_up), runs_init_code, "{context}");
+        }
+    }
 }
 
 /// Runs a transaction with a [`PrestateInspector`] and returns the result and the frame.
