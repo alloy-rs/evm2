@@ -109,6 +109,7 @@ pub(crate) fn verify_kzg_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::B256;
 
     #[test]
     fn basic_test() {
@@ -240,8 +241,7 @@ mod tests {
         );
         let wrong_y = hex!("1522a4a7f34e1ea350ae07c29c96c7e79655aa926122e95fe69fcbd932ca49ea");
         let scalar = |n: u8| {
-            let mut bytes = [0u8; 32];
-            bytes[31] = n;
+            let bytes: [u8; 32] = B256::with_last_byte(n).into();
             bytes
         };
 

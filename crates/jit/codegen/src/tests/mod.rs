@@ -2535,7 +2535,7 @@ tests! {
             assert_host: Some(|host| {
                 assert_eq!(host.logs, [Log {
                     address: DEF_ADDR,
-                    data: LogData::new(vec![], Bytes::copy_from_slice(&0x6942_U256.to_be_bytes::<32>())).unwrap(),
+                    data: LogData::new(vec![], Bytes::from(0x6942_U256.to_be_bytes::<32>())).unwrap(),
                 }]);
             }),
         }),

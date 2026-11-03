@@ -4,7 +4,7 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output,
     SpecId, TransactTo, TxEnv, deploy_contract, inspect_deploy_contract, op, print_traces,
 };
-use alloy_primitives::{Address, U256, address, b256, bytes, hex, map::HashSet};
+use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
     filter::TraceFilter,
@@ -514,7 +514,7 @@ fn vmtrace_memory_is_attached_to_the_writing_instruction() {
     let trace = trace_vm_code(&hex!("60016000525f00"), &[]);
     let mem = trace.ops[2].ex.as_ref().unwrap().mem.as_ref().unwrap();
     assert_eq!(mem.off, 0);
-    assert_eq!(mem.data.as_ref(), U256::from(1).to_be_bytes::<32>());
+    assert_eq!(mem.data.as_ref(), B256::with_last_byte(1).0);
     assert!(trace.ops[3].ex.as_ref().unwrap().mem.is_none());
 }
 
@@ -788,7 +788,7 @@ fn vmtrace_call_pushes_result_and_copies_return_memory() {
     assert_eq!(call.ex.as_ref().unwrap().push.as_slice(), &[U256::ONE]);
     let mem = call.ex.as_ref().unwrap().mem.as_ref().unwrap();
     assert_eq!(mem.off, 32);
-    assert_eq!(mem.data.as_ref(), U256::from(42).to_be_bytes::<32>());
+    assert_eq!(mem.data.as_ref(), B256::with_last_byte(42).0);
 }
 
 #[test]

@@ -2,7 +2,7 @@ use crate::{
     EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
     interpreter::{Host, Word},
-    utils::{WordExt, b256_to_word},
+    utils::WordExt,
 };
 use evm2_macros::instruction;
 
@@ -12,7 +12,7 @@ pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
-            b256_to_word(cx.state.host().block_hash(number).map_err(|error| cx.state.fail(error))?)
+            cx.state.host().block_hash(number).map_err(|error| cx.state.fail(error))?.into()
         }
     } else {
         Word::ZERO
@@ -168,7 +168,7 @@ mod tests {
         let randao = B256::with_last_byte(0x55);
         let mut host = test_host(BlockEnvExt {
             difficulty: Word::from(14),
-            prevrandao: b256_to_word(randao),
+            prevrandao: randao.into(),
             ..BlockEnvExt::default()
         });
         let interp =
@@ -227,8 +227,7 @@ mod tests {
     fn blobhash_opcode() {
         let hash = B256::with_last_byte(0x42);
         let mut host = TestHost::default();
-        let tx_env =
-            TxEnvExt { blob_hashes: Vec::from([b256_to_word(hash)]), ..TxEnvExt::default() };
+        let tx_env = TxEnvExt { blob_hashes: Vec::from([hash.into()]), ..TxEnvExt::default() };
 
         let interp = run(RunConfig::new([op::PUSH0, op::BLOBHASH, op::STOP])
             .host(&mut host)

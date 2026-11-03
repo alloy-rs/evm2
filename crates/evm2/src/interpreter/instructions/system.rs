@@ -556,7 +556,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -589,7 +589,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -615,7 +615,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -641,7 +641,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ONE,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -704,7 +704,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::ZERO,
             ],
         );
@@ -735,7 +735,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::ZERO,
             ],
         );
@@ -765,7 +765,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::from(7),
-                address_to_word(&code_address),
+                code_address.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -793,7 +793,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::from(7),
-                address_to_word(&code_address),
+                code_address.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -824,7 +824,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&code_address),
+                code_address.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -874,7 +874,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -960,7 +960,7 @@ mod tests {
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [address_to_word(&created), Word::ZERO]);
+        assert_eq!(interp.stack(), [created.into_word().into(), Word::ZERO]);
     }
 
     #[test]
@@ -1175,7 +1175,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::from(value),
-                address_to_word(&Address::repeat_byte(0x22)),
+                Address::repeat_byte(0x22).into_word().into(),
                 Word::from(5_000),
             ],
         );

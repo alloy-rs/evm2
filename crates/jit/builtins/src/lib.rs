@@ -207,7 +207,7 @@ pub unsafe fn __revmc_builtin_calldataload<T: EvmTypesHost>(
     ecx: &EvmContext<'_, '_, '_, T>,
     offset_ptr: &mut EvmWord,
 ) {
-    do_calldataload(ecx, offset_ptr, word_to_usize_saturated(offset_ptr.to_u256()));
+    do_calldataload(ecx, offset_ptr, offset_ptr.to_u256().saturating_to::<usize>());
 }
 
 #[inline]
@@ -238,7 +238,7 @@ pub unsafe fn __revmc_builtin_calldatacopy<T: EvmTypesHost>(
         ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
         let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
-        let data_offset = word_to_usize_saturated(data_offset.to_u256());
+        let data_offset = data_offset.to_u256().saturating_to::<usize>();
         let input = ecx.input().as_ref();
         let input = unsafe { core::slice::from_raw_parts(input.as_ptr(), input.len()) };
         ecx.memory_mut().set_data(memory_offset, data_offset, len, input);
@@ -284,7 +284,7 @@ pub unsafe fn __revmc_builtin_extcodecopy<T: EvmTypesHost>(
     let code = account.code.original_bytes();
 
     let code_offset_usize =
-        core::cmp::min(word_to_usize_saturated(code_offset.to_u256()), code.len());
+        core::cmp::min(code_offset.to_u256().saturating_to::<usize>(), code.len());
     ecx.memory_mut().set_data(memory_offset_usize, code_offset_usize, len, &code);
     Ok(())
 }
@@ -296,7 +296,7 @@ pub unsafe fn __revmc_builtin_returndatacopy<T: EvmTypesHost>(
 ) -> BuiltinResult {
     let rev![memory_offset, offset, len] = sp;
     let len = word_to_usize(len.to_u256())?;
-    let data_offset = word_to_usize_saturated(offset.to_u256());
+    let data_offset = offset.to_u256().saturating_to::<usize>();
 
     // Bounds check before charging gas.
     let data_end = data_offset.saturating_add(len);
@@ -341,7 +341,7 @@ pub unsafe fn __revmc_builtin_blockhash<T: EvmTypesHost>(
         return Ok(());
     };
 
-    let diff = word_to_u64_saturated(diff);
+    let diff = diff.saturating_to::<u64>();
 
     // Current block returns 0
     if diff == 0 {
@@ -395,7 +395,7 @@ pub unsafe fn __revmc_builtin_blob_hash<T: EvmTypesHost>(
     index_ptr: &mut EvmWord,
 ) {
     let index = index_ptr.to_u256();
-    let index_usize = word_to_usize_saturated(index);
+    let index_usize = index.saturating_to::<usize>();
     *index_ptr = ecx.tx_env().blob_hashes.get(index_usize).copied().unwrap_or_default().into();
 }
 
@@ -772,7 +772,7 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
     let local_gas_limit = local_gas_limit.to_u256();
     let to = to.to_address();
 
-    let local_gas_limit = word_to_u64_saturated(local_gas_limit);
+    let local_gas_limit = local_gas_limit.saturating_to::<u64>();
 
     let value = match call_kind {
         CallKind::Call | CallKind::CallCode => {
