@@ -8,7 +8,11 @@ pub(super) type LoopState = ();
 pub(super) type Cursor = (Pc, usize);
 
 /// Unpacked instruction return value.
-type InstrFnRet = (Pc, usize);
+#[repr(C)]
+pub(crate) struct InstrFnRet {
+    pc: Pc,
+    stack_len: usize,
+}
 
 /// Unpacked instruction function pointer.
 pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
@@ -23,7 +27,8 @@ pub(super) fn dispatch_loop_call<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     _loop_state: &mut LoopState,
 ) -> Cursor {
-    instr(pc, Stack::new(stack, stack_len), state)
+    let InstrFnRet { pc, stack_len } = instr(pc, Stack::new(stack, stack_len), state);
+    (pc, stack_len)
 }
 
 #[inline(always)]
@@ -51,6 +56,6 @@ extern_table! {
         state: &mut InterpreterState<'_, '_, T>,
     ) -> InstrFnRet {
         let (pc, ()) = super::dispatch_inner::<T, C, M, ()>(pc, stack.as_mut(), (), state, OP);
-        (pc, stack.len)
+        InstrFnRet { pc, stack_len: stack.len }
     }
 }

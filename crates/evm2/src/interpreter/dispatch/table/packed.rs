@@ -13,7 +13,11 @@ pub(super) type LoopState = RemainingGas;
 pub(super) type Cursor = PackedPc;
 
 /// Packed instruction return value.
-pub(crate) type InstrFnRet = (PackedPc, RemainingGas);
+#[repr(C)]
+pub(crate) struct InstrFnRet {
+    pc: PackedPc,
+    gas: RemainingGas,
+}
 
 /// Packed instruction function pointer.
 pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
@@ -33,9 +37,9 @@ pub(super) fn dispatch_loop_call<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     remaining_gas: &mut LoopState,
 ) -> Cursor {
-    let (cursor, gas) = instr(cursor, stack, *remaining_gas, state);
+    let InstrFnRet { pc, gas } = instr(cursor, stack, *remaining_gas, state);
     *remaining_gas = gas;
-    cursor
+    pc
 }
 
 #[inline(always)]
@@ -112,9 +116,9 @@ extern_table! {
                 OP,
             );
         if next_pc.as_ptr().is_null() {
-            return (PackedPc(stack.len), remaining_gas);
+            return InstrFnRet { pc: PackedPc(stack.len), gas: remaining_gas };
         }
-        (packed.update(pc, next_pc, stack_len, stack.len), remaining_gas)
+        InstrFnRet { pc: packed.update(pc, next_pc, stack_len, stack.len), gas: remaining_gas }
     }
 }
 
