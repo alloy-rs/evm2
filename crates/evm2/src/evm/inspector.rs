@@ -805,6 +805,8 @@ mod tests {
         stop_in_step_end: Option<u8>,
         /// Stops every frame before it runs.
         stop_on_init: bool,
+        /// Answers the calls of child messages in the `call` hook, so no child frame runs.
+        answer_calls: Option<MessageResult<BaseEvmTypes>>,
     }
 
     impl ConfigInspector {
@@ -815,6 +817,12 @@ mod tests {
         /// Uses `after` instead of `before` once a child message starts.
         fn switching_to(mut self, after: OpcodeSet) -> Self {
             self.after = Some(after);
+            self
+        }
+
+        /// Answers the calls of child messages with `result` in the `call` hook.
+        fn answering_calls(mut self, result: MessageResult<BaseEvmTypes>) -> Self {
+            self.answer_calls = Some(result);
             self
         }
     }
@@ -863,6 +871,13 @@ mod tests {
             }
             // Like a cheatcode that changes what its caller's inspector wants to see.
             self.switched |= message.depth > 0;
+            if message.depth > 0
+                && let Some(answer) = &self.answer_calls
+            {
+                let mut result = answer.clone();
+                result.gas.set_remaining(message.gas_limit);
+                return Some(result);
+            }
             None
         }
 
@@ -1230,6 +1245,56 @@ mod tests {
         assert_eq!(inspector.creates, 1);
         assert_eq!(inspector.logs, expected_logs);
         assert_eq!(inspector.logs.len(), 1);
+    }
+
+    #[test]
+    fn answered_call_can_change_the_parent_steps() {
+        let mut code = call_code(Address::from([0x66; 20]));
+        code.extend([op::CALL, op::GAS, op::POP, op::STOP]);
+        let answer = MessageResultExt {
+            stop: InstrStop::Return,
+            output: Bytes::from_static(&[0xaa]),
+            ..Default::default()
+        };
+        let run = |inspector: ConfigInspector| {
+            run_evm_with_inspector(
+                code.clone(),
+                &MessageExt::default(),
+                100_000,
+                inspector.answering_calls(answer.clone()),
+            )
+        };
+        let (expected, full, _) = run(ConfigInspector::new(OpcodeSet::ALL));
+        // The hook answers the call, so every step belongs to the caller.
+        assert_eq!(full.calls, 2);
+        let call = full.steps.iter().position(|record| record.0 == op::CALL).unwrap();
+        let end = full.steps.len();
+
+        for (before, after, range, kept) in [
+            (OpcodeSet::EMPTY, OpcodeSet::ALL, call + 1..end, OpcodeSet::ALL),
+            (
+                OpcodeSet::EMPTY,
+                opcode_set([op::GAS, op::STOP]),
+                call + 1..end,
+                opcode_set([op::GAS, op::STOP]),
+            ),
+            (OpcodeSet::ALL, OpcodeSet::EMPTY, 0..call + 1, OpcodeSet::ALL),
+            (
+                opcode_set([op::CALL]),
+                opcode_set([op::POP]),
+                call..end,
+                opcode_set([op::CALL, op::POP]),
+            ),
+        ] {
+            let (result, inspector, _) = run(ConfigInspector::new(before).switching_to(after));
+            assert_eq!(result, expected, "{before:?} {after:?}");
+            let keep = |records: &[(u8, u64, Vec<Word>)]| {
+                let records = records[range.clone()].iter();
+                records.filter(|record| kept.contains(record.0)).cloned().collect::<Vec<_>>()
+            };
+            assert_eq!(inspector.steps, keep(&full.steps), "{before:?} {after:?}");
+            assert_eq!(inspector.step_ends, keep(&full.step_ends), "{before:?} {after:?}");
+        }
     }
 
     #[test]
