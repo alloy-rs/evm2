@@ -485,7 +485,7 @@ impl<'a> StackMut<'a> {
     /// Panics if `n` is zero.
     #[inline(always)]
     pub fn swap(&mut self, n: usize) -> Result {
-        self.exchange(0, n)
+        self.exchange(n, 0)
     }
 
     /// Exchanges the `n`th and `m`th words below the top.

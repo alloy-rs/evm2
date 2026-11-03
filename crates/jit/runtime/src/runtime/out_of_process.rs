@@ -571,10 +571,10 @@ enum HelperResponse {
 
 #[derive(Clone, Copy, Default, SchemaWrite, SchemaRead)]
 struct HelperTimings {
-    parse: u64,
-    translate: u64,
-    optimize: u64,
-    codegen: u64,
+    parse_ns: u64,
+    translate_ns: u64,
+    optimize_ns: u64,
+    codegen_ns: u64,
 }
 
 fn write_init<W: Write + ?Sized>(w: &mut BufWriter<W>, init: &HelperInit) -> std::io::Result<()> {
@@ -638,10 +638,10 @@ fn read_helper_response<R: Read + ?Sized>(
 impl From<CompileTimings> for HelperTimings {
     fn from(timings: CompileTimings) -> Self {
         Self {
-            parse: duration_to_nanos(timings.parse),
-            translate: duration_to_nanos(timings.translate),
-            optimize: duration_to_nanos(timings.optimize),
-            codegen: duration_to_nanos(timings.codegen),
+            parse_ns: duration_to_nanos(timings.parse),
+            translate_ns: duration_to_nanos(timings.translate),
+            optimize_ns: duration_to_nanos(timings.optimize),
+            codegen_ns: duration_to_nanos(timings.codegen),
         }
     }
 }
@@ -649,10 +649,10 @@ impl From<CompileTimings> for HelperTimings {
 impl From<HelperTimings> for CompileTimings {
     fn from(timings: HelperTimings) -> Self {
         Self {
-            parse: Duration::from_nanos(timings.parse),
-            translate: Duration::from_nanos(timings.translate),
-            optimize: Duration::from_nanos(timings.optimize),
-            codegen: Duration::from_nanos(timings.codegen),
+            parse: Duration::from_nanos(timings.parse_ns),
+            translate: Duration::from_nanos(timings.translate_ns),
+            optimize: Duration::from_nanos(timings.optimize_ns),
+            codegen: Duration::from_nanos(timings.codegen_ns),
         }
     }
 }

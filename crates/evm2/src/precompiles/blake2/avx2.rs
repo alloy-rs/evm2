@@ -91,10 +91,10 @@ unsafe fn g1(a: &mut __m256i, b: &mut __m256i, c: &mut __m256i, d: &mut __m256i,
     unsafe {
         *a = add(*a, *m);
         *a = add(*a, *b);
-        *d = xor(*d, *a);
+        *d = xor(*a, *d);
         *d = rot32(*d);
         *c = add(*c, *d);
-        *b = xor(*b, *c);
+        *b = xor(*c, *b);
         *b = rot24(*b);
     }
 }
@@ -104,10 +104,10 @@ unsafe fn g2(a: &mut __m256i, b: &mut __m256i, c: &mut __m256i, d: &mut __m256i,
     unsafe {
         *a = add(*a, *m);
         *a = add(*a, *b);
-        *d = xor(*d, *a);
+        *d = xor(*a, *d);
         *d = rot16(*d);
         *c = add(*c, *d);
-        *b = xor(*b, *c);
+        *b = xor(*c, *b);
         *b = rot63(*b);
     }
 }
@@ -422,9 +422,9 @@ pub(super) unsafe fn compress(
         }
 
         a = xor(a, c);
-        b = xor(b, d);
+        b = xor(d, b);
         a = xor(a, iv0);
-        b = xor(b, iv1);
+        b = xor(iv1, b);
 
         storeu(a, words_low);
         storeu(b, words_high);
