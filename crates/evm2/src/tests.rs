@@ -7,7 +7,7 @@ use crate::{
         eip7702::{AuthRefunds, Eip7702Authorization, RuntimeAuthCharges, apply_auth_list},
         ethereum_tx_registry, prepare_initial_frame,
     },
-    evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
+    evm::{AccountInfo, InMemoryDB},
     interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
     test_utils::{legacy_bytecode, push, push_address, push_all},
@@ -15,7 +15,10 @@ use crate::{
 };
 use alloc::{vec, vec::Vec};
 use alloy_consensus::{TxEip7702, TxLegacy, transaction::Recovered};
-use alloy_eips::eip7702::{Authorization, SignedAuthorization};
+use alloy_eips::{
+    eip4788::SYSTEM_ADDRESS,
+    eip7702::{Authorization, SignedAuthorization},
+};
 use alloy_primitives::{Address, Log, TxKind, U256, hex};
 
 type TestEvm = Evm<'static, BaseEvmTypes>;

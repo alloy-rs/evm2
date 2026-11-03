@@ -20,12 +20,10 @@ use crate::{
     version::{EvmFeatures, GasId},
 };
 use alloc::vec::Vec;
-use alloy_primitives::{Address, Bytes, TxKind, U256, address};
+use alloy_eips::eip4788::SYSTEM_ADDRESS;
+use alloy_primitives::{Address, Bytes, TxKind, U256};
 #[cfg(feature = "async")]
 use core::future::Future;
-
-/// Caller address used by execution-layer system calls.
-pub const SYSTEM_ADDRESS: Address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
 
 /// Default gas limit used by execution-layer system calls.
 pub const SYSTEM_CALL_GAS_LIMIT: u64 = 30_000_000;
@@ -35,28 +33,6 @@ pub const SYSTEM_CALL_GAS_LIMIT: u64 = 30_000_000;
 /// EIP-8037 (Amsterdam) sizes the system-call state-gas reservoir as this many `SSTORE` new-slot
 /// state charges; state gas beyond the reservoir spills into the execution gas budget.
 pub const SYSTEM_MAX_SSTORES_PER_CALL: u64 = 16;
-
-/// EIP-4788 beacon roots system contract address.
-pub const BEACON_ROOTS_ADDRESS: Address = address!("0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02");
-
-/// EIP-2935 historical block hashes system contract address.
-pub const HISTORY_STORAGE_ADDRESS: Address = address!("0x0000F90827F1C53a10cb7A02335B175320002935");
-
-/// EIP-7002 withdrawal request system contract address.
-pub const WITHDRAWAL_REQUEST_ADDRESS: Address =
-    address!("0x00000961Ef480Eb55e80D19ad83579A64c007002");
-
-/// EIP-7251 consolidation request system contract address.
-pub const CONSOLIDATION_REQUEST_ADDRESS: Address =
-    address!("0x0000BBdDc7CE488642fb579F8B00f3a590007251");
-
-/// EIP-8282 builder deposit request system contract address (request type `0x03`).
-pub const BUILDER_DEPOSIT_REQUEST_ADDRESS: Address =
-    address!("0x0000BFF46984E3725691FA540A8C7589300D8282");
-
-/// EIP-8282 builder exit request system contract address (request type `0x04`).
-pub const BUILDER_EXIT_REQUEST_ADDRESS: Address =
-    address!("0x000064D678505AD48F8CCB093BC65613800E8282");
 
 /// System transaction input for [`Evm::system_call`].
 #[derive(Clone, Debug, PartialEq, Eq)]

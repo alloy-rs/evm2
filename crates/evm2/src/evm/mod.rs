@@ -132,7 +132,7 @@ use crate::{
 };
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
-use alloy_eips::eip2718::Typed2718;
+use alloy_eips::{eip2718::Typed2718, eip4788::SYSTEM_ADDRESS};
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 use core::ptr::NonNull;
 #[cfg(feature = "async")]
@@ -148,11 +148,7 @@ pub mod inspector;
 pub mod precompile;
 pub mod registry;
 mod system;
-pub use system::{
-    BEACON_ROOTS_ADDRESS, BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS,
-    CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS, SYSTEM_CALL_GAS_LIMIT,
-    SYSTEM_MAX_SSTORES_PER_CALL, SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
-};
+pub use system::{SYSTEM_CALL_GAS_LIMIT, SYSTEM_MAX_SSTORES_PER_CALL, SystemTx};
 
 mod any;
 pub use any::NonStaticAny;
