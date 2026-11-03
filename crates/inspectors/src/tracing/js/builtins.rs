@@ -227,7 +227,7 @@ pub(crate) fn address_to_uint8_array(
     addr: Address,
     context: &mut Context,
 ) -> JsResult<JsUint8Array> {
-    JsUint8Array::from_iter(addr, context)
+    to_uint8_array(addr, context)
 }
 
 /// Create a new [JsUint8Array] array buffer from the address' bytes.

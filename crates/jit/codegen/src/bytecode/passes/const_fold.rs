@@ -495,7 +495,7 @@ mod tests {
 
         let bytecode = analyze_asm(&src);
         // The folded result is operand 1 (second from top) at MSTORE.
-        bytecode.const_operand(Inst::from_usize(mstore_inst), 1)
+        bytecode.const_operand(Inst::new(mstore_inst), 1)
     }
 
     #[test]
@@ -808,7 +808,7 @@ mod tests {
         assert_eq!(bytecode.compiler_gas_used, 0);
         // inst layout: PUSH(0), PUSH(1), ADD(2), PUSH0(3), MSTORE(4), STOP(5).
         // The ADD result should NOT be folded — operand 1 at MSTORE should be None.
-        assert!(bytecode.const_operand(Inst::from_usize(4), 1).is_none());
+        assert!(bytecode.const_operand(Inst::new(4), 1).is_none());
     }
 
     /// Verify that a very large gas limit allows all folding to proceed.
@@ -824,7 +824,7 @@ mod tests {
 
         assert!(bytecode.compiler_gas_used > 0);
         // inst layout: PUSH(0), PUSH(1), ADD(2), PUSH0(3), MSTORE(4), STOP(5).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(4), 1), Some(U256::from(5)));
+        assert_eq!(bytecode.const_operand(Inst::new(4), 1), Some(U256::from(5)));
     }
 
     /// Exhaustively verify that `const_fold_gas` and `try_const_fold` agree on which opcodes

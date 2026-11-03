@@ -364,7 +364,7 @@ fn blocking_mode_compiles_bytecode_over_max_len() {
 
 #[test]
 fn lookup_disabled() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: false, ..Default::default() });
+    let tb = TestBackend::new(RuntimeConfig::default());
 
     let req = TestBackend::req_cancun(&[0x00]);
     let decision = tb.lookup(req);
@@ -389,7 +389,7 @@ fn lookup_miss_when_enabled() {
 
 #[test]
 fn set_enabled_toggle() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: false, ..Default::default() });
+    let tb = TestBackend::new(RuntimeConfig::default());
     let req = TestBackend::req_cancun(&[0x00]);
 
     assert!(matches!(

@@ -89,7 +89,7 @@ pub(crate) struct GasSectionAnalysis {
 
 impl Default for GasSectionAnalysis {
     fn default() -> Self {
-        Self { gas_cost: 0, start_inst: Inst::from_usize(0), gas_insts: SmallVec::new() }
+        Self { gas_cost: 0, start_inst: Inst::new(0), gas_insts: SmallVec::new() }
     }
 }
 
@@ -162,7 +162,7 @@ pub(crate) struct StackSectionAnalysis {
 
 impl Default for StackSectionAnalysis {
     fn default() -> Self {
-        Self { inputs: 0, diff: 0, max_growth: 0, start_inst: Inst::from_usize(0) }
+        Self { inputs: 0, diff: 0, max_growth: 0, start_inst: Inst::new(0) }
     }
 }
 
@@ -341,7 +341,7 @@ mod tests {
     /// Returns the gas section cost for the first non-dead instruction (the section head).
     fn section_gas(src: &str) -> u32 {
         let bytecode = analyze_asm(src);
-        bytecode.inst(Inst::from_usize(0)).gas_section.gas_cost
+        bytecode.inst(Inst::new(0)).gas_section.gas_cost
     }
 
     /// EXP with an asymmetric base/exponent: base is 1 byte (2), exponent is 2 bytes (256).
@@ -401,10 +401,10 @@ mod tests {
             ],
             SpecId::CANCUN,
         );
-        let head = bytecode.inst(Inst::from_usize(0));
-        let gas = bytecode.inst(Inst::from_usize(7));
-        let call = bytecode.inst(Inst::from_usize(8));
-        let after_call = bytecode.inst(Inst::from_usize(9));
+        let head = bytecode.inst(Inst::new(0));
+        let gas = bytecode.inst(Inst::new(7));
+        let call = bytecode.inst(Inst::new(8));
+        let after_call = bytecode.inst(Inst::new(9));
         // `GAS` does not end the section: 4 * PUSH1 + CALLVALUE + PUSH1 + CALLDATALOAD + GAS +
         // CALL.
         assert_eq!(head.gas_section.gas_cost, 4 * 3 + 2 + 3 + 3 + 2 + 100);
@@ -422,7 +422,7 @@ mod tests {
             "PUSH0 GAS PUSH 256 PUSH 2 EXP GAS POP SLOAD PUSH0 STOP",
             SpecId::CANCUN,
         );
-        let head = bytecode.inst(Inst::from_usize(0));
+        let head = bytecode.inst(Inst::new(0));
         assert_eq!(head.gas_section.gas_cost, 2 + 2 + 3 + 3 + 110 + 2 + 2 + 100);
         let owed = bytecode
             .iter_insts()
@@ -468,7 +468,7 @@ mod tests {
     fn disabled_opcode_does_not_poison_section() {
         // CALLDATASIZE(0→1) ; TSTORE(2→0, disabled before Cancun)
         let bytecode = analyze_asm_spec("CALLDATASIZE TSTORE", SpecId::SHANGHAI);
-        let head = bytecode.inst(Inst::from_usize(0));
+        let head = bytecode.inst(Inst::new(0));
         assert_eq!(
             head.stack_section.inputs, 0,
             "CALLDATASIZE needs 0 inputs; disabled TSTORE must not inflate the section"
@@ -485,12 +485,12 @@ mod tests {
             vec![op::PUSH0, op::DUPN, 0x5b, op::PUSH0, op::SSTORE, op::STOP],
             SpecId::AMSTERDAM,
         );
-        let dupn = bytecode.inst(Inst::from_usize(1));
+        let dupn = bytecode.inst(Inst::new(1));
         assert!(dupn.is_diverging(), "DUPN with invalid immediate must diverge");
         assert_eq!(dupn.stack_io(), (0, 0), "DUPN with invalid immediate must have zero stack I/O");
 
         // The instructions after it are dead, so they add no stack inputs or gas to a section.
-        let after = bytecode.inst(Inst::from_usize(3));
+        let after = bytecode.inst(Inst::new(3));
         assert!(after.is_dead_code());
     }
 }

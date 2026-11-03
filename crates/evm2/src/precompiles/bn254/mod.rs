@@ -284,7 +284,7 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        let outcome = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // Zero sum test
@@ -303,7 +303,7 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        let outcome = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // Out of gas test
@@ -316,7 +316,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(499));
+        let res = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(499));
 
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
 
@@ -329,7 +329,7 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        let outcome = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // Point not on curve fail
@@ -342,19 +342,19 @@ mod tests {
         )
         .unwrap();
 
-        let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
+        let res = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
         assert_matches!(
             res,
             Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
         );
 
         // Short input is right-padded. This makes the first field element non-canonical.
-        let res = run_add(&[0x40], BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
+        let res = add::run(&[0x40], BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
         // A coordinate equal to the field modulus is non-canonical.
         let input = hex!("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47");
-        let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
+        let res = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
         // The largest canonical coordinate, p - 1, is accepted: (p - 1, sqrt(2)) is on the curve.
@@ -365,7 +365,7 @@ mod tests {
         input[32..64].copy_from_slice(&hex!(
             "279d7bc4e184e3a57f5fa684690c6df6b484a7f1daa1de608d266a2a4be6593f"
         ));
-        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        let outcome = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
         assert_eq!(outcome.bytes(), &input[..64]);
 
         let input = hex::decode(
@@ -383,7 +383,7 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        let outcome = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
         assert_eq!(outcome.bytes(), expected);
     }
 
@@ -404,7 +404,7 @@ mod tests {
         .unwrap();
 
         let outcome =
-            run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
+            mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // Out of gas test
@@ -416,7 +416,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(39_999));
+        let res = mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(39_999));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
 
         // Zero multiplication test
@@ -435,7 +435,7 @@ mod tests {
         .unwrap();
 
         let outcome =
-            run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
+            mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // No input test
@@ -448,7 +448,7 @@ mod tests {
         .unwrap();
 
         let outcome =
-            run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
+            mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // Point not on curve fail
@@ -460,14 +460,14 @@ mod tests {
         )
         .unwrap();
 
-        let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
+        let res = mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
         assert_matches!(
             res,
             Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
         );
 
         // Short input is right-padded. This makes the point x-coordinate non-canonical.
-        let res = run_mul(&[0x40], BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
+        let res = mul::run(&[0x40], BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
         let input = hex::decode(
@@ -485,7 +485,7 @@ mod tests {
         .unwrap();
 
         let outcome =
-            run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
+            mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
         assert_eq!(outcome.bytes(), expected);
     }
 
@@ -511,7 +511,7 @@ mod tests {
             hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
                 .unwrap();
 
-        let outcome = run_pair(
+        let outcome = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -538,7 +538,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = run_pair(
+        let res = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -552,7 +552,7 @@ mod tests {
             hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
                 .unwrap();
 
-        let outcome = run_pair(
+        let outcome = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -573,7 +573,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = run_pair(
+        let res = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -596,7 +596,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = run_pair(
+        let res = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -623,7 +623,7 @@ mod tests {
         let pair_infinity_with = |g2: &str| {
             let mut input = [0u8; PAIR_ELEMENT_LEN];
             hex::decode_to_slice(g2, &mut input[G1_LEN..]).unwrap();
-            run_pair(
+            pair::run(
                 &input,
                 BYZANTIUM_PAIR_PER_POINT,
                 BYZANTIUM_PAIR_BASE,
@@ -641,7 +641,7 @@ mod tests {
 
         let mut input = [0u8; PAIR_ELEMENT_LEN];
         input[0] = 0x40;
-        let res = run_pair(
+        let res = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -659,7 +659,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = run_pair(
+        let res = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -683,7 +683,7 @@ mod tests {
             hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
                 .unwrap();
 
-        let outcome = run_pair(
+        let outcome = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -705,7 +705,7 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = run_pair(
+        let outcome = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,

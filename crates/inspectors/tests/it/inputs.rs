@@ -337,7 +337,7 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
             assert_eq!(transfers.transfers().len(), 1);
             assert_eq!(transfers.transfers()[0].from, target);
             assert_eq!(transfers.transfers()[0].to, child);
-            let mut opcodes = OpcodeGasInspector::default();
+            let mut opcodes = OpcodeGasInspector::new();
             run(&mut opcodes);
             assert!(
                 opcodes

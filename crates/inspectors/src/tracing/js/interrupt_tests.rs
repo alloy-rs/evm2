@@ -19,7 +19,7 @@ const TARGET: Address = Address::with_last_byte(0x42);
 
 #[test]
 fn unset_interrupt_preserves_results() {
-    for interrupt in [None, Some(JsInspectorInterrupt::default())] {
+    for interrupt in [None, Some(JsInspectorInterrupt::new())] {
         let mut inspector = JsInspector::new(TRACER.into(), serde_json::Value::Null).unwrap();
         if let Some(interrupt) = interrupt {
             inspector = inspector.with_interrupt(interrupt);

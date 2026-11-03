@@ -413,7 +413,7 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(0)).flags.contains(InstFlags::NOOP),
             "PUSH should be skipped (dead store)"
         );
     }
@@ -431,7 +431,7 @@ mod tests {
         );
         for (i, name) in [(0, "PUSH 3"), (1, "PUSH 4"), (2, "ADD")] {
             assert!(
-                bytecode.inst(Inst::from_usize(i)).flags.contains(InstFlags::NOOP),
+                bytecode.inst(Inst::new(i)).flags.contains(InstFlags::NOOP),
                 "{name} should be skipped"
             );
         }
@@ -451,11 +451,11 @@ mod tests {
         );
         // PUSH 1 feeds MSTORE's value input; known constant, so codegen pre-writes it.
         assert!(
-            bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(0)).flags.contains(InstFlags::NOOP),
             "PUSH 1 should be skipped (const input)"
         );
         assert!(
-            bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "PUSH 2 should be skipped"
         );
     }
@@ -477,11 +477,11 @@ mod tests {
         );
         // A is swapped to TOS then popped → dead. B is consumed by RET_WORD → live.
         assert!(
-            bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "CALLDATALOAD A should be skipped (dead after swap+pop)"
         );
         assert!(
-            !bytecode.inst(Inst::from_usize(3)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(3)).flags.contains(InstFlags::NOOP),
             "CALLDATALOAD B should NOT be skipped (consumed by RET_WORD)"
         );
     }
@@ -500,7 +500,7 @@ mod tests {
         );
         for i in 0..4 {
             assert!(
-                bytecode.inst(Inst::from_usize(i)).flags.contains(InstFlags::NOOP),
+                bytecode.inst(Inst::new(i)).flags.contains(InstFlags::NOOP),
                 "inst at {i} should be skipped (exit stack dead)"
             );
         }
@@ -521,7 +521,7 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(0)).flags.contains(InstFlags::NOOP),
             "PUSH should be skipped (const input)"
         );
     }
@@ -540,7 +540,7 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(0)).flags.contains(InstFlags::NOOP),
             "PUSH should be skipped when both DUP copy and source are dead"
         );
     }
@@ -556,7 +556,7 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(0)).flags.contains(InstFlags::NOOP),
             "ADDRESS should be skipped when dead"
         );
     }
@@ -571,7 +571,7 @@ mod tests {
             STOP
         ",
         );
-        assert!(!bytecode.inst(Inst::from_usize(2)).flags.contains(InstFlags::NOOP));
+        assert!(!bytecode.inst(Inst::new(2)).flags.contains(InstFlags::NOOP));
     }
 
     #[test]
@@ -580,7 +580,7 @@ mod tests {
         // CDL at bottom, 17 × PUSH0 above → SWAP 17 swaps TOS with CDL.
         let bytecode = with_dynamic_and_prefix(17, "SWAP 17 RET_WORD");
         assert!(
-            !bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "CALLDATALOAD should NOT be skipped (consumed via SWAPN + MSTORE)"
         );
     }
@@ -591,7 +591,7 @@ mod tests {
         // CDL at bottom, 16 × PUSH0 above → DUP 17 copies CDL to TOS.
         let bytecode = with_dynamic_and_prefix(16, "DUP 17 RET_WORD");
         assert!(
-            !bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "CALLDATALOAD should NOT be skipped"
         );
     }
@@ -602,11 +602,11 @@ mod tests {
         // remains on the stack and feeds RET_WORD.
         let bytecode = analyze_asm("PUSH0 CALLDATALOAD DUP1 POP RET_WORD");
         assert!(
-            bytecode.inst(Inst::from_usize(2)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(2)).flags.contains(InstFlags::NOOP),
             "DUP1 should be skipped (copy is dead)"
         );
         assert!(
-            !bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "CALLDATALOAD should NOT be skipped"
         );
     }
@@ -622,7 +622,7 @@ mod tests {
             SpecId::AMSTERDAM,
         );
         assert!(
-            !bytecode.inst(Inst::from_usize(2)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(2)).flags.contains(InstFlags::NOOP),
             "CALLDATALOAD should NOT be skipped (consumed via EXCHANGE + SWAP + MSTORE)"
         );
     }
@@ -639,8 +639,8 @@ mod tests {
             STOP
         ",
         );
-        assert!(bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP));
-        assert!(bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP));
+        assert!(bytecode.inst(Inst::new(0)).flags.contains(InstFlags::NOOP));
+        assert!(bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP));
     }
 
     #[test]
@@ -658,7 +658,7 @@ mod tests {
         );
         for (i, name) in [(0, "PUSH 1"), (1, "PUSH 2"), (2, "SWAP1")] {
             assert!(
-                bytecode.inst(Inst::from_usize(i)).flags.contains(InstFlags::NOOP),
+                bytecode.inst(Inst::new(i)).flags.contains(InstFlags::NOOP),
                 "{name} should be skipped"
             );
         }
@@ -691,7 +691,7 @@ mod tests {
             .enumerate()
         {
             assert_eq!(
-                !bytecode.inst(Inst::from_usize(i)).flags.contains(InstFlags::NOOP),
+                !bytecode.inst(Inst::new(i)).flags.contains(InstFlags::NOOP),
                 alive,
                 "inst {i}"
             );
@@ -708,7 +708,7 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(0)).flags.contains(InstFlags::NOOP),
             "RETURNDATASIZE should be skipped when dead"
         );
     }
@@ -725,7 +725,7 @@ mod tests {
         ",
         );
         assert!(
-            !bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "RETURNDATASIZE should NOT be skipped when live"
         );
     }
@@ -742,11 +742,11 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(0)).flags.contains(InstFlags::NOOP),
             "PUSH0 should be skipped"
         );
         assert!(
-            bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "BLOBHASH should be skipped when dead"
         );
     }
@@ -764,7 +764,7 @@ mod tests {
         ",
         );
         assert!(
-            !bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "BLOBHASH should NOT be skipped when live"
         );
     }
@@ -776,12 +776,12 @@ mod tests {
         let bytecode = with_prefix(17, &format!("DUP 17 {pops} STOP"));
         for i in 0..17 {
             assert!(
-                bytecode.inst(Inst::from_usize(i)).flags.contains(InstFlags::NOOP),
+                bytecode.inst(Inst::new(i)).flags.contains(InstFlags::NOOP),
                 "PUSH0 at {i} should be skipped"
             );
         }
         assert!(
-            bytecode.inst(Inst::from_usize(17)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(17)).flags.contains(InstFlags::NOOP),
             "DUPN should be skipped"
         );
     }
@@ -796,7 +796,7 @@ mod tests {
             SpecId::AMSTERDAM,
         );
         assert!(
-            !bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "DUPN with invalid immediate should NOT be skipped"
         );
     }
@@ -808,7 +808,7 @@ mod tests {
         // perspective the immediate is valid and the instruction is eliminable.
         let bytecode = with_prefix(1, "DUP 17 POP POP STOP");
         assert!(
-            bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "DUPN with valid immediate should be skipped when dead"
         );
     }
@@ -820,12 +820,12 @@ mod tests {
         let bytecode = with_prefix(18, &format!("SWAP 17 {pops} STOP"));
         for i in 0..18 {
             assert!(
-                bytecode.inst(Inst::from_usize(i)).flags.contains(InstFlags::NOOP),
+                bytecode.inst(Inst::new(i)).flags.contains(InstFlags::NOOP),
                 "PUSH0 at {i} should be skipped"
             );
         }
         assert!(
-            bytecode.inst(Inst::from_usize(18)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(18)).flags.contains(InstFlags::NOOP),
             "SWAPN should be skipped"
         );
     }
@@ -836,12 +836,12 @@ mod tests {
         let bytecode = with_prefix(3, "EXCHANGE 1 2 POP POP POP STOP");
         for i in 0..3 {
             assert!(
-                bytecode.inst(Inst::from_usize(i)).flags.contains(InstFlags::NOOP),
+                bytecode.inst(Inst::new(i)).flags.contains(InstFlags::NOOP),
                 "PUSH0 at {i} should be skipped"
             );
         }
         assert!(
-            bytecode.inst(Inst::from_usize(3)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(3)).flags.contains(InstFlags::NOOP),
             "EXCHANGE should be skipped"
         );
     }
@@ -880,10 +880,10 @@ mod tests {
         ",
         );
         for dead in [0, 1, 2, 3] {
-            assert!(bytecode.inst(Inst::from_usize(dead)).flags.contains(InstFlags::NOOP));
+            assert!(bytecode.inst(Inst::new(dead)).flags.contains(InstFlags::NOOP));
         }
         for not_dead in [4, 5] {
-            assert!(!bytecode.inst(Inst::from_usize(not_dead)).flags.contains(InstFlags::NOOP));
+            assert!(!bytecode.inst(Inst::new(not_dead)).flags.contains(InstFlags::NOOP));
         }
     }
 
@@ -905,7 +905,7 @@ mod tests {
         );
         for (i, name) in [(0, "PUSH 2"), (1, "PUSH 3"), (2, "ADD"), (3, "PUSH 4")] {
             assert!(
-                bytecode.inst(Inst::from_usize(i)).flags.contains(InstFlags::NOOP),
+                bytecode.inst(Inst::new(i)).flags.contains(InstFlags::NOOP),
                 "{name} should be skipped"
             );
         }
@@ -926,11 +926,11 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(2)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(2)).flags.contains(InstFlags::NOOP),
             "PUSH 1 (addend) should be skipped (const input)"
         );
         assert!(
-            !bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "CALLDATALOAD should NOT be skipped"
         );
     }
@@ -950,11 +950,11 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(2)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(2)).flags.contains(InstFlags::NOOP),
             "PUSH0 (addend) should be skipped (const input)"
         );
         assert!(
-            !bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "CALLDATALOAD should NOT be skipped"
         );
     }
@@ -974,11 +974,11 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(0)).flags.contains(InstFlags::NOOP),
             "PUSH0 (deeper const input) should be skipped"
         );
         assert!(
-            !bytecode.inst(Inst::from_usize(2)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(2)).flags.contains(InstFlags::NOOP),
             "CALLDATALOAD should NOT be skipped"
         );
     }
@@ -1000,11 +1000,11 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(2)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(2)).flags.contains(InstFlags::NOOP),
             "PUSH 2 (divisor) should be skipped (builtin const input)"
         );
         assert!(
-            !bytecode.inst(Inst::from_usize(1)).flags.contains(InstFlags::NOOP),
+            !bytecode.inst(Inst::new(1)).flags.contains(InstFlags::NOOP),
             "CALLDATALOAD should NOT be skipped"
         );
     }
@@ -1023,7 +1023,7 @@ mod tests {
         ",
         );
         assert!(
-            bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
+            bytecode.inst(Inst::new(0)).flags.contains(InstFlags::NOOP),
             "PUSH 0 should be skipped (const input)"
         );
     }

@@ -1340,7 +1340,7 @@ impl LLJIT {
 
     /// Creates a new ORC JIT, auto-detecting the host target.
     pub fn new() -> Result<Self, LLVMString> {
-        LLJITBuilder::new().build()
+        Self::builder().build()
     }
 
     /// Wraps a raw pointer.

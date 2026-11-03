@@ -1231,7 +1231,7 @@ mod tests {
 
     #[test]
     fn test_multi_reverts_with_delete() {
-        let mut state = BundleBuilder::new(0..=3)
+        let mut state = BundleState::builder(0..=3)
             .revert_address(0, account1())
             .revert_account_info(2, account1(), Some(Some(AccountInfo::default())))
             .revert_account_info(3, account1(), Some(None))
@@ -1349,7 +1349,7 @@ mod tests {
 
     #[test]
     fn test_getters() {
-        let mut builder = BundleBuilder::new(0..=3);
+        let mut builder = BundleState::builder(0..=3);
 
         // Test get_states and get_states_mut
         assert!(builder.get_states().is_empty());
