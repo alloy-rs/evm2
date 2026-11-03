@@ -39,10 +39,14 @@ use syn::{
 ///   checks.
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
-/// - `#[instruction(needs_pc)]`: Before the instruction runs, the dispatch writes the current pc
-///   and stack length to the interpreter, as `dynamic_gas` does for gas. Set it on an instruction
-///   that runs a child message, or otherwise hands the interpreter to host code such as an
-///   inspector hook, so that the host sees the instruction's pc, opcode and stack.
+/// - `#[instruction(hooked)]`: Marks an instruction that may run inspector hooks or host code that
+///   read the interpreter. Before the instruction runs, the dispatch stores the latest pc, stack
+///   length and gas into the interpreter, so `hooked` implies `dynamic_gas`. Set it on an
+///   instruction that runs a child message. The `call`, `call_end`, `create` and `create_end` hooks
+///   get the interpreter from inside such an instruction. `step` and `step_end` get the current
+///   state from the dispatch, and `initialize_interp` runs at frame start, so they need no flag. An
+///   instruction that only reaches `log` or `selfdestruct` needs none either, because those hooks
+///   get the host, which has no current frame. Flag it if a hook starts receiving the interpreter.
 /// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete EVM type
 ///   family instead of generating a generic implementation.
 /// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic EVM
@@ -144,7 +148,7 @@ impl Parse for InstructionAttr {
 struct InstructionAttrs {
     no_stack_preamble: bool,
     dynamic_gas: bool,
-    needs_pc: bool,
+    hooked: bool,
     evm_types: Option<Type>,
     evm_types_span: Option<proc_macro2::Span>,
     evm_types_bounds: Vec<Punctuated<TypeParamBound, Token![+]>>,
@@ -162,8 +166,9 @@ impl InstructionAttrs {
                 InstructionAttr::Flag(arg) if arg == "dynamic_gas" => {
                     attrs.dynamic_gas = true;
                 }
-                InstructionAttr::Flag(arg) if arg == "needs_pc" => {
-                    attrs.needs_pc = true;
+                InstructionAttr::Flag(arg) if arg == "hooked" => {
+                    attrs.hooked = true;
+                    attrs.dynamic_gas = true;
                 }
                 InstructionAttr::Flag(arg) => {
                     return Err(syn::Error::new_spanned(
@@ -344,9 +349,9 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
                 #flags.union(evm2::interpreter::private::InstructionFlags::DYNAMIC_GAS)
             };
         }
-        if instruction_attrs.needs_pc {
+        if instruction_attrs.hooked {
             flags = quote! {
-                #flags.union(evm2::interpreter::private::InstructionFlags::NEEDS_PC)
+                #flags.union(evm2::interpreter::private::InstructionFlags::HOOKED)
             };
         }
         flags

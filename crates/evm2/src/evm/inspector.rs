@@ -1109,7 +1109,7 @@ mod tests {
         };
     }
 
-    /// A call that does not set `needs_pc`, so a config reload would resume from a stale pc.
+    /// A call that is not `hooked`, so a config reload would resume from a stale pc.
     #[instruction(no_stack_preamble, dynamic_gas, EvmTypes = BaseEvmTypes)]
     fn unflagged_call(cx: _) -> Result {
         instr::call_with(
@@ -1181,8 +1181,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "an instruction that runs a message must set `needs_pc`")]
-    fn message_instruction_without_needs_pc_is_rejected() {
+    #[should_panic(expected = "an instruction that runs a message must be `hooked`")]
+    fn message_instruction_that_is_not_hooked_is_rejected() {
         run_custom_call::<UnflaggedCallConfig>(
             ConfigInspector::new(OpcodeSet::EMPTY),
             CUSTOM_CALL,

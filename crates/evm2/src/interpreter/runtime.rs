@@ -48,8 +48,8 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
-    /// Whether the dispatch wrote the pc and stack length before the running instruction.
-    pc_published: bool,
+    /// Whether the running instruction is `hooked`.
+    hooked_running: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
     #[derive_where(skip)]
@@ -115,7 +115,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             host: None,
             inspector: None,
             steps: OpcodeSet::EMPTY,
-            pc_published: false,
+            hooked_running: false,
             inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
@@ -726,7 +726,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline(never)]
     fn reload_if_config_changed(&mut self) {
-        assert!(self.0.pc_published, "an instruction that runs a message must set `needs_pc`");
+        assert!(self.0.hooked_running, "an instruction that runs a message must be `hooked`");
         if self.0.result.is_ok()
             && let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
@@ -736,10 +736,11 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         }
     }
 
-    /// Records whether the dispatch wrote the pc and stack length for the running instruction.
+    /// Records whether the running instruction is `hooked`, so that the dispatch stored the latest
+    /// state into the interpreter before it ran.
     #[inline]
-    pub(crate) const fn set_pc_published(&mut self, published: bool) {
-        self.0.pc_published = published;
+    pub(crate) const fn set_hooked_running(&mut self, running: bool) {
+        self.0.hooked_running = running;
     }
 
     #[inline]

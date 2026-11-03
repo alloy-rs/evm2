@@ -221,27 +221,27 @@ fn prepare_call<T: EvmTypesHost>(
     Ok(new_account_state_gas)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas, needs_pc)]
+#[instruction(no_stack_preamble, hooked)]
 pub fn call(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::Call)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas, needs_pc)]
+#[instruction(no_stack_preamble, hooked)]
 pub fn callcode(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::CallCode)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas, needs_pc)]
+#[instruction(no_stack_preamble, hooked)]
 pub fn delegatecall(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::DelegateCall)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas, needs_pc)]
+#[instruction(no_stack_preamble, hooked)]
 pub fn staticcall(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::StaticCall)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas, needs_pc)]
+#[instruction(no_stack_preamble, hooked)]
 pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx.gas, cx.state, IS_CREATE2)
 }
@@ -260,9 +260,9 @@ fn call_inner<T: EvmTypesHost>(
 ///
 /// This is the body of [`call`], [`callcode`], [`delegatecall`] and [`staticcall`], for custom
 /// call instructions that need extra behavior. Use it from an
-/// `#[instruction(no_stack_preamble, dynamic_gas, needs_pc)]` function with `stack`, `cx.gas` and
-/// `cx.state`. The instruction must set `needs_pc`, so that the hooks and the host see its pc,
-/// opcode and stack.
+/// `#[instruction(no_stack_preamble, hooked)]` function with `stack`, `cx.gas` and
+/// `cx.state`. The instruction must be `hooked`, so that the hooks and the host see its pc, opcode,
+/// stack and gas.
 ///
 /// `before` runs after every charge the opcode makes, the EIP-8037 new-account state gas
 /// included, and after the forwarded gas is taken from `gas`, right before the child message
@@ -1098,7 +1098,7 @@ mod tests {
 
     // Keeps `KEPT_GAS` of the forwarded gas in the caller and charges `AFTER_FEE` after a
     // successful child; a failed child fails the instruction.
-    #[instruction(no_stack_preamble, dynamic_gas, needs_pc)]
+    #[instruction(no_stack_preamble, hooked)]
     fn hooked_call(cx: _) -> Result {
         call_with(
             stack,
@@ -1116,7 +1116,7 @@ mod tests {
         )
     }
 
-    #[instruction(no_stack_preamble, dynamic_gas, needs_pc)]
+    #[instruction(no_stack_preamble, hooked)]
     fn hooked_create(cx: _) -> Result {
         create_with(
             stack,
