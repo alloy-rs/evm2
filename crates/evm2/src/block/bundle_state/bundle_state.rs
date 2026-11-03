@@ -871,11 +871,7 @@ mod tests {
 
         let transition = TransitionAccount {
             info: Some(acc1),
-            status: AccountStatus::InMemoryChange,
-            previous_info: None,
-            previous_status: AccountStatus::LoadedNotExisting,
-            storage: StorageWithOriginalValues::default(),
-            storage_was_destroyed: false,
+            ..TransitionAccount::new_empty_eip161(StorageWithOriginalValues::default())
         };
 
         // Apply first transition
@@ -1012,14 +1008,10 @@ mod tests {
         };
         let recreate = TransitionAccount {
             info: Some(info),
-            status: AccountStatus::InMemoryChange,
-            previous_info: None,
-            previous_status: AccountStatus::LoadedNotExisting,
-            storage: HashMap::from_iter([(
+            ..TransitionAccount::new_empty_eip161(HashMap::from_iter([(
                 slot2(),
                 StorageSlot::new_changed(U256::ZERO, U256::from(5)),
-            )]),
-            storage_was_destroyed: false,
+            )]))
         };
         let block_bundle = |transition| {
             let mut bundle = BundleState::default();
