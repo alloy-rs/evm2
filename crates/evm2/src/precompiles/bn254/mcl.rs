@@ -5,8 +5,8 @@
 //! these features, including under emulators that do not report ADX such as valgrind, mcl runs
 //! generic code that is slower but still faster than the arkworks backend.
 
-use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN};
-use crate::precompiles::{PrecompileHalt, bls12_381_const::SCALAR_LENGTH};
+use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
+use crate::precompiles::PrecompileHalt;
 use alloy_primitives::hex;
 use mcl_rust::{CurveType, Fp, Fp2, Fr, G1, G2, GT};
 use std::sync::{Once, OnceLock};
@@ -112,8 +112,7 @@ impl Bn254Ops for MclOps {
 
     #[inline]
     fn read_scalar(input: &[u8]) -> Self::Scalar {
-        let mut le_bytes =
-            *input.as_array::<SCALAR_LENGTH>().expect("input must be SCALAR_LENGTH bytes");
+        let mut le_bytes = *input.as_array::<SCALAR_LEN>().expect("input must be SCALAR_LEN bytes");
         le_bytes.reverse();
 
         let mut fr = Fr::zero();

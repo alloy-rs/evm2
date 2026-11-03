@@ -1,7 +1,7 @@
 //! BN128 precompile using Arkworks BLS12-381 implementation.
 
-use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN};
-use crate::precompiles::{PrecompileHalt, bls12_381_const::SCALAR_LENGTH};
+use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
+use crate::precompiles::PrecompileHalt;
 
 use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G1Projective, G2Affine};
 use ark_ec::{AffineRepr, CurveGroup, pairing::Pairing};
@@ -229,9 +229,9 @@ pub(super) fn read_g2_point(input: &[u8]) -> Result<G2Affine, PrecompileHalt> {
 ///
 /// # Panics
 ///
-/// If `input.len()` is not equal to [`SCALAR_LENGTH`].
+/// If `input.len()` is not equal to [`SCALAR_LEN`].
 #[inline]
 pub(super) fn read_scalar(input: &[u8]) -> Fr {
-    let input = input.as_array::<SCALAR_LENGTH>().expect("input must be SCALAR_LENGTH bytes");
+    let input = input.as_array::<SCALAR_LEN>().expect("input must be SCALAR_LEN bytes");
     Fr::from_be_bytes_mod_order(input)
 }
