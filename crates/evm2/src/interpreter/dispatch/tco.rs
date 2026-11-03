@@ -107,6 +107,12 @@ extern_table! {
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         super::inc_pc(&mut pc, OP);
+        if !M::INSPECT && hooked && state.reload_requested() {
+            // The frame continues after the instruction on the table for the new config.
+            cold_path();
+            state.set_result(Err(InstrStop::Reload));
+            tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+        }
         if M::INSPECT {
             M::step_end(state, pc, stack.len());
             remaining_gas.set(state.gas_mut().remaining());

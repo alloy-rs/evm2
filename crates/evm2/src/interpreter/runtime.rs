@@ -50,6 +50,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     steps: OpcodeSet,
     /// Whether the running instruction is `hooked`.
     hooked_running: bool,
+    /// Whether the inspector's config changed while the running instruction ran. The frame leaves
+    /// the dispatch after the instruction and continues on the table for the new config.
+    reload: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
     #[derive_where(skip)]
@@ -116,6 +119,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             inspector: None,
             steps: OpcodeSet::EMPTY,
             hooked_running: false,
+            reload: false,
             inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
@@ -469,6 +473,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.features = version.features;
         self.host = Some(NonNull::from(host));
         self.inspector = None;
+        self.reload = false;
     }
 
     /// Runs the host's instruction implementation for the opcode at `pc` on the interpreter
@@ -593,8 +598,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             }
             cold_path();
             self.result = Ok(());
-            // SAFETY: The stop left the pc at the message instruction, which a next one follows.
-            self.pc = unsafe { self.pc.add(dispatch::instruction_len(*self.pc)) };
+            self.reload = false;
         }
     }
 
@@ -714,9 +718,9 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.steps
     }
 
-    /// Stops the instruction with [`InstrStop::Reload`] if the inspector's config no longer
-    /// matches the table this frame runs on. A message instruction calls it after its child
-    /// message and returns the result.
+    /// Requests a reload if the inspector's config no longer matches the table this frame runs on.
+    /// A message instruction calls it after its child message, and the dispatch leaves for the
+    /// reload once the instruction returns, whatever the instruction does in between.
     #[inline(always)]
     pub(crate) fn note_inspector_config_change(&mut self) {
         if self.0.inspector.is_some() {
@@ -727,13 +731,18 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline(never)]
     fn reload_if_config_changed(&mut self) {
         assert!(self.0.hooked_running, "an instruction that runs a message must be `hooked`");
-        if self.0.result.is_ok()
-            && let Some(inspector) = self.0.inspector
+        if let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
             && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
         {
-            self.0.result = Err(InstrStop::Reload);
+            self.0.reload = true;
         }
+    }
+
+    /// Returns whether the running instruction requested a reload.
+    #[inline]
+    pub(crate) const fn reload_requested(&self) -> bool {
+        self.0.reload
     }
 
     /// Records whether the running instruction is `hooked`, so that the dispatch stored the latest
@@ -880,14 +889,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        let reload = self.0.result == Err(InstrStop::Reload);
-        if reload {
-            cold_path();
-            // The hook sees the instruction as done, with the pc after it.
-            self.0.result = Ok(());
-            // SAFETY: A next instruction follows the instruction at `pc`.
-            self.0.pc = unsafe { pc.as_ptr().add(dispatch::instruction_len(pc.op())) };
-        } else if self.0.result.is_err() {
+        if self.0.result.is_err() {
             cold_path();
             if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
                 // Failed charges may leave a wrapped counter until frame settlement.
@@ -899,11 +901,9 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             inspector.as_mut().step_end(&mut self.0);
         }
         // A stop the hook set wins over the reload.
-        if reload {
-            self.0.pc = pc.as_ptr();
-            if self.0.result.is_ok() {
-                self.0.result = Err(InstrStop::Reload);
-            }
+        if self.0.reload && self.0.result.is_ok() {
+            cold_path();
+            self.0.result = Err(InstrStop::Reload);
         }
     }
 
