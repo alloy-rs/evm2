@@ -4,6 +4,11 @@
 //! the interpreter's own stack, addressing slots relative to the stack top at block entry, and
 //! pass control to the next record with a tail call on nightly compilers, or by returning it to
 //! a dispatch loop otherwise.
+//!
+//! Handlers do not check bounds on the hot paths: records, operands and moves come from
+//! translating the running program, which only emits in-bounds ones, and entering a block checks
+//! that its slots fit the stack. [`Cx`], [`RecPtr`] and [`Top`] hold that invariant, and their
+//! methods are the only code that relies on it. In debug builds they check it.
 
 use crate::program::{
     Block, CMP_NZ, Halt, INVALID_BLOCK, Kind, MAX_UNROLLED_MOVES, Move, NO_MOVES, NO_SECTION,
@@ -20,17 +25,53 @@ use evm2::{
 /// What a handler hands back to the dispatch loop: the next record and stack top, or nothing
 /// once the frame stopped.
 #[cfg(not(tco))]
-pub(crate) type Next<T> = Option<(*const Rec<T>, *mut Word)>;
+pub(crate) type Next<T> = Option<(RecPtr<T>, Top)>;
 
 /// A record handler.
 #[cfg(tco)]
 pub(crate) type HandlerFn<T> =
-    for<'c, 'f, 'h> extern "rust-preserve-none" fn(*const Rec<T>, *mut Word, &'c mut Cx<'f, 'h, T>);
+    for<'c, 'p, 'f, 'h> extern "rust-preserve-none" fn(RecPtr<T>, Top, &'c mut Cx<'p, 'f, 'h, T>);
 
 /// A record handler.
 #[cfg(not(tco))]
 pub(crate) type HandlerFn<T> =
-    for<'c, 'f, 'h> fn(*const Rec<T>, *mut Word, &'c mut Cx<'f, 'h, T>) -> Next<T>;
+    for<'c, 'p, 'f, 'h> fn(RecPtr<T>, Top, &'c mut Cx<'p, 'f, 'h, T>) -> Next<T>;
+
+/// Points at a record of the running program.
+///
+/// Only [`Cx`] makes these, from the program's records. Translation ends every block with a record
+/// that leaves it, so [`Self::next`] of a record that continues is a record too.
+#[repr(transparent)]
+pub(crate) struct RecPtr<T: EvmTypesHost>(*const Rec<T>);
+
+impl<T: EvmTypesHost> Clone for RecPtr<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: EvmTypesHost> Copy for RecPtr<T> {}
+
+impl<T: EvmTypesHost> RecPtr<T> {
+    /// Returns the record after this one.
+    #[inline(always)]
+    const fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
+/// The stack top at block entry, which slot operands are relative to.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct Top(*mut Word);
+
+impl Top {
+    /// Returns the top an exit with height field `e` leaves.
+    #[inline(always)]
+    const fn exit(self, e: u32) -> Self {
+        Self(self.0.wrapping_offset(e as i32 as isize))
+    }
+}
 
 /// A linked record: an [`Inst`](crate::program::Inst) with its handler resolved.
 #[repr(C)]
@@ -69,21 +110,293 @@ impl<T: EvmTypesHost> core::fmt::Debug for Linked<T> {
 }
 
 /// Execution context shared by the handlers of one frame.
-pub(crate) struct Cx<'f, 'h, T: EvmTypesHost> {
+///
+/// # Invariant
+///
+/// For as long as the context lives:
+///
+/// - `interp` and `host` are the running frame's interpreter and host, which [`run`] lends the
+///   context mutably. Only [`Self::interp`] and [`Self::bail`] reach them, for the length of one
+///   call, as the interpreter's own dispatch loop does.
+/// - `base` is the interpreter's stack. Every slot a record addresses, relative to a [`Top`] that
+///   entering its block produced, lies within the stack and holds an initialized word when read:
+///   translation only emits slots within the block's entry inputs and its `need`, and
+///   [`Self::enter`] checks the entry length against both.
+/// - [`RecPtr`]s point into `recs`, and records' constant and move indices into `consts` and
+///   `moves`.
+pub(crate) struct Cx<'p, 'f, 'h, T: EvmTypesHost> {
     interp: *mut Interpreter<'f, 'h, T>,
     host: *mut T::Host<'h>,
     base: *mut Word,
-    recs: *const Rec<T>,
-    consts: *const Word,
-    blocks: *const Block,
-    sections: *const Section,
-    moves: *const Move,
-    jump_map: *const u32,
-    host_instrs: *const ExternalInstruction<T>,
-    code_len: usize,
+    recs: &'p [Rec<T>],
+    consts: &'p [Word],
+    blocks: &'p [Block],
+    sections: &'p [Section],
+    moves: &'p [Move],
+    jump_map: &'p [u32],
+    host_instrs: &'p [ExternalInstruction<T>],
     gas_params: *const GasParams,
     stop: InstrStop,
     bailed: bool,
+}
+
+impl<'p, 'f, 'h, T: EvmTypesHost> Cx<'p, 'f, 'h, T> {
+    /// Returns the record `p` points at.
+    #[inline(always)]
+    fn rec(&self, p: RecPtr<T>) -> &'p Rec<T> {
+        debug_assert!(self.recs.as_ptr_range().contains(&p.0), "record out of the program");
+        // SAFETY: Record pointers point into `recs` (see the invariant).
+        unsafe { &*p.0 }
+    }
+
+    /// Returns a pointer to record `index`.
+    #[inline(always)]
+    const fn first(&self, index: u32) -> RecPtr<T> {
+        RecPtr(self.recs.as_ptr().wrapping_add(index as usize))
+    }
+
+    /// Returns the stack length at `top`.
+    #[inline(always)]
+    fn len(&self, top: Top) -> usize {
+        top.0.addr().wrapping_sub(self.base.addr()) / size_of::<Word>()
+    }
+
+    #[inline(always)]
+    fn slot_ptr(&self, top: Top, raw: u32) -> *mut Word {
+        let p = top.0.cast::<u8>().wrapping_offset(Operand::slot_bytes(raw)).cast::<Word>();
+        debug_assert!(
+            p >= self.base && p < self.base.wrapping_add(STACK_LIMIT),
+            "slot out of the stack"
+        );
+        p
+    }
+
+    /// Returns operand `raw`, an immediate if `IMM`, else a slot.
+    #[inline(always)]
+    fn operand<const IMM: bool>(&self, top: Top, raw: u32) -> &Word {
+        if IMM {
+            debug_assert!(
+                Operand::imm_bytes(raw) / 32 < self.consts.len(),
+                "constant out of range"
+            );
+            // SAFETY: Immediates index `consts` (see the invariant).
+            unsafe {
+                &*self.consts.as_ptr().cast::<u8>().add(Operand::imm_bytes(raw)).cast::<Word>()
+            }
+        } else {
+            // SAFETY: The slot is in the stack and initialized (see the invariant). Writes take
+            // `&mut self`, so no write overlaps the returned borrow.
+            unsafe { &*self.slot_ptr(top, raw) }
+        }
+    }
+
+    /// Returns operand `raw`, of either kind.
+    #[inline(always)]
+    fn operand_dyn(&self, top: Top, raw: u32) -> &Word {
+        if Operand::is_imm(raw) {
+            self.operand::<true>(top, raw)
+        } else {
+            self.operand::<false>(top, raw)
+        }
+    }
+
+    /// Writes a computed `value` to slot `raw`, with a single store (see [`WordExt::write`]).
+    #[inline(always)]
+    fn write(&mut self, top: Top, raw: u32, value: Word) {
+        // SAFETY: The slot is in the stack (see the invariant), and `&mut self` excludes live
+        // borrows of it.
+        unsafe { (*self.slot_ptr(top, raw)).write(value) }
+    }
+
+    /// Writes a copied `value` to slot `raw`.
+    #[inline(always)]
+    fn store(&mut self, top: Top, raw: u32, value: Word) {
+        // SAFETY: As in [`Self::write`].
+        unsafe { self.slot_ptr(top, raw).write(value) }
+    }
+
+    #[inline(always)]
+    fn move_at(&self, index: usize) -> Move {
+        debug_assert!(index < self.moves.len(), "move out of range");
+        // SAFETY: Exits index `moves` (see the invariant).
+        unsafe { *self.moves.get_unchecked(index) }
+    }
+
+    /// Runs the moves of an exit or host instruction, starting at `start`.
+    #[inline(always)]
+    fn moves(&mut self, top: Top, start: u32) {
+        if start == NO_MOVES {
+            return;
+        }
+        let count = self.move_at(start as usize).dst as usize;
+        for i in 0..count {
+            self.run_move(top, start as usize + 1 + i);
+        }
+    }
+
+    /// Runs exactly `N` moves starting at `start`, unrolled.
+    #[inline(always)]
+    fn moves_n<const N: u8>(&mut self, top: Top, start: u32) {
+        if N > MAX_UNROLLED_MOVES {
+            return self.moves(top, start);
+        }
+        for i in 0..N as usize {
+            self.run_move(top, start as usize + 1 + i);
+        }
+    }
+
+    #[inline(always)]
+    fn run_move(&mut self, top: Top, index: usize) {
+        let m = self.move_at(index);
+        let value = *self.operand_dyn(top, m.src);
+        self.store(top, m.dst as u32, value);
+    }
+
+    /// Returns the frame's interpreter.
+    #[inline(always)]
+    fn interp(&mut self) -> &mut Interpreter<'f, 'h, T> {
+        // SAFETY: [`run`] lends the context the interpreter, and the result borrows `self`.
+        unsafe { &mut *self.interp }
+    }
+
+    /// Resizes memory for an access of `len` bytes at `offset`.
+    #[inline(always)]
+    fn resize(&mut self, offset: Word, len: usize) -> Result<usize, InstrStop> {
+        let offset = offset.to_usize()?;
+        let gas_params = self.gas_params;
+        let interp = self.interp();
+        let gas: *mut Gas = interp.gas_mut();
+        // SAFETY: Gas and memory are disjoint fields of the interpreter, as in its own memory
+        // instructions. The gas parameters belong to the host's execution config, which no
+        // instruction changes.
+        unsafe { interp.memory_mut().resize_evm(&mut *gas, &*gas_params, offset, len)? };
+        Ok(offset)
+    }
+
+    /// Charges block `block`'s entry section and returns its first record, or stops.
+    ///
+    /// A block whose slots and temporaries do not fit above `top` runs on the interpreter instead.
+    #[inline(always)]
+    fn enter(&mut self, block: u32, top: Top) -> Option<RecPtr<T>> {
+        let blocks = self.blocks;
+        let b = &blocks[block as usize];
+        let len = self.len(top) as u32;
+        if len.wrapping_sub(b.min_len) > b.span {
+            return self.enter_checked(b, len as usize);
+        }
+        if let Err(stop) = self.interp().gas_mut().spend(b.gas) {
+            self.stop = stop;
+            return None;
+        }
+        Some(self.first(b.first))
+    }
+
+    /// [`Self::enter`] for an entry stack length that may fail the entry section's checks.
+    #[cold]
+    #[inline(never)]
+    fn enter_checked(&mut self, b: &Block, len: usize) -> Option<RecPtr<T>> {
+        let sections = self.sections;
+        let s = &sections[b.section as usize];
+        if len + s.need as usize > STACK_LIMIT {
+            self.bail(b.pc, len);
+            return None;
+        }
+        if let Err(stop) = self.charge(s, len) {
+            self.stop = stop;
+            return None;
+        }
+        Some(self.first(b.first))
+    }
+
+    /// [`Self::enter`] for a static target whose entry the record `r` carries.
+    #[inline(always)]
+    fn enter_static(&mut self, r: &Rec<T>, top: Top) -> Option<RecPtr<T>> {
+        let len = self.len(top) as u32;
+        if len.wrapping_sub(r.g & 0xffff) > r.g >> 16 {
+            let blocks = self.blocks;
+            return self.enter_checked(&blocks[r.c as usize], len as usize);
+        }
+        if let Err(stop) = self.interp().gas_mut().spend(r.b as u64) {
+            self.stop = stop;
+            return None;
+        }
+        Some(self.first(r.a))
+    }
+
+    /// Charges section `s`'s gas and checks its stack bounds, for a block entered at height `len`.
+    #[inline(always)]
+    fn charge(&mut self, s: &Section, len: usize) -> Result<(), InstrStop> {
+        self.interp().gas_mut().spend(s.gas)?;
+        let height = len as i64 + s.base as i64;
+        if height < s.inputs as i64 {
+            return Err(InstrStop::StackUnderflow);
+        }
+        if height + s.max_growth as i64 > STACK_LIMIT as i64 {
+            return Err(InstrStop::StackOverflow);
+        }
+        Ok(())
+    }
+
+    /// Charges section `index` for the block entered at `top`.
+    #[inline(always)]
+    fn charge_section(&mut self, index: u32, top: Top) -> Result<(), InstrStop> {
+        let sections = self.sections;
+        self.charge(&sections[index as usize], self.len(top))
+    }
+
+    /// Returns the block a dynamic jump to `dest` enters, if `dest` is a valid jump destination.
+    #[inline(always)]
+    fn jump_block(&self, dest: &Word) -> Option<u32> {
+        let &block = self.jump_map.get(usize::try_from(*dest).ok()?)?;
+        (block != INVALID_BLOCK).then_some(block)
+    }
+
+    /// Runs the host instruction of record `r` on the canonical stack.
+    #[inline(always)]
+    fn host_call(&mut self, r: &Rec<T>, top: Top) -> Result<(), InstrStop> {
+        self.moves(top, r.d);
+        let len = self.len(top.exit(r.e));
+        let instr = self.host_instrs[r.g as usize];
+        let interp = self.interp();
+        // SAFETY: Translation emits host instructions only for in-bounds pcs, linking resolved
+        // `instr` from the opcode at `r.a`, and after the moves the stack holds `len` initialized
+        // words.
+        let new_len = unsafe { interp.run_resolved_instruction(instr, r.a as usize, len) }?;
+        let (inputs, outputs) = ((r.b >> 8 & 0xff) as usize, (r.b & 0xff) as usize);
+        let expected = len.wrapping_sub(inputs) + outputs;
+        if new_len != expected {
+            return Err(interp.fail_host_instruction(
+                r.a as usize,
+                format_args!(
+                    "left {new_len} stack items, but the superinstruction backend expects \
+                     {expected} from the opcode's fixed inputs and outputs"
+                ),
+            ));
+        }
+        if r.c != NO_SECTION {
+            self.charge_section(r.c, top)?;
+        }
+        Ok(())
+    }
+
+    /// Runs the rest of the frame on the interpreter from `pc`, with `len` words on the stack.
+    #[cold]
+    #[inline(never)]
+    fn bail(&mut self, pc: u32, len: usize) {
+        let host = self.host;
+        let interp = self.interp();
+        // SAFETY: `len` is within the stack and its words are initialized (see the invariant).
+        unsafe { *interp.stack_mut().into_raw_parts().1 = len };
+        interp.set_pc(pc as usize);
+        // SAFETY: [`run`] lends the context the host, and nothing else uses it while the
+        // interpreter runs.
+        let stop = match interp.run(unsafe { &mut *host }) {
+            Ok(stop) => stop,
+            Err(error) => interp.fail(error),
+        };
+        self.stop = stop;
+        self.bailed = true;
+    }
 }
 
 macro_rules! handler {
@@ -92,15 +405,15 @@ macro_rules! handler {
         $(#[$attr])*
         #[allow(clippy::missing_const_for_fn)]
         extern "rust-preserve-none" fn $name<$($g)*>(
-            $rec: *const Rec<T>,
-            $top: *mut Word,
-            $cx: &mut Cx<'_, '_, T>,
+            $rec: RecPtr<T>,
+            $top: Top,
+            $cx: &mut Cx<'_, '_, '_, T>,
         ) $body
 
         #[cfg(not(tco))]
         $(#[$attr])*
         #[allow(clippy::missing_const_for_fn)]
-        fn $name<$($g)*>($rec: *const Rec<T>, $top: *mut Word, $cx: &mut Cx<'_, '_, T>) -> Next<T>
+        fn $name<$($g)*>($rec: RecPtr<T>, $top: Top, $cx: &mut Cx<'_, '_, '_, T>) -> Next<T>
             $body
     };
 }
@@ -109,8 +422,7 @@ macro_rules! handler {
 macro_rules! next {
     ($rec:expr, $top:expr, $cx:expr) => {{
         let rec = $rec;
-        // SAFETY: Records come from a linked program that outlives the frame.
-        let f = unsafe { (*rec).f };
+        let f = $cx.rec(rec).f;
         become f(rec, $top, $cx)
     }};
 }
@@ -148,8 +460,7 @@ macro_rules! stop {
 macro_rules! goto {
     ($cx:expr, $block:expr, $top:expr) => {{
         let top = $top;
-        // SAFETY: Block IDs come from translation of the running program.
-        match unsafe { enter($cx, $block, top) } {
+        match $cx.enter($block, top) {
             Some(rec) => next!(rec, top, $cx),
             None => exit!(),
         }
@@ -206,7 +517,8 @@ pub(crate) fn run<'f, 'h, T: EvmTypesHost>(
 ) -> (InstrStop, bool) {
     let gas_params: *const GasParams = &host.execution_config().version().gas_params;
     interp.prepare_run(host);
-    // SAFETY: The stack view is dropped before anything else touches the stack.
+    // SAFETY: The view is dropped at once. Handlers keep the length within the stack and read
+    // only words that the caller or they wrote.
     let (base, len) = unsafe { interp.stack_mut().into_raw_parts() };
     let len = *len;
     let prog = &program.program;
@@ -214,242 +526,38 @@ pub(crate) fn run<'f, 'h, T: EvmTypesHost>(
         interp,
         host,
         base,
-        recs: program.recs.as_ptr(),
-        consts: prog.consts.as_ptr(),
-        blocks: prog.blocks.as_ptr(),
-        sections: prog.sections.as_ptr(),
-        moves: prog.moves.as_ptr(),
-        jump_map: prog.jump_map.as_ptr(),
-        host_instrs: program.host_instrs.as_ptr(),
-        code_len: prog.jump_map.len(),
+        recs: &program.recs,
+        consts: &prog.consts,
+        blocks: &prog.blocks,
+        sections: &prog.sections,
+        moves: &prog.moves,
+        jump_map: &prog.jump_map,
+        host_instrs: &program.host_instrs,
         gas_params,
         stop: InstrStop::Stop,
         bailed: false,
     };
-    // SAFETY: `len` is the interpreter's own stack length.
-    let top = unsafe { base.add(len) };
-    // SAFETY: Block 0 starts at pc 0, where every frame starts.
-    if let Some(rec) = unsafe { enter(&mut cx, 0, top) } {
-        // SAFETY: The context points at the live frame and program.
-        unsafe { dispatch(rec, top, &mut cx) };
+    let top = Top(base.wrapping_add(len));
+    // Block 0 starts at pc 0, where every frame starts.
+    if let Some(rec) = cx.enter(0, top) {
+        dispatch(rec, top, &mut cx);
     }
     (cx.stop, cx.bailed)
 }
 
 #[cfg(tco)]
 #[inline(always)]
-unsafe fn dispatch<T: EvmTypesHost>(rec: *const Rec<T>, top: *mut Word, cx: &mut Cx<'_, '_, T>) {
-    // SAFETY: Upheld by the caller.
-    unsafe { ((*rec).f)(rec, top, cx) }
+fn dispatch<T: EvmTypesHost>(rec: RecPtr<T>, top: Top, cx: &mut Cx<'_, '_, '_, T>) {
+    (cx.rec(rec).f)(rec, top, cx)
 }
 
 #[cfg(not(tco))]
 #[inline(always)]
-unsafe fn dispatch<T: EvmTypesHost>(
-    mut rec: *const Rec<T>,
-    mut top: *mut Word,
-    cx: &mut Cx<'_, '_, T>,
-) {
-    // SAFETY: Upheld by the caller.
-    while let Some((next, next_top)) = unsafe { ((*rec).f)(rec, top, cx) } {
+fn dispatch<T: EvmTypesHost>(mut rec: RecPtr<T>, mut top: Top, cx: &mut Cx<'_, '_, '_, T>) {
+    while let Some((next, next_top)) = (cx.rec(rec).f)(rec, top, cx) {
         rec = next;
         top = next_top;
     }
-}
-
-/// Charges block `block`'s entry section and returns its first record, or stops.
-///
-/// A block whose slots and temporaries do not fit above `top` runs on the interpreter instead.
-#[inline(always)]
-unsafe fn enter<T: EvmTypesHost>(
-    cx: &mut Cx<'_, '_, T>,
-    block: u32,
-    top: *mut Word,
-) -> Option<*const Rec<T>> {
-    // SAFETY: `block` comes from translation, and `top` is in the stack.
-    unsafe {
-        let b = &*cx.blocks.add(block as usize);
-        let len = top.offset_from(cx.base) as u32;
-        if len.wrapping_sub(b.min_len) > b.span {
-            return enter_checked(cx, b, len as usize);
-        }
-        if let Err(stop) = (*cx.interp).gas_mut().spend(b.gas) {
-            cx.stop = stop;
-            return None;
-        }
-        Some(cx.recs.add(b.first as usize))
-    }
-}
-
-/// [`enter`] for an entry stack length that may fail the entry section's checks.
-#[cold]
-#[inline(never)]
-unsafe fn enter_checked<T: EvmTypesHost>(
-    cx: &mut Cx<'_, '_, T>,
-    b: &Block,
-    len: usize,
-) -> Option<*const Rec<T>> {
-    // SAFETY: The section comes from translation.
-    unsafe {
-        let s = &*cx.sections.add(b.section as usize);
-        if len + s.need as usize > STACK_LIMIT {
-            bail_to_interpreter(cx, b.pc, len);
-            return None;
-        }
-        if let Err(stop) = charge(cx, s, len) {
-            cx.stop = stop;
-            return None;
-        }
-        Some(cx.recs.add(b.first as usize))
-    }
-}
-
-/// [`enter`] for a static target whose entry the record `r` carries.
-#[inline(always)]
-unsafe fn enter_static<T: EvmTypesHost>(
-    cx: &mut Cx<'_, '_, T>,
-    r: &Rec<T>,
-    top: *mut Word,
-) -> Option<*const Rec<T>> {
-    // SAFETY: The record and its target come from translation, and `top` is in the stack.
-    unsafe {
-        let len = top.offset_from(cx.base) as u32;
-        if len.wrapping_sub(r.g & 0xffff) > r.g >> 16 {
-            return enter_checked(cx, &*cx.blocks.add(r.c as usize), len as usize);
-        }
-        if let Err(stop) = (*cx.interp).gas_mut().spend(r.b as u64) {
-            cx.stop = stop;
-            return None;
-        }
-        Some(cx.recs.add(r.a as usize))
-    }
-}
-
-/// Charges section `s`'s gas and checks its stack bounds, for a block entered at height `len`.
-#[inline(always)]
-unsafe fn charge<T: EvmTypesHost>(
-    cx: &mut Cx<'_, '_, T>,
-    s: &Section,
-    len: usize,
-) -> Result<(), InstrStop> {
-    // SAFETY: The interpreter outlives the frame.
-    unsafe { (*cx.interp).gas_mut().spend(s.gas)? };
-    let height = len as i64 + s.base as i64;
-    if height < s.inputs as i64 {
-        return Err(InstrStop::StackUnderflow);
-    }
-    if height + s.max_growth as i64 > STACK_LIMIT as i64 {
-        return Err(InstrStop::StackOverflow);
-    }
-    Ok(())
-}
-
-/// Runs the rest of the frame on the interpreter from `pc`, with `len` words on the stack.
-#[cold]
-#[inline(never)]
-unsafe fn bail_to_interpreter<T: EvmTypesHost>(cx: &mut Cx<'_, '_, T>, pc: u32, len: usize) {
-    // SAFETY: The interpreter and host outlive the frame.
-    unsafe {
-        let interp = &mut *cx.interp;
-        *interp.stack_mut().into_raw_parts().1 = len;
-        interp.set_pc(pc as usize);
-        cx.stop = match interp.run(&mut *cx.host) {
-            Ok(stop) => stop,
-            Err(error) => interp.fail(error),
-        };
-    }
-    cx.bailed = true;
-}
-
-#[inline(always)]
-unsafe fn operand<'a, T: EvmTypesHost, const IMM: bool>(
-    cx: &Cx<'_, '_, T>,
-    top: *mut Word,
-    raw: u32,
-) -> &'a Word {
-    // SAFETY: Translation only emits in-bounds constants and slots.
-    unsafe {
-        if IMM {
-            &*cx.consts.cast::<u8>().add(Operand::imm_bytes(raw)).cast::<Word>()
-        } else {
-            &*top.cast::<u8>().offset(Operand::slot_bytes(raw)).cast::<Word>()
-        }
-    }
-}
-
-#[inline(always)]
-unsafe fn operand_dyn<'a, T: EvmTypesHost>(
-    cx: &Cx<'_, '_, T>,
-    top: *mut Word,
-    raw: u32,
-) -> &'a Word {
-    // SAFETY: Upheld by the caller.
-    unsafe {
-        if Operand::is_imm(raw) {
-            operand::<T, true>(cx, top, raw)
-        } else {
-            operand::<T, false>(cx, top, raw)
-        }
-    }
-}
-
-#[inline(always)]
-unsafe fn slot<'a>(top: *mut Word, raw: u32) -> &'a mut Word {
-    // SAFETY: Translation only emits in-bounds slots.
-    unsafe { &mut *top.cast::<u8>().offset(Operand::slot_bytes(raw)).cast::<Word>() }
-}
-
-/// Runs the moves of an exit or host instruction, starting at `start`.
-#[inline(always)]
-unsafe fn moves<T: EvmTypesHost>(cx: &Cx<'_, '_, T>, top: *mut Word, start: u32) {
-    if start == NO_MOVES {
-        return;
-    }
-    // SAFETY: Moves come from translation and address the block's slots and constants.
-    unsafe {
-        let count = (*cx.moves.add(start as usize)).dst as usize;
-        for i in 0..count {
-            run_move(cx, top, &*cx.moves.add(start as usize + 1 + i));
-        }
-    }
-}
-
-/// Runs exactly `N` moves starting at `start`, unrolled.
-#[inline(always)]
-unsafe fn moves_n<T: EvmTypesHost, const N: u8>(cx: &Cx<'_, '_, T>, top: *mut Word, start: u32) {
-    if N > MAX_UNROLLED_MOVES {
-        // SAFETY: Upheld by the caller.
-        return unsafe { moves(cx, top, start) };
-    }
-    for i in 0..N as usize {
-        // SAFETY: An exit with `N` moves has them after its header.
-        unsafe { run_move(cx, top, &*cx.moves.add(start as usize + 1 + i)) };
-    }
-}
-
-#[inline(always)]
-unsafe fn run_move<T: EvmTypesHost>(cx: &Cx<'_, '_, T>, top: *mut Word, m: &Move) {
-    // SAFETY: Upheld by the caller.
-    unsafe {
-        let value = *operand_dyn(cx, top, m.src);
-        top.cast::<u8>().offset(m.dst as isize).cast::<Word>().write(value);
-    }
-}
-
-/// Returns the stack top an exit with height field `e` leaves.
-#[inline(always)]
-const unsafe fn exit_top(top: *mut Word, e: u32) -> *mut Word {
-    // SAFETY: Exit heights stay within the stack.
-    unsafe { top.offset(e as i32 as isize) }
-}
-
-/// Returns the block a dynamic jump to `dest` enters, if `dest` is a valid jump destination.
-#[inline(always)]
-fn jump_block<T: EvmTypesHost>(cx: &Cx<'_, '_, T>, dest: &Word) -> Option<u32> {
-    let pc = usize::try_from(*dest).ok().filter(|&pc| pc < cx.code_len)?;
-    // SAFETY: `pc` is in bounds of the jump map.
-    let block = unsafe { *cx.jump_map.add(pc) };
-    (block != INVALID_BLOCK).then_some(block)
 }
 
 #[inline(always)]
@@ -457,136 +565,97 @@ fn address_word(address: &alloy_primitives::Address) -> Word {
     Word::from_be_bytes(address.into_word().0)
 }
 
-/// Resizes memory for an access of `len` bytes at `offset`.
-#[inline(always)]
-unsafe fn resize<T: EvmTypesHost>(
-    cx: &mut Cx<'_, '_, T>,
-    offset: &Word,
-    len: usize,
-) -> Result<usize, InstrStop> {
-    let offset = offset.to_usize()?;
-    // SAFETY: The interpreter outlives the frame; gas and memory are disjoint fields.
-    unsafe {
-        let interp = &mut *cx.interp;
-        let gas: *mut Gas = interp.gas_mut();
-        interp.memory_mut().resize_evm(&mut *gas, &*cx.gas_params, offset, len)?;
-    }
-    Ok(offset)
-}
-
 handler! {
     fn alu2[T: EvmTypesHost, const OP: u8, const NEG: u8, const AI: bool, const BI: bool](rec, top, cx) {
-        // SAFETY: Records and slots come from translation.
-        unsafe {
-            let r = &*rec;
-            let value = eval2(OP, NEG, operand::<T, AI>(cx, top, r.a), operand::<T, BI>(cx, top, r.b));
-            slot(top, r.c).write(value);
-        }
-        next!(unsafe { rec.add(1) }, top, cx)
+        let r = cx.rec(rec);
+        let value = eval2(OP, NEG, cx.operand::<AI>(top, r.a), cx.operand::<BI>(top, r.b));
+        cx.write(top, r.c, value);
+        next!(rec.next(), top, cx)
     }
 }
 
 handler! {
     fn alu1[T: EvmTypesHost, const OP: u8, const NEG: u8](rec, top, cx) {
-        // SAFETY: Records and slots come from translation.
-        unsafe {
-            let r = &*rec;
-            let value = eval1(OP, NEG, operand::<T, false>(cx, top, r.a));
-            slot(top, r.c).write(value);
-        }
-        next!(unsafe { rec.add(1) }, top, cx)
+        let r = cx.rec(rec);
+        let value = eval1(OP, NEG, cx.operand::<false>(top, r.a));
+        cx.write(top, r.c, value);
+        next!(rec.next(), top, cx)
     }
 }
 
 handler! {
     fn mload[T: EvmTypesHost, const AI: bool](rec, top, cx) {
-        // SAFETY: Records and slots come from translation.
-        unsafe {
-            let r = &*rec;
-            let offset = match resize(cx, operand::<T, AI>(cx, top, r.a), 32) {
-                Ok(offset) => offset,
-                Err(stop) => stop!(cx, stop),
-            };
-            let value = (*cx.interp).memory().get_word(offset);
-            *slot(top, r.c) = value;
-        }
-        next!(unsafe { rec.add(1) }, top, cx)
+        let r = cx.rec(rec);
+        let offset = match cx.resize(*cx.operand::<AI>(top, r.a), 32) {
+            Ok(offset) => offset,
+            Err(stop) => stop!(cx, stop),
+        };
+        let value = cx.interp().memory().get_word(offset);
+        cx.store(top, r.c, value);
+        next!(rec.next(), top, cx)
     }
 }
 
 handler! {
     fn mstore[T: EvmTypesHost, const OP: u8, const AI: bool, const BI: bool](rec, top, cx) {
-        // SAFETY: Records and slots come from translation.
-        unsafe {
-            let r = &*rec;
-            let value = *operand::<T, BI>(cx, top, r.b);
-            let len = if OP == op::MSTORE8 { 1 } else { 32 };
-            let offset = match resize(cx, operand::<T, AI>(cx, top, r.a), len) {
-                Ok(offset) => offset,
-                Err(stop) => stop!(cx, stop),
-            };
-            let memory = (*cx.interp).memory_mut();
-            if OP == op::MSTORE8 {
-                memory.set(offset, &[value.byte(0)]);
-            } else {
-                memory.set(offset, &value.to_be_bytes::<32>());
-            }
+        let r = cx.rec(rec);
+        let value = *cx.operand::<BI>(top, r.b);
+        let len = if OP == op::MSTORE8 { 1 } else { 32 };
+        let offset = match cx.resize(*cx.operand::<AI>(top, r.a), len) {
+            Ok(offset) => offset,
+            Err(stop) => stop!(cx, stop),
+        };
+        let memory = cx.interp().memory_mut();
+        if OP == op::MSTORE8 {
+            memory.set(offset, &[value.byte(0)]);
+        } else {
+            memory.set(offset, &value.to_be_bytes::<32>());
         }
-        next!(unsafe { rec.add(1) }, top, cx)
+        next!(rec.next(), top, cx)
     }
 }
 
 handler! {
     fn env[T: EvmTypesHost, const OP: u8](rec, top, cx) {
-        // SAFETY: Records and slots come from translation, and the frame's message is live.
-        unsafe {
-            let r = &*rec;
-            let interp = &*cx.interp;
-            let message = interp.message();
-            let value = match OP {
-                op::ADDRESS => address_word(&message.destination),
-                op::CALLER => address_word(&message.caller),
-                op::CALLVALUE => message.value,
-                op::CALLDATASIZE => Word::from(message.input.len()),
-                op::RETURNDATASIZE => Word::from(interp.return_data().len()),
-                _ => unreachable!(),
-            };
-            slot(top, r.c).write(value);
-        }
-        next!(unsafe { rec.add(1) }, top, cx)
+        let r = cx.rec(rec);
+        let interp = cx.interp();
+        let message = interp.message();
+        let value = match OP {
+            op::ADDRESS => address_word(&message.destination),
+            op::CALLER => address_word(&message.caller),
+            op::CALLVALUE => message.value,
+            op::CALLDATASIZE => Word::from(message.input.len()),
+            op::RETURNDATASIZE => Word::from(interp.return_data().len()),
+            _ => unreachable!(),
+        };
+        cx.write(top, r.c, value);
+        next!(rec.next(), top, cx)
     }
 }
 
 handler! {
     fn calldataload[T: EvmTypesHost, const AI: bool](rec, top, cx) {
-        // SAFETY: Records and slots come from translation, and the frame's message is live.
-        unsafe {
-            let r = &*rec;
-            let offset = operand::<T, AI>(cx, top, r.a);
-            let input = &(*cx.interp).message().input;
-            let mut word = [0u8; 32];
-            if let Ok(offset) = usize::try_from(*offset)
-                && offset < input.len()
-            {
-                let len = (input.len() - offset).min(32);
-                word[..len].copy_from_slice(&input[offset..offset + len]);
-            }
-            *slot(top, r.c) = Word::from_be_bytes(word);
+        let r = cx.rec(rec);
+        let offset = *cx.operand::<AI>(top, r.a);
+        let input = &cx.interp().message().input;
+        let mut word = [0u8; 32];
+        if let Ok(offset) = usize::try_from(offset)
+            && offset < input.len()
+        {
+            let len = (input.len() - offset).min(32);
+            word[..len].copy_from_slice(&input[offset..offset + len]);
         }
-        next!(unsafe { rec.add(1) }, top, cx)
+        cx.store(top, r.c, Word::from_be_bytes(word));
+        next!(rec.next(), top, cx)
     }
 }
 
 handler! {
     fn jump[T: EvmTypesHost, const N: u8](rec, top, cx) {
-        // SAFETY: Records come from translation.
-        let (next, top) = unsafe {
-            let r = &*rec;
-            moves_n::<T, N>(cx, top, r.d);
-            let top = exit_top(top, r.e);
-            (enter_static(cx, r, top), top)
-        };
-        match next {
+        let r = cx.rec(rec);
+        cx.moves_n::<N>(top, r.d);
+        let top = top.exit(r.e);
+        match cx.enter_static(r, top) {
             Some(rec) => next!(rec, top, cx),
             None => exit!(),
         }
@@ -595,14 +664,11 @@ handler! {
 
 handler! {
     fn jump_dyn[T: EvmTypesHost](rec, top, cx) {
-        // SAFETY: Records come from translation.
-        let (dest, top) = unsafe {
-            let r = &*rec;
-            let dest = *operand_dyn(cx, top, r.a);
-            moves(cx, top, r.d);
-            (dest, exit_top(top, r.e))
-        };
-        match jump_block(cx, &dest) {
+        let r = cx.rec(rec);
+        let dest = *cx.operand_dyn(top, r.a);
+        cx.moves(top, r.d);
+        let top = top.exit(r.e);
+        match cx.jump_block(&dest) {
             Some(block) => goto!(cx, block, top),
             None => stop!(cx, InstrStop::InvalidJump),
         }
@@ -618,107 +684,58 @@ handler! {
         const AI: bool,
         const BI: bool,
     ](rec, top, cx) {
-        // SAFETY: Records come from translation.
-        let (taken, r) = unsafe {
-            let r = &*rec;
-            (cond(CMP, NEG, operand::<T, AI>(cx, top, r.a), operand::<T, BI>(cx, top, r.b)), r)
-        };
-        if taken {
-            // SAFETY: As above.
-            let top = unsafe {
-                moves(cx, top, r.d);
-                exit_top(top, r.e)
-            };
+        let r = cx.rec(rec);
+        if cond(CMP, NEG, cx.operand::<AI>(top, r.a), cx.operand::<BI>(top, r.b)) {
+            cx.moves(top, r.d);
             if r.c == INVALID_BLOCK {
                 stop!(cx, InstrStop::InvalidJump);
             }
-            goto!(cx, r.c, top)
+            goto!(cx, r.c, top.exit(r.e))
         }
         if CONT {
-            if r.g != NO_SECTION {
-                // SAFETY: Sections come from translation.
-                let result = unsafe {
-                    let s = &*cx.sections.add(r.g as usize);
-                    charge(cx, s, top.offset_from(cx.base) as usize)
-                };
-                if let Err(stop) = result {
-                    stop!(cx, stop);
-                }
+            if r.g != NO_SECTION
+                && let Err(stop) = cx.charge_section(r.g, top)
+            {
+                stop!(cx, stop);
             }
-            next!(unsafe { rec.add(1) }, top, cx)
+            next!(rec.next(), top, cx)
         }
-        // SAFETY: As above.
-        let top = unsafe {
-            moves(cx, top, r.d);
-            exit_top(top, r.e)
-        };
-        goto!(cx, r.g, top)
+        cx.moves(top, r.d);
+        goto!(cx, r.g, top.exit(r.e))
     }
 }
 
 handler! {
     fn br_dyn[T: EvmTypesHost](rec, top, cx) {
-        // SAFETY: Records come from translation.
-        let (taken, dest, fall, top) = unsafe {
-            let r = &*rec;
-            let taken = !operand_dyn(cx, top, r.a).is_zero();
-            let dest = *operand_dyn(cx, top, r.b);
-            moves(cx, top, r.d);
-            (taken, dest, r.g, exit_top(top, r.e))
-        };
+        let r = cx.rec(rec);
+        let taken = !cx.operand_dyn(top, r.a).is_zero();
+        let dest = *cx.operand_dyn(top, r.b);
+        cx.moves(top, r.d);
+        let top = top.exit(r.e);
         if taken {
-            match jump_block(cx, &dest) {
+            match cx.jump_block(&dest) {
                 Some(block) => goto!(cx, block, top),
                 None => stop!(cx, InstrStop::InvalidJump),
             }
         }
-        goto!(cx, fall, top)
+        goto!(cx, r.g, top)
     }
 }
 
 handler! {
     fn generic[T: EvmTypesHost](rec, top, cx) {
-        // SAFETY: Records come from translation, and the interpreter outlives the frame.
-        unsafe {
-            let r = &*rec;
-            moves(cx, top, r.d);
-            let len = exit_top(top, r.e).offset_from(cx.base) as usize;
-            let interp = &mut *cx.interp;
-            let instr = *cx.host_instrs.add(r.g as usize);
-            match interp.run_resolved_instruction(instr, r.a as usize, len) {
-                Ok(new_len) => {
-                    let (inputs, outputs) = ((r.b >> 8 & 0xff) as usize, (r.b & 0xff) as usize);
-                    let expected = len.wrapping_sub(inputs) + outputs;
-                    if new_len != expected {
-                        let stop = interp.fail_host_instruction(
-                            r.a as usize,
-                            format_args!(
-                                "left {new_len} stack items, but the superinstruction backend \
-                                 expects {expected} from the opcode's fixed inputs and outputs"
-                            ),
-                        );
-                        stop!(cx, stop);
-                    }
-                }
-                Err(stop) => stop!(cx, stop),
-            }
-            if r.c != NO_SECTION {
-                let s = &*cx.sections.add(r.c as usize);
-                if let Err(stop) = charge(cx, s, top.offset_from(cx.base) as usize) {
-                    stop!(cx, stop);
-                }
-            }
+        let r = cx.rec(rec);
+        if let Err(stop) = cx.host_call(r, top) {
+            stop!(cx, stop);
         }
-        next!(unsafe { rec.add(1) }, top, cx)
+        next!(rec.next(), top, cx)
     }
 }
 
 handler! {
     fn halt[T: EvmTypesHost](rec, top, cx) {
         let _ = top;
-        // SAFETY: Records come from translation.
-        let halt = unsafe { (*rec).a };
-        let stop = match halt {
+        let stop = match cx.rec(rec).a {
             h if h == Halt::InvalidJump as u32 => InstrStop::InvalidJump,
             h if h == Halt::InvalidFE as u32 => InstrStop::InvalidFEOpcode,
             _ => InstrStop::Stop,
@@ -729,13 +746,10 @@ handler! {
 
 handler! {
     fn bail[T: EvmTypesHost](rec, top, cx) {
-        // SAFETY: Records come from translation.
-        unsafe {
-            let r = &*rec;
-            moves(cx, top, r.d);
-            let len = exit_top(top, r.e).offset_from(cx.base) as usize;
-            bail_to_interpreter(cx, r.a, len);
-        }
+        let r = cx.rec(rec);
+        cx.moves(top, r.d);
+        let len = cx.len(top.exit(r.e));
+        cx.bail(r.a, len);
         exit!()
     }
 }
