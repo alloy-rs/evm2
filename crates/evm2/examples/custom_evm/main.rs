@@ -73,20 +73,13 @@ fn state_change_consumer() -> HandlerResult<()> {
     database.insert_account_info(&target, AccountInfo::default().with_nonce(1));
     let mut evm = custom_evm_with_database(database);
     let mut consumer = ExampleStateConsumer::default();
-    let tx = Recovered::new_unchecked(
-        CustomEnvelope::ExecuteCode(ExecuteCodeTx {
-            target,
-            gas_limit: 100_000,
-            code: Bytes::from_static(&[
-                opcode::CUSTOM_OPCODE,
-                op::PUSH1,
-                0x01,
-                op::SSTORE,
-                op::STOP,
-            ]),
-        }),
-        Address::ZERO,
-    );
+    let tx = custom_opcode_tx(Bytes::from_static(&[
+        opcode::CUSTOM_OPCODE,
+        op::PUSH1,
+        0x01,
+        op::SSTORE,
+        op::STOP,
+    ]));
 
     let Ok(result) = evm.transact(&tx)?.commit_with(&mut consumer);
     let storage_change = consumer.storage_changes.first().expect("storage change observed");

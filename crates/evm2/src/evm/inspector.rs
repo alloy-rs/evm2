@@ -448,17 +448,18 @@ pub(crate) mod tests {
         constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
         ethereum::{TxEnvelope, ethereum_tx_registry},
-        evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
+        evm::{AccountInfo, EmptyDB, InMemoryDB, State, StateCheckpoint},
         interpreter::{
             GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageKind,
             MessageResult, MessageResultExt, Word, instructions as instr, op,
         },
         registry::TxRegistry,
-        test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
+        test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all, return_top_word},
         utils::address_to_word,
     };
     use alloc::{boxed::Box, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
+    use alloy_eips::eip4788::SYSTEM_ADDRESS;
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
     use core::assert_matches;
     use evm2_macros::instruction;
@@ -696,11 +697,6 @@ pub(crate) mod tests {
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
-    }
-
-    /// Appends code that returns the word at the top of the stack as the frame output.
-    fn return_top_word(code: &mut Vec<u8>) {
-        code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
     }
 
     pub(crate) fn call_code(target: Address) -> Vec<u8> {
@@ -2483,8 +2479,7 @@ pub(crate) mod tests {
                 if marker == Address::with_last_byte(0x44) {
                     self.snapshot = Some(interp.host().state().clone_with(EmptyDB::default()));
                 } else if marker == Address::with_last_byte(0x55) {
-                    *interp.host().state_mut() =
-                        self.snapshot.as_ref().unwrap().clone_with(EmptyDB::default());
+                    *interp.host().state_mut() = self.snapshot.as_ref().unwrap().clone();
                     self.restored = true;
                 } else {
                     return None;

@@ -1,16 +1,21 @@
 use crate::{
-    BaseEvmConfigSelector, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
+    BaseEvmConfigSelector, BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig,
+    SpecId, TxResult, TxResultExt,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, BlockEnvExt, TxEnv, TxEnvExt},
+    ethereum::{RecoveredTxEnvelope, TxEnvelope},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult, StorageSlot, Tracked},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, Memory, Message, MessageExt, MessageKind,
         MessageResult, MessageResultExt, StackBacking, Word, op,
     },
+    registry::{HandlerResult, TxRequest},
     storage_key::{StorageKey, StorageKeyMap},
+    utils::address_to_word,
 };
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, Log};
 use core::{assert_matches, ops::Range};
 
@@ -119,7 +124,6 @@ impl Host<TestTypes> for TestHost {
             return Err(InstrStop::OutOfGas.into());
         }
         self.account_loads.push(*address);
-        let features = self.execution_config.version().features;
         Ok(AccountLoad {
             balance: address.into_word().into(),
             nonce: 0,
@@ -130,7 +134,11 @@ impl Host<TestTypes> for TestHost {
                 Bytecode::default()
             },
             is_empty: self.is_empty,
-            is_empty_for_new_account_gas: if features.contains(EvmFeatures::EIP161) {
+            is_empty_for_new_account_gas: if self
+                .execution_config
+                .version()
+                .feature(EvmFeatures::EIP161)
+            {
                 !self.exists || self.is_empty
             } else {
                 !self.exists && !self.is_touched
@@ -449,7 +457,7 @@ pub(crate) fn push_all<T: ToWord, const N: usize>(code: &mut Vec<u8>, values: [T
 }
 
 pub(crate) fn push_address(code: &mut Vec<u8>, address: &Address) {
-    push(code, Word::from_be_slice(address.as_slice()));
+    push(code, address_to_word(address));
 }
 
 pub(crate) fn neg(value: u64) -> Word {
@@ -460,6 +468,25 @@ pub(crate) fn legacy_bytecode(code: impl Into<Vec<u8>>) -> Bytecode {
     Bytecode::new_legacy(Bytes::from(code.into()))
 }
 
-pub(crate) fn slot(original: Word, current: Word) -> StorageSlot {
+pub(crate) fn test_tx(value: u64) -> RecoveredTxEnvelope {
+    Recovered::new_unchecked(
+        TxEnvelope::Legacy(TxLegacy { nonce: value, ..TxLegacy::default() }),
+        Address::ZERO,
+    )
+}
+
+pub(crate) fn handle_test_tx(
+    req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
+) -> HandlerResult<TxResult> {
+    let _ = req.host.spec_id();
+    Ok(TxResultExt { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResultExt::default() })
+}
+
+/// Appends code that returns the word at the top of the stack as the frame output.
+pub(crate) fn return_top_word(code: &mut Vec<u8>) {
+    code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
+}
+
+pub(crate) fn storage_slot(original: Word, current: Word) -> StorageSlot {
     StorageSlot { value: Tracked::from_parts(original, current), ..Default::default() }
 }

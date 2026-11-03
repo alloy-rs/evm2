@@ -31,8 +31,10 @@ use alloy_consensus::{
 };
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
 use alloy_eips::{
-    eip4844::DATA_GAS_PER_BLOB, eip4895::Withdrawal as AlloyWithdrawal,
-    eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_CODE, eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_CODE,
+    eip4844::DATA_GAS_PER_BLOB,
+    eip4895::Withdrawal as AlloyWithdrawal,
+    eip7002::{WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, WITHDRAWAL_REQUEST_PREDEPLOY_CODE},
+    eip7251::{CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, CONSOLIDATION_REQUEST_PREDEPLOY_CODE},
     eip7840::BlobParams,
 };
 use alloy_primitives::{Address, B256, Bloom, Bytes, Signature, U256, aliases::U512};
@@ -47,10 +49,7 @@ use evm2::{
     },
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::{
-        AccountInfo as EvmAccountInfo, Bal, CONSOLIDATION_REQUEST_ADDRESS, DbStats, DbStatsCounts,
-        InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
-    },
+    evm::{AccountInfo as EvmAccountInfo, Bal, DbStats, DbStatsCounts, InMemoryDB},
 };
 #[cfg(feature = "jit")]
 use std::path::PathBuf;
@@ -202,8 +201,8 @@ pub fn pre_state(
         // A capture holds only the accounts its transactions touch, but the blocks' system calls
         // read the request contracts, which must have code.
         for (address, code) in [
-            (WITHDRAWAL_REQUEST_ADDRESS, WITHDRAWAL_REQUEST_PREDEPLOY_CODE.clone()),
-            (CONSOLIDATION_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_PREDEPLOY_CODE.clone()),
+            (WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, WITHDRAWAL_REQUEST_PREDEPLOY_CODE.clone()),
+            (CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, CONSOLIDATION_REQUEST_PREDEPLOY_CODE.clone()),
         ] {
             pre.to_mut().entry(address).or_insert_with(|| Account {
                 code,

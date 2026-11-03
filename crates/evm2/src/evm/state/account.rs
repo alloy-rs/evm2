@@ -71,15 +71,7 @@ impl core::hash::Hash for AccountInfo {
 impl Default for AccountInfo {
     #[inline]
     fn default() -> Self {
-        Self {
-            balance: U256::ZERO,
-            nonce: 0,
-            code_hash: KECCAK256_EMPTY,
-            code: Some(Bytecode::default()),
-            #[cfg(feature = "account-ext")]
-            extension: super::AccountExtension::new(),
-            _non_exhaustive: (),
-        }
+        Self::new(U256::ZERO, 0, KECCAK256_EMPTY, Some(Bytecode::default()))
     }
 }
 
@@ -445,7 +437,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Returns whether the account was created in the current transaction.
     #[inline]
     pub const fn is_created(&self) -> bool {
-        self.tracked.present.is_some() && self.tracked.is_created()
+        self.exists() && self.tracked.is_created()
     }
 
     /// Returns whether the account is dead by the EIP-161 definition while existing in the overlay.
@@ -466,7 +458,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if features.contains(EvmFeatures::EIP161) {
             return self.tracked.present.as_ref().is_none_or(AccountInfo::is_empty);
         }
-        self.tracked.present.is_none() && !self.tracked.flags.contains(AccountFlags::TOUCHED)
+        self.tracked.present.is_none() && !self.is_touched()
     }
 
     /// Loads the account's bytecode, reading it from the backing database by code hash when it is
@@ -519,7 +511,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// finalization even when no field changes.
     #[inline]
     pub fn touch(&mut self) {
-        if !self.tracked.flags.contains(AccountFlags::TOUCHED) {
+        if !self.is_touched() {
             self.record_change();
             self.tracked.flags.insert(AccountFlags::TOUCHED);
         }
@@ -546,9 +538,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// base warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        if self.tracked.flags.contains(AccountFlags::WARM)
-            || self.inner.prewarm_set.is_warm(&self.address)
-        {
+        if self.is_warm() {
             return false;
         }
         self.record_change();

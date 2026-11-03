@@ -26,7 +26,7 @@ use crate::{
         MessageResultExt, gas::WARM_STORAGE_READ_COST,
     },
     registry::{HandlerError, HandlerResult, TxRegistry, handler},
-    utils::num_words,
+    utils::{b256_to_word, num_words},
     version::GasId,
 };
 use alloy_consensus::{
@@ -478,10 +478,8 @@ pub fn warm_base_accounts<'a, T: EvmTypes>(host: &mut Evm<'a, T>, to: TxKind) {
 /// Warms every account and storage key in an access list.
 pub fn warm_access_list<'a, T: EvmTypes>(host: &mut Evm<'a, T>, access_list: &AccessList) {
     for item in access_list.iter() {
-        host.state.prewarm_storage(
-            &item.address,
-            item.storage_keys.iter().map(|key| U256::from_be_bytes(key.0)),
-        );
+        host.state
+            .prewarm_storage(&item.address, item.storage_keys.iter().map(|key| b256_to_word(*key)));
     }
 }
 
@@ -695,7 +693,7 @@ pub const fn settle_initial_frame_gas<E>(
 ) {
     tx_gas.spend_all();
     tx_gas.merge_child_gas(result.gas, result.stop);
-    if charged_state_gas != 0 && !result.stop.is_success() {
+    if charged_state_gas != 0 && !result.is_success() {
         tx_gas.refill_reservoir(charged_state_gas);
         if result.stop.is_halt() {
             tx_gas.spend_all();
@@ -796,7 +794,7 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         gas_spent_breakdown(tx_gas_limit, &result.gas, initial_state_gas);
     let state_gas_spent = state_gas_spent.saturating_sub(state_refund);
     Ok(TxResultExt {
-        status: result.stop.is_success(),
+        status: result.is_success(),
         total_gas_spent,
         state_gas_spent,
         refunded,
@@ -988,7 +986,7 @@ mod tests {
         );
 
         let validation = evm.validate_tx(&tx);
-        let result = evm.transact(&tx).map(crate::evm::ExecutedTx::discard);
+        let result = evm.call_tx(&tx);
         assert_eq!(validation, result.as_ref().map(|_| ()).map_err(Clone::clone));
         if gas_limit < 31_050 {
             assert_eq!(
@@ -1238,7 +1236,7 @@ mod tests {
         );
 
         assert!(evm.transact(&tx).unwrap().commit().status);
-        let reward = evm.state.account_info_untracked(&beneficiary).unwrap().unwrap().balance;
+        let reward = evm.read_account_info(&beneficiary).unwrap().unwrap().balance;
         assert_eq!(reward, U256::from(21_000 * beneficiary_gas_price));
     }
 
@@ -1279,7 +1277,7 @@ mod tests {
         );
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
-        let sender = evm.state.account_info_untracked(&caller).unwrap().unwrap();
+        let sender = evm.read_account_info(&caller).unwrap().unwrap();
         assert_eq!((sender.balance, sender.nonce), (U256::ZERO, 1));
     }
 
@@ -1308,10 +1306,7 @@ mod tests {
         );
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
-        assert_eq!(
-            evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
-            U256::from(100)
-        );
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(100));
     }
 
     #[test]
@@ -1334,7 +1329,7 @@ mod tests {
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
         charge_upfront(&mut evm, caller, U256::from(100)).unwrap();
-        assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().balance, U256::ZERO);
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::ZERO);
     }
 
     #[test]
@@ -1588,12 +1583,11 @@ mod tests {
                             );
                             let tx = Recovered::new_unchecked(tx, caller);
                             let case = format!("{spec:?} {to:?} value={value} type={tx_type}");
-                            let caller_before = evm.state.account_info_untracked(&caller).unwrap();
-                            let recipient_before =
-                                evm.state.account_info_untracked(&recipient).unwrap();
+                            let caller_before = evm.read_account_info(&caller).unwrap();
+                            let recipient_before = evm.read_account_info(&recipient).unwrap();
                             if balance_check && value == 2 {
                                 assert_eq!(
-                                    evm.transact(&tx).map(crate::evm::ExecutedTx::discard),
+                                    evm.call_tx(&tx),
                                     Err(HandlerError::InsufficientFunds {
                                         fee: U256::from(2),
                                         balance: U256::ONE
@@ -1601,12 +1595,12 @@ mod tests {
                                     "{case}"
                                 );
                                 assert_eq!(
-                                    evm.state.account_info_untracked(&caller).unwrap(),
+                                    evm.read_account_info(&caller).unwrap(),
                                     caller_before,
                                     "{case}"
                                 );
                                 assert_eq!(
-                                    evm.state.account_info_untracked(&recipient).unwrap(),
+                                    evm.read_account_info(&recipient).unwrap(),
                                     recipient_before,
                                     "{case}"
                                 );
@@ -1618,8 +1612,7 @@ mod tests {
                             } else {
                                 assert_eq!(result.status, input[0] == op::STOP, "{case}");
                             }
-                            let nonce =
-                                evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce;
+                            let nonce = evm.read_account_info(&caller).unwrap().unwrap().nonce;
                             assert_eq!(nonce, 11, "{case}");
                         }
                     }

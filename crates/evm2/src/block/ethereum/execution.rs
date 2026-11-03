@@ -8,10 +8,7 @@ use crate::{
         InternalBlockExecutionError, InvalidTxError, StateUpdate, map_database_error,
         map_handler_error,
     },
-    evm::{
-        AccountChangeRef, AccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS,
-        StateChangeSink, SystemTx,
-    },
+    evm::{AccountChangeRef, AccountInfo, StateChangeSink, SystemTx},
     interpreter::InstrStop,
     registry::HandlerError,
 };
@@ -25,6 +22,8 @@ use alloy_consensus::{
 };
 use alloy_eips::{
     eip2718::Typed2718,
+    eip2935::HISTORY_STORAGE_ADDRESS,
+    eip4788::BEACON_ROOTS_ADDRESS,
     eip4895::Withdrawal,
     eip6110::{DEPOSIT_REQUEST_TYPE, MAINNET_DEPOSIT_CONTRACT_ADDRESS},
     eip7002::{WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, WITHDRAWAL_REQUEST_TYPE},

@@ -5,14 +5,14 @@ use crate::{
     bytecode::Bytecode,
     env::BlockEnvExt,
     ethereum::ethereum_tx_registry,
-    evm::{AccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB},
+    evm::{AccountInfo, InMemoryDB},
     utils::b256_to_word,
 };
 use alloc::vec;
 use alloy_consensus::{Signed, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered};
 use alloy_eips::{
-    eip2935::HISTORY_STORAGE_CODE,
-    eip4788::BEACON_ROOTS_CODE,
+    eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
+    eip4788::{BEACON_ROOTS_ADDRESS, BEACON_ROOTS_CODE},
     eip7002::{WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, WITHDRAWAL_REQUEST_PREDEPLOY_CODE},
     eip7251::{CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, CONSOLIDATION_REQUEST_PREDEPLOY_CODE},
 };

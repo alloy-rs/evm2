@@ -5,16 +5,17 @@
 //! transaction decoding, execution and block commits.
 
 use crate::reference;
-use alloy_eips::eip7702::SignedAuthorization;
+use alloy_eips::{
+    eip2935::HISTORY_STORAGE_ADDRESS,
+    eip4788::BEACON_ROOTS_ADDRESS,
+    eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+    eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+    eip7702::SignedAuthorization,
+    eip8282::{BUILDER_DEPOSIT_CONTRACT_ADDRESS, BUILDER_EXIT_CONTRACT_ADDRESS},
+};
 use alloy_primitives::{Address, B256, Bytes, Keccak256, Log, TxKind, U256};
 use alloy_rpc_types_eth::{AccessList as RpcAccessList, AccessListItem as RpcAccessListItem};
-use evm2::{
-    SpecId,
-    evm::{
-        BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
-        WITHDRAWAL_REQUEST_ADDRESS,
-    },
-};
+use evm2::SpecId;
 use evm2_eest::{
     BlockchainTestExecuteConfig, NameFilter,
     blockchaintest::{
@@ -678,23 +679,13 @@ fn revm_post_block(evm: &mut RevmEvm<'_>, spec: SpecId, withdrawals: &[Withdrawa
     }
 
     if spec.enables(SpecId::PRAGUE) {
-        revm_system_call(evm, WITHDRAWAL_REQUEST_ADDRESS, Bytes::new(), "eip7002");
-        revm_system_call(evm, CONSOLIDATION_REQUEST_ADDRESS, Bytes::new(), "eip7251");
+        revm_system_call(evm, WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, Bytes::new(), "eip7002");
+        revm_system_call(evm, CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, Bytes::new(), "eip7251");
     }
 
     if spec.enables(SpecId::AMSTERDAM) {
-        revm_system_call(
-            evm,
-            evm2::evm::BUILDER_DEPOSIT_REQUEST_ADDRESS,
-            Bytes::new(),
-            "eip8282_deposit",
-        );
-        revm_system_call(
-            evm,
-            evm2::evm::BUILDER_EXIT_REQUEST_ADDRESS,
-            Bytes::new(),
-            "eip8282_exit",
-        );
+        revm_system_call(evm, BUILDER_DEPOSIT_CONTRACT_ADDRESS, Bytes::new(), "eip8282_deposit");
+        revm_system_call(evm, BUILDER_EXIT_CONTRACT_ADDRESS, Bytes::new(), "eip8282_exit");
     }
 }
 
