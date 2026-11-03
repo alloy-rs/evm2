@@ -643,7 +643,6 @@ fn access_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use evm2::interpreter::op;
 
     #[cfg(feature = "jit")]
