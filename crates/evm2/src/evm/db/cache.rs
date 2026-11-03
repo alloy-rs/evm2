@@ -117,7 +117,7 @@ pub struct CacheDB<ExtDB = EmptyDB> {
     pub _non_exhaustive: (),
 }
 
-impl Default for CacheDB<EmptyDB> {
+impl Default for InMemoryDB {
     #[inline]
     fn default() -> Self {
         Self::new(EmptyDB::default())
