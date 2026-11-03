@@ -738,17 +738,14 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     ecx.gas.merge_child_gas(result.gas, result.stop);
     // EIP-8037: refund the conditional create state gas when the create fails
     // to deploy (no new account leaf is created).
-    let create_failed = result.created_address.is_none() || !result.stop.is_success();
+    let create_failed = result.created_address.is_none() || !result.is_success();
     if charged_create_state_gas && create_failed {
         ecx.gas.refill_reservoir(version.gas_params.create_state_gas());
     }
 
     let address = EvmWord::from(result.created_address_for_parent());
-    let return_data = if result.stop == InstrStop::Revert {
-        core::mem::take(&mut result.output)
-    } else {
-        Bytes::new()
-    };
+    let return_data =
+        if result.stop.is_revert() { core::mem::take(&mut result.output) } else { Bytes::new() };
     unsafe {
         sp.write(address);
     }
@@ -853,7 +850,7 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
         return Err(result.stop.into());
     }
     ecx.gas.merge_child_gas(result.gas, result.stop);
-    if new_account_state_gas != 0 && !result.stop.is_success() {
+    if new_account_state_gas != 0 && !result.is_success() {
         ecx.gas.refill_reservoir(new_account_state_gas);
     }
 
@@ -861,7 +858,7 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
     if copy_len != 0 {
         ecx.memory_mut().set(out_offset, &result.output[..copy_len]);
     }
-    let success = EvmWord::from(Word::from(u8::from(result.stop.is_success())));
+    let success = EvmWord::from(Word::from(u8::from(result.is_success())));
     unsafe {
         sp.write(success);
     }
@@ -1020,7 +1017,7 @@ pub unsafe fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
 
     // State gas for new account creation (EIP-8037).
     if ecx.enables(EvmFeatures::EIP8037) && should_charge_topup {
-        ecx.gas.spend_state(ecx.gas_params().get(GasId::NewAccountState))?;
+        ecx.gas.spend_state(ecx.gas_params().new_account_state_gas())?;
     }
 
     if !res.previously_destroyed {
