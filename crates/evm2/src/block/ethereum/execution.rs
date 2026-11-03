@@ -671,13 +671,13 @@ impl core::error::Error for SystemCallFailed {}
 mod tests {
     use super::*;
     use alloc::vec;
-    use alloy_primitives::LogData;
 
     fn deposit_log(data: Vec<u8>) -> Log {
-        Log {
-            address: MAINNET_DEPOSIT_CONTRACT_ADDRESS,
-            data: LogData::new_unchecked(vec![DEPOSIT_EVENT_SIGNATURE_HASH], data.into()),
-        }
+        Log::new_unchecked(
+            MAINNET_DEPOSIT_CONTRACT_ADDRESS,
+            vec![DEPOSIT_EVENT_SIGNATURE_HASH],
+            data.into(),
+        )
     }
 
     /// Encodes a canonical `DepositEvent` payload whose fields are filled with `fill`.

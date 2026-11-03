@@ -104,17 +104,13 @@ mod tests {
 
     #[test]
     fn log_rolls_back_to_checkpoint() {
-        use alloy_primitives::{Bytes, LogData};
+        use alloy_primitives::Bytes;
 
         let mut state = State::new(CacheDB::default());
-        let kept = Log {
-            address: Address::repeat_byte(0x44),
-            data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x01])),
-        };
-        let reverted = Log {
-            address: Address::repeat_byte(0x55),
-            data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x02])),
-        };
+        let kept =
+            Log::new_unchecked(Address::repeat_byte(0x44), Vec::new(), Bytes::from_static(&[0x01]));
+        let reverted =
+            Log::new_unchecked(Address::repeat_byte(0x55), Vec::new(), Bytes::from_static(&[0x02]));
 
         state.log(kept.clone());
         let checkpoint = state.checkpoint();
@@ -124,10 +120,11 @@ mod tests {
             state.logs(),
             &[
                 kept.clone(),
-                Log {
-                    address: Address::repeat_byte(0x55),
-                    data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x02])),
-                }
+                Log::new_unchecked(
+                    Address::repeat_byte(0x55),
+                    Vec::new(),
+                    Bytes::from_static(&[0x02])
+                )
             ]
         );
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);

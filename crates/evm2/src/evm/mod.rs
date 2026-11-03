@@ -2251,10 +2251,7 @@ mod tests {
     ) -> HandlerResult<TxResult> {
         let value = Word::from(req.tx.nonce);
         req.host.state.storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)?.write(value);
-        req.host.state.log(Log {
-            address: LIFECYCLE_ACCOUNT,
-            data: LogData::new_unchecked(vec![], Bytes::new()),
-        });
+        req.host.state.log(Log::new_unchecked(LIFECYCLE_ACCOUNT, vec![], Bytes::new()));
         Ok(TxResultExt { status: true, total_gas_spent: req.tx.nonce, ..TxResultExt::default() })
     }
 
@@ -2324,10 +2321,11 @@ mod tests {
         }
 
         let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
-            evm.log(Log {
-                address: TEST_PRECOMPILE,
-                data: LogData::new_unchecked(Vec::new(), Bytes::from_static(b"precompile")),
-            });
+            evm.log(Log::new_unchecked(
+                TEST_PRECOMPILE,
+                Vec::new(),
+                Bytes::from_static(b"precompile"),
+            ));
             Ok(PrecompileOutput::new(Bytes::new()))
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -4565,10 +4563,7 @@ mod tests {
                         .storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)?
                         .write(Word::from(99));
                     req.host.state.account(&LIFECYCLE_ACCOUNT)?.bump_nonce();
-                    req.host.state.log(Log {
-                        address: LIFECYCLE_ACCOUNT,
-                        data: LogData::new_unchecked(vec![], Bytes::new()),
-                    });
+                    req.host.state.log(Log::new_unchecked(LIFECYCLE_ACCOUNT, vec![], Bytes::new()));
                     if let Some(error) = errors.get(req.tx.nonce as usize) {
                         return Err(error.clone());
                     }
