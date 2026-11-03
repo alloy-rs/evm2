@@ -2,8 +2,9 @@ use super::{InspectMode, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
-        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, gas::RemainingGas,
-        private::InstructionImplFn,
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result,
+        gas::RemainingGas,
+        private::{InstructionFlags, InstructionImplFn},
     },
 };
 use core::hint::cold_path;
@@ -54,8 +55,11 @@ extern_table! {
     ) {
         let instruction = C::OPCODE_CONFIG.instruction(OP);
         let instr: InstructionImplFn<T> = instruction.instr;
-        let dynamic_gas = instruction.dynamic_gas;
+        let dynamic_gas = instruction.flags.contains(InstructionFlags::DYNAMIC_GAS);
+        let hooked = instruction.flags.contains(InstructionFlags::HOOKED);
         if M::INSPECT {
+            // Handlers that skip the hooks keep the gas in a register.
+            state.gas_mut().set_remaining(remaining_gas.get());
             M::step(state, pc, stack.len());
             remaining_gas.set(state.gas_mut().remaining());
             if state.result().is_err() {
@@ -76,6 +80,10 @@ extern_table! {
         if M::INSPECT || dynamic_gas {
             state.gas_mut().set_remaining(remaining_gas.get());
         }
+        if hooked {
+            state.set_pc_stack_len(pc.as_ptr(), stack.len());
+            state.set_hooked_running(true);
+        }
         let (r, stack_len) = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
             let mut stack_view = unsafe { stack.borrow() };
@@ -83,6 +91,9 @@ extern_table! {
             (r, stack_view.len)
         };
         stack.set_len(stack_len);
+        if hooked {
+            state.set_hooked_running(false);
+        }
         if dynamic_gas {
             remaining_gas.set(state.gas_mut().remaining());
         }
