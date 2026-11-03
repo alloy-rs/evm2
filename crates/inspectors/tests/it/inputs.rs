@@ -265,7 +265,7 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
     let code = bytes!("5f5f5f5f600160435af100");
     for initial_call_depth in [0, 7, u16::MAX - CALL_DEPTH_LIMIT - 1] {
         for kind in [TransactTo::Call(Address::with_last_byte(0x42)), TransactTo::Create] {
-            let target = Option::from(kind).unwrap_or_else(|| caller.create(0));
+            let target = kind.into_to().unwrap_or_else(|| caller.create(0));
             let data = if kind.is_create() { code.clone() } else { Bytes::from_static(&[1, 2]) };
             let run = |inspector: &mut dyn Inspector<BaseEvmTypes>| {
                 let mut db = InMemoryDB::default();
