@@ -26,3 +26,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 evm2 = { workspace = true, features = ["std"] }
+
+alloy-primitives = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }

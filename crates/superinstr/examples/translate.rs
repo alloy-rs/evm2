@@ -2,8 +2,10 @@
 //!
 //! Usage: `cargo run -p evm2-superinstr --example translate --release [iterations]`
 
+use alloy_primitives::Bytes;
 use evm2::{BaseEvmTypes, ExecutionConfig, SpecId, bytecode::Bytecode};
-use std::{fs, time::Instant};
+use serde::Deserialize;
+use std::{collections::BTreeMap, fs, time::Instant};
 
 fn main() {
     let iterations: usize = std::env::args().nth(1).and_then(|n| n.parse().ok()).unwrap_or(20);
@@ -15,12 +17,10 @@ fn main() {
             continue;
         }
         let text = fs::read_to_string(&path).unwrap();
-        for part in text.split("\"code\": \"0x").skip(1) {
-            let hex = &part[..part.find('"').unwrap()];
-            if hex.len() > 2 && hex.len() % 2 == 0 {
-                codes.push(alloy_primitives::hex::decode(hex).unwrap());
-            }
-        }
+        let fixture: Fixture = serde_json::from_str(&text)
+            .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()));
+        let accounts = fixture.into_values().flat_map(|unit| unit.pre.into_values());
+        codes.extend(accounts.map(|account| account.code).filter(|code| !code.is_empty()));
     }
     codes.sort();
     codes.dedup();
@@ -28,9 +28,8 @@ fn main() {
         SpecId::OSAKA,
         *evm2::Version::base(SpecId::OSAKA),
     );
-    let bytecodes: Vec<_> =
-        codes.iter().map(|code| Bytecode::new_raw(code.clone().into())).collect();
-    let bytes: usize = codes.iter().map(Vec::len).sum();
+    let bytecodes: Vec<_> = codes.iter().map(|code| Bytecode::new_raw(code.clone())).collect();
+    let bytes: usize = codes.iter().map(|code| code.len()).sum();
     let mut records = 0;
     let start = Instant::now();
     for _ in 0..iterations {
@@ -45,4 +44,18 @@ fn main() {
         elapsed.as_nanos() as f64 / (bytes * iterations) as f64,
         records as f64 / (bytes * iterations) as f64,
     );
+}
+
+/// A state test fixture: its test units by name.
+type Fixture = BTreeMap<String, Unit>;
+
+/// The part of a state test unit this example reads.
+#[derive(Deserialize)]
+struct Unit {
+    pre: BTreeMap<String, Account>,
+}
+
+#[derive(Deserialize)]
+struct Account {
+    code: Bytes,
 }
