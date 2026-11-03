@@ -3239,3 +3239,51 @@ fn test_geth_prestate_selfdestruct_reports_slots_before_the_wipe() {
         })
     );
 }
+
+#[test]
+fn test_geth_erc7562_operand_overflow_is_not_out_of_gas() {
+    let root = address!("1000000000000000000000000000000000000001");
+    let child = address!("1000000000000000000000000000000000000002");
+    // geth rejects a >64-bit memory operand before metering dynamic gas, but an
+    // affordable-size expansion with insufficient gas is still an out-of-gas error.
+    for (offset, out_of_gas) in
+        [(U256::MAX, false), (U256::from(0x10_0000), true), (U256::from(u32::MAX), true)]
+    {
+        let mut child_code = vec![op::PUSH1, 0, op::PUSH32];
+        child_code.extend_from_slice(&offset.to_be_bytes::<32>());
+        child_code.push(op::MSTORE);
+        let mut root_code = hex!("60006000600060006000").to_vec();
+        root_code.push(op::PUSH20);
+        root_code.extend_from_slice(child.as_slice());
+        root_code.extend_from_slice(&hex!("61fffff15000"));
+        let mut db = CacheDB::<EmptyDB>::default();
+        for (address, code) in [(root, root_code), (child, child_code)] {
+            db.insert_account_info(
+                &address,
+                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+            );
+        }
+        let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default());
+        let mut inspector = DebugInspector::new(opts).unwrap();
+        let mut evm = Context::mainnet().with_db(db).build_mainnet().with_inspector(&mut inspector);
+        let res = evm
+            .inspect_tx(TxEnv {
+                gas_limit: 1_000_000,
+                kind: TransactTo::Call(root),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(res.result.is_success(), "{res:#?}");
+        let (ctx, inspector) = evm.ctx_inspector();
+        let tx = ctx.tx().envelope();
+        let block = *ctx.block();
+        let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+        let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+        assert!(!frame.out_of_gas);
+        assert_eq!(frame.calls.len(), 1);
+        let call = &frame.calls[0];
+        assert!(call.error.is_some(), "offset={offset:#x}");
+        assert_eq!(call.used_opcodes, HashMap::from_iter([(op::MSTORE, 1)]));
+        assert_eq!(call.out_of_gas, out_of_gas, "offset={offset:#x}");
+    }
+}

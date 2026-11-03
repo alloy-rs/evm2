@@ -200,8 +200,12 @@ impl Erc7562Inspector {
                     .collect(),
                 used_opcodes: counters.used_opcodes,
                 contract_size: counters.contract_size,
-                // geth reports it for frames that exit with an out of gas error, not for the root.
-                out_of_gas: idx != 0 && node.trace.status.is_some_and(InstrStop::is_out_of_gas),
+                // geth's OnExit checks ErrOutOfGas / ErrCodeStoreOutOfGas, not the bare
+                // ErrGasUintOverflow of an oversized memory operand. The root is excluded.
+                out_of_gas: idx != 0
+                    && node.trace.status.is_some_and(|status| {
+                        status.is_out_of_gas() && status != InstrStop::InvalidOperandOOG
+                    }),
                 keccak: if idx == 0 { self.keccak.iter().cloned().collect() } else { Vec::new() },
                 calls: Vec::new(),
             };
