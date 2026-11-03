@@ -3,12 +3,11 @@
 use crate::{
     EvmConfig, EvmTypesHost, SpecId,
     constants::{
-        CALL_DEPTH_LIMIT, MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
-        MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
+        CALL_DEPTH_LIMIT, MAX_CODE_SIZE, MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE,
+        MAX_INITCODE_SIZE_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
     },
     interpreter::{instructions as instr, op},
 };
-use alloy_eip7928::MAX_CODE_SIZE;
 use alloy_eips::{eip4844::MAX_BLOBS_PER_BLOCK_DENCUN, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 
 mod gas_params;

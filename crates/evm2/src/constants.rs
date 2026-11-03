@@ -1,7 +1,11 @@
 //! EVM constants.
 
-use alloy_eip7928::MAX_CODE_SIZE;
 use alloy_primitives::{B256, b256};
+
+/// Maximum deployed contract bytecode size.
+///
+/// EIP-170 - Contract code size limit.
+pub const MAX_CODE_SIZE: usize = 0x6000;
 
 /// Maximum contract creation initcode size.
 ///
