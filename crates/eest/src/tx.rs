@@ -8,7 +8,7 @@ use alloy_eips::{
     eip2718::{Decodable2718, Eip2718Error},
     eip7702::SignedAuthorization,
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, ruint::FromUintError};
 use alloy_rpc_types_eth::{
     AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
     TransactionRequest,
@@ -71,7 +71,7 @@ fn normalize_authorization_value(value: &mut serde_json::Value) {
 pub(crate) enum TxBuildError {
     /// Numeric value overflowed the target type.
     #[error("value overflows {0}")]
-    Overflow(&'static str),
+    Overflow(&'static str, #[source] Box<dyn core::error::Error + Send + Sync>),
     /// Transaction request could not be converted to a consensus transaction.
     #[error("could not build consensus transaction: {0}")]
     BuildTransaction(String),
@@ -83,7 +83,7 @@ pub(crate) enum TxBuildError {
     Decode(#[from] Eip2718Error),
     /// Signature `v` value is not valid for the transaction type.
     #[error("invalid signature v value: {0}")]
-    InvalidV(U256),
+    InvalidV(U256, #[source] Option<FromUintError<u64>>),
     /// An EIP-155 legacy transaction appears before Spurious Dragon.
     #[error("EIP-155 transaction before Spurious Dragon")]
     ProtectedLegacy,
@@ -167,13 +167,13 @@ fn consensus_tx(fields: TxFields) -> Result<TypedTransaction, TxBuildError> {
         .chain_id
         .map(TryInto::try_into)
         .transpose()
-        .map_err(|_| TxBuildError::Overflow("chainId"))?;
+        .map_err(|e| TxBuildError::Overflow("chainId", Box::new(e)))?;
     if !matches!(fields.tx_type, Some(2..=4)) {
         request.gas_price = fields
             .gas_price
             .map(TryInto::try_into)
             .transpose()
-            .map_err(|_| TxBuildError::Overflow("gasPrice"))?;
+            .map_err(|e| TxBuildError::Overflow("gasPrice", Box::new(e)))?;
         if request.gas_price.is_none()
             && (matches!(fields.tx_type, Some(0 | 1))
                 || (fields.max_fee_per_gas.is_none() && fields.max_priority_fee_per_gas.is_none()))
@@ -185,7 +185,7 @@ fn consensus_tx(fields: TxFields) -> Result<TypedTransaction, TxBuildError> {
         .max_fee_per_gas
         .map(TryInto::try_into)
         .transpose()
-        .map_err(|_| TxBuildError::Overflow("maxFeePerGas"))?;
+        .map_err(|e| TxBuildError::Overflow("maxFeePerGas", Box::new(e)))?;
     request.max_priority_fee_per_gas =
         if fields.max_fee_per_gas.is_some() && fields.max_priority_fee_per_gas.is_none() {
             Some(0)
@@ -194,13 +194,14 @@ fn consensus_tx(fields: TxFields) -> Result<TypedTransaction, TxBuildError> {
                 .max_priority_fee_per_gas
                 .map(TryInto::try_into)
                 .transpose()
-                .map_err(|_| TxBuildError::Overflow("maxPriorityFeePerGas"))?
+                .map_err(|e| TxBuildError::Overflow("maxPriorityFeePerGas", Box::new(e)))?
         };
-    request.max_fee_per_blob_gas = fields
-        .max_fee_per_blob_gas
-        .map(TryInto::try_into)
-        .transpose()
-        .map_err(|_| TxBuildError::Overflow("maxFeePerBlobGas"))?;
+    request.max_fee_per_blob_gas =
+        fields
+            .max_fee_per_blob_gas
+            .map(TryInto::try_into)
+            .transpose()
+            .map_err(|e| TxBuildError::Overflow("maxFeePerBlobGas", Box::new(e)))?;
     request.access_list = fields.access_list;
     request.authorization_list = fields.authorization_list;
     if fields.max_fee_per_blob_gas.is_some()
@@ -248,7 +249,6 @@ pub(crate) fn signature_from_vrs(
     legacy: bool,
     spec: SpecId,
 ) -> Result<(Signature, Option<u64>), TxBuildError> {
-    let invalid = || TxBuildError::InvalidV(v);
     let (y_parity, chain_id) = if !legacy && v <= U256::ONE {
         (v == U256::ONE, None)
     } else if legacy && (v == U256::from(27) || v == U256::from(28)) {
@@ -258,9 +258,12 @@ pub(crate) fn signature_from_vrs(
             return Err(TxBuildError::ProtectedLegacy);
         }
         let encoded = v - U256::from(35);
-        (encoded.bit(0), Some(u64::try_from(encoded >> 1).map_err(|_| invalid())?))
+        (
+            encoded.bit(0),
+            Some(u64::try_from(encoded >> 1).map_err(|e| TxBuildError::InvalidV(v, Some(e)))?),
+        )
     } else {
-        return Err(invalid());
+        return Err(TxBuildError::InvalidV(v, None));
     };
     Ok((Signature::new(r, s, y_parity), chain_id))
 }
@@ -358,8 +361,8 @@ mod tests {
         let (signature, chain_id) = parse(v(38), true, SpecId::SPURIOUS_DRAGON).unwrap();
         assert!(signature.v());
         assert_eq!(chain_id, Some(1));
-        assert!(matches!(parse(v(29), true, SpecId::CANCUN), Err(TxBuildError::InvalidV(_))));
-        assert!(matches!(parse(v(27), false, SpecId::CANCUN), Err(TxBuildError::InvalidV(_))));
+        assert!(matches!(parse(v(29), true, SpecId::CANCUN), Err(TxBuildError::InvalidV(..))));
+        assert!(matches!(parse(v(27), false, SpecId::CANCUN), Err(TxBuildError::InvalidV(..))));
         assert!(parse(v(1), false, SpecId::CANCUN).unwrap().0.v());
     }
 
@@ -371,7 +374,7 @@ mod tests {
         // The encoded `v` of the largest chain ID needs 65 bits.
         let chain_id = u128::from(u64::MAX);
         assert_eq!(parse(encoded(chain_id)).unwrap().1, Some(u64::MAX));
-        assert!(matches!(parse(encoded(chain_id + 1)), Err(TxBuildError::InvalidV(_))));
+        assert!(matches!(parse(encoded(chain_id + 1)), Err(TxBuildError::InvalidV(..))));
     }
 
     #[test]

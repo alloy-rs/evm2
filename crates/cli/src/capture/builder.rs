@@ -63,8 +63,8 @@ impl CaptureBuilder {
             return Ok(*index);
         }
 
-        let index = u32::try_from(self.versions.len())
-            .map_err(|_| CaptureError::TooManyCapturedVersions)?;
+        let index =
+            u32::try_from(self.versions.len()).map_err(CaptureError::TooManyCapturedVersions)?;
         self.versions.push(crate::capture::model::captured_version(spec));
         self.version_indexes.insert(spec_id, index);
         Ok(index)

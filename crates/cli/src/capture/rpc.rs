@@ -30,7 +30,8 @@ impl RpcEndpoint {
         max_concurrent_requests: usize,
         rpc_retries: u32,
     ) -> Result<Self, CaptureError> {
-        let url = url.parse().map_err(|_| CaptureError::InvalidRpcUrl(url.to_owned()))?;
+        let url =
+            url.parse().map_err(|e| CaptureError::InvalidRpcUrl(url.to_owned(), Box::new(e)))?;
         let retry_layer = alloy_provider::transport::layers::RetryBackoffLayer::new(
             rpc_retries,
             RPC_INITIAL_BACKOFF_MS,

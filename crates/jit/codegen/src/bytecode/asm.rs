@@ -2,7 +2,7 @@
 
 use crate::{
     U256, encode_pair, encode_single,
-    eyre::{self, Result},
+    eyre::{self, Result, WrapErr},
 };
 use alloy_primitives::map::HashMap;
 use evm2::interpreter::{op, opcode::OpCode};
@@ -599,8 +599,8 @@ fn expect_number_u8(
     match &tok.kind {
         TokenKind::Number(n) => {
             let v: u64 =
-                n.try_into().map_err(|_| eyre::eyre!("invalid {ctx} immediate: too large"))?;
-            u8::try_from(v).map_err(|_| eyre::eyre!("invalid {ctx} immediate: too large"))
+                n.try_into().wrap_err_with(|| format!("invalid {ctx} immediate: too large"))?;
+            u8::try_from(v).wrap_err_with(|| format!("invalid {ctx} immediate: too large"))
         }
         _ => {
             eyre::bail!("expected numeric immediate for {ctx}, got {tok:?}");

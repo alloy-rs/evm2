@@ -1073,7 +1073,8 @@ fn parse_state(
 ) -> Result<InMemoryDB, TestErrorKind> {
     let mut database = InMemoryDB::default();
     for (address, account) in accounts {
-        let nonce = account.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
+        let nonce =
+            account.nonce.try_into().map_err(|e| TestErrorKind::Overflow("nonce", Box::new(e)))?;
         let info = EvmAccountInfo::default()
             .with_balance(account.balance)
             .with_nonce(nonce)
@@ -1120,8 +1121,9 @@ fn build_tx(
     spec: SpecId,
     validate: bool,
 ) -> Result<(RecoveredTxEnvelope, EthereumTxEnvelope<TxEip4844>), TestErrorKind> {
-    let gas_limit = raw.gas_limit.try_into().map_err(|_| TestErrorKind::Overflow("gasLimit"))?;
-    let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
+    let gas_limit =
+        raw.gas_limit.try_into().map_err(|e| TestErrorKind::Overflow("gasLimit", Box::new(e)))?;
+    let nonce = raw.nonce.try_into().map_err(|e| TestErrorKind::Overflow("nonce", Box::new(e)))?;
     let tx_type = raw.tx_type();
     let (signer, chain_id, signature) = if validate {
         let (signature, legacy_chain_id) =

@@ -5,7 +5,7 @@ pub(crate) enum CaptureError {
     #[error("invalid block range: from {from} is greater than to {to}")]
     InvalidRange { from: u64, to: u64 },
     #[error("invalid RPC URL: {0}")]
-    InvalidRpcUrl(String),
+    InvalidRpcUrl(String, #[source] Box<dyn core::error::Error + Send + Sync>),
     #[error("RPC transport request failed")]
     Transport(#[from] alloy_provider::transport::TransportError),
     #[error("RPC did not return block header {0}")]
@@ -32,13 +32,17 @@ pub(crate) enum CaptureError {
     #[error("invalid trace result: {0}")]
     InvalidTraceResult(&'static str),
     #[error("invalid hex value {0}")]
-    InvalidHex(String),
+    InvalidHex(String, #[source] alloy_primitives::hex::FromHexError),
+    #[error("invalid hex value {0}")]
+    MissingHexPrefix(String),
     #[error("invalid integer value {0}")]
-    InvalidNumber(String),
+    InvalidNumber(String, #[source] alloy_primitives::ruint::ParseError),
+    #[error("invalid integer value {0}")]
+    InvalidInteger(String, #[source] core::num::ParseIntError),
     #[error("failed to recover transaction signer")]
     RecoverSigner(#[source] alloy_consensus::crypto::RecoveryError),
     #[error("capture contains too many distinct execution versions")]
-    TooManyCapturedVersions,
+    TooManyCapturedVersions(#[source] core::num::TryFromIntError),
     #[error("capture contains no execution versions")]
     EmptyCapturedVersions,
     #[error("capture contains no blocks")]

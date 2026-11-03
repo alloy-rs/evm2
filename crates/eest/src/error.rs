@@ -81,7 +81,7 @@ pub(crate) enum TestErrorKind {
     },
     /// Numeric value overflowed the target type.
     #[error("value overflows {0}")]
-    Overflow(&'static str),
+    Overflow(&'static str, #[source] Box<dyn core::error::Error + Send + Sync>),
     /// The runner does not support the test's fork.
     #[error("unsupported fork: {0:?}")]
     UnsupportedFork(ForkSpec),
@@ -108,11 +108,11 @@ pub(crate) enum TestErrorKind {
 impl From<TxBuildError> for TestErrorKind {
     fn from(error: TxBuildError) -> Self {
         match error {
-            TxBuildError::Overflow(name) => Self::Overflow(name),
+            TxBuildError::Overflow(name, source) => Self::Overflow(name, source),
             TxBuildError::BuildTransaction(error) => Self::BuildTransaction(error),
             TxBuildError::SerdeDeserialize(error) => Self::SerdeDeserialize(error),
             error @ (TxBuildError::Decode(_)
-            | TxBuildError::InvalidV(_)
+            | TxBuildError::InvalidV(..)
             | TxBuildError::ProtectedLegacy
             | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error.to_string()),
         }

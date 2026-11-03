@@ -14,7 +14,9 @@ use evm2_eest::{StateTestPost, StateTestSuite, StateTestUnit};
 use evm2_jit_context::{EvmCompilerFn, can_run_compiled};
 use evm2_jit_llvm::EvmLlvmBackend;
 use evm2_jit_runtime::{
-    EvmCompiler, Linker, OptimizationLevel, eyre, parse_asm, shared_library_path,
+    EvmCompiler, Linker, OptimizationLevel,
+    eyre::{self, WrapErr},
+    parse_asm, shared_library_path,
 };
 use std::{
     borrow::Cow,
@@ -804,11 +806,11 @@ fn build_fixture_tx(
 }
 
 fn u128_value(value: U256) -> eyre::Result<u128> {
-    value.try_into().map_err(|_| eyre::eyre!("fixture value overflows u128"))
+    value.try_into().wrap_err("fixture value overflows u128")
 }
 
 fn u64_value(value: U256) -> eyre::Result<u64> {
-    value.try_into().map_err(|_| eyre::eyre!("fixture value overflows u64"))
+    value.try_into().wrap_err("fixture value overflows u64")
 }
 
 fn read_code_path(path: &Path) -> eyre::Result<Vec<u8>> {

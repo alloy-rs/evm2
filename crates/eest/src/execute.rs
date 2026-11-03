@@ -614,9 +614,9 @@ fn build_tx(
         .get(indexes.gas)
         .ok_or(TestErrorKind::BadIndex("gas"))?
         .try_into()
-        .map_err(|_| TestErrorKind::Overflow("gasLimit"))?;
+        .map_err(|e| TestErrorKind::Overflow("gasLimit", Box::new(e)))?;
     let value = *raw.value.get(indexes.value).ok_or(TestErrorKind::BadIndex("value"))?;
-    let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
+    let nonce = raw.nonce.try_into().map_err(|e| TestErrorKind::Overflow("nonce", Box::new(e)))?;
 
     Ok(build_recovered_tx(
         TxFields {

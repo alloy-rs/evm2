@@ -15,6 +15,7 @@ use crossbeam_queue::ArrayQueue;
 use evm2::SpecId;
 use stats::RuntimeStats;
 use std::{
+    any::Any,
     hint::cold_path,
     ops::ControlFlow,
     sync::{
@@ -409,7 +410,7 @@ impl JitBackend {
             bytecode: req.code,
             sync_notifier: SyncNotifier::new(tx),
         });
-        self.inner.tx.send(cmd).map_err(|_| eyre::eyre!("backend channel closed"))?;
+        self.inner.tx.send(cmd).wrap_err("backend channel closed")?;
         self.recv_compile_completion(rx)
     }
 
@@ -486,7 +487,7 @@ impl JitBackend {
             .collect();
         let completions = owned.len();
         let cmd = Command::PrepareAot(owned);
-        self.inner.tx.send(cmd).map_err(|_| eyre::eyre!("backend channel closed"))?;
+        self.inner.tx.send(cmd).wrap_err("backend channel closed")?;
         for _ in 0..completions {
             self.recv_compile_completion(rx.clone())?;
         }
@@ -801,7 +802,7 @@ impl BackendInner {
             }
 
             // Thread signaled done, join should return immediately.
-            ct.handle.join().map_err(|_| eyre::eyre!("backend thread panicked"))??;
+            ct.handle.join().map_err(backend_panic)??;
         }
         Ok(())
     }
@@ -812,5 +813,17 @@ impl Drop for BackendInner {
         if let Err(err) = self.shutdown() {
             warn!(%err, "failed to shutdown JIT backend");
         }
+    }
+}
+
+/// Wraps a backend thread's panic payload message, if it has one, as the cause of the report.
+fn backend_panic(payload: Box<dyn Any + Send>) -> eyre::Report {
+    let message = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+    match message {
+        Some(message) => eyre::Report::msg(message.to_owned()).wrap_err("backend thread panicked"),
+        None => eyre::eyre!("backend thread panicked"),
     }
 }
