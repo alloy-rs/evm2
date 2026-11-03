@@ -105,10 +105,15 @@ fn state_change_consumer() -> HandlerResult<()> {
     assert_eq!(consumer.account_changes, 0);
     assert_eq!(consumer.storage_wipes, 0);
     assert_eq!(consumer.storage_changes.len(), 1);
-    assert_eq!(storage_change.address, target);
-    assert_eq!(storage_change.key, U256::ONE);
-    assert_eq!(storage_change.original, U256::ZERO);
-    assert_eq!(storage_change.current, U256::from(0xdead_u64));
+    assert_eq!(
+        *storage_change,
+        StorageChange {
+            address: target,
+            key: U256::ONE,
+            original: U256::ZERO,
+            current: U256::from(0xdead_u64),
+        }
+    );
     Ok(())
 }
 

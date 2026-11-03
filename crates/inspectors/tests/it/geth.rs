@@ -15,7 +15,9 @@ use alloy_primitives::{
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
     GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
-    PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
+    PreStateConfig, PreStateFrame, StateGasTrace,
+    erc7562::{AccessedSlots, Erc7562Config},
+    mux::MuxConfig,
 };
 use evm2::{
     AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, EvmTypesHost, ExecutionConfig,
@@ -593,11 +595,16 @@ fn test_geth_erc7562_accessed_slots_and_ignored_opcodes() {
     let slot = |slot: u8| B256::with_last_byte(slot);
     let slots = &frame.accessed_slots;
     assert_eq!(
-        slots.reads,
-        HashMap::from_iter([
-            (slot(1), vec![B256::with_last_byte(0x2a)]),
-            (slot(2), vec![B256::with_last_byte(0x2b)]),
-        ])
+        *slots,
+        AccessedSlots {
+            reads: HashMap::from_iter([
+                (slot(1), vec![B256::with_last_byte(0x2a)]),
+                (slot(2), vec![B256::with_last_byte(0x2b)]),
+            ]),
+            writes: HashMap::from_iter([(slot(1), 1), (slot(3), 1)]),
+            transient_reads: HashMap::from_iter([(slot(4), 1)]),
+            transient_writes: HashMap::from_iter([(slot(4), 1)]),
+        }
     );
     assert_eq!(slots.writes, HashMap::from_iter([(slot(1), 1), (slot(3), 1)]));
     assert_eq!(slots.transient_reads, HashMap::from_iter([(slot(4), 1)]));
@@ -931,10 +938,15 @@ fn test_geth_state_gas_tracer() {
 
     match trace {
         GethTrace::StateGasTracer(frame) => {
-            assert_eq!(frame.gas_used, gas.tx_gas_used());
-            assert_eq!(frame.execution_gas_used, gas.execution_gas_spent());
-            assert_eq!(frame.state_gas_used, gas.state_gas_spent());
-            assert_eq!(frame.gas_refund, gas.refunded);
+            assert_eq!(
+                frame,
+                StateGasTrace {
+                    gas_used: gas.tx_gas_used(),
+                    execution_gas_used: gas.execution_gas_spent(),
+                    state_gas_used: gas.state_gas_spent(),
+                    gas_refund: gas.refunded,
+                }
+            );
         }
         _ => panic!("Expected StateGasTracer"),
     }
@@ -1210,10 +1222,15 @@ fn test_geth_mux_tracer() {
         .clone();
     match state_gas_frame {
         GethTrace::StateGasTracer(state_gas) => {
-            assert_eq!(state_gas.gas_used, res.tx_result.result.tx_gas_used());
-            assert_eq!(state_gas.execution_gas_used, res.tx_result.result.execution_gas_spent());
-            assert_eq!(state_gas.state_gas_used, res.tx_result.result.state_gas_spent());
-            assert_eq!(state_gas.gas_refund, res.tx_result.result.refunded);
+            assert_eq!(
+                state_gas,
+                StateGasTrace {
+                    gas_used: res.tx_result.result.tx_gas_used(),
+                    execution_gas_used: res.tx_result.result.execution_gas_spent(),
+                    state_gas_used: res.tx_result.result.state_gas_spent(),
+                    gas_refund: res.tx_result.result.refunded,
+                }
+            );
         }
         _ => panic!("Expected StateGasTracer"),
     }
