@@ -671,7 +671,7 @@ fn parse_fixture_bench(bench: &Bench, fixture_path: &str) -> eyre::Result<Prepar
     let (case_name, unit, post) = select_case(&suite, &bench.name, bench.spec_id)?;
     let block = parse_block(&unit.env);
     let mut db = InMemoryDB::default();
-    let mut accounts = Vec::new();
+    let mut accounts = Vec::with_capacity(unit.pre.len());
     for (address, account) in &unit.pre {
         let bytecode = Bytecode::from_stored(account.code.clone());
         let code_hash = bytecode.hash_slow();
