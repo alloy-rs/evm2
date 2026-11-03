@@ -307,7 +307,7 @@ impl crate::evm::StateChangeSource for BundleSource<'_> {
         }
         for (address, account) in &self.0.state {
             let current = account.info.as_ref();
-            if account.status.was_destroyed() {
+            if account.was_destroyed() {
                 sink.storage_wipe(*address)?;
             }
             sink.account(crate::evm::AccountChangeRef {
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(account.info.as_ref().unwrap().extension.as_ref(), b"updated extension");
         assert!(bundle.revert_latest());
         assert_eq!(
-            bundle.state.get(&address).unwrap().info.as_ref().unwrap().extension.as_ref(),
+            bundle.account(&address).unwrap().info.as_ref().unwrap().extension.as_ref(),
             b"original extension"
         );
     }
