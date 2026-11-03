@@ -338,7 +338,7 @@ impl Default for RunConfig<'_> {
             host: None,
             spec_id: SpecId::OSAKA,
             tx_env: TxEnvExt::default(),
-            message: MessageExt { gas_limit: 10_000, ..MessageExt::default() },
+            message: test_message(),
             gas_limit: 10_000,
             return_data: Bytes::new(),
         }
@@ -477,4 +477,8 @@ pub(crate) fn handle_test_tx(
 /// Appends code that returns the word at the top of the stack as the frame output.
 pub(crate) fn return_top_word(code: &mut Vec<u8>) {
     code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
+}
+
+pub(crate) fn test_message() -> Message<TestTypes> {
+    MessageExt { gas_limit: 10_000, ..MessageExt::default() }
 }
