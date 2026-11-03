@@ -1355,7 +1355,7 @@ mod tests {
             fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let mut gas = interp.gas();
                 gas.set_remaining(100);
-                gas.set_refunded(7);
+                gas.set_refund(7);
                 interp.set_gas(gas);
             }
 
