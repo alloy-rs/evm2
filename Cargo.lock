@@ -2836,6 +2836,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "evm2-superinstr"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "dashmap",
+ "evm2",
+ "tracing",
+]
+
+[[package]]
 name = "eyre"
 version = "0.6.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"

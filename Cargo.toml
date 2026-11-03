@@ -13,6 +13,7 @@ members = [
     "crates/jit/context",
     "crates/jit/llvm",
     "crates/jit/runtime",
+    "crates/superinstr",
 ]
 resolver = "3"
 
@@ -60,6 +61,7 @@ evm2-jit-codegen = { path = "crates/jit/codegen", version = "0.1.0", default-fea
 evm2-jit-context = { path = "crates/jit/context", version = "0.1.0", default-features = false }
 evm2-jit-llvm = { path = "crates/jit/llvm", version = "0.1.0", default-features = false }
 evm2-jit-runtime = { path = "crates/jit/runtime", version = "0.1.0", default-features = false }
+evm2-superinstr = { path = "crates/superinstr", version = "0.1.0" }
 
 alloy-consensus = { version = "2.0.4", default-features = false }
 alloy-chains = { version = "0.2.34", default-features = false }
