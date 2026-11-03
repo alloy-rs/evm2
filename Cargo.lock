@@ -2645,6 +2645,7 @@ dependencies = [
  "evm2-jit-context",
  "evm2-jit-llvm",
  "evm2-jit-runtime",
+ "evm2-superinstr",
  "futures-util",
  "libloading",
  "mimalloc",

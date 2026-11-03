@@ -46,6 +46,12 @@ pub(crate) fn run(command: Replay) -> Result<()> {
             "--json-traces requires the interpreter backend; drop --jit/--aot".to_string(),
         ));
     }
+    #[cfg(feature = "superinstr")]
+    if command.json_traces && command.superinstr {
+        return Err(Error::InvalidArgs(
+            "--json-traces requires the interpreter backend; drop --superinstr".to_string(),
+        ));
+    }
     let options = ReplayOptions {
         trace: command.json_traces,
         print_json_outcome: command.json_output,
@@ -251,6 +257,10 @@ fn collect_json_files_into(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
 }
 
 const fn replay_state_execution_mode(_command: &Replay) -> StateTestExecutionMode {
+    #[cfg(feature = "superinstr")]
+    if _command.superinstr {
+        return StateTestExecutionMode::SuperInstr;
+    }
     #[cfg(feature = "jit")]
     {
         if _command.jit {
@@ -264,6 +274,10 @@ const fn replay_state_execution_mode(_command: &Replay) -> StateTestExecutionMod
 }
 
 const fn replay_blockchain_execution_mode(_command: &Replay) -> BlockchainTestExecutionMode {
+    #[cfg(feature = "superinstr")]
+    if _command.superinstr {
+        return BlockchainTestExecutionMode::SuperInstr;
+    }
     #[cfg(feature = "jit")]
     {
         if _command.jit {
@@ -539,6 +553,8 @@ mod tests {
             filter_file: None,
             jit,
             aot,
+            #[cfg(feature = "superinstr")]
+            superinstr: false,
             db_stats: false,
             json_traces: false,
             json_output: false,

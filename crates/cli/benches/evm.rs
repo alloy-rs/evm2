@@ -17,6 +17,9 @@ mod mainnet;
 mod mainnet_revm;
 #[path = "evm/revm.rs"]
 mod revm;
+#[cfg(feature = "superinstr")]
+#[path = "evm/superinstr.rs"]
+mod superinstr;
 #[path = "evm/support.rs"]
 mod support;
 
@@ -52,12 +55,17 @@ fn evm(c: &mut Criterion) {
 
     let shard = env::var("EVM2_BENCH_SHARD").ok();
     assert!(
-        matches!(shard.as_deref(), None | Some("interpreter" | "jit" | "jit-mainnet")),
+        matches!(
+            shard.as_deref(),
+            None | Some("interpreter" | "jit" | "jit-mainnet" | "superinstr")
+        ),
         "unknown EVM2_BENCH_SHARD: {shard:?}"
     );
     let bench_interpreter = matches!(shard.as_deref(), None | Some("interpreter"));
+    let bench_superinstr =
+        cfg!(feature = "superinstr") && matches!(shard.as_deref(), None | Some("superinstr"));
     assert!(
-        bench_interpreter || cfg!(feature = "jit"),
+        bench_interpreter || bench_superinstr || cfg!(feature = "jit"),
         "JIT benchmark shards require the jit feature"
     );
 
@@ -77,9 +85,11 @@ fn evm(c: &mut Criterion) {
     let cases = expand_cases(&benches, &suites);
 
     let bench_revm = bench_interpreter && env::var_os("EVM2_BENCH_REVM").is_some();
+    let _ = bench_superinstr;
 
     #[cfg(feature = "jit")]
-    let mut jit_compiler = (shard.as_deref() != Some("interpreter")).then(jit::Compiler::new);
+    let mut jit_compiler =
+        matches!(shard.as_deref(), None | Some("jit" | "jit-mainnet")).then(jit::Compiler::new);
 
     for bench in &cases {
         match bench.kind {
@@ -94,6 +104,13 @@ fn evm(c: &mut Criterion) {
                 if let Some(compiler) = &mut jit_compiler
                     && let Some(prepared) = jit::PreparedBench::load(bench, &suites, compiler)
                 {
+                    prepared.sanity_check();
+                    prepared.bench(&mut group);
+                }
+
+                #[cfg(feature = "superinstr")]
+                if bench_superinstr {
+                    let prepared = superinstr::PreparedBench::load(bench, &suites);
                     prepared.sanity_check();
                     prepared.bench(&mut group);
                 }

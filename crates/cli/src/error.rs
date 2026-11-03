@@ -53,7 +53,7 @@ pub(crate) enum Error {
     UnknownFixtureKind { path: std::path::PathBuf },
     #[error("{failed} of {total} replayed fixtures failed")]
     ReplayFailures { failed: usize, total: usize },
-    #[cfg(feature = "jit")]
+    #[cfg(any(feature = "jit", feature = "superinstr"))]
     #[error("invalid arguments: {0}")]
     InvalidArgs(String),
 }
