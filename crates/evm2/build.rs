@@ -58,7 +58,7 @@ impl DispatchBackend {
         match self {
             Self::Auto => {
                 if is_wasm {
-                    Self::SingleReturn
+                    Self::Unpacked
                 } else if target_pointer_width == Some(64) {
                     // `rust-preserve-none` passes arguments on the stack on 32-bit targets.
                     if !no_tco && rustc_is_nightly() { Self::Tco } else { Self::Packed }

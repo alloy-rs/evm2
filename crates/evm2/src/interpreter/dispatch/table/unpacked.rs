@@ -1,3 +1,4 @@
+use super::Cursor as _;
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{InterpreterState, Pc, Stack, StackBacking, gas::Gas},
@@ -5,10 +6,17 @@ use crate::{
 
 pub(super) type LoopState = ();
 
-pub(super) type Cursor = (Pc, usize);
+core::cfg_select! {
+    all(target_family = "wasm", target_pointer_width = "32") => {
+        pub(super) type Cursor = WasmCursor;
+    }
+    _ => {
+        pub(super) type Cursor = (Pc, usize);
+    }
+}
 
 /// Unpacked instruction return value.
-type InstrFnRet = (Pc, usize);
+pub(crate) type InstrFnRet = Cursor;
 
 /// Unpacked instruction function pointer.
 pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
@@ -18,12 +26,12 @@ pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
 #[inline(always)]
 pub(super) fn dispatch_loop_call<T: EvmTypesHost>(
     instr: RawInstrFn<T>,
-    (pc, stack_len): Cursor,
+    cursor: Cursor,
     stack: &mut StackBacking,
     state: &mut InterpreterState<'_, '_, T>,
     _loop_state: &mut LoopState,
 ) -> Cursor {
-    instr(pc, Stack::new(stack, stack_len), state)
+    instr(cursor.pc(), Stack::new(stack, cursor.stack_len()), state)
 }
 
 #[inline(always)]
@@ -51,6 +59,34 @@ extern_table! {
         state: &mut InterpreterState<'_, '_, T>,
     ) -> InstrFnRet {
         let (pc, ()) = super::dispatch_inner::<T, C, M, ()>(pc, stack.as_mut(), (), state, OP);
-        (pc, stack.len)
+        Cursor::new(pc, stack.len)
+    }
+}
+
+/// Program counter in the high 32 bits and stack length in the low 32 bits.
+///
+/// Rust's wasm ABI returns a `(Pc, usize)` pair through a result pointer in linear memory: every
+/// handler takes an extra pointer argument and stores both values, and the dispatch loop loads
+/// them back. A single `u64` is returned as one wasm `i64` result instead.
+#[cfg(all(target_family = "wasm", target_pointer_width = "32"))]
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct WasmCursor(u64);
+
+#[cfg(all(target_family = "wasm", target_pointer_width = "32"))]
+impl super::Cursor for WasmCursor {
+    #[inline(always)]
+    fn new(pc: Pc, stack_len: usize) -> Self {
+        Self(((pc.as_ptr() as usize as u64) << 32) | stack_len as u64)
+    }
+
+    #[inline(always)]
+    fn pc(self) -> Pc {
+        Pc::new((self.0 >> 32) as usize as *const u8)
+    }
+
+    #[inline(always)]
+    fn stack_len(self) -> usize {
+        self.0 as u32 as usize
     }
 }
