@@ -2676,6 +2676,7 @@ dependencies = [
  "evm2",
  "evm2-jit-build",
  "evm2-jit-runtime",
+ "evm2-superinstr",
  "k256 0.14.0",
  "libtest-mimic",
  "postcard",

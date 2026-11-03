@@ -38,12 +38,15 @@ pub(crate) fn suites() -> Vec<TestSuite> {
             run_file: run_file_aot,
             run_files: Some(run_files_aot),
         });
+        add_superinstr_suite(&mut suites);
         suites
     }
 
     #[cfg(not(feature = "jit"))]
     {
-        vec![suite()]
+        let mut suites = vec![suite()];
+        add_superinstr_suite(&mut suites);
+        suites
     }
 }
 
@@ -56,6 +59,34 @@ pub(crate) fn suite() -> TestSuite {
         run_file,
         run_files: None,
     }
+}
+
+#[cfg(feature = "superinstr")]
+fn add_superinstr_suite(suites: &mut Vec<TestSuite>) {
+    suites.push(TestSuite {
+        name: "blockchain_tests::superinstr",
+        roots: blockchain_test_roots()
+            .into_iter()
+            .map(|mut root| {
+                root.name = format!("{}::superinstr", root.name);
+                root
+            })
+            .collect(),
+        should_descend,
+        should_ignore,
+        run_file: run_file_superinstr,
+        run_files: None,
+    });
+}
+
+#[cfg(not(feature = "superinstr"))]
+const fn add_superinstr_suite(suites: &mut Vec<TestSuite>) {
+    let _ = suites;
+}
+
+#[cfg(feature = "superinstr")]
+fn run_file_superinstr(path: PathBuf) -> Result<(), Failed> {
+    run_file_with_mode(path, ExecutionMode::SuperInstr)
 }
 
 fn run_file(path: PathBuf) -> Result<(), Failed> {

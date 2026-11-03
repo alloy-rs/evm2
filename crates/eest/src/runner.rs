@@ -33,12 +33,15 @@ pub(crate) fn suites() -> Vec<TestSuite> {
             run_file: run_file_aot,
             run_files: Some(run_files_aot),
         });
+        add_superinstr_suite(&mut suites);
         suites
     }
 
     #[cfg(not(feature = "jit"))]
     {
-        vec![suite()]
+        let mut suites = vec![suite()];
+        add_superinstr_suite(&mut suites);
+        suites
     }
 }
 
@@ -51,6 +54,50 @@ fn suite() -> TestSuite {
         run_file,
         run_files: None,
     }
+}
+
+#[cfg(feature = "superinstr")]
+fn add_superinstr_suite(suites: &mut Vec<TestSuite>) {
+    suites.push(TestSuite {
+        name: "statetests::superinstr",
+        roots: superinstr_roots(),
+        should_descend: descend_all,
+        should_ignore,
+        run_file: run_file_superinstr,
+        run_files: None,
+    });
+}
+
+/// The state-test roots, and the benchmark fixtures in `data/`: mainnet contracts whose compiler
+/// output exercises stack shapes the spec tests rarely do.
+#[cfg(feature = "superinstr")]
+fn superinstr_roots() -> Vec<crate::env::StateTestRoot> {
+    let mut roots = state_test_roots()
+        .into_iter()
+        .map(|mut root| {
+            root.name = format!("{}::superinstr", root.name);
+            root
+        })
+        .collect::<Vec<_>>();
+    let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+    if data.is_dir() {
+        roots.push(crate::env::StateTestRoot {
+            name: "statetests::data::superinstr".to_string(),
+            label: "benchmark fixtures",
+            path: data,
+        });
+    }
+    roots
+}
+
+#[cfg(not(feature = "superinstr"))]
+const fn add_superinstr_suite(suites: &mut Vec<TestSuite>) {
+    let _ = suites;
+}
+
+#[cfg(feature = "superinstr")]
+fn run_file_superinstr(path: PathBuf) -> Result<(), Failed> {
+    run_file_with_mode(path, ExecutionMode::SuperInstr)
 }
 
 fn run_file(path: PathBuf) -> Result<(), Failed> {
