@@ -988,7 +988,7 @@ mod tests {
         );
 
         let validation = evm.validate_tx(&tx);
-        let result = evm.transact(&tx).map(crate::evm::ExecutedTx::discard);
+        let result = evm.call_tx(&tx);
         assert_eq!(validation, result.as_ref().map(|_| ()).map_err(Clone::clone));
         if gas_limit < 31_050 {
             assert_eq!(
@@ -1308,10 +1308,7 @@ mod tests {
         );
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
-        assert_eq!(
-            evm.read_account_info(&caller).unwrap().unwrap().balance,
-            U256::from(100)
-        );
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(100));
     }
 
     #[test]
@@ -1589,11 +1586,10 @@ mod tests {
                             let tx = Recovered::new_unchecked(tx, caller);
                             let case = format!("{spec:?} {to:?} value={value} type={tx_type}");
                             let caller_before = evm.read_account_info(&caller).unwrap();
-                            let recipient_before =
-                                evm.read_account_info(&recipient).unwrap();
+                            let recipient_before = evm.read_account_info(&recipient).unwrap();
                             if balance_check && value == 2 {
                                 assert_eq!(
-                                    evm.transact(&tx).map(crate::evm::ExecutedTx::discard),
+                                    evm.call_tx(&tx),
                                     Err(HandlerError::InsufficientFunds {
                                         fee: U256::from(2),
                                         balance: U256::ONE
@@ -1618,8 +1614,7 @@ mod tests {
                             } else {
                                 assert_eq!(result.status, input[0] == op::STOP, "{case}");
                             }
-                            let nonce =
-                                evm.read_account_info(&caller).unwrap().unwrap().nonce;
+                            let nonce = evm.read_account_info(&caller).unwrap().unwrap().nonce;
                             assert_eq!(nonce, 11, "{case}");
                         }
                     }

@@ -579,7 +579,7 @@ impl<'a> State<'a> {
                 let account = entry.into_mut();
                 if skip_cold
                     && !account.flags.contains(AccountFlags::WARM)
-                    && !inner.prewarm_set.is_warm(address)
+                    && inner.prewarm_set.is_cold(address)
                 {
                     return Err(LoadError::ColdLoadSkipped);
                 }

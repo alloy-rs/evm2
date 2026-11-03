@@ -2536,7 +2536,7 @@ mod tests {
             Host::load_account(&mut evm, &address, true, true),
             Err(HostError::Halt(InstrStop::OutOfGas))
         ));
-        let stats = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
+        let stats = evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts();
         assert_eq!(stats.get_account, 0);
         assert_eq!(stats.get_code_by_hash, 0);
 
@@ -2546,7 +2546,7 @@ mod tests {
             Host::sload(&mut evm, &address, &Word::ZERO, true),
             Err(HostError::Halt(InstrStop::OutOfGas))
         ));
-        let stats = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
+        let stats = evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts();
         assert_eq!(stats.get_account, 1);
         assert_eq!(stats.get_storage, 0);
         assert_eq!(stats.get_code_by_hash, 0);
@@ -2714,7 +2714,7 @@ mod tests {
             precompiles,
         );
 
-        let error = evm.transact(&tx).map(ExecutedTx::discard).unwrap_err();
+        let error = evm.call_tx(&tx).unwrap_err();
         let HandlerError::Fatal(error) = error else { panic!("expected fatal precompile error") };
         assert!(error.downcast_ref::<TestPrecompileError>().is_some());
         assert_eq!(error.to_string(), "test precompile error");
@@ -3504,7 +3504,7 @@ mod tests {
             TxEnvelope::as_legacy,
             handler(|_| Ok(()), |req, ()| fail(req)),
         );
-        let error = evm.transact(&test_tx(7)).map(ExecutedTx::discard).unwrap_err();
+        let error = evm.call_tx(&test_tx(7)).unwrap_err();
         let HandlerError::Fatal(error) = error else { panic!("expected fatal handler error") };
         assert_eq!(error.to_string(), "handler failed");
         assert!(evm.logs().is_empty());
