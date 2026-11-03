@@ -26,7 +26,8 @@ use crate::{
     },
 };
 use alloy_consensus::{
-    Eip658Value, EthereumTxEnvelope, Header, Receipt, ReceiptEnvelope, TxEip4844,
+    Eip658Value, EthereumTxEnvelope, Header, Receipt, ReceiptEnvelope, ReceiptWithBloom, TxEip4844,
+    TxType,
 };
 use alloy_eip7928::{BlockAccessList, validate_block_access_list};
 use alloy_eips::{
@@ -34,14 +35,15 @@ use alloy_eips::{
     eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_CODE, eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_CODE,
     eip7840::BlobParams,
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, U256, aliases::U512};
+use alloy_primitives::{Address, B256, Bloom, Bytes, Signature, U256, aliases::U512};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles, SpecId,
+    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     block::{
-        BlockExecutor as _, BundleSource,
-        ethereum::{EthBlockExecutionCtx, EthBlockExecutor, EthBlockRules, EthReceiptBuilder},
+        BlockExecutor as _, BundleSource, ReceiptBuilder, ReceiptBuilderCtx,
+        bundle_state::BundleRetention,
+        ethereum::{EthBlockExecutionCtx, EthBlockExecutor, EthBlockRules},
     },
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
@@ -542,7 +544,12 @@ fn execute_block<'a>(
         max_blob_gas_per_block: blob_params.as_ref().map(BlobParams::max_blob_gas_per_block),
         ..EthBlockRules::default()
     };
-    let mut executor = EthBlockExecutor::new(evm, ctx, rules, EthReceiptBuilder::default());
+    let mut executor = EthBlockExecutor::new(
+        evm,
+        ctx,
+        rules,
+        HarnessReceiptBuilder { compute_bloom: compare_receipt_root },
+    );
 
     // When the fixture declares an EIP-7928 block access list, build one alongside execution and
     // validate it against the fixture. Only Amsterdam+ fixtures carry a block access list, so
@@ -780,7 +787,7 @@ fn execute_block<'a>(
     // The EVM was constructed with this concrete database above; recover it before returning so
     // invalid blocks leave the caller's state unchanged.
     let mut evm = executor.evm;
-    let block_state = executor.block_state.into_bundle();
+    let block_state = executor.block_state;
     let (mut restored_database, block_db_stats_counts) = if db_stats {
         let stats = evm
             .database_as_mut::<DbStats<InMemoryDB>>()
@@ -803,6 +810,8 @@ fn execute_block<'a>(
 
     match result {
         Ok(BlockResolution::Commit(block_hash)) => {
+            // Only the plain state is applied, so the block's reverts are not built.
+            let block_state = block_state.into_bundle_with_retention(BundleRetention::PlainState);
             restored_database.commit_source(&BundleSource(&block_state));
             restored_database.insert_block_hash(&next_block_env.number, &block_hash);
             *database = restored_database;
@@ -839,6 +848,36 @@ fn execute_block<'a>(
             *database = restored_database;
             Err(err)
         }
+    }
+}
+
+/// Builds the same receipts as [`EthReceiptBuilder`](evm2::block::ethereum::EthReceiptBuilder),
+/// but computes the logs bloom only when the receipt root is compared, as nothing else reads it.
+#[derive(Clone, Copy, Debug)]
+struct HarnessReceiptBuilder {
+    compute_bloom: bool,
+}
+
+impl ReceiptBuilder for HarnessReceiptBuilder {
+    type Transaction = EthereumTxEnvelope<TxEip4844>;
+    type Receipt = ReceiptEnvelope;
+
+    fn build_receipt<T: EvmTypes>(
+        &self,
+        ctx: ReceiptBuilderCtx<TxType, TxResult<T>>,
+    ) -> ReceiptEnvelope {
+        let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
+        let receipt = Receipt {
+            status: Eip658Value::Eip658(result.status),
+            cumulative_gas_used,
+            logs: result.logs,
+        };
+        let receipt = if self.compute_bloom {
+            receipt.with_bloom()
+        } else {
+            ReceiptWithBloom::new(receipt, Bloom::ZERO)
+        };
+        ReceiptEnvelope::from_typed(tx_type, receipt)
     }
 }
 

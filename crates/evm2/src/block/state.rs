@@ -157,10 +157,15 @@ impl BlockState {
 
     /// Finalizes one block's transitions and reverts.
     pub fn into_bundle(self) -> BundleState {
+        self.into_bundle_with_retention(BundleRetention::Reverts)
+    }
+
+    /// Finalizes one block's transitions, creating reverts only if `retention` asks for them.
+    pub fn into_bundle_with_retention(self, retention: BundleRetention) -> BundleState {
         let mut bundle = BundleState::default();
         bundle.apply_transitions_and_create_reverts(
             TransitionState { transitions: self.transitions },
-            BundleRetention::Reverts,
+            retention,
         );
         bundle.contracts.extend(self.contracts);
         bundle
