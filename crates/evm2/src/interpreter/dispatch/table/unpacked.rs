@@ -9,6 +9,32 @@ pub(super) type LoopState = ();
 core::cfg_select! {
     all(target_family = "wasm", target_pointer_width = "32") => {
         pub(super) type Cursor = WasmCursor;
+
+        /// Program counter in the high 32 bits and stack length in the low 32 bits.
+        ///
+        /// Rust's wasm ABI returns a `(Pc, usize)` pair through a result pointer in linear memory:
+        /// every handler takes an extra pointer argument and stores both values, and the dispatch
+        /// loop loads them back. A single `u64` is returned as one wasm `i64` result instead.
+        #[derive(Clone, Copy)]
+        #[repr(transparent)]
+        pub(crate) struct WasmCursor(u64);
+
+        impl super::Cursor for WasmCursor {
+            #[inline(always)]
+            fn new(pc: Pc, stack_len: usize) -> Self {
+                Self(((pc.as_ptr() as usize as u64) << 32) | stack_len as u64)
+            }
+
+            #[inline(always)]
+            fn pc(self) -> Pc {
+                Pc::new((self.0 >> 32) as usize as *const u8)
+            }
+
+            #[inline(always)]
+            fn stack_len(self) -> usize {
+                self.0 as u32 as usize
+            }
+        }
     }
     _ => {
         pub(super) type Cursor = (Pc, usize);
@@ -16,7 +42,7 @@ core::cfg_select! {
 }
 
 /// Unpacked instruction return value.
-pub(crate) type InstrFnRet = Cursor;
+type InstrFnRet = Cursor;
 
 /// Unpacked instruction function pointer.
 pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
@@ -60,33 +86,5 @@ extern_table! {
     ) -> InstrFnRet {
         let (pc, ()) = super::dispatch_inner::<T, C, M, ()>(pc, stack.as_mut(), (), state, OP);
         Cursor::new(pc, stack.len)
-    }
-}
-
-/// Program counter in the high 32 bits and stack length in the low 32 bits.
-///
-/// Rust's wasm ABI returns a `(Pc, usize)` pair through a result pointer in linear memory: every
-/// handler takes an extra pointer argument and stores both values, and the dispatch loop loads
-/// them back. A single `u64` is returned as one wasm `i64` result instead.
-#[cfg(all(target_family = "wasm", target_pointer_width = "32"))]
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(crate) struct WasmCursor(u64);
-
-#[cfg(all(target_family = "wasm", target_pointer_width = "32"))]
-impl super::Cursor for WasmCursor {
-    #[inline(always)]
-    fn new(pc: Pc, stack_len: usize) -> Self {
-        Self(((pc.as_ptr() as usize as u64) << 32) | stack_len as u64)
-    }
-
-    #[inline(always)]
-    fn pc(self) -> Pc {
-        Pc::new((self.0 >> 32) as usize as *const u8)
-    }
-
-    #[inline(always)]
-    fn stack_len(self) -> usize {
-        self.0 as u32 as usize
     }
 }
