@@ -39,7 +39,7 @@ pub use host::{Host, MessageResult, MessageResultExt};
 
 mod runtime;
 pub(crate) use runtime::InterpreterPool;
-pub use runtime::{Interpreter, InterpreterState};
+pub use runtime::{ExternalInstruction, Interpreter, InterpreterState};
 
 /// Instruction result type.
 pub type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
