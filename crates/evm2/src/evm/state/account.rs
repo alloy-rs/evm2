@@ -71,15 +71,7 @@ impl core::hash::Hash for AccountInfo {
 impl Default for AccountInfo {
     #[inline]
     fn default() -> Self {
-        Self {
-            balance: U256::ZERO,
-            nonce: 0,
-            code_hash: KECCAK256_EMPTY,
-            code: Some(Bytecode::default()),
-            #[cfg(feature = "account-ext")]
-            extension: super::AccountExtension::new(),
-            _non_exhaustive: (),
-        }
+        Self::new(U256::ZERO, 0, KECCAK256_EMPTY, Some(Bytecode::default()))
     }
 }
 
