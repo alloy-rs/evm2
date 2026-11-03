@@ -142,6 +142,12 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
         state.set_result(Err(e));
         cold_path();
         return (Pc::new(core::ptr::null()), gas);
+    } else if hooked && state.reload_requested() {
+        // The frame continues after the instruction on the table for the new config.
+        cold_path();
+        state.set_result(Err(InstrStop::Reload));
+        state.set_pc_stack_len(pc.as_ptr(), *stack.len);
+        return (Pc::new(core::ptr::null()), gas);
     }
     (pc, gas)
 }
