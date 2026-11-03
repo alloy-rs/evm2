@@ -3113,7 +3113,7 @@ mod tests {
         let origin_word = Word::from_be_slice(origin.as_slice());
         assert_eq!(evm.state.storage_slot_untracked(&target, &Word::ZERO).unwrap(), origin_word);
         assert_eq!(evm.state.storage_slot_untracked(&inner, &Word::from(1)).unwrap(), origin_word);
-        assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce, 1);
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().nonce, 1);
     }
 
     #[test]

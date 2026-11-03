@@ -1238,7 +1238,7 @@ mod tests {
         );
 
         assert!(evm.transact(&tx).unwrap().commit().status);
-        let reward = evm.state.account_info_untracked(&beneficiary).unwrap().unwrap().balance;
+        let reward = evm.read_account_info(&beneficiary).unwrap().unwrap().balance;
         assert_eq!(reward, U256::from(21_000 * beneficiary_gas_price));
     }
 
@@ -1279,7 +1279,7 @@ mod tests {
         );
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
-        let sender = evm.state.account_info_untracked(&caller).unwrap().unwrap();
+        let sender = evm.read_account_info(&caller).unwrap().unwrap();
         assert_eq!((sender.balance, sender.nonce), (U256::ZERO, 1));
     }
 
@@ -1309,7 +1309,7 @@ mod tests {
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
         assert_eq!(
-            evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
+            evm.read_account_info(&caller).unwrap().unwrap().balance,
             U256::from(100)
         );
     }
@@ -1334,7 +1334,7 @@ mod tests {
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
         charge_upfront(&mut evm, caller, U256::from(100)).unwrap();
-        assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().balance, U256::ZERO);
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::ZERO);
     }
 
     #[test]
@@ -1588,9 +1588,9 @@ mod tests {
                             );
                             let tx = Recovered::new_unchecked(tx, caller);
                             let case = format!("{spec:?} {to:?} value={value} type={tx_type}");
-                            let caller_before = evm.state.account_info_untracked(&caller).unwrap();
+                            let caller_before = evm.read_account_info(&caller).unwrap();
                             let recipient_before =
-                                evm.state.account_info_untracked(&recipient).unwrap();
+                                evm.read_account_info(&recipient).unwrap();
                             if balance_check && value == 2 {
                                 assert_eq!(
                                     evm.transact(&tx).map(crate::evm::ExecutedTx::discard),
@@ -1601,12 +1601,12 @@ mod tests {
                                     "{case}"
                                 );
                                 assert_eq!(
-                                    evm.state.account_info_untracked(&caller).unwrap(),
+                                    evm.read_account_info(&caller).unwrap(),
                                     caller_before,
                                     "{case}"
                                 );
                                 assert_eq!(
-                                    evm.state.account_info_untracked(&recipient).unwrap(),
+                                    evm.read_account_info(&recipient).unwrap(),
                                     recipient_before,
                                     "{case}"
                                 );
@@ -1619,7 +1619,7 @@ mod tests {
                                 assert_eq!(result.status, input[0] == op::STOP, "{case}");
                             }
                             let nonce =
-                                evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce;
+                                evm.read_account_info(&caller).unwrap().unwrap().nonce;
                             assert_eq!(nonce, 11, "{case}");
                         }
                     }
