@@ -154,13 +154,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // The reservoir is funded on top of `gas_limit`, so the transaction gas limit includes it.
         let (total_gas_spent, state_gas_spent) =
             gas_spent_breakdown(gas_limit + reservoir, &result.gas, 0);
-        let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
+        let gas_refunded = if result.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
         } else {
             0
         };
         Ok(TxResultExt {
-            status: result.stop.is_success(),
+            status: result.is_success(),
             total_gas_spent,
             state_gas_spent,
             refunded: gas_refunded,

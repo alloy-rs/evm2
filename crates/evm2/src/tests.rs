@@ -32,7 +32,7 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         ..Default::default()
     };
     let result = Host::execute_message(evm, &mut message).unwrap();
-    assert!(result.stop.is_success());
+    assert!(result.is_success());
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     };
     let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
-    assert!(result.stop.is_success());
+    assert!(result.is_success());
     assert_eq!(result.gas.refunded(), 0);
 }
 
@@ -580,7 +580,7 @@ fn precompile_dispatch_uses_original_callee(
     .unwrap();
     let result = Host::execute_message(&mut evm, &mut frame.message).unwrap();
 
-    assert!(result.stop.is_success(), "{:?}", result.stop);
+    assert!(result.is_success(), "{:?}", result.stop);
     assert_eq!(result.output.as_ref(), expected_output);
     // Geth's Prague gas usage includes delegation resolution even for precompile callees.
     let expected_gas = match opcode {

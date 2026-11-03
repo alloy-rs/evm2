@@ -695,7 +695,7 @@ pub const fn settle_initial_frame_gas<E>(
 ) {
     tx_gas.spend_all();
     tx_gas.merge_child_gas(result.gas, result.stop);
-    if charged_state_gas != 0 && !result.stop.is_success() {
+    if charged_state_gas != 0 && !result.is_success() {
         tx_gas.refill_reservoir(charged_state_gas);
         if result.stop.is_halt() {
             tx_gas.spend_all();
@@ -796,7 +796,7 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         gas_spent_breakdown(tx_gas_limit, &result.gas, initial_state_gas);
     let state_gas_spent = state_gas_spent.saturating_sub(state_refund);
     Ok(TxResultExt {
-        status: result.stop.is_success(),
+        status: result.is_success(),
         total_gas_spent,
         state_gas_spent,
         refunded,

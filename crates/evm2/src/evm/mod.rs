@@ -3806,7 +3806,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
     }
 
     #[test]
@@ -4017,7 +4017,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let pending = evm.state.take_pending_state();
@@ -4173,7 +4173,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let pending = evm.state.take_pending_state();
@@ -4208,7 +4208,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let pending = evm.state.take_pending_state();
@@ -4274,7 +4274,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         let version = *evm.version();
         evm.state.finalize_transaction_(&version);
