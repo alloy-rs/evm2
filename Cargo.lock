@@ -201,6 +201,7 @@ dependencies = [
  "alloy-primitives",
  "auto_impl",
  "dyn-clone",
+ "serde",
 ]
 
 [[package]]
@@ -2580,6 +2581,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
  "alloy-eips",
+ "alloy-hardforks",
  "alloy-primitives",
  "ark-bls12-381",
  "ark-bn254",

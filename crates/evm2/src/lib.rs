@@ -11,6 +11,8 @@ extern crate alloc;
 #[cfg(feature = "nightly")]
 use ruint as _;
 
+#[cfg(feature = "block")]
+pub mod block;
 pub mod bytecode;
 pub mod constants;
 mod error;
