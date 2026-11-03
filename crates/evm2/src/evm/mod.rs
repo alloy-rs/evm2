@@ -884,8 +884,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Replaces the precompile provider.
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
-        self.assert_precompiles_mutable();
-        self.precompiles = boxed_precompile_provider(precompiles);
+        self.set_boxed_precompiles(boxed_precompile_provider(precompiles));
     }
 
     /// Replaces the precompile provider with an already boxed one.
@@ -998,8 +997,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Sets the active execution inspector.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
-        self.assert_inspector_mutable();
-        self.inspector = Some(InspectorSlot::Owned(boxed_inspector(inspector)));
+        self.set_boxed_inspector(boxed_inspector(inspector));
     }
 
     /// Sets the active boxed execution inspector.
@@ -1051,9 +1049,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Sets the optional external interpreter runner.
     #[inline]
     pub fn set_interpreter_runner<R: InterpreterRunner<T>>(&mut self, runner: R) {
-        self.assert_interpreter_runner_mutable();
-        self.interpreter_runner = Some(Arc::new(runner));
-        self.refresh_runner_support();
+        self.set_shared_interpreter_runner(Arc::new(runner));
     }
 
     /// Sets the optional shared external interpreter runner.
