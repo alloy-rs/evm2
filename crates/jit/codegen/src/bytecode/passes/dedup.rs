@@ -539,8 +539,7 @@ mod tests {
             })
             .and_then(|to| to.as_str())
             .unwrap();
-        let code = case["pre"][to]["code"].as_str().unwrap().trim_start_matches("0x");
-        alloy_primitives::hex::decode(code).unwrap()
+        alloy_primitives::hex::decode(case["pre"][to]["code"].as_str().unwrap()).unwrap()
     }
 
     #[test]

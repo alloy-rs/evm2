@@ -2871,8 +2871,7 @@ pub(crate) mod tests {
             })
             .and_then(|to| to.as_str())
             .unwrap();
-        let code = case["pre"][to]["code"].as_str().unwrap().trim_start_matches("0x");
-        hex::decode(code).unwrap()
+        hex::decode(case["pre"][to]["code"].as_str().unwrap()).unwrap()
     }
 }
 
