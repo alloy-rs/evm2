@@ -1919,3 +1919,90 @@ fn shutdown_propagates_worker_error() {
     assert!(error.to_string().contains("controlled compile worker failure"));
     assert!(backend.inner.thread.lock().unwrap().is_none());
 }
+
+/// Compiles `BYTECODE_RET42` as an AOT artifact into a fresh store, signed with `auth_key`.
+#[cfg(feature = "llvm")]
+fn store_with_signed_artifact(auth_key: B256) -> Arc<RuntimeArtifactStore> {
+    let store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        store: Some(store.clone()),
+        artifact_auth_key: Some(auth_key),
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+        ..Default::default()
+    });
+    tb.prepare_aot_sync(AotRequest {
+        code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
+        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        spec_id: SpecId::CANCUN,
+    })
+    .unwrap();
+    store
+}
+
+/// Returns how many artifacts of `store` a runtime with `auth_key` preloads.
+#[cfg(feature = "llvm")]
+fn preloaded_with_key(store: &Arc<RuntimeArtifactStore>, auth_key: B256) -> u64 {
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        store: Some(store.clone()),
+        artifact_auth_key: Some(auth_key),
+        ..Default::default()
+    });
+    tb.stats().resident_entries
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn preload_aot_links_only_artifacts_signed_with_its_key() {
+    let store = store_with_signed_artifact(B256::repeat_byte(1));
+    assert_eq!(preloaded_with_key(&store, B256::repeat_byte(2)), 0);
+    assert_eq!(preloaded_with_key(&store, B256::repeat_byte(1)), 1);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn preload_aot_rejects_tampered_object() {
+    let auth_key = B256::repeat_byte(1);
+    let store = store_with_signed_artifact(auth_key);
+    let (artifact_key, stored) = store.load_all().unwrap().pop().unwrap();
+    let mut object = std::fs::read(&stored.object_path).unwrap();
+    let last = object.len() - 1;
+    object[last] ^= 1;
+
+    // Recomputing the unkeyed content hash does not make it acceptable.
+    let manifest = ArtifactManifest {
+        content_hash: alloy_primitives::keccak256(&object).0,
+        ..stored.manifest
+    };
+    store.store(&artifact_key, &manifest, &object).unwrap();
+    assert_eq!(preloaded_with_key(&store, auth_key), 0);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn linker_refuses_objects_importing_non_builtin_symbols() {
+    let auth_key = B256::repeat_byte(1);
+    let store = store_with_signed_artifact(auth_key);
+    let (artifact_key, stored) = store.load_all().unwrap().pop().unwrap();
+    let mut object = std::fs::read(&stored.object_path).unwrap();
+    // Rename an imported builtin to a symbol outside the allowlist, then sign it with the
+    // runtime's key, as a compromised compiler could.
+    let needle = b"__revmc_builtin_";
+    let at =
+        object.windows(needle.len()).position(|w| w == needle).expect("object imports a builtin");
+    object[at..at + needle.len()].copy_from_slice(b"__revmc_sneaky__");
+    let manifest = ArtifactManifest {
+        artifact_len: object.len(),
+        content_hash: alloy_primitives::keccak256(&object).0,
+        mac: storage::artifact_mac(&auth_key, &artifact_key, &stored.manifest.symbol_name, &object),
+        ..stored.manifest.clone()
+    };
+    store.store(&artifact_key, &manifest, &object).unwrap();
+    let stored = store.load(&artifact_key).unwrap().unwrap();
+    let error = JitObjectLinker::new(None, auth_key)
+        .link_stored(artifact_key.runtime, &stored)
+        .expect_err("linked an object with a disallowed import");
+    assert!(error.to_string().starts_with("object imports disallowed symbol __revmc_sneaky__"));
+    assert_eq!(preloaded_with_key(&store, auth_key), 0);
+}

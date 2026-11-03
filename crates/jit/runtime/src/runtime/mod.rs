@@ -687,7 +687,7 @@ impl JitBackend {
         info!(count = artifacts.len(), "loading AOT artifacts");
 
         let config_hash = storage::compile_config_hash(config);
-        let mut linker = JitObjectLinker::new(config.host.resolver);
+        let mut linker = JitObjectLinker::new(config.host.resolver, config.auth_key());
         let mut out: Vec<(RuntimeCacheKey, Arc<CompiledProgram>)> =
             Vec::with_capacity(artifacts.len());
         let mut loaded = 0u64;

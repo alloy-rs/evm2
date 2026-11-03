@@ -20,7 +20,7 @@ use llvm_sys::{
 use object::{Object, ObjectSymbol};
 use std::{
     cell::Cell,
-    ffi::{CStr, CString},
+    ffi::{CStr, CString, c_char},
     fmt::{self, Write},
     iter,
     mem::ManuallyDrop,
@@ -450,11 +450,42 @@ fn link_jit_object_in_dylib(
     object: &[u8],
     symbols: &[(CString, usize)],
 ) -> Result<(usize, orc::ResourceTracker)> {
+    check_imports(orc.global.jit.get_global_prefix(), object, symbols)?;
     orc.global.define_builtins(symbols);
     let tracker = jd.create_resource_tracker();
     orc.global.jit.add_object_with_rt(symbol_name, object, &tracker).map_err(error_msg)?;
     let addr = orc.global.jit.lookup_in(jd, symbol_name).map_err(error_msg)?;
     Ok((addr, tracker))
+}
+
+/// Symbols outside the builtins that LLVM may emit calls to for compiled EVM code.
+const RUNTIME_IMPORTS: &[&str] = &["memcpy", "memmove", "memset", "memcmp", "bcmp"];
+
+/// Refuses an object that imports anything but the builtins it is linked with and
+/// [`RUNTIME_IMPORTS`].
+///
+/// The JITDylib also resolves process symbols, so without this an object (a stored AOT artifact,
+/// or one the out-of-process compiler returned) could call `system` or `mprotect`.
+fn check_imports(prefix: c_char, object: &[u8], symbols: &[(CString, usize)]) -> Result<()> {
+    let file = object::File::parse(object).map_err(|e| eyre::eyre!("invalid object: {e}"))?;
+    for symbol in file.symbols().filter(|symbol| symbol.is_undefined()) {
+        let name = symbol.name_bytes().map_err(|e| eyre::eyre!("invalid symbol: {e}"))?;
+        let name = match name.split_first() {
+            Some((&first, rest)) if prefix != 0 && first == prefix as u8 => rest,
+            _ => name,
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let allowed = RUNTIME_IMPORTS.iter().any(|import| import.as_bytes() == name)
+            || symbols.iter().any(|(builtin, _)| builtin.as_bytes() == name);
+        eyre::ensure!(
+            allowed,
+            "object imports disallowed symbol {}",
+            String::from_utf8_lossy(name)
+        );
+    }
+    Ok(())
 }
 
 /// Creates an ORC-owned LLVM context, returning a `&'static` reference to it.
