@@ -2131,11 +2131,11 @@ mod tests {
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         env::BlockEnvExt,
-        ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+        ethereum::{TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
         registry::{HandlerError, TxRequest, handler},
-        test_utils::{legacy_bytecode, push_address},
+        test_utils::{handle_test_tx, legacy_bytecode, push_address, test_tx},
         utils::address_to_word,
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
@@ -2181,22 +2181,6 @@ mod tests {
         assert_eq!(*evm.ext(), 41);
         *evm.ext_mut() += 1;
         assert_eq!(*evm.ext(), 42);
-    }
-
-    fn test_tx(value: u64) -> RecoveredTxEnvelope {
-        Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy { nonce: value, ..TxLegacy::default() }),
-            Address::ZERO,
-        )
-    }
-
-    fn handle_test_tx(req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>) -> HandlerResult<TxResult> {
-        let _ = req.host.spec_id();
-        Ok(TxResultExt {
-            status: true,
-            total_gas_spent: req.tx.nonce + 1,
-            ..TxResultExt::default()
-        })
     }
 
     #[derive(Debug)]

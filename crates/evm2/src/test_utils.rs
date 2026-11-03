@@ -1,17 +1,21 @@
 use crate::{
-    BaseEvmConfigSelector, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
+    BaseEvmConfigSelector, BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig,
+    SpecId, TxResult, TxResultExt,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, BlockEnvExt, TxEnv, TxEnvExt},
+    ethereum::{RecoveredTxEnvelope, TxEnvelope},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, Memory, Message, MessageExt, MessageKind,
         MessageResult, MessageResultExt, StackBacking, Word, op,
     },
+    registry::{HandlerResult, TxRequest},
     storage_key::{StorageKey, StorageKeyMap},
     utils::address_to_word,
 };
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, Log};
 use core::{assert_matches, ops::Range};
 
@@ -454,4 +458,18 @@ pub(crate) fn neg(value: u64) -> Word {
 
 pub(crate) fn legacy_bytecode(code: impl Into<Vec<u8>>) -> Bytecode {
     Bytecode::new_legacy(Bytes::from(code.into()))
+}
+
+pub(crate) fn test_tx(value: u64) -> RecoveredTxEnvelope {
+    Recovered::new_unchecked(
+        TxEnvelope::Legacy(TxLegacy { nonce: value, ..TxLegacy::default() }),
+        Address::ZERO,
+    )
+}
+
+pub(crate) fn handle_test_tx(
+    req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
+) -> HandlerResult<TxResult> {
+    let _ = req.host.spec_id();
+    Ok(TxResultExt { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResultExt::default() })
 }
