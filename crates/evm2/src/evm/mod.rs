@@ -1445,6 +1445,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             } else {
                 inspector.call_end(frame, message, result);
             }
+            assert!(
+                result.stop != InstrStop::Reload,
+                "`InstrStop::Reload` is internal and cannot be set"
+            );
         }
 
         if let Some(error) = frame.take_error() {

@@ -1251,6 +1251,29 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "`InstrStop::Reload` is internal and cannot be set")]
+    fn hook_cannot_end_a_message_with_the_reload_stop() {
+        struct ReloadResult;
+
+        impl Inspector<BaseEvmTypes> for ReloadResult {
+            fn call_end(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth > 0 {
+                    result.stop = InstrStop::Reload;
+                }
+            }
+        }
+
+        let mut code = call_code(Address::from([0x66; 20]));
+        code.extend([op::CALL, op::STOP]);
+        run_evm_with_inspector(code, &MessageExt::default(), 100_000, ReloadResult);
+    }
+
+    #[test]
     fn custom_call_opcode_with_immediates_resumes_after_them() {
         // The immediates are invalid opcodes that fail the frame if the reload resumes inside them.
         let immediates = [op::INVALID; 30];
@@ -1298,7 +1321,7 @@ mod tests {
     /// result and the inspector of the run that steps every opcode.
     fn assert_steps_follow_the_child(
         answer: Option<MessageResult<BaseEvmTypes>>,
-    ) -> (MessageResult<BaseEvmTypes>, ConfigInspector) {
+    ) -> (Vec<u8>, MessageResult<BaseEvmTypes>, ConfigInspector) {
         let mut code = call_code(Address::from([0x66; 20]));
         code.extend([op::CALL, op::GAS, op::POP, op::STOP]);
         let run = |inspector: ConfigInspector| {
@@ -1343,15 +1366,13 @@ mod tests {
         let (_, inspector, _) =
             run(ConfigInspector::new(OpcodeSet::EMPTY).switching_to(OpcodeSet::ALL));
         assert_eq!(inspector.steps[0], (op::GAS, full.steps[call + 1].1, vec![Word::ONE]));
-        (expected, *full)
+        (code, expected, *full)
     }
 
     #[test]
     fn child_message_can_change_the_parent_steps() {
-        let mut code = call_code(Address::from([0x66; 20]));
-        code.extend([op::CALL, op::GAS, op::POP, op::STOP]);
+        let (code, result, _) = assert_steps_follow_the_child(None);
         let (uninspected, _) = run_evm_uninspected(InMemoryDB::default(), code, 100_000);
-        let (result, _) = assert_steps_follow_the_child(None);
         assert_eq!(result, uninspected);
     }
 
@@ -1362,7 +1383,7 @@ mod tests {
             output: Bytes::from_static(&[0xaa]),
             ..Default::default()
         };
-        let (_, full) = assert_steps_follow_the_child(Some(answer));
+        let (_, _, full) = assert_steps_follow_the_child(Some(answer));
         // The hook answers the call, so every step belongs to the caller.
         assert_eq!(full.calls, 2);
     }

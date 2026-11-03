@@ -123,6 +123,7 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
                 state.set_hooked_running(true);
             }
             r = instr(&mut pc, stack.reborrow(), state);
+            debug_assert!(r != Err(InstrStop::Reload), "`InstrStop::Reload` is internal");
             if hooked {
                 state.set_hooked_running(false);
             }

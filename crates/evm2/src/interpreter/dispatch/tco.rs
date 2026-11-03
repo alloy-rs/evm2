@@ -91,6 +91,7 @@ extern_table! {
             (r, stack_view.len)
         };
         stack.set_len(stack_len);
+        debug_assert!(r != Err(InstrStop::Reload), "`InstrStop::Reload` is internal");
         if hooked {
             state.set_hooked_running(false);
         }

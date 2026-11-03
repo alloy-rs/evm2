@@ -484,7 +484,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.features = version.features;
         self.host = Some(NonNull::from(host));
         self.inspector = None;
-        self.reload = false;
     }
 
     /// Runs the host's instruction implementation for the opcode at `pc` on the interpreter
@@ -604,13 +603,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             } else {
                 self.run_inspected_table(instructions)
             };
-            // Only the dispatch produces a reload, so a hook's stop of that kind is no reload.
-            if stop != InstrStop::Reload || !self.reload {
+            // A stop that the dispatch did not request gets no reload.
+            if !core::mem::take(&mut self.reload) || stop != InstrStop::Reload {
                 return stop;
             }
             cold_path();
             self.result = Ok(());
-            self.reload = false;
         }
     }
 
