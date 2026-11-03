@@ -11,7 +11,10 @@
 
 use crate::tracing::{TraceLimits, limits::TraceBudget};
 use alloc::{borrow::Cow, vec};
-use alloy_primitives::{B256, Bytes, hex, keccak256, map::HashMap};
+use alloy_primitives::{
+    Bytes, hex, keccak256,
+    map::{B256Map, HashMap},
+};
 use evm2::{
     EvmTypes, Inspector, InspectorConfig, OpcodeSet,
     interpreter::{Interpreter, opcode::op},
@@ -38,7 +41,7 @@ pub struct LimitExceeded;
 #[derive(Clone, Debug)]
 pub struct Keccak256PreimageInspector {
     /// The map of hash to preimage.
-    inner: HashMap<B256, Bytes>,
+    inner: B256Map<Bytes>,
     /// The bytes of the recorded preimages.
     budget: TraceBudget,
 }

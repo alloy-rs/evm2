@@ -1,4 +1,7 @@
-use alloy_primitives::{Address, B256, map::HashMap};
+use alloy_primitives::{
+    B256,
+    map::{AddressMap, B256Map},
+};
 use evm2::{
     EvmTypesHost, Inspector,
     interpreter::{Interpreter, op},
@@ -8,7 +11,7 @@ use evm2::{
 #[derive(Debug, Default, Clone)]
 pub struct StorageInspector {
     /// Tracks storage slots and access counter.
-    accessed_slots: HashMap<Address, HashMap<B256, u64>>,
+    accessed_slots: AddressMap<B256Map<u64>>,
 }
 
 impl StorageInspector {
@@ -36,12 +39,12 @@ impl StorageInspector {
     }
 
     /// Returns the tracked slots per address.
-    pub const fn accessed_slots(&self) -> &HashMap<Address, HashMap<B256, u64>> {
+    pub const fn accessed_slots(&self) -> &AddressMap<B256Map<u64>> {
         &self.accessed_slots
     }
 
     /// Consumes the inspector and returns the map.
-    pub fn into_accessed_slots(self) -> HashMap<Address, HashMap<B256, u64>> {
+    pub fn into_accessed_slots(self) -> AddressMap<B256Map<u64>> {
         self.accessed_slots
     }
 }

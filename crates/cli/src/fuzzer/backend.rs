@@ -5,7 +5,7 @@ use crate::fuzzer::{
         apply_account_changes, canonical_accounts, canonical_log, state_from_revm,
     },
 };
-use alloy_primitives::{Address, map::HashMap};
+use alloy_primitives::map::AddressMap;
 use evm2::{
     BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles,
     bytecode::Bytecode,
@@ -99,7 +99,7 @@ type RevmExecutor = revm::MainnetEvm<revm::handler::MainnetContext<RevmState<Rev
 #[derive(Default)]
 pub(crate) struct RevmBackend {
     evm: Option<RevmExecutor>,
-    accounts: HashMap<Address, CanonicalAccount>,
+    accounts: AddressMap<CanonicalAccount>,
 }
 
 impl EvmBackend for RevmBackend {

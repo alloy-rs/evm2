@@ -6,7 +6,7 @@ use crate::tracing::{
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, vec, vec::Vec};
 use alloy_primitives::{
     Address, B256, Bytes, U256,
-    map::{AddressSet, HashMap},
+    map::{AddressMap, AddressSet, HashMap},
 };
 use alloy_rpc_types_trace::geth::{
     AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode, GethDefaultTracingOptions,
@@ -141,7 +141,7 @@ impl<'a> GethTraceBuilder<'a> {
         &self,
         main_trace_node: &CallTraceNode,
         opts: &GethDefaultTracingOptions,
-        storage: &mut HashMap<Address, BTreeMap<B256, B256>>,
+        storage: &mut AddressMap<BTreeMap<B256, B256>>,
         struct_logs: &mut Vec<StructLog>,
         mut stacks: Option<&mut [StackSnapshots]>,
     ) {

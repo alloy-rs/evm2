@@ -3,7 +3,7 @@ use alloy_consensus::Transaction;
 use alloy_eip2930::{AccessList, AccessListItem};
 use alloy_primitives::{
     Address, B256, U256,
-    map::{HashMap, HashSet},
+    map::{AddressMap, AddressSet},
 };
 use evm2::{
     Evm, EvmTypes, Inspector,
@@ -16,9 +16,9 @@ use evm2::{
 #[derive(Debug, Default)]
 pub struct AccessListInspector {
     /// All addresses that should be excluded from the final accesslist
-    excluded: HashSet<Address>,
+    excluded: AddressSet,
     /// All addresses and touched slots
-    touched_slots: HashMap<Address, BTreeSet<B256>>,
+    touched_slots: AddressMap<BTreeSet<B256>>,
 }
 
 impl From<AccessList> for AccessListInspector {
@@ -32,7 +32,7 @@ impl AccessListInspector {
     ///
     /// The `access_list` is the provided access list from the call request
     pub fn new(access_list: AccessList) -> Self {
-        let mut touched_slots = HashMap::<Address, BTreeSet<B256>>::default();
+        let mut touched_slots = AddressMap::<BTreeSet<B256>>::default();
         for item in access_list.0 {
             touched_slots.entry(item.address).or_default().extend(item.storage_keys);
         }
@@ -69,18 +69,18 @@ impl AccessListInspector {
     }
 
     /// Returns the excluded addresses.
-    pub const fn excluded(&self) -> &HashSet<Address> {
+    pub const fn excluded(&self) -> &AddressSet {
         &self.excluded
     }
 
     /// Returns a reference to the map of addresses and their corresponding touched storage slots.
-    pub const fn touched_slots(&self) -> &HashMap<Address, BTreeSet<B256>> {
+    pub const fn touched_slots(&self) -> &AddressMap<BTreeSet<B256>> {
         &self.touched_slots
     }
 
     /// Consumes the inspector and returns the map of addresses and their corresponding touched
     /// storage slots.
-    pub fn into_touched_slots(self) -> HashMap<Address, BTreeSet<B256>> {
+    pub fn into_touched_slots(self) -> AddressMap<BTreeSet<B256>> {
         self.touched_slots
     }
 

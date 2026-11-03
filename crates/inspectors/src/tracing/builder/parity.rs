@@ -5,8 +5,8 @@ use crate::tracing::{
 };
 use alloc::{string::ToString, vec, vec::Vec};
 use alloy_primitives::{
-    Address, Bytes, U64,
-    map::{HashMap, HashSet},
+    Bytes, U64,
+    map::{AddressSet, HashMap, HashSet},
 };
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
@@ -37,7 +37,7 @@ impl ParityTraceBuilder {
     }
 
     /// Returns a list of all addresses that appeared as callers.
-    pub fn callers(&self) -> HashSet<Address> {
+    pub fn callers(&self) -> AddressSet {
         self.nodes.iter().map(|node| node.trace.caller).collect()
     }
 
@@ -571,6 +571,7 @@ pub fn populate_state_diff(
 mod tests {
     use super::*;
     use crate::tracing::types::{CallKind, CallTrace};
+    use alloy_primitives::Address;
 
     #[test]
     fn test_parity_suicide_simple_call() {
