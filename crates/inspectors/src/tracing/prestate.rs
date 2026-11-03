@@ -51,9 +51,9 @@ pub struct PrestateInspector {
     deleted: AddressSet,
     /// What the opcode that is running addresses, kept until its step ends.
     pending: Option<Lookup>,
-    /// The addresses that the `CREATE` and `CREATE2` that are running create, one per depth. They
-    /// run frames of their own before their steps end, which `pending` does not survive.
-    creates: Vec<(u16, Address)>,
+    /// The `CREATE` and `CREATE2` that are running, one per depth. They run frames of their own
+    /// before their steps end, which `pending` does not survive.
+    creates: Vec<(u16, Create)>,
 }
 
 /// The opcodes whose steps the inspector looks at: they address an account or a slot, or create
@@ -82,6 +82,16 @@ enum Lookup {
     Account(Address),
     /// The beneficiary of a `SELFDESTRUCT` in the given account.
     SelfDestruct(Address, Address),
+}
+
+/// What a `CREATE` or `CREATE2` needs to name the address it creates, taken before it runs.
+#[derive(Clone, Copy, Debug)]
+enum Create {
+    /// The address that a `CREATE` creates.
+    Create(Address),
+    /// The operands of a `CREATE2`. Its init code is hashed once the step ends without a halt, so
+    /// that an opcode that fails its checks costs no hashing.
+    Create2 { offset: u64, size: u64, salt: B256 },
 }
 
 impl PrestateInspector {
@@ -310,25 +320,38 @@ impl PrestateInspector {
         Ok(())
     }
 
-    /// Returns the address that the `CREATE` or `CREATE2` about to run creates.
-    fn created_address<T: EvmTypes>(interp: &mut Interpreter<'_, '_, T>) -> Option<Address> {
-        let account = interp.message().destination;
+    /// Returns what the `CREATE` or `CREATE2` about to run needs to name its address.
+    fn pending_create<T: EvmTypes>(interp: &mut Interpreter<'_, '_, T>) -> Option<Create> {
         let stack = interp.stack();
         let stack = stack.as_slice();
         // `back(0)` is the top of the stack.
         let back = |index: usize| stack.len().checked_sub(index + 1).map(|at| stack[at]);
         if interp.opcode() == op::CREATE {
             back(2)?;
+            let account = interp.message().destination;
             let info = interp.host().state_mut().account_info_untracked(&account).ok()?;
-            return Some(account.create(info.unwrap_or_default().nonce));
+            return Some(Create::Create(account.create(info.unwrap_or_default().nonce)));
         }
         let (offset, size, salt) = (back(1)?, back(2)?, back(3)?);
         // The operands are truncated to 64 bits, and geth fails on a negative one.
         let (offset, size) = (offset.as_limbs()[0], size.as_limbs()[0]);
         i64::try_from(offset).ok()?;
         i64::try_from(size).ok()?;
-        let init_code = memory_copy_padded(interp.memory().as_slice(), offset, size)?;
-        Some(account.create2(B256::from(salt), keccak256(init_code)))
+        Some(Create::Create2 { offset, size, salt: B256::from(salt) })
+    }
+
+    /// Returns the address that a create whose step ended creates.
+    fn created_address<T: EvmTypes>(
+        create: Create,
+        interp: &Interpreter<'_, '_, T>,
+    ) -> Option<Address> {
+        match create {
+            Create::Create(address) => Some(address),
+            Create::Create2 { offset, size, salt } => {
+                let init_code = memory_copy_padded(interp.memory().as_slice(), offset, size)?;
+                Some(interp.message().destination.create2(salt, keccak256(init_code)))
+            }
+        }
     }
 
     /// Returns what the opcode about to run addresses.
@@ -365,8 +388,8 @@ impl<T: EvmTypes> Inspector<T> for PrestateInspector {
             while self.creates.last().is_some_and(|(at, _)| *at >= depth) {
                 self.creates.pop();
             }
-            if let Some(address) = Self::created_address(interp) {
-                self.creates.push((depth, address));
+            if let Some(create) = Self::pending_create(interp) {
+                self.creates.push((depth, create));
             }
         } else {
             self.pending = Self::lookup(interp);
@@ -377,12 +400,12 @@ impl<T: EvmTypes> Inspector<T> for PrestateInspector {
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let halted = interp.result().is_err_and(|stop| stop.is_halt());
         // While a create runs its frames, only a step at its own depth can end its step.
-        if let Some(&(depth, address)) = self.creates.last()
+        if let Some(&(depth, create)) = self.creates.last()
             && depth == interp.message().depth
         {
             self.creates.pop();
             // geth ignores an opcode that fails before its body runs.
-            if !halted {
+            if !halted && let Some(address) = Self::created_address(create, interp) {
                 self.accounts.push(address);
                 self.created.insert(address);
             }
