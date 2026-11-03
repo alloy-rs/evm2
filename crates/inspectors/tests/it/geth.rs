@@ -3733,6 +3733,73 @@ fn test_geth_prestate_names_the_address_of_a_refused_create() {
     }
 }
 
+/// geth names the address of a `CREATE2` when the opcode starts and never takes the name back, so a
+/// `SELFDESTRUCT` of a contract that a colliding `CREATE2` named drops its post state from the diff
+/// after Cancun although the contract survives.
+#[test]
+fn test_geth_prestate_diff_selfdestruct_after_colliding_create2() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let factory = address!("1111111111111111111111111111111111111111");
+    let init_code_hash = alloy_primitives::keccak256([0u8]);
+    let victim = factory.create2(B256::ZERO, init_code_hash);
+
+    // CREATE2 of the one-byte init code `00` with salt 0, which collides with `victim`; then CALL
+    // `victim`.
+    let mut factory_code = hex!("600060015f5ff5505f5f5f5f5f73").to_vec();
+    factory_code.extend_from_slice(victim.as_slice());
+    factory_code.extend_from_slice(&hex!("5af150"));
+    // SSTORE 7 at slot 0, SELFDESTRUCT to the zero address.
+    let victim_code = Bytes::from(hex!("60075f555fff"));
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &factory,
+        AccountInfo {
+            balance: U256::from(1),
+            nonce: 1,
+            code_hash: alloy_primitives::keccak256(&factory_code),
+            code: Some(Bytecode::new_raw(factory_code.into())),
+            ..Default::default()
+        },
+    );
+    db.insert_account_info(
+        &victim,
+        AccountInfo {
+            balance: U256::from(1),
+            nonce: 1,
+            code_hash: alloy_primitives::keccak256(&victim_code),
+            code: Some(Bytecode::new_raw(victim_code)),
+            ..Default::default()
+        },
+    );
+    db.insert_account_storage(&victim, &U256::ZERO, &U256::from(5));
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet();
+
+    let (res, frame) = trace_prestate(
+        evm,
+        PreStateConfig { diff_mode: Some(true), ..Default::default() },
+        TxEnv {
+            caller: sender,
+            gas_limit: 8_000_000,
+            kind: TransactTo::Call(factory),
+            ..Default::default()
+        },
+    );
+    assert!(res.result.is_success(), "{res:#?}");
+    let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
+
+    // Matches geth's `evm t8n --state.fork Cancun` with the prestate tracer in diff mode.
+    assert!(!diff.post.contains_key(&victim));
+    assert_eq!(diff.pre[&victim].storage[&B256::ZERO], B256::with_last_byte(5));
+}
+
 /// Runs a transaction with a [`PrestateInspector`] and returns the result and the frame.
 fn trace_prestate(
     evm: TestEvm,
