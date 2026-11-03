@@ -784,7 +784,7 @@ fn vmtrace_revert_keeps_its_execution_record() {
 fn vmtrace_call_pushes_result_and_copies_return_memory() {
     let trace = trace_vm_code(&hex!("602060205f5f5f604361fffff15f00"), &hex!("602a5f5260205ff3"));
     let call = &trace.ops[7];
-    assert_eq!(call.ex.as_ref().unwrap().push.as_slice(), &[U256::ONE]);
+    assert_eq!(call.ex.as_ref().unwrap().push, &[U256::ONE]);
     let mem = call.ex.as_ref().unwrap().mem.as_ref().unwrap();
     assert_eq!(mem.off, 32);
     assert_eq!(mem.data.as_ref(), B256::with_last_byte(42).0);
@@ -862,7 +862,7 @@ fn vmtrace_stop_only_child_preserves_parent_and_creation_result() {
     assert_eq!(trace.ops.len(), 6);
     let create = &trace.ops[3];
     assert_eq!(
-        create.ex.as_ref().unwrap().push.as_slice(),
+        create.ex.as_ref().unwrap().push,
         &[U256::from_be_slice(Address::with_last_byte(0x42).create(0).as_slice())]
     );
     assert!(create.sub.is_some());
@@ -926,7 +926,7 @@ fn vmtrace_memory_copy_and_terminal_writes() {
             .find_map(|op| op.ex.as_ref().and_then(|ex| ex.mem.as_ref()))
             .unwrap();
         assert_eq!(mem.off, offset);
-        assert_eq!(mem.data.as_ref(), expected);
+        assert_eq!(mem.data, expected);
     }
 }
 

@@ -1619,7 +1619,7 @@ mod tests {
         view.post = Some(post.leak());
 
         assert_eq!(view.len(), 64);
-        assert_eq!(view.bytes(0..64).unwrap().as_slice(), pre.as_slice());
+        assert_eq!(view.bytes(0..64).unwrap().as_slice(), pre);
         assert_eq!(view.bytes(10..20).unwrap().as_slice(), &pre[10..20]);
 
         // writes beyond the pre-execution length only expand memory

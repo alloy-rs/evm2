@@ -2343,7 +2343,7 @@ mod tests {
         assert_eq!(result.stop, InstrStop::Return);
         let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
         assert_eq!(inspector.0.len(), 1);
-        assert_eq!(inspector.0.as_slice(), evm.logs());
+        assert_eq!(inspector.0, evm.logs());
     }
 
     #[test]

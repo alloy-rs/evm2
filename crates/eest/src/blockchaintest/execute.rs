@@ -1307,7 +1307,7 @@ fn check_block_access_list(
         }
     }
 
-    if built.as_slice() == expected.as_slice() {
+    if built == *expected {
         return Ok(());
     }
     Err(TestErrorKind::BlockAccessListMismatch {
