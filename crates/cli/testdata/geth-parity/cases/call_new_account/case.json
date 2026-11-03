@@ -1,0 +1,9 @@
+{
+  "description": "CALL with value to a nonexistent account pays the new account cost; zero value does not.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

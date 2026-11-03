@@ -519,7 +519,8 @@ fn logs_hash(logs: &[Log]) -> B256 {
     keccak256(out)
 }
 
-pub(crate) fn state_root_from_database(state: &InMemoryDB) -> B256 {
+/// Computes the state root of the accounts in an in-memory database.
+pub fn state_root_from_database(state: &InMemoryDB) -> B256 {
     let accounts = state.cache.accounts.iter().filter_map(|(&address, info)| {
         let info = info.as_ref()?;
         let storage = storage_for_root(state, address);

@@ -1,0 +1,8 @@
+{
+  "description": "A log of the deposit contract becomes an EIP-6110 request.",
+  "forks": [
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

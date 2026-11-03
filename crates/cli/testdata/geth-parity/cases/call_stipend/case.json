@@ -1,0 +1,9 @@
+{
+  "description": "CALL with value gives the callee a 2300 gas stipend, which pays for a LOG but not for SSTORE.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

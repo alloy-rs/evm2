@@ -1,0 +1,9 @@
+{
+  "description": "The ripemd160 precompile called with valid input.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

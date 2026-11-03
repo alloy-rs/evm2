@@ -1735,6 +1735,12 @@ impl ForkStage {
     }
 }
 
+/// Returns the mainnet blob parameters of the latest blob fork `spec` enables, or `None` before
+/// Cancun.
+pub fn mainnet_blob_params(spec: SpecId) -> Option<BlobParams> {
+    ForkStage::new(spec).blob_fork?.mainnet_params()
+}
+
 impl ForkSchedule {
     const fn fixed(spec: SpecId) -> Self {
         Self::new(ForkStage::new(spec), None)

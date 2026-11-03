@@ -1,0 +1,9 @@
+{
+  "description": "Out of gas at CREATE2 before its state gas: base, memory, init code and hashing cost do not fit.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

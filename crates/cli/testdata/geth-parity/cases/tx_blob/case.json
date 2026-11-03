@@ -1,0 +1,10 @@
+{
+  "description": "A blob transaction reads BLOBHASH and BLOBBASEFEE.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ],
+  "node": false
+}

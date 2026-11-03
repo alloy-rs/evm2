@@ -1,0 +1,9 @@
+{
+  "description": "CREATE2 to an address that already has code, or a nonce, fails.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

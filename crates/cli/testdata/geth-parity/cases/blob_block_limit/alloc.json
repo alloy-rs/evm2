@@ -1,0 +1,38 @@
+{
+  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {
+    "balance": "0x56bc75e2d63100000",
+    "code": "0x",
+    "nonce": "0x0",
+    "storage": {}
+  },
+  "0x1a642f0e3c3af545e7acbd38b07251b3990914f1": {
+    "balance": "0x56bc75e2d63100000",
+    "code": "0x",
+    "nonce": "0x0",
+    "storage": {}
+  },
+  "0x5050a4f4b3f9338c3472dcc01a87c76a144b3c9c": {
+    "balance": "0x56bc75e2d63100000",
+    "code": "0x",
+    "nonce": "0x0",
+    "storage": {}
+  },
+  "0x3325a78425f17a7e487eb5666b2bfd93abb06c70": {
+    "balance": "0x56bc75e2d63100000",
+    "code": "0x",
+    "nonce": "0x0",
+    "storage": {}
+  },
+  "0xc48b812bb43401392c037381aca934f4069c0517": {
+    "balance": "0x56bc75e2d63100000",
+    "code": "0x",
+    "nonce": "0x0",
+    "storage": {}
+  },
+  "0xd09ad14080d4b257a819a4f579b8485be88f086c": {
+    "balance": "0x56bc75e2d63100000",
+    "code": "0x",
+    "nonce": "0x0",
+    "storage": {}
+  }
+}

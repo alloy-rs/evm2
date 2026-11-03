@@ -1,0 +1,8 @@
+{
+  "description": "A set-code transaction resets the delegation to the zero address.",
+  "forks": [
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

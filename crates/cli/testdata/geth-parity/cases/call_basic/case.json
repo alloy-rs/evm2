@@ -1,0 +1,9 @@
+{
+  "description": "CALL into a contract that returns data and writes storage.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

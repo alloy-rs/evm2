@@ -1,0 +1,9 @@
+{
+  "description": "Memory expansion through MSTORE, MSTORE8, MLOAD, MCOPY, CALLDATACOPY, KECCAK256 and RETURN.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

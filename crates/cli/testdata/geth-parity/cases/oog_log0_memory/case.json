@@ -1,0 +1,9 @@
+{
+  "description": "Out of gas at LOG0 that expands memory.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

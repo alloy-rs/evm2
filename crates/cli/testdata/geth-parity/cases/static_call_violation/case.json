@@ -1,0 +1,9 @@
+{
+  "description": "State changing opcodes inside a STATICCALL.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

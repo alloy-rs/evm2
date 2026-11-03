@@ -67,7 +67,7 @@ fn normalize_authorization_value(value: &mut serde_json::Value) {
 
 /// Error while building a consensus transaction from fixture fields.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum TxBuildError {
+pub enum TxBuildError {
     /// Numeric value overflowed the target type.
     #[error("value overflows {0}")]
     Overflow(&'static str),
@@ -100,35 +100,36 @@ pub(crate) enum TxSigner {
 }
 
 /// Common transaction fields already selected from a fixture.
-pub(crate) struct TxFields {
+#[derive(Debug)]
+pub struct TxFields {
     /// Explicit transaction type.
-    pub(crate) tx_type: Option<u8>,
+    pub tx_type: Option<u8>,
     /// Transaction recipient, or create.
-    pub(crate) kind: TxKind,
+    pub kind: TxKind,
     /// Transaction calldata.
-    pub(crate) data: Bytes,
+    pub data: Bytes,
     /// Gas limit.
-    pub(crate) gas_limit: u64,
+    pub gas_limit: u64,
     /// Transaction nonce.
-    pub(crate) nonce: u64,
+    pub nonce: u64,
     /// Ether value.
-    pub(crate) value: U256,
+    pub value: U256,
     /// Optional chain ID.
-    pub(crate) chain_id: Option<U256>,
+    pub chain_id: Option<U256>,
     /// Legacy gas price.
-    pub(crate) gas_price: Option<U256>,
+    pub gas_price: Option<U256>,
     /// EIP-1559 max fee.
-    pub(crate) max_fee_per_gas: Option<U256>,
+    pub max_fee_per_gas: Option<U256>,
     /// EIP-1559 priority fee.
-    pub(crate) max_priority_fee_per_gas: Option<U256>,
+    pub max_priority_fee_per_gas: Option<U256>,
     /// EIP-2930 access list.
-    pub(crate) access_list: Option<RpcAccessList>,
+    pub access_list: Option<RpcAccessList>,
     /// EIP-7702 authorization list.
-    pub(crate) authorization_list: Option<Vec<SignedAuthorization>>,
+    pub authorization_list: Option<Vec<SignedAuthorization>>,
     /// EIP-4844 blob hashes.
-    pub(crate) blob_versioned_hashes: Vec<B256>,
+    pub blob_versioned_hashes: Vec<B256>,
     /// EIP-4844 max fee per blob gas.
-    pub(crate) max_fee_per_blob_gas: Option<U256>,
+    pub max_fee_per_blob_gas: Option<U256>,
 }
 
 /// Builds an evm2 recovered transaction envelope from common fixture fields.
@@ -136,6 +137,18 @@ pub(crate) fn build_recovered_tx(
     fields: TxFields,
     signer: TxSigner,
 ) -> Result<RecoveredTxEnvelope, TxBuildError> {
+    let tx = build_typed_tx(fields)?;
+    let caller = match signer {
+        TxSigner::Fixture(caller) => caller,
+        TxSigner::Signature { signature, spec } => {
+            recover_sender(&signature, tx.signature_hash(), spec)?
+        }
+    };
+    Ok(recovered_envelope(tx, caller))
+}
+
+/// Builds an unsigned consensus transaction from common fixture fields.
+pub fn build_typed_tx(fields: TxFields) -> Result<TypedTransaction, TxBuildError> {
     let mut request = TransactionRequest::default()
         .gas_limit(fields.gas_limit)
         .nonce(fields.nonce)
@@ -190,15 +203,7 @@ pub(crate) fn build_recovered_tx(
         request.blob_versioned_hashes = Some(fields.blob_versioned_hashes);
     }
 
-    let tx =
-        request.build_consensus_tx().map_err(|err| TxBuildError::BuildTransaction(err.error))?;
-    let caller = match signer {
-        TxSigner::Fixture(caller) => caller,
-        TxSigner::Signature { signature, spec } => {
-            recover_sender(&signature, tx.signature_hash(), spec)?
-        }
-    };
-    Ok(recovered_envelope(tx, caller))
+    request.build_consensus_tx().map_err(|err| TxBuildError::BuildTransaction(err.error))
 }
 
 /// Decodes an EIP-2718 signed transaction and recovers its sender.
@@ -269,7 +274,7 @@ fn rpc_access_list_item(item: &AccessListItem) -> RpcAccessListItem {
 }
 
 /// Deserializes signed authorizations from their raw fixture JSON form.
-pub(crate) fn signed_authorizations(
+pub fn signed_authorizations(
     raw: Option<&[TestAuthorization]>,
 ) -> Result<Option<Vec<SignedAuthorization>>, TxBuildError> {
     let Some(authorizations) = raw else {
@@ -283,13 +288,14 @@ pub(crate) fn signed_authorizations(
 }
 
 /// Recovers an address from a private key.
-pub(crate) fn recover_address(private_key: &[u8]) -> Option<Address> {
+pub fn recover_address(private_key: &[u8]) -> Option<Address> {
     let key = SigningKey::from_slice(private_key).ok()?;
     let public_key = key.verifying_key().to_sec1_point(false);
     Some(Address::from_raw_public_key(&public_key.as_bytes()[1..]))
 }
 
-fn recovered_envelope(tx: TypedTransaction, caller: Address) -> RecoveredTxEnvelope {
+/// Wraps an unsigned consensus transaction with its sender.
+pub fn recovered_envelope(tx: TypedTransaction, caller: Address) -> RecoveredTxEnvelope {
     match tx {
         TypedTransaction::Legacy(tx) => Recovered::new_unchecked(TxEnvelope::Legacy(tx), caller),
         TypedTransaction::Eip2930(tx) => Recovered::new_unchecked(TxEnvelope::Eip2930(tx), caller),

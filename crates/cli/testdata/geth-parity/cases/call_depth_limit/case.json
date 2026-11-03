@@ -1,0 +1,14 @@
+{
+  "description": "A contract calls itself until the depth limit stops it.",
+  "forks": [
+    "Cancun",
+    "Prague"
+  ],
+  "tracers": [
+    "call",
+    "call-top",
+    "4byte",
+    "noop"
+  ],
+  "node": false
+}

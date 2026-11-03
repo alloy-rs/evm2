@@ -1,0 +1,9 @@
+{
+  "description": "Out of gas at an MSTORE far beyond the memory limit.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}
