@@ -1,5 +1,5 @@
-use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
-use crate::precompiles::PrecompileHalt;
+use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN};
+use crate::precompiles::{PrecompileHalt, bls12_381_const::SCALAR_LENGTH};
 use alloc::vec::Vec;
 use bn::{AffineG1, AffineG2, Fq, Fq2, G1, G2, Group, Gt};
 
@@ -188,15 +188,15 @@ pub(super) fn read_g2_point(input: &[u8]) -> Result<G2, PrecompileHalt> {
 ///
 /// # Panics
 ///
-/// If `input.len()` is not equal to [`SCALAR_LEN`].
+/// If `input.len()` is not equal to [`SCALAR_LENGTH`].
 #[inline]
 pub(super) fn read_scalar(input: &[u8]) -> bn::Fr {
     assert_eq!(
         input.len(),
-        SCALAR_LEN,
-        "unexpected scalar length. got {}, expected {SCALAR_LEN}",
+        SCALAR_LENGTH,
+        "unexpected scalar length. got {}, expected {SCALAR_LENGTH}",
         input.len()
     );
-    // `Fr::from_slice` can only fail when the length is not `SCALAR_LEN`.
+    // `Fr::from_slice` can only fail when the length is not `SCALAR_LENGTH`.
     bn::Fr::from_slice(input).unwrap()
 }

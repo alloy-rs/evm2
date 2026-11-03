@@ -871,11 +871,7 @@ mod tests {
 
         let transition = TransitionAccount {
             info: Some(acc1),
-            status: AccountStatus::InMemoryChange,
-            previous_info: None,
-            previous_status: AccountStatus::LoadedNotExisting,
-            storage: StorageWithOriginalValues::default(),
-            storage_was_destroyed: false,
+            ..TransitionAccount::new_empty_eip161(StorageWithOriginalValues::default())
         };
 
         // Apply first transition
@@ -1012,14 +1008,10 @@ mod tests {
         };
         let recreate = TransitionAccount {
             info: Some(info),
-            status: AccountStatus::InMemoryChange,
-            previous_info: None,
-            previous_status: AccountStatus::LoadedNotExisting,
-            storage: HashMap::from_iter([(
+            ..TransitionAccount::new_empty_eip161(HashMap::from_iter([(
                 slot2(),
                 StorageSlot::new_changed(U256::ZERO, U256::from(5)),
-            )]),
-            storage_was_destroyed: false,
+            )]))
         };
         let block_bundle = |transition| {
             let mut bundle = BundleState::default();
@@ -1239,12 +1231,12 @@ mod tests {
 
         state.revert_latest();
         // State for account one was deleted
-        assert_eq!(state.state.get(&account1()), None);
+        assert_eq!(state.account(&account1()), None);
 
         state.revert_latest();
         // State is set to
         assert_eq!(
-            state.state.get(&account1()),
+            state.account(&account1()),
             Some(&BundleAccount::new(
                 None,
                 Some(AccountInfo::default()),
@@ -1338,13 +1330,13 @@ mod tests {
 
         test.prepend_state(previous_state);
 
-        assert_eq!(test.state.len(), 2);
+        assert_eq!(test.len(), 2);
         // The receiver keeps its own reverts.
         assert_eq!(test.reverts, present_reverts);
         // Account1 is not overwritten.
-        assert_eq!(test.state.get(&address1).unwrap().info, Some(account1_changed));
+        assert_eq!(test.account(&address1).unwrap().info, Some(account1_changed));
         // Account2 got inserted
-        assert_eq!(test.state.get(&address2).unwrap().info, Some(account2));
+        assert_eq!(test.account(&address2).unwrap().info, Some(account2));
     }
 
     #[test]

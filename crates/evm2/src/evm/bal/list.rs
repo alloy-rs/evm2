@@ -340,8 +340,9 @@ mod tests {
         bytecode::Bytecode,
         evm::{
             bal::{AccountInfoBal, BalChanges, BalCodeChange, StorageBal},
-            state::{Account, AccountFlags, AccountInfo, StorageOverlay, StorageSlot, Tracked},
+            state::{Account, AccountFlags, AccountInfo, StorageOverlay},
         },
+        test_utils::slot,
     };
     use alloc::{vec, vec::Vec};
     use alloy_eip7928::{
@@ -468,10 +469,6 @@ mod tests {
         let bal = Bal::new();
         assert!(bal.to_alloy_bal().is_empty());
         assert!(AlloyBal::from(&bal).is_empty());
-    }
-
-    fn slot(original: U256, current: U256) -> StorageSlot {
-        StorageSlot { value: Tracked::from_parts(original, current), ..Default::default() }
     }
 
     #[test]

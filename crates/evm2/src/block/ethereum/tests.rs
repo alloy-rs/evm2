@@ -5,16 +5,16 @@ use crate::{
     bytecode::Bytecode,
     env::BlockEnvExt,
     ethereum::ethereum_tx_registry,
-    evm::{
-        AccountInfo, BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
-        InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
-    },
+    evm::{AccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB},
+    utils::b256_to_word,
 };
 use alloc::vec;
 use alloy_consensus::{Signed, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered};
 use alloy_eips::{
-    eip2935::HISTORY_STORAGE_CODE, eip4788::BEACON_ROOTS_CODE,
-    eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_CODE, eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_CODE,
+    eip2935::HISTORY_STORAGE_CODE,
+    eip4788::BEACON_ROOTS_CODE,
+    eip7002::{WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, WITHDRAWAL_REQUEST_PREDEPLOY_CODE},
+    eip7251::{CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, CONSOLIDATION_REQUEST_PREDEPLOY_CODE},
 };
 use alloy_primitives::{Signature, TxKind, U256};
 
@@ -31,8 +31,8 @@ fn database() -> InMemoryDB {
     for (address, code) in [
         (HISTORY_STORAGE_ADDRESS, &HISTORY_STORAGE_CODE),
         (BEACON_ROOTS_ADDRESS, &BEACON_ROOTS_CODE),
-        (WITHDRAWAL_REQUEST_ADDRESS, &WITHDRAWAL_REQUEST_PREDEPLOY_CODE),
-        (CONSOLIDATION_REQUEST_ADDRESS, &CONSOLIDATION_REQUEST_PREDEPLOY_CODE),
+        (WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, &WITHDRAWAL_REQUEST_PREDEPLOY_CODE),
+        (CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, &CONSOLIDATION_REQUEST_PREDEPLOY_CODE),
     ] {
         let code = Bytecode::new_legacy(code.clone());
         database.insert_account_info(&address, AccountInfo::default().with_code(code));
@@ -128,10 +128,10 @@ fn executes_prague_block() {
     let state = &output.state;
     assert_eq!(balance(state, RECIPIENT), Some(U256::from(1)));
     // EIP-2935 stores the parent hash at slot `(number - 1) % 8191`.
-    let parent_hash = U256::from_be_bytes(PARENT_HASH.0);
+    let parent_hash = b256_to_word(PARENT_HASH);
     assert_eq!(storage(state, HISTORY_STORAGE_ADDRESS, U256::ZERO), Some(parent_hash));
     // EIP-4788 stores the timestamp at `timestamp % 8191` and the root 8191 slots later.
-    let root = U256::from_be_bytes(PARENT_BEACON_BLOCK_ROOT.0);
+    let root = b256_to_word(PARENT_BEACON_BLOCK_ROOT);
     assert_eq!(storage(state, BEACON_ROOTS_ADDRESS, U256::from(12)), Some(U256::from(12)));
     assert_eq!(storage(state, BEACON_ROOTS_ADDRESS, U256::from(12 + 8191)), Some(root));
 }
@@ -223,7 +223,7 @@ fn reads_rules_from_hardforks() {
 #[test]
 fn rejects_request_contract_without_code() {
     let mut database = database();
-    database.insert_account_info(&WITHDRAWAL_REQUEST_ADDRESS, AccountInfo::default());
+    database.insert_account_info(&WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, AccountInfo::default());
     let evm = evm_with(SpecId::PRAGUE, 30_000_000, database);
     let mut executor =
         EthBlockExecutor::new(evm, ctx(), EthBlockRules::default(), EthReceiptBuilder);
@@ -232,7 +232,7 @@ fn rejects_request_contract_without_code() {
     assert!(matches!(
         error,
         BlockExecutionError::Validation(BlockValidationError::SystemContractEmpty { address })
-            if address == WITHDRAWAL_REQUEST_ADDRESS
+            if address == WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS
     ));
 }
 
