@@ -11,7 +11,7 @@ mod utils;
 /// This module is not part of the stable API and has no stability guarantees.
 #[doc(hidden)]
 pub mod instructions;
-pub use instructions::i256;
+pub use instructions::{i256, should_charge_new_account_gas};
 
 pub(crate) mod dispatch;
 
