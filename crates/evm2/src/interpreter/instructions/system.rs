@@ -305,7 +305,7 @@ pub fn call_with<T: EvmTypesHost>(
     // gas upfront on this frame. If the call does not succeed (depth/balance failure,
     // child revert or halt) the target is not created, so refund the upfront charge to
     // the reservoir (execution-specs `credit_state_gas_refund`), mirroring CREATE.
-    if new_account_state_gas != 0 && !result.stop.is_success() {
+    if new_account_state_gas != 0 && !result.is_success() {
         gas.refill_reservoir(new_account_state_gas);
     }
     after(gas, state, &message, &result)?;
@@ -315,7 +315,7 @@ pub fn call_with<T: EvmTypesHost>(
         state.memory().set_unchecked(return_memory_range.start, output);
     }
     state.swap_return_data(&mut result.output);
-    stack.push_u64(result.stop.is_success() as u64)?;
+    stack.push_u64(result.is_success() as u64)?;
     // A hook's stop or a config reload.
     state.result()
 }
@@ -476,13 +476,13 @@ pub fn create_with<T: EvmTypesHost>(
     // `created_address == None` — depth, out-of-funds, nonce overflow), no new account leaf is
     // created, so refund the charge to the reservoir via `refill_reservoir` (matching 0→x→0 storage
     // restoration). A successful deployment keeps the charge; an alive target was never charged.
-    let create_failed = result.created_address.is_none() || !result.stop.is_success();
+    let create_failed = result.created_address.is_none() || !result.is_success();
     if charged_create_state_gas && create_failed {
         gas.refill_reservoir(state.gas_params().create_state_gas());
     }
     after(gas, state, &message, &result)?;
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
-    if result.stop == InstrStop::Revert {
+    if result.stop.is_revert() {
         state.swap_return_data(&mut result.output);
     } else {
         state.clear_return_data();
@@ -1093,7 +1093,7 @@ mod tests {
                 Ok(())
             },
             |gas, _, _, result| {
-                if result.stop.is_success() { gas.spend(AFTER_FEE) } else { Err(InstrStop::Revert) }
+                if result.is_success() { gas.spend(AFTER_FEE) } else { Err(InstrStop::Revert) }
             },
         )
     }
