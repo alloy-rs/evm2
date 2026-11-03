@@ -39,6 +39,14 @@ use syn::{
 ///   checks.
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
+/// - `#[instruction(hooked)]`: Marks an instruction that may run inspector hooks or host code that
+///   read the interpreter. Before the instruction runs, the dispatch stores the latest pc, stack
+///   length and gas into the interpreter, so `hooked` implies `dynamic_gas`. Set it on an
+///   instruction that runs a child message. The `call`, `call_end`, `create` and `create_end` hooks
+///   get the interpreter from inside such an instruction. `step` and `step_end` get the current
+///   state from the dispatch, and `initialize_interp` runs at frame start, so they need no flag. An
+///   instruction that only reaches `log` or `selfdestruct` needs none either, because those hooks
+///   get the host, which has no current frame. Flag it if a hook starts receiving the interpreter.
 /// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete EVM type
 ///   family instead of generating a generic implementation.
 /// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic EVM
@@ -140,6 +148,7 @@ impl Parse for InstructionAttr {
 struct InstructionAttrs {
     no_stack_preamble: bool,
     dynamic_gas: bool,
+    hooked: bool,
     evm_types: Option<Type>,
     evm_types_span: Option<proc_macro2::Span>,
     evm_types_bounds: Vec<Punctuated<TypeParamBound, Token![+]>>,
@@ -155,6 +164,10 @@ impl InstructionAttrs {
                     attrs.no_stack_preamble = true;
                 }
                 InstructionAttr::Flag(arg) if arg == "dynamic_gas" => {
+                    attrs.dynamic_gas = true;
+                }
+                InstructionAttr::Flag(arg) if arg == "hooked" => {
+                    attrs.hooked = true;
                     attrs.dynamic_gas = true;
                 }
                 InstructionAttr::Flag(arg) => {
@@ -329,7 +342,20 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             }
         }
     });
-    let dynamic_gas = instruction_attrs.dynamic_gas;
+    let flags = {
+        let mut flags = quote! { evm2::interpreter::private::InstructionFlags::empty() };
+        if instruction_attrs.dynamic_gas {
+            flags = quote! {
+                #flags.union(evm2::interpreter::private::InstructionFlags::DYNAMIC_GAS)
+            };
+        }
+        if instruction_attrs.hooked {
+            flags = quote! {
+                #flags.union(evm2::interpreter::private::InstructionFlags::HOOKED)
+            };
+        }
+        flags
+    };
     quote! {
         #(#fn_attrs)*
         #[allow(non_camel_case_types)]
@@ -340,7 +366,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         impl #struct_generics evm2::interpreter::private::Instruction<#evm_types> for #ident #type_generics
         #where_clause
         {
-            const DYNAMIC_GAS: bool = #dynamic_gas;
+            const FLAGS: evm2::interpreter::private::InstructionFlags = #flags;
 
             #[inline]
             fn execute(
