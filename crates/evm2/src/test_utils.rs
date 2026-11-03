@@ -3,7 +3,7 @@ use crate::{
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, BlockEnvExt, TxEnv, TxEnvExt},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, SLoad, SStore, SelfDestructResult, StorageSlot, Tracked},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, Memory, Message, MessageExt, MessageKind,
         MessageResult, MessageResultExt, StackBacking, Word, op,
@@ -450,4 +450,8 @@ pub(crate) fn neg(value: u64) -> Word {
 
 pub(crate) fn legacy_bytecode(code: impl Into<Vec<u8>>) -> Bytecode {
     Bytecode::new_legacy(Bytes::from(code.into()))
+}
+
+pub(crate) fn slot(original: Word, current: Word) -> StorageSlot {
+    StorageSlot { value: Tracked::from_parts(original, current), ..Default::default() }
 }
