@@ -1711,6 +1711,12 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.bcx.build_unreachable();
     }
 
+    fn trap(&mut self) {
+        let trap = self.get_or_add_function("llvm.trap", |this| this.ty_void.fn_type(&[], false));
+        self.bcx.build_call(trap, &[], "");
+        self.bcx.build_unreachable();
+    }
+
     fn get_or_build_function(
         &mut self,
         name: &str,

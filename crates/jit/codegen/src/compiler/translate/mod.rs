@@ -243,6 +243,10 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     incoming_dynamic_jumps: Incoming<B>,
     /// The dynamic jump table block where all dynamic jumps branch to.
     dynamic_jump_table: B::BasicBlock,
+    /// Traps if reached. Paths that only our analyses rule out branch here instead of to an LLVM
+    /// `unreachable`: if an analysis is wrong, `unreachable` lets LLVM assume the path away and
+    /// miscompile the code around it, while a trap stops execution there.
+    trap_block: B::BasicBlock,
 
     /// `failure_block` incoming values.
     incoming_failures: Incoming<B>,
@@ -325,13 +329,13 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let stack_bytes = bcx.new_stack_slot(isize_type, "stack_bytes.addr");
 
         // Create all instruction entry blocks. Dead-code instructions map to
-        // `unreachable_block`; dedup redirects are resolved at control-flow callsites.
-        let unreachable_block = bcx.create_block("unreachable");
+        // `trap_block`; dedup redirects are resolved at control-flow callsites.
+        let trap_block = bcx.create_block("trap");
         let inst_entries: IndexVec<Inst, _> = bytecode
             .iter_all_insts()
             .map(|(i, data)| {
                 if data.is_dead_code() {
-                    unreachable_block
+                    trap_block
                 } else {
                     let name = if config.debug { &bytecode.op_block_name(Some(i), "") } else { "" };
                     bcx.create_block(name)
@@ -378,6 +382,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
             incoming_dynamic_jumps: Vec::new(),
             dynamic_jump_table,
+            trap_block,
 
             incoming_failures: Vec::new(),
             failure_block: Some(failure_block),
@@ -412,16 +417,16 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             fx.bcx.clear_debug_location();
         }
 
-        // Finalize the dynamic jump table.
-        fx.bcx.switch_to_block(unreachable_block);
-        fx.bcx.unreachable();
+        // Finalize the trap block and the dynamic jump table.
+        fx.bcx.switch_to_block(trap_block);
+        fx.bcx.trap();
         if bytecode.has_dynamic_jumps() {
-            fx.build_dynamic_jump_table(unreachable_block);
+            fx.build_dynamic_jump_table();
         } else {
             // No dynamic jumps.
             debug_assert!(fx.incoming_dynamic_jumps.is_empty());
             fx.bcx.switch_to_block(fx.dynamic_jump_table);
-            fx.bcx.unreachable();
+            fx.bcx.trap();
         }
 
         // Initialize stack length in the entry path.
@@ -2105,7 +2110,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     /// Builds the block that dispatches unresolved dynamic jumps to their target.
-    fn build_dynamic_jump_table(&mut self, unreachable_block: B::BasicBlock) {
+    fn build_dynamic_jump_table(&mut self) {
         self.bcx.switch_to_block(self.dynamic_jump_table);
         let i64_type = self.bcx.type_int(64);
         let i32_type = self.bcx.type_int(32);
@@ -2175,7 +2180,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.switch_to_block(dispatch);
         let at_or_after = self.bcx.popcnt(bits);
         let index = self.bcx.iadd(base, at_or_after);
-        self.bcx.switch(index, unreachable_block, &targets, false);
+        self.bcx.switch(index, self.trap_block, &targets, false);
     }
 
     fn add_invalid_jump(&mut self) -> B::BasicBlock {
