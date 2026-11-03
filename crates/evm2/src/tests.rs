@@ -10,7 +10,7 @@ use crate::{
     evm::{AccountInfo, InMemoryDB},
     interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
-    test_utils::{legacy_bytecode, push, push_address, push_all},
+    test_utils::{legacy_bytecode, push, push_address, push_all, return_top_word},
     version::GasId,
 };
 use alloc::{vec, vec::Vec};
@@ -404,11 +404,6 @@ fn log_collection_tx() -> RecoveredTxEnvelope {
         }),
         LOG_CALLER,
     )
-}
-
-/// Appends code that returns the word at the top of the stack.
-fn return_top_word(code: &mut Vec<u8>) {
-    code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
 }
 
 #[test]

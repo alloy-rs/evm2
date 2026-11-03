@@ -473,3 +473,8 @@ pub(crate) fn handle_test_tx(
     let _ = req.host.spec_id();
     Ok(TxResultExt { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResultExt::default() })
 }
+
+/// Appends code that returns the word at the top of the stack as the frame output.
+pub(crate) fn return_top_word(code: &mut Vec<u8>) {
+    code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
+}

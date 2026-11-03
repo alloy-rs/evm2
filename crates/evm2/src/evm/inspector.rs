@@ -454,7 +454,7 @@ mod tests {
             MessageResult, MessageResultExt, Word, instructions as instr, op,
         },
         registry::TxRegistry,
-        test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
+        test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all, return_top_word},
         utils::address_to_word,
     };
     use alloc::{boxed::Box, vec, vec::Vec};
@@ -697,11 +697,6 @@ mod tests {
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
-    }
-
-    /// Appends code that returns the word at the top of the stack as the frame output.
-    fn return_top_word(code: &mut Vec<u8>) {
-        code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
     }
 
     fn call_code(target: Address) -> Vec<u8> {
