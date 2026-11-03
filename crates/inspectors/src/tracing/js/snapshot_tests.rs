@@ -8,7 +8,7 @@ use evm2::{
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     ethereum::{TxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo, CacheDB, EmptyDB},
+    evm::{AccountInfo, InMemoryDB},
     interpreter::Host,
 };
 use serde_json::{Value, json};
@@ -75,7 +75,7 @@ impl Inspector<BaseEvmTypes> for SnapshotInspector {
 
 fn compare(code: Bytes, child: Option<Bytes>, initial_call_depth: u16) -> Vec<Value> {
     let address = Address::repeat_byte(0x11);
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &address,
         AccountInfo { code: Some(Bytecode::new_legacy(code.clone())), ..Default::default() },

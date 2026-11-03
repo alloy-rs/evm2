@@ -569,7 +569,7 @@ mod tests {
     use evm2::{
         AccountInfo, DatabaseError,
         bytecode::Bytecode,
-        evm::{CacheDB, DbResult, DynDatabase, EmptyDB},
+        evm::{DbResult, DynDatabase, InMemoryDB},
         interpreter::{InstrStop, Word, op},
     };
 
@@ -691,7 +691,7 @@ mod tests {
         );
         state.insert_account(empty_addr, None, Some(AccountInfo::default().with_nonce(1)));
 
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &prefunded_addr,
             AccountInfo::default().with_balance(U256::from(10)),
@@ -725,7 +725,7 @@ mod tests {
 
         state.insert_account(address, None, Some(account));
 
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         let builder = GethTraceBuilder::new(Vec::new());
         let frame = builder.geth_prestate_diff_traces(&state, &mut db, true, false).unwrap();
 
@@ -765,7 +765,7 @@ mod tests {
         let nonce_account = Address::with_last_byte(4);
         let contract = Address::with_last_byte(5);
         let code = Bytecode::new_legacy(Bytes::from_static(&[0x00]));
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(&empty_beneficiary, AccountInfo::default());
         db.insert_account_info(
             &funded_beneficiary,

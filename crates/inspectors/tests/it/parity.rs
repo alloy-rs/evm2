@@ -1,8 +1,8 @@
 //! Parity tests
 
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output,
-    SpecId, TransactTo, TxEnv, deploy_contract, inspect_deploy_contract, op, print_traces,
+    AccountInfo, Bytecode, Context, DatabaseCommit, ExecutionResult, Output, SpecId, TransactTo,
+    TxEnv, deploy_contract, inspect_deploy_contract, op, print_traces,
 };
 use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
@@ -13,6 +13,7 @@ use alloy_rpc_types_trace::{
         TransactionTrace, VmTrace,
     },
 };
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::tracing::{
     TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
 };
@@ -45,10 +46,9 @@ fn test_parity_selfdestruct(spec_id: SpecId) {
     let deployer = address!("341348115259a8bf69f1f50101c227fced83bac6");
     let value = U256::from(69);
 
-    let mut context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(&deployer, AccountInfo { balance: value, ..Default::default() });
-        });
+    let mut context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(&deployer, AccountInfo { balance: value, ..Default::default() });
+    });
 
     context.modify_tx(|tx| tx.value = value);
     let mut evm = context.build_mainnet();
@@ -118,7 +118,7 @@ fn test_parity_constructor_selfdestruct() {
     let deployer = Address::ZERO;
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_tx_chained(|tx| tx.caller = deployer)
         .build_mainnet_with_inspector(TracingInspector::new(
             TracingInspectorConfig::default_parity(),
@@ -179,7 +179,7 @@ fn test_parity_call_selfdestruct() {
     let value = U256::from(69);
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_db_chained(|db| {
             db.insert_account_info(&deployer, AccountInfo { balance: value, ..Default::default() });
         })
@@ -252,7 +252,7 @@ fn test_parity_call_selfdestruct_create() {
     let value = U256::ONE;
 
     let evm = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_db_chained(|db| {
             db.insert_account_info(
                 &caller,
@@ -324,7 +324,7 @@ fn test_parity_statediff_blob_commit() {
     let caller = address!("283b5b7d75e3e6b84b8e2161e8a468d733bbbe8d");
     let to = address!("15dd773dad3f630773a0e771e9b221f4c8b9b939");
 
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &caller,
         AccountInfo { balance: U256::from(u64::MAX), ..Default::default() },
@@ -396,7 +396,7 @@ fn test_parity_delegatecall_selfdestruct() {
 
     let deployer = address!("341348115259a8bf69f1f50101c227fced83bac6");
 
-    let mut evm = Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).build_mainnet();
+    let mut evm = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
 
     // Deploy DelegateCall contract
     let delegate_addr =
@@ -491,7 +491,7 @@ fn inspect_funded_code(
     use crate::utils::Bytecode;
     let target = Address::with_last_byte(0x42);
     let child_address = Address::with_last_byte(0x43);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     for (address, code, balance) in [(target, code, balance), (child_address, child, 0)] {
         db.insert_account_info(
             &address,
@@ -877,7 +877,7 @@ fn vmtrace_nested_sibling_calls_keep_their_own_subtraces() {
     root.extend(hex!("505f5f5f5f5f604461fffff100"));
     let mut branch = hex!("5f5f5f5f5f604561fffff1").to_vec();
     branch.push(0x00);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     for (last, code) in [
         (0x42, root),
         (0x43, hex!("60015000").to_vec()),
@@ -965,7 +965,7 @@ fn frame_errors(inspector: &TracingInspector) -> (Vec<String>, Vec<String>) {
 fn reverted_create_reports_gas_and_revert_data() {
     let initcode = hex!("63deadbeef5f526004601cfd");
     let factory = Address::with_last_byte(0x42);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &factory,
         AccountInfo::default()
@@ -1083,7 +1083,7 @@ fn failed_frames_use_parity_labels() {
 fn create_nonce_overflow_is_a_failed_frame() {
     for nonce in [u64::MAX, u64::MAX - 1] {
         let factory = Address::with_last_byte(0x42);
-        let mut db = CacheDB::<EmptyDB>::default();
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &factory,
             AccountInfo {
@@ -1119,7 +1119,7 @@ fn create_nonce_overflow_is_a_failed_frame() {
 #[test]
 fn create_nonce_overflow_runs_no_frame_since_amsterdam() {
     let factory = Address::with_last_byte(0x42);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &factory,
         AccountInfo {
@@ -1147,7 +1147,7 @@ fn create_nonce_overflow_runs_no_frame_since_amsterdam() {
 fn create_with_empty_initcode_runs_no_steps() {
     let factory = Address::with_last_byte(0x42);
     for (kind, depth_nodes) in [(TransactTo::Create, 1), (TransactTo::Call(factory), 2)] {
-        let mut db = CacheDB::<EmptyDB>::default();
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &factory,
             AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f5ff000"))),
@@ -1175,7 +1175,7 @@ fn precompile_exclusion_uses_original_callee_with_delegation() {
                 code.push(op::PUSH0);
             }
             code.extend([op::PUSH1, callee, op::GAS, opcode, op::POP, op::STOP]);
-            let mut db = CacheDB::<EmptyDB>::default();
+            let mut db = InMemoryDB::default();
             db.insert_account_info(
                 &parent,
                 AccountInfo::default().with_code(Bytecode::new_raw(code.into())),

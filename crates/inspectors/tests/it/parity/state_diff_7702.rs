@@ -6,7 +6,7 @@ use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     ethereum::{LazyTxEip7702, TxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo, CacheDB, EmptyDB},
+    evm::{AccountInfo, InMemoryDB},
 };
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
@@ -24,7 +24,7 @@ fn authorization_code_changes() {
         for revert in [false, true] {
             let authority = Address::with_last_byte(0x43);
             let target = Address::with_last_byte(0x44);
-            let mut db = CacheDB::<EmptyDB>::default();
+            let mut db = InMemoryDB::default();
             db.insert_account_info(
                 &authority,
                 AccountInfo { nonce: 1, ..Default::default() }.with_code(before.clone()),

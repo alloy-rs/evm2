@@ -1,10 +1,11 @@
 //! Transfer tests
 
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output,
-    SpecId, TestDbExt, TransactTo, TxEnv,
+    AccountInfo, Bytecode, Context, DatabaseCommit, ExecutionResult, Output, SpecId, TestDbExt,
+    TransactTo, TxEnv,
 };
 use alloy_primitives::{Address, B256, Log, U256, address, bytes, hex};
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::{
     tracing::{TracingInspector, TracingInspectorConfig},
     transfer::{
@@ -29,7 +30,7 @@ fn test_internal_transfers() {
     );
     let deployer = Address::ZERO;
 
-    let db = CacheDB::new(EmptyDB::default());
+    let db = InMemoryDB::default();
 
     let context = Context::mainnet().with_db(db).modify_cfg_chained(|c| c.spec = SpecId::LONDON);
 
@@ -112,7 +113,7 @@ fn test_internal_transfers() {
 #[test]
 fn discards_failed_create_transfer() {
     let deployer = Address::ZERO;
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.load_account(deployer).info.balance = U256::from(u64::MAX);
 
     let context = Context::mainnet().with_db(db).modify_cfg_chained(|c| c.spec = SpecId::LONDON);
@@ -148,7 +149,7 @@ fn discards_failed_call_transfers_and_logs() {
         "6000600060006000600260ff5af150"
         "00"
     );
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.load_account(deployer).info.balance = U256::from(u64::MAX);
     db.insert_account_info(
         &caller,
@@ -207,7 +208,7 @@ fn discards_failed_internal_create_transfer_and_log() {
 
     // Creates a contract with 1 wei and init code `INVALID`.
     let factory_code = hex!("60fe600053600160006001f05000");
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.load_account(deployer).info.balance = U256::from(u64::MAX);
     db.insert_account_info(
         &factory,
@@ -248,7 +249,7 @@ fn discards_internal_create_transfer_on_nonce_overflow() {
 
     // Creates a contract with 1 wei from a factory whose nonce cannot be bumped.
     let factory_code = hex!("60fe600053600160006001f05000");
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.load_account(deployer).info.balance = U256::from(u64::MAX);
     db.insert_account_info(
         &factory,
@@ -340,7 +341,7 @@ struct TransferCase {
 fn simulate_transfer_logs_match_geth() {
     let sender = a(0x1001);
     for case in CASES {
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.load_account(sender).info.balance = U256::from(10u128.pow(18));
         for &(address, code, balance, nonce) in case.accounts {
             db.insert_account_info(
@@ -399,7 +400,7 @@ fn simulate_transfer_logs_match_geth() {
 fn simulate_transfer_logs_use_eip7708_logs() {
     let sender = a(0x1001);
     let contract = a(0xc6);
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.load_account(sender).info.balance = U256::from(10u128.pow(18));
     db.insert_account_info(
         &contract,

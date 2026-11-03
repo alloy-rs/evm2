@@ -3,7 +3,7 @@
 use super::*;
 use alloy_primitives::bytes;
 use alloy_rpc_types_trace::geth::{CallFrame, CallLogFrame};
-use evm2::interpreter::InstrStop;
+use evm2::{evm::InMemoryDB, interpreter::InstrStop};
 
 #[test]
 fn runtime_oog_call_frames_and_reuse() {
@@ -20,7 +20,7 @@ fn runtime_oog_call_frames_and_reuse() {
             let mut inspector =
                 DebugInspector::new(serde_json::from_value(options).unwrap()).unwrap();
             let context = Context::mainnet()
-                .with_db(CacheDB::<EmptyDB>::default())
+                .with_db(InMemoryDB::default())
                 .modify_cfg_chained(|cfg| cfg.spec = SpecId::AMSTERDAM)
                 .modify_db_chained(|db| {
                     db.insert_account_info(

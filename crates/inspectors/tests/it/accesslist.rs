@@ -1,11 +1,11 @@
 //! Accesslist tests
 
-use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, TransactTo, TxEnv};
+use crate::utils::{AccountInfo, Bytecode, Context, TransactTo, TxEnv};
 use alloy_consensus::{TxEip7702, crypto::secp256k1::sign_message};
 use alloy_eip2930::{AccessList, AccessListItem};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Signature, U256, address, bytes, hex};
-use evm2::ethereum::TxEnvelope;
+use evm2::{ethereum::TxEnvelope, evm::InMemoryDB};
 use evm2_inspectors::access_list::AccessListInspector;
 
 #[test]
@@ -22,17 +22,16 @@ fn initial_access_list_is_normalized_and_pruned() {
         item(lower, vec![]),
     ]);
 
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(
-                &callee,
-                AccountInfo {
-                    // Read slot 1 so it is re-added after pruning the callee's stale seeded slot.
-                    code: Some(Bytecode::new_raw(bytes!("60015400"))),
-                    ..Default::default()
-                },
-            );
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(
+            &callee,
+            AccountInfo {
+                // Read slot 1 so it is re-added after pruning the callee's stale seeded slot.
+                code: Some(Bytecode::new_raw(bytes!("60015400"))),
+                ..Default::default()
+            },
+        );
+    });
     let mut inspector = AccessListInspector::new(initial);
     let mut evm = context.build_mainnet().with_inspector(&mut inspector);
     let result = evm
@@ -71,13 +70,12 @@ fn test_access_list_precompile() {
     let account = address!("341348115259a8bf69f1f50101c227fced83bac6");
     let caller = address!("341348115259a8bf69f1f50101c227fced83bac5");
 
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(
-                &account,
-                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
-            );
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(
+            &account,
+            AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+        );
+    });
 
     let mut accesslist = AccessListInspector::default();
     let mut evm = context.build_mainnet().with_inspector(&mut accesslist);
@@ -181,7 +179,7 @@ fn access_list(items: &[(Address, &[B256])]) -> AccessList {
 fn access_list_matches_geth() {
     let sender = a(0x1001);
     for case in CASES {
-        let mut db = CacheDB::<EmptyDB>::default();
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &sender,
             AccountInfo { balance: U256::from(10u128.pow(18)), ..Default::default() },

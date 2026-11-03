@@ -220,7 +220,7 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
 }
 
 fn new_evm(spec: SpecId, block: BlockEnv, db: InMemoryDB) -> BenchEvm {
-    Evm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
+    BenchEvm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
 }
 
 fn new_compiler(opt_level: OptimizationLevel) -> LlvmCompiler {

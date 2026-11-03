@@ -117,7 +117,7 @@ pub struct CacheDB<ExtDB = EmptyDB> {
     pub _non_exhaustive: (),
 }
 
-impl Default for CacheDB<EmptyDB> {
+impl Default for InMemoryDB {
     #[inline]
     fn default() -> Self {
         Self::new(EmptyDB::default())
@@ -599,13 +599,13 @@ mod tests {
         let loaded = cache.get_account(&address).unwrap().unwrap();
         assert_eq!(loaded.code_hash, KECCAK256_EMPTY);
 
-        let mut cache = CacheDB::new(crate::evm::EmptyDB::default());
+        let mut cache = InMemoryDB::default();
         cache.insert_account_info(&address, zero_hash.clone());
         assert_eq!(cache.account_info(&address).unwrap().code_hash, KECCAK256_EMPTY);
 
         let mut incoming = Cache::default();
         incoming.accounts.insert(address, Some(zero_hash));
-        let mut cache = CacheDB::new(crate::evm::EmptyDB::default());
+        let mut cache = InMemoryDB::default();
         cache.cache.merge(incoming);
         let loaded = cache.get_account(&address).unwrap().unwrap();
         assert_eq!(loaded.code_hash, KECCAK256_EMPTY);

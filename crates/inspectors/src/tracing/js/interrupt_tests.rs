@@ -9,8 +9,8 @@ use evm2::{
     BaseEvmTypes, Precompiles, SpecId,
     bytecode::Bytecode,
     env::BlockEnvExt,
-    ethereum::{TxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo, CacheDB, EmptyDB},
+    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    evm::{AccountInfo, EmptyDB, InMemoryDB},
     registry::HandlerError,
 };
 
@@ -247,7 +247,7 @@ fn run(
     code: &[u8],
     kind: TxKind,
 ) -> (JsInspector, Result<TxResultWithState, HandlerError>) {
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &TARGET,
         AccountInfo::default().with_code(Bytecode::new_raw(code.to_vec().into())),
@@ -271,7 +271,7 @@ fn assert_interrupted(result: Result<TxResultWithState, HandlerError>) {
     ));
 }
 
-fn transaction(kind: TxKind) -> Recovered<TxEnvelope> {
+fn transaction(kind: TxKind) -> RecoveredTxEnvelope {
     Recovered::new_unchecked(
         TxEnvelope::Legacy(TxLegacy { gas_limit: 1_000_000, to: kind, ..Default::default() }),
         Address::ZERO,

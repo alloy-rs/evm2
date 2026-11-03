@@ -1,16 +1,15 @@
 //! Otterscan internal operations tests.
 
-use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ExecutionResult, SpecId, TxEnv,
-};
+use crate::utils::{AccountInfo, Bytecode, Context, ExecutionResult, SpecId, TxEnv};
 use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
 use alloy_rpc_types_trace::otterscan::{InternalOperation, OperationType};
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::otterscan::InternalOperationsInspector;
 
 const CONTRACT: Address = Address::repeat_byte(0x11);
 
 fn execute(code: Bytes, spec: SpecId, kind: TxKind) -> (ExecutionResult, Vec<InternalOperation>) {
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &Address::ZERO,
         AccountInfo { balance: U256::from(1_000_000), ..Default::default() },

@@ -1131,7 +1131,7 @@ mod tests {
         BaseEvmTypes, Evm, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         ethereum::{TxEnvelope, ethereum_tx_registry, intrinsic_and_floor_gas},
-        evm::{AccountInfo, CacheDB, EmptyDB},
+        evm::{AccountInfo, InMemoryDB},
         interpreter::{Host, op},
     };
     use serde_json::json;
@@ -1295,7 +1295,7 @@ mod tests {
         tx: TxEnvelope,
     ) -> Result<serde_json::Value, JsInspectorError> {
         let addr = Address::repeat_byte(0x01);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
 
         // Insert the caller
         db.insert_account_info(
@@ -1816,7 +1816,7 @@ mod tests {
             result: function() { return this.count; }
         }"#;
         let addr = Address::repeat_byte(0x01);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &Address::ZERO,
             AccountInfo { balance: U256::from(1e18), ..Default::default() },
@@ -1894,7 +1894,7 @@ mod tests {
             bytecode.extend_from_slice(&hex!("61fffff150")); // PUSH2 gas, CALL, POP
         }
         bytecode.push(0x00);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &addr,
             AccountInfo { code: Some(Bytecode::new_legacy(bytecode.into())), ..Default::default() },
@@ -2015,7 +2015,7 @@ mod tests {
         ] {
             let caller = Address::repeat_byte(0xaa);
             let nonce = 7;
-            let mut db = CacheDB::new(EmptyDB::default());
+            let mut db = InMemoryDB::default();
             db.insert_account_info(&caller, AccountInfo { nonce, ..AccountInfo::default() });
             let script = r#"{
                 fault: function() {},

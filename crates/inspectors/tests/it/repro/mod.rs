@@ -47,10 +47,11 @@
 
 mod prestate;
 
-use crate::utils::{AccountInfo, Bytecode, CacheDB, EmptyDB, SpecId};
+use crate::utils::{AccountInfo, Bytecode, SpecId};
 use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::Address;
 use alloy_rpc_types_trace::geth::AccountState;
+use evm2::evm::InMemoryDB;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -89,8 +90,8 @@ pub const fn spec_id_from_block(block_number: u64) -> SpecId {
 }
 
 /// Build a CacheDB from prestate AccountState map.
-pub fn build_db_from_prestate(prestate: &BTreeMap<Address, AccountState>) -> CacheDB<EmptyDB> {
-    let mut db = CacheDB::new(EmptyDB::default());
+pub fn build_db_from_prestate(prestate: &BTreeMap<Address, AccountState>) -> InMemoryDB {
+    let mut db = InMemoryDB::default();
 
     for (addr, state) in prestate {
         let balance = state.balance.unwrap_or_default();
@@ -149,7 +150,7 @@ pub struct ReproContext {
     /// The EVM spec to use for execution.
     pub spec_id: SpecId,
     /// The database populated with prestate.
-    pub db: CacheDB<EmptyDB>,
+    pub db: InMemoryDB,
 }
 
 impl ReproContext {

@@ -21,7 +21,7 @@ fn execute_with_child(
     child: &[u8],
     gas_limit: u64,
 ) -> (Result<Value, JsInspectorError>, ResultAndState) {
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     for (address, code, balance) in [
         (Address::ZERO, &[][..], U256::from(1e18)),
         (TARGET, code, U256::from(5)),

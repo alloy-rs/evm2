@@ -4,8 +4,8 @@ mod consistency;
 mod runtime_oog;
 
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
-    TxEnv, deploy_contract, op,
+    AccountInfo, Bytecode, Context, ETH_TRANSFER_LOG_ADDRESS, SpecId, TransactTo, TxEnv,
+    deploy_contract, op,
 };
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
@@ -21,7 +21,7 @@ use evm2::{
     AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, EvmTypesHost, ExecutionConfig,
     Inspector, InspectorConfig, OpcodeSet, Precompiles, Version,
     ethereum::ethereum_tx_registry,
-    evm::{DbResult, DynDatabase},
+    evm::{DbResult, DynDatabase, InMemoryDB},
     interpreter::{Interpreter, Message, MessageResult, Word},
 };
 use evm2_inspectors::tracing::{
@@ -44,7 +44,7 @@ fn test_calltracer_invalid_opcode_errors() {
             let options =
                 serde_json::from_value(serde_json::json!({"tracer": "callTracer"})).unwrap();
             let mut inspector = DebugInspector::new(options).unwrap();
-            let mut db = CacheDB::<EmptyDB>::default();
+            let mut db = InMemoryDB::default();
             db.insert_account_info(
                 &account,
                 AccountInfo {
@@ -94,7 +94,7 @@ fn test_calltracer_eip7702_call_targets() {
     let implementation = address!("3000000000000000000000000000000000000003");
     for opcode in [op::CALL, op::CALLCODE, op::DELEGATECALL, op::STATICCALL] {
         let trace = |tracer: &str| {
-            let mut db = CacheDB::<EmptyDB>::default();
+            let mut db = InMemoryDB::default();
             db.insert_account_info(
                 &target,
                 AccountInfo {
@@ -182,16 +182,12 @@ fn test_debug_empty_tracer() {
         // Write memory and storage, and call the identity precompile to populate return data.
         let code = hex!("602a6000526020600060206000600461fffffa50602a60005560206000f3");
         let account = address!("1000000000000000000000000000000000000001");
-        let context =
-            Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-                db.insert_account_info(
-                    &account,
-                    AccountInfo {
-                        code: Some(Bytecode::new_raw(code.into())),
-                        ..Default::default()
-                    },
-                );
-            });
+        let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+            db.insert_account_info(
+                &account,
+                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+            );
+        });
         let mut evm = context.build_mainnet().with_inspector(&mut inspector);
         let res = evm
             .inspect_tx(TxEnv {
@@ -319,7 +315,7 @@ fn test_geth_calltracer_logs() {
         }
     }
     */
-    let mut evm = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let mut evm = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
     let code = hex!(
         "608060405234801561001057600080fd5b506103ac806100206000396000f3fe60806040526004361061003f5760003560e01c80630332ed131461014d5780636ae1ad40146101625780638384a00214610177578063de7eb4f31461018c575b60405134815233906000805160206103578339815191529060200160405180910390a2306001600160a01b0316636ae1ad406040518163ffffffff1660e01b8152600401600060405180830381600087803b15801561009d57600080fd5b505af19250505080156100ae575060015b50306001600160a01b0316630332ed136040518163ffffffff1660e01b8152600401600060405180830381600087803b1580156100ea57600080fd5b505af19250505080156100fb575060015b50306001600160a01b0316638384a0026040518163ffffffff1660e01b8152600401600060405180830381600087803b15801561013757600080fd5b505af115801561014b573d6000803e3d6000fd5b005b34801561015957600080fd5b5061014b6101a1565b34801561016e57600080fd5b5061014b610253565b34801561018357600080fd5b5061014b6102b7565b34801561019857600080fd5b5061014b6102dd565b306001600160a01b031663de7eb4f36040518163ffffffff1660e01b8152600401600060405180830381600087803b1580156101dc57600080fd5b505af11580156101f0573d6000803e3d6000fd5b505060405162461bcd60e51b8152602060048201526024808201527f6e6573746564456d6974576974684661696c75726541667465724e6573746564604482015263115b5a5d60e21b6064820152608401915061024a9050565b60405180910390fd5b6040516000815233906000805160206103578339815191529060200160405180910390a260405162461bcd60e51b81526020600482015260156024820152746e6573746564456d6974576974684661696c75726560581b604482015260640161024a565b6040516000815233906000805160206103578339815191529060200160405180910390a2565b6040516000815233906000805160206103578339815191529060200160405180910390a2306001600160a01b0316638384a0026040518163ffffffff1660e01b8152600401600060405180830381600087803b15801561033c57600080fd5b505af1158015610350573d6000803e3d6000fd5b5050505056fef950957d2407bed19dc99b718b46b4ce6090c05589006dfb86fd22c34865b23ea2646970667358221220090a696b9fbd22c7d1cc2a0b6d4a48c32d3ba892480713689a3145b73cfeb02164736f6c63430008130033"
     );
@@ -384,13 +380,12 @@ fn test_geth_erc7562_tracer() {
     let account = address!("1000000000000000000000000000000000000001");
     let caller = address!("1000000000000000000000000000000000000002");
 
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(
-                &account,
-                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
-            );
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(
+            &account,
+            AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+        );
+    });
 
     let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default());
     let mut inspector = DebugInspector::new(opts).unwrap();
@@ -461,7 +456,7 @@ fn test_geth_erc7562_counts_like_geth() {
     let target_code = Bytes::from_static(&[op::STOP]);
     let failing_code = bytes!("6001600020");
 
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     for (address, code) in [
         (root, Bytes::from(code)),
         (target, target_code),
@@ -562,7 +557,7 @@ fn test_geth_erc7562_accessed_slots_and_ignored_opcodes() {
         op::TSTORE,
         op::STOP,
     ]);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &contract,
         AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
@@ -634,7 +629,7 @@ fn test_geth_erc7562_bounds_retained_preimages() {
         op::KECCAK256,
         op::STOP,
     ]);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &contract,
         AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
@@ -670,7 +665,7 @@ fn test_geth_erc7562_bounds_retained_preimages() {
 }
 
 /// A database whose storage reads fail.
-struct NoStorageDb(CacheDB<EmptyDB>);
+struct NoStorageDb(InMemoryDB);
 
 impl DynDatabase for NoStorageDb {
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
@@ -694,7 +689,7 @@ impl DynDatabase for NoStorageDb {
 fn test_geth_erc7562_reports_a_failed_state_read() {
     let contract = address!("1000000000000000000000000000000000000001");
     let spec = SpecId::CANCUN;
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &contract,
         AccountInfo {
@@ -750,7 +745,7 @@ fn test_geth_erc7562_contract_size_reads_accepted_state() {
     let mut code = vec![op::PUSH20];
     code.extend_from_slice(target.as_slice());
     code.extend_from_slice(&[op::EXTCODESIZE, op::STOP]);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &root,
         AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
@@ -803,19 +798,15 @@ fn test_geth_erc7562_records_warm_first_reads() {
     let outer_code =
         hex!("6001545060006000600060007310000000000000000000000000000000000000035af45000").to_vec();
     let inner_code = hex!("6001545000").to_vec();
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            for (address, code) in [(outer, outer_code), (inner, inner_code)] {
-                db.insert_account_info(
-                    &address,
-                    AccountInfo {
-                        code: Some(Bytecode::new_raw(code.into())),
-                        ..Default::default()
-                    },
-                );
-            }
-            db.insert_account_storage(&outer, &U256::ONE, &U256::from(0x2a));
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        for (address, code) in [(outer, outer_code), (inner, inner_code)] {
+            db.insert_account_info(
+                &address,
+                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+            );
+        }
+        db.insert_account_storage(&outer, &U256::ONE, &U256::from(0x2a));
+    });
 
     let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default());
     let mut inspector = DebugInspector::new(opts).unwrap();
@@ -851,7 +842,7 @@ fn trace_contract(
     let contract = address!("1000000000000000000000000000000000000001");
     let caller = address!("1000000000000000000000000000000000000002");
     let context = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = spec)
         .modify_db_chained(|db| {
             db.insert_account_info(
@@ -890,13 +881,12 @@ fn trace_contract_with_version(
 ) -> (GethTrace, evm2::TxResult) {
     let contract = address!("1000000000000000000000000000000000000001");
     let caller = address!("1000000000000000000000000000000000000002");
-    let mut context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(
-                &contract,
-                AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
-            );
-        });
+    let mut context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(
+            &contract,
+            AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
+        );
+    });
     let block = *context.block();
     let mut inspector = DebugInspector::new(opts).unwrap();
     let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
@@ -1086,7 +1076,7 @@ fn test_geth_mux_tracer() {
     }
     */
 
-    let mut evm = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let mut evm = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
 
     let code = hex!(
         "608060405234801561001057600080fd5b506103ac806100206000396000f3fe60806040526004361061003f5760003560e01c80630332ed131461014d5780636ae1ad40146101625780638384a00214610177578063de7eb4f31461018c575b60405134815233906000805160206103578339815191529060200160405180910390a2306001600160a01b0316636ae1ad406040518163ffffffff1660e01b8152600401600060405180830381600087803b15801561009d57600080fd5b505af19250505080156100ae575060015b50306001600160a01b0316630332ed136040518163ffffffff1660e01b8152600401600060405180830381600087803b1580156100ea57600080fd5b505af19250505080156100fb575060015b50306001600160a01b0316638384a0026040518163ffffffff1660e01b8152600401600060405180830381600087803b15801561013757600080fd5b505af115801561014b573d6000803e3d6000fd5b005b34801561015957600080fd5b5061014b6101a1565b34801561016e57600080fd5b5061014b610253565b34801561018357600080fd5b5061014b6102b7565b34801561019857600080fd5b5061014b6102dd565b306001600160a01b031663de7eb4f36040518163ffffffff1660e01b8152600401600060405180830381600087803b1580156101dc57600080fd5b505af11580156101f0573d6000803e3d6000fd5b505060405162461bcd60e51b8152602060048201526024808201527f6e6573746564456d6974576974684661696c75726541667465724e6573746564604482015263115b5a5d60e21b6064820152608401915061024a9050565b60405180910390fd5b6040516000815233906000805160206103578339815191529060200160405180910390a260405162461bcd60e51b81526020600482015260156024820152746e6573746564456d6974576974684661696c75726560581b604482015260640161024a565b6040516000815233906000805160206103578339815191529060200160405180910390a2565b6040516000815233906000805160206103578339815191529060200160405180910390a2306001600160a01b0316638384a0026040518163ffffffff1660e01b8152600401600060405180830381600087803b15801561033c57600080fd5b505af1158015610350573d6000803e3d6000fd5b5050505056fef950957d2407bed19dc99b718b46b4ce6090c05589006dfb86fd22c34865b23ea2646970667358221220090a696b9fbd22c7d1cc2a0b6d4a48c32d3ba892480713689a3145b73cfeb02164736f6c63430008130033"
@@ -1231,7 +1221,7 @@ fn test_geth_inspector_reset() {
     let insp = TracingInspector::new(TracingInspectorConfig::default_geth());
 
     let context = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON);
 
     assert_eq!(insp.traces().nodes().first().unwrap().trace.gas_limit, 0);
@@ -1286,7 +1276,7 @@ fn test_geth_calltracer_top_call_reverting() {
     Test that verifies the behavior of only_top_call with a reverting transaction.
     Uses the LogTracing contract which has functions that make nested calls and revert.
     */
-    let mut evm = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let mut evm = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
 
     // Use the LogTracing contract from test_geth_calltracer_logs
     let code = hex!(
@@ -1327,7 +1317,7 @@ fn test_geth_calltracer_top_call_reverting() {
 
     // Now test with only_top_call = false to verify we see the nested structure
     let mut insp2 = TracingInspector::new(TracingInspectorConfig::default_geth());
-    let mut evm2 = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let mut evm2 = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
 
     let addr2 = deploy_contract(&mut evm2, code.into(), deployer, SpecId::LONDON)
         .created_address()
@@ -1376,7 +1366,7 @@ fn test_geth_calltracer_nested_revert() {
     Test that verifies the behavior of only_top_call with the nestedRevert function.
     This function calls nestedEmitWithFailure which emits a log and then reverts.
     */
-    let mut evm = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let mut evm = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
 
     // Use the LogTracing contract with nestedRevert function
     let code = hex!(
@@ -1417,7 +1407,7 @@ fn test_geth_calltracer_nested_revert() {
 
     // Now test with only_top_call = false
     let mut insp2 = TracingInspector::new(TracingInspectorConfig::default_geth());
-    let mut evm2 = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let mut evm2 = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
 
     let addr2 = deploy_contract(&mut evm2, code.into(), deployer, SpecId::LONDON)
         .created_address()
@@ -1455,7 +1445,7 @@ fn test_geth_calltracer_nested_revert() {
     // Test revert with topcall
     let mut insp3 =
         TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
-    let mut evm3 = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let mut evm3 = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
 
     let addr3 = deploy_contract(&mut evm3, code.into(), deployer, SpecId::LONDON)
         .created_address()
@@ -1496,7 +1486,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
     Test that verifies the disableCode flag works correctly in diff mode for PreStateTracer.
     When disableCode is true, code should be excluded from both pre and post states.
     */
-    let mut evm = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let mut evm = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
 
     // Deploy a simple contract
     let code = hex!(
@@ -1572,7 +1562,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
     let mut insp2 = TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(
         &prestate_config_with_code,
     ));
-    let evm2 = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let evm2 = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
     let mut db2 = evm2.ctx.db.clone();
 
     let res2 = {
@@ -1640,7 +1630,7 @@ fn test_geth_calltracer_null_bytes_revert_reason_omitted() {
     This simulates scenarios where contract reverts with empty or null-byte-only data,
     ensuring compatibility with Geth behavior of omitting such meaningless revert reasons.
     */
-    let mut evm = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let mut evm = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
 
     // Deploy a simple contract that reverts with empty or null bytes
     // This bytecode reverts with 32 null bytes: revert(0, 32)
@@ -1706,7 +1696,7 @@ fn test_geth_default_tracer_omits_empty_return_data() {
     let code = hex!("00");
 
     let context = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
         .modify_db_chained(|db| {
             db.insert_account_info(
@@ -1778,7 +1768,7 @@ fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
 
     // Deploy the contract in a separate transaction first
     let mut context = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_db_chained(|db| {
             db.insert_account_info(&deployer, AccountInfo { balance: value, ..Default::default() });
         })
@@ -1867,7 +1857,7 @@ fn test_geth_calltracer_logs_eip7708() {
     let caller = address!("0xa000000000000000000000000000000000000001");
 
     let context = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::AMSTERDAM)
         .modify_db_chained(|db| {
             // Fund the contract so it can send 1 wei
@@ -1959,7 +1949,7 @@ fn test_geth_calltracer_logs_address_regular() {
     let caller = address!("0xa000000000000000000000000000000000000002");
 
     let context = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
         .modify_db_chained(|db| {
             db.insert_account_info(
@@ -2035,7 +2025,7 @@ fn test_geth_calltracer_logs_delegatecall() {
     };
 
     let context = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
         .modify_db_chained(|db| {
             db.insert_account_info(
@@ -2116,7 +2106,7 @@ fn test_geth_opcode_limit_end_to_end() {
             let mut code = hex!("6000600060006000600060ff61fffff150602a60005360016000").to_vec();
             code.push(terminal);
             let context =
-                Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+                Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
                     for (addr, code) in [(account, Bytes::from(code)), (child, bytes!("60015000"))]
                     {
                         db.insert_account_info(
@@ -2194,18 +2184,14 @@ fn test_geth_struct_logs_follow_calls_with_excluded_precompiles() {
     let code = [call([0, 4]), call([0x12, 0x34]), vec![op::STOP]].concat();
     let child_code = vec![op::PUSH1, 1, op::PUSH1, 1, op::ADD, op::STOP];
 
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            for (addr, code) in [(account, code), (child, child_code)] {
-                db.insert_account_info(
-                    &addr,
-                    AccountInfo {
-                        code: Some(Bytecode::new_raw(code.into())),
-                        ..Default::default()
-                    },
-                );
-            }
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        for (addr, code) in [(account, code), (child, child_code)] {
+            db.insert_account_info(
+                &addr,
+                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+            );
+        }
+    });
     let config = TracingInspectorConfig::default_geth().set_exclude_precompile_calls(true);
     let mut inspector = TracingInspector::new(config);
     let mut evm = context.build_mainnet().with_inspector(&mut inspector);
@@ -2258,7 +2244,7 @@ fn test_geth_opcode_limit() {
         code.push(terminal);
         let run = |inspector: &mut TracingInspector, opts: GethDefaultTracingOptions| {
             let context =
-                Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+                Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
                     for (addr, code) in
                         [(account, Bytes::from(code.clone())), (child, bytes!("60015000"))]
                     {
@@ -2371,7 +2357,7 @@ fn test_geth_struct_log_out_of_gas_cost() {
     let code = [op::PUSH1, 0x01, op::PUSH1, 0x00, op::SSTORE];
 
     let context = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
         .modify_db_chained(|db| {
             db.insert_account_info(
@@ -2420,7 +2406,7 @@ fn test_geth_calltracer_log_index_eip7708_revert() {
     let reverts = address!("0000000000000000000000000000000000002222");
 
     let context = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::AMSTERDAM)
         .modify_db_chained(|db| {
             db.insert_account_info(
@@ -2506,7 +2492,7 @@ fn test_debug_call_log_index_seed_and_reset() {
                 inspector.set_next_log_index(seed);
             }
             let context =
-                Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+                Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
                     db.insert_account_info(
                         &account,
                         AccountInfo {
@@ -2589,7 +2575,7 @@ fn test_debug_default_tracer_moves_stacks() {
             let mut inspector =
                 DebugInspector::new(GethDebugTracingOptions { config, ..Default::default() })
                     .unwrap();
-            let mut db = CacheDB::<EmptyDB>::default();
+            let mut db = InMemoryDB::default();
             for (address, code) in
                 [(caller, caller_code.clone()), (callee, hex!("6001600201").to_vec())]
             {
@@ -2662,7 +2648,7 @@ fn test_geth_failed_root_logs() {
         let code = code.parse::<Bytes>().unwrap();
         for create in [false, true] {
             let context = Context::mainnet()
-                .with_db(CacheDB::<EmptyDB>::default())
+                .with_db(InMemoryDB::default())
                 .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
                 .modify_db_chained(|db| {
                     db.insert_account_info(
@@ -2740,9 +2726,9 @@ fn test_geth_failed_root_logs() {
     }
 }
 
-fn contract_with_code(code: &[u8]) -> (Address, CacheDB<EmptyDB>) {
+fn contract_with_code(code: &[u8]) -> (Address, InMemoryDB) {
     let contract = Address::with_last_byte(0x42);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &contract,
         AccountInfo::default().with_code(Bytecode::new_raw(code.to_vec().into())),
@@ -2936,7 +2922,7 @@ fn struct_log_storage_snapshots_match_geth() {
     // SLOAD 5 (holds 7), SSTORE 5 = 7 (unchanged), SLOAD 5 (warm), SSTORE 6 = 1, SLOAD 6, and an
     // SSTORE that runs out of gas, which fails before it runs.
     let code = hex!("60055450600760055560055450600160065560065450600160075500");
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &account,
         AccountInfo { code: Some(Bytecode::new_raw(Bytes::from(code))), ..Default::default() },
@@ -2991,7 +2977,7 @@ fn struct_log_storage_snapshots_follow_the_storage_context() {
         "60015450"
         "600060006000600060d05afa5000"
     );
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     for (address, code) in [
         (parent, parent_code.to_vec()),
         (writer, hex!("6002600155").to_vec()),
@@ -3046,7 +3032,7 @@ fn test_geth_prestate_diff_omits_empty_accounts() {
     let coinbase = address!("2adc25665018aa1fe0e6bc666dac8fc2697ff9ba");
     let recipient = Address::repeat_byte(0x22);
 
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &sender,
         AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
@@ -3111,7 +3097,7 @@ fn test_geth_prestate_diff_reports_cleared_code() {
     let authority = address!("7e5f4552091a69125d5dfcb7b8c2659029395bdf");
     let delegation = bytes!("ef0100000000000000000000000000000000000000aaaa");
 
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &sender,
         AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
@@ -3176,7 +3162,7 @@ fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreSt
 
     // SLOAD 1, SLOAD 2, SELFDESTRUCT to the beneficiary.
     let code = bytes!("6001545060025450733333333333333333333333333333333333333333ff");
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &sender,
         AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
