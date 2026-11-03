@@ -2484,8 +2484,7 @@ mod tests {
                 if marker == Address::with_last_byte(0x44) {
                     self.snapshot = Some(interp.host().state().clone_with(EmptyDB::default()));
                 } else if marker == Address::with_last_byte(0x55) {
-                    *interp.host().state_mut() =
-                        self.snapshot.as_ref().unwrap().clone_with(EmptyDB::default());
+                    *interp.host().state_mut() = self.snapshot.as_ref().unwrap().clone();
                     self.restored = true;
                 } else {
                     return None;
