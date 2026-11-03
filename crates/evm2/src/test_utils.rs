@@ -9,6 +9,7 @@ use crate::{
         MessageResult, MessageResultExt, StackBacking, Word, op,
     },
     storage_key::{StorageKey, StorageKeyMap},
+    utils::address_to_word,
 };
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
@@ -119,7 +120,6 @@ impl Host<TestTypes> for TestHost {
             return Err(InstrStop::OutOfGas.into());
         }
         self.account_loads.push(*address);
-        let features = self.execution_config.version().features;
         Ok(AccountLoad {
             balance: address.into_word().into(),
             nonce: 0,
@@ -130,7 +130,11 @@ impl Host<TestTypes> for TestHost {
                 Bytecode::default()
             },
             is_empty: self.is_empty,
-            is_empty_for_new_account_gas: if features.contains(EvmFeatures::EIP161) {
+            is_empty_for_new_account_gas: if self
+                .execution_config
+                .version()
+                .feature(EvmFeatures::EIP161)
+            {
                 !self.exists || self.is_empty
             } else {
                 !self.exists && !self.is_touched
@@ -441,7 +445,7 @@ pub(crate) fn push_all<T: ToWord, const N: usize>(code: &mut Vec<u8>, values: [T
 }
 
 pub(crate) fn push_address(code: &mut Vec<u8>, address: &Address) {
-    push(code, Word::from_be_slice(address.as_slice()));
+    push(code, address_to_word(address));
 }
 
 pub(crate) fn neg(value: u64) -> Word {

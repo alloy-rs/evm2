@@ -1392,7 +1392,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
         // `destination` already holds the create's contract address (set when the message was
         // constructed), so the create hook observes it directly.
-        let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
+        let is_create = message.kind.is_create();
 
         // Keeps the top-level frame's bytecode alive when a hook replaces `message.code`.
         let top_code;
@@ -2140,6 +2140,7 @@ mod tests {
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
         registry::{HandlerError, TxRequest, handler},
         test_utils::{legacy_bytecode, push_address},
+        utils::address_to_word,
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -3110,7 +3111,7 @@ mod tests {
         let executed = evm.transact_with_inspector(&tx, &mut OriginInspector(origin)).unwrap();
         assert!(executed.commit().status);
 
-        let origin_word = Word::from_be_slice(origin.as_slice());
+        let origin_word = address_to_word(&origin);
         assert_eq!(evm.state.storage_slot_untracked(&target, &Word::ZERO).unwrap(), origin_word);
         assert_eq!(evm.state.storage_slot_untracked(&inner, &Word::from(1)).unwrap(), origin_word);
         assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().nonce, 1);
@@ -3415,7 +3416,7 @@ mod tests {
         set_spec(&mut evm, SpecId::PRAGUE);
         assert_eq!(run(&mut evm), (InstrStop::Return, 2));
 
-        let mut version = *Version::base(SpecId::PRAGUE);
+        let mut version = Version::new(SpecId::PRAGUE);
         version.initial_call_depth = 1;
         evm.set_block_and_execution_config_within_spec(
             BlockEnvExt::default(),
@@ -4021,8 +4022,7 @@ mod tests {
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let pending = evm.state.take_pending_state();
-        let account =
-            pending.accounts.get(&created).and_then(|entry| entry.present.as_ref()).unwrap();
+        let account = pending.account_info(&created).unwrap();
         assert!(account.is_empty_code_hash());
     }
 
@@ -4864,7 +4864,7 @@ mod tests {
         assert_eq!(changes.account_info(&caller).unwrap().nonce, 1);
         let slot = changes.account_changes_for(&target).unwrap().storage.slots[&Word::ZERO].value;
         assert_eq!(slot.current, Word::from(1));
-        let mut in_place = changes.account_changes().map(|c| c.address).collect::<Vec<_>>();
+        let mut in_place = executed.account_changes().map(|c| c.address).collect::<Vec<_>>();
         in_place.sort();
         let _ = executed.discard();
 
@@ -4873,8 +4873,7 @@ mod tests {
         let executed = evm.transact(&tx).unwrap();
         assert!(executed.result().status);
         let pending = executed.detach().pending_state;
-        let mut detached =
-            pending.changes().account_changes().map(|c| c.address).collect::<Vec<_>>();
+        let mut detached = pending.account_changes().map(|c| c.address).collect::<Vec<_>>();
         detached.sort();
         assert_eq!(in_place, detached);
         assert_eq!(pending.changes().account_info(&caller).unwrap().nonce, 1);

@@ -26,7 +26,7 @@ use crate::{
         MessageResultExt, gas::WARM_STORAGE_READ_COST,
     },
     registry::{HandlerError, HandlerResult, TxRegistry, handler},
-    utils::num_words,
+    utils::{b256_to_word, num_words},
     version::GasId,
 };
 use alloy_consensus::{
@@ -478,10 +478,8 @@ pub fn warm_base_accounts<'a, T: EvmTypes>(host: &mut Evm<'a, T>, to: TxKind) {
 /// Warms every account and storage key in an access list.
 pub fn warm_access_list<'a, T: EvmTypes>(host: &mut Evm<'a, T>, access_list: &AccessList) {
     for item in access_list.iter() {
-        host.state.prewarm_storage(
-            &item.address,
-            item.storage_keys.iter().map(|key| U256::from_be_bytes(key.0)),
-        );
+        host.state
+            .prewarm_storage(&item.address, item.storage_keys.iter().map(|key| b256_to_word(*key)));
     }
 }
 
