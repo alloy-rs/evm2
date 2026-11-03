@@ -272,6 +272,20 @@ fn test_debug_nonempty_tracer() {
 }
 
 #[test]
+fn test_debug_invalid_tracer_config() {
+    let opts = serde_json::from_value(
+        serde_json::json!({"tracer": "callTracer", "tracerConfig": {"onlyTopCall": "yes"}}),
+    )
+    .unwrap();
+    let err = DebugInspector::new(opts).unwrap_err();
+    assert!(matches!(err, evm2_inspectors::tracing::DebugInspectorError::InvalidTracerConfig(_)));
+    assert_eq!(
+        err.to_string(),
+        r#"invalid tracer config: invalid type: string "yes", expected a boolean"#
+    );
+}
+
+#[test]
 fn test_geth_calltracer_logs() {
     /*
     contract LogTracing {

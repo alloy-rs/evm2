@@ -94,9 +94,7 @@ impl DebugInspector {
                         Self::FourByte(FourByteInspector::default())
                     }
                     GethDebugBuiltInTracerType::CallTracer => {
-                        let config = tracer_config
-                            .into_call_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let config = tracer_config.into_call_config()?;
 
                         Self::CallTracer(
                             TracingInspector::new(TracingInspectorConfig::from_geth_call_config(
@@ -106,9 +104,7 @@ impl DebugInspector {
                         )
                     }
                     GethDebugBuiltInTracerType::PreStateTracer => {
-                        let config = tracer_config
-                            .into_pre_state_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let config = tracer_config.into_pre_state_config()?;
 
                         Self::PreStateTracer(PrestateInspector::new(config))
                     }
@@ -117,16 +113,12 @@ impl DebugInspector {
                         Self::StateGasTracer(NoopInspector::default())
                     }
                     GethDebugBuiltInTracerType::MuxTracer => {
-                        let config = tracer_config
-                            .into_mux_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let config = tracer_config.into_mux_config()?;
 
                         Self::Mux(MuxInspector::try_from_config(config.clone())?, config)
                     }
                     GethDebugBuiltInTracerType::FlatCallTracer => {
-                        let flat_call_config = tracer_config
-                            .into_flat_call_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let flat_call_config = tracer_config.into_flat_call_config()?;
 
                         Self::FlatCallTracer(TracingInspector::new(
                             TracingInspectorConfig::from_flat_call_config(&flat_call_config),
@@ -136,9 +128,7 @@ impl DebugInspector {
                         let config = if tracer_config.is_null() {
                             Erc7562Config::default()
                         } else {
-                            tracer_config
-                                .from_value()
-                                .map_err(|_| DebugInspectorError::InvalidTracerConfig)?
+                            tracer_config.from_value()?
                         };
 
                         Self::Erc7562Tracer(Erc7562Inspector::new(config))
@@ -412,8 +402,8 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
 #[derive(Debug, Error)]
 pub enum DebugInspectorError {
     /// Invalid tracer configuration
-    #[error("invalid tracer config")]
-    InvalidTracerConfig,
+    #[error("invalid tracer config: {0}")]
+    InvalidTracerConfig(#[from] serde_json::Error),
     /// Unsupported tracer
     #[error("unsupported tracer")]
     UnsupportedTracer,
