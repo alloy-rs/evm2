@@ -1068,9 +1068,7 @@ fn reject_block(
     }
 }
 
-fn parse_state(
-    accounts: &std::collections::BTreeMap<Address, Account>,
-) -> Result<InMemoryDB, TestErrorKind> {
+fn parse_state(accounts: &BTreeMap<Address, Account>) -> Result<InMemoryDB, TestErrorKind> {
     let mut database = InMemoryDB::default();
     for (address, account) in accounts {
         let nonce = account.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
@@ -1188,7 +1186,7 @@ const fn base_block_reward(spec: SpecId) -> u128 {
 
 fn validate_post_state(
     database: &InMemoryDB,
-    expected: &std::collections::BTreeMap<Address, Account>,
+    expected: &BTreeMap<Address, Account>,
 ) -> Result<(), TestErrorKind> {
     for (address, expected_account) in expected {
         let info = database.cache.accounts.get(address).cloned().flatten().unwrap_or_default();
@@ -1319,10 +1317,7 @@ fn check_block_access_list(
 }
 
 /// Renders a compact per-account summary of how the built and expected block access lists differ.
-fn format_bal_diff(
-    built: &alloy_eip7928::BlockAccessList,
-    expected: &alloy_eip7928::BlockAccessList,
-) -> String {
+fn format_bal_diff(built: &BlockAccessList, expected: &BlockAccessList) -> String {
     use std::{
         collections::{BTreeMap, BTreeSet},
         fmt::Write,
@@ -2368,7 +2363,7 @@ mod tests {
         assert_eq!(pass["errorMsg"], "");
 
         let failure: Result<Option<B256>, TestError> = Err(TestError::case(
-            std::path::Path::new("f.json"),
+            Path::new("f.json"),
             "case-b",
             TestErrorKind::UnexpectedFailure("boom".to_string()),
         ));

@@ -1705,10 +1705,7 @@ fn test_geth_default_tracer_omits_empty_return_data() {
             );
             db.insert_account_info(
                 &caller,
-                AccountInfo {
-                    balance: alloy_primitives::U256::from(1_000_000_000),
-                    ..Default::default()
-                },
+                AccountInfo { balance: U256::from(1_000_000_000), ..Default::default() },
             );
         });
 
@@ -1764,7 +1761,7 @@ fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
     );
 
     let deployer = alloy_primitives::address!("341348115259a8bf69f1f50101c227fced83bac6");
-    let value = alloy_primitives::U256::from(69);
+    let value = U256::from(69);
 
     // Deploy the contract in a separate transaction first
     let mut context = Context::mainnet()
@@ -1864,7 +1861,7 @@ fn test_geth_calltracer_logs_eip7708() {
             db.insert_account_info(
                 &contract,
                 AccountInfo {
-                    balance: alloy_primitives::U256::from(1_000_000),
+                    balance: U256::from(1_000_000),
                     code: Some(Bytecode::new_raw(code.into())),
                     ..Default::default()
                 },
@@ -1872,10 +1869,7 @@ fn test_geth_calltracer_logs_eip7708() {
             // Fund the caller
             db.insert_account_info(
                 &caller,
-                AccountInfo {
-                    balance: alloy_primitives::U256::from(1_000_000_000),
-                    ..Default::default()
-                },
+                AccountInfo { balance: U256::from(1_000_000_000), ..Default::default() },
             );
         });
 
@@ -1958,10 +1952,7 @@ fn test_geth_calltracer_logs_address_regular() {
             );
             db.insert_account_info(
                 &caller,
-                AccountInfo {
-                    balance: alloy_primitives::U256::from(1_000_000_000),
-                    ..Default::default()
-                },
+                AccountInfo { balance: U256::from(1_000_000_000), ..Default::default() },
             );
         });
 
@@ -2041,10 +2032,7 @@ fn test_geth_calltracer_logs_delegatecall() {
             );
             db.insert_account_info(
                 &caller,
-                AccountInfo {
-                    balance: alloy_primitives::U256::from(1_000_000_000),
-                    ..Default::default()
-                },
+                AccountInfo { balance: U256::from(1_000_000_000), ..Default::default() },
             );
         });
 
@@ -2549,7 +2537,7 @@ fn test_geth_4byte_tracer_skips_precompiles() {
 
     match trace {
         GethTrace::FourByteTracer(frame) => {
-            assert_eq!(frame.0, std::collections::BTreeMap::from([("0x00000000-0".into(), 1)]));
+            assert_eq!(frame.0, BTreeMap::from([("0x00000000-0".into(), 1)]));
         }
         _ => panic!("Expected FourByteTracer"),
     }
@@ -3106,7 +3094,7 @@ fn test_geth_prestate_diff_reports_cleared_code() {
         &authority,
         AccountInfo {
             balance: U256::ONE,
-            code_hash: alloy_primitives::keccak256(&delegation),
+            code_hash: keccak256(&delegation),
             code: Some(Bytecode::new_raw(delegation.clone())),
             ..Default::default()
         },
@@ -3172,7 +3160,7 @@ fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreSt
         AccountInfo {
             balance: U256::from(7),
             nonce: 1,
-            code_hash: alloy_primitives::keccak256(&code),
+            code_hash: keccak256(&code),
             code: Some(Bytecode::new_raw(code)),
             ..Default::default()
         },

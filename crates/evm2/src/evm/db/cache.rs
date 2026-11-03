@@ -561,7 +561,7 @@ mod tests {
     }
 
     impl crate::evm::Database for CountingDB {
-        type Error = core::convert::Infallible;
+        type Error = Infallible;
 
         fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
             self.account_loads += 1;

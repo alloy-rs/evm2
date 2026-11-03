@@ -697,8 +697,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[cfg(feature = "async")]
     #[inline]
-    fn async_stack(&mut self) -> core::ptr::NonNull<r#async::FiberStack> {
-        core::ptr::NonNull::from(&mut self.async_stack)
+    fn async_stack(&mut self) -> NonNull<r#async::FiberStack> {
+        NonNull::from(&mut self.async_stack)
     }
 
     #[cfg(feature = "async")]

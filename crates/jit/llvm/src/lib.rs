@@ -972,9 +972,9 @@ impl Backend for EvmLlvmBackend {
         // Can be overridden with `EVM2_JIT_PASSES` env var for experimentation.
         // From `opt --help`, `-passes`.
 
-        static PASSES_OVERRIDE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-        static PASSES: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        static PASSES_WITH_LICM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        static PASSES_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
+        static PASSES: OnceLock<String> = OnceLock::new();
+        static PASSES_WITH_LICM: OnceLock<String> = OnceLock::new();
 
         let passes = PASSES_OVERRIDE.get_or_init(|| std::env::var("EVM2_JIT_PASSES").ok());
         let passes = passes.as_deref().unwrap_or_else(|| match self.backend_config.opt_level {
@@ -1879,7 +1879,7 @@ fn init() -> Result<()> {
 
 fn init_() -> Result<()> {
     extern "C" fn report_fatal_error(msg: *const std::ffi::c_char) {
-        let msg_cstr = unsafe { std::ffi::CStr::from_ptr(msg) };
+        let msg_cstr = unsafe { CStr::from_ptr(msg) };
         let msg = msg_cstr.to_string_lossy();
         error!(target: "llvm", "LLVM fatal error: {msg}");
     }

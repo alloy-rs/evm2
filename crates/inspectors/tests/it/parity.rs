@@ -464,7 +464,7 @@ fn test_parity_delegatecall_selfdestruct() {
     assert_eq!(action2.refund_address, deployer);
 }
 
-fn trace_vm_code(code: &[u8], child: &[u8]) -> alloy_rpc_types_trace::parity::VmTrace {
+fn trace_vm_code(code: &[u8], child: &[u8]) -> VmTrace {
     let config =
         TracingInspectorConfig::from_parity_config(&HashSet::from_iter([TraceType::VmTrace]));
     inspect_code(code, child, SpecId::default(), config).into_parity_builder().vm_trace()
