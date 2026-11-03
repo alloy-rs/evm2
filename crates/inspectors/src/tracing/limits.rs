@@ -70,8 +70,9 @@ impl TraceBudget {
     }
 
     /// Returns whether exceeding the budget can halt execution.
-    pub(crate) fn can_halt(&self) -> bool {
-        self.limits.max_recorded_bytes.is_some() && self.limits.behavior == TraceLimitBehavior::Halt
+    pub(crate) const fn can_halt(&self) -> bool {
+        self.limits.max_recorded_bytes.is_some()
+            && matches!(self.limits.behavior, TraceLimitBehavior::Halt)
     }
 
     /// Returns whether the budget was exceeded and the limits halt execution.

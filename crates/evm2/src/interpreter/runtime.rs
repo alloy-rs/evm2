@@ -50,8 +50,7 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     steps: OpcodeSet,
     /// Whether the running instruction is `hooked`.
     hooked_running: bool,
-    /// Whether the inspector's config changed while the running instruction ran. The frame leaves
-    /// the dispatch after the instruction and continues on the table for the new config.
+    /// Whether the running instruction requested a reload.
     reload: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
@@ -302,12 +301,24 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     }
 
     /// Sets the interpreter result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `result` is `Err(InstrStop::Reload)`, which only the dispatch produces.
     #[inline]
     pub const fn set_result(&mut self, result: Result) {
+        assert!(
+            !matches!(result, Err(InstrStop::Reload)),
+            "`InstrStop::Reload` is internal and cannot be set"
+        );
         self.result = result;
     }
 
     /// Sets the current instruction result to `stop`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stop` is `InstrStop::Reload`, which only the dispatch produces.
     #[inline]
     pub const fn set_stop(&mut self, stop: InstrStop) {
         self.set_result(Err(stop));
@@ -593,7 +604,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             } else {
                 self.run_inspected_table(instructions)
             };
-            if stop != InstrStop::Reload {
+            // Only the dispatch produces a reload, so a hook's stop of that kind is no reload.
+            if stop != InstrStop::Reload || !self.reload {
                 return stop;
             }
             cold_path();
@@ -720,7 +732,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     /// Requests a reload if the inspector's config no longer matches the table this frame runs on.
     /// A message instruction calls it after its child message, and the dispatch leaves for the
-    /// reload once the instruction returns, whatever the instruction does in between.
+    /// reload once the instruction returns.
     #[inline(always)]
     pub(crate) fn note_inspector_config_change(&mut self) {
         if self.0.inspector.is_some() {

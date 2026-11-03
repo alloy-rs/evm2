@@ -1131,6 +1131,19 @@ mod tests {
         )
     }
 
+    /// The base config with the call without the flag installed at [`CUSTOM_CALL`].
+    struct UnflaggedCallConfig;
+
+    impl EvmConfig<BaseEvmTypes> for UnflaggedCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<unflagged_call>(CUSTOM_CALL, 100);
+            config
+        };
+    }
+
     /// A hooked call that pushes a word after `call_with`.
     #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
     fn call_then_push(cx: _) -> Result {
@@ -1155,19 +1168,6 @@ mod tests {
             let mut config =
                 OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
             config.set_instruction::<call_then_push>(CUSTOM_CALL, 100);
-            config
-        };
-    }
-
-    /// The base config with the call without the flag installed at [`CUSTOM_CALL`].
-    struct UnflaggedCallConfig;
-
-    impl EvmConfig<BaseEvmTypes> for UnflaggedCallConfig {
-        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
-        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
-            let mut config =
-                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
-            config.set_instruction::<unflagged_call>(CUSTOM_CALL, 100);
             config
         };
     }
@@ -1225,6 +1225,29 @@ mod tests {
             CUSTOM_CALL,
             &[],
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "`InstrStop::Reload` is internal and cannot be set")]
+    fn hook_cannot_set_the_reload_stop() {
+        struct ReloadInHook;
+
+        impl Inspector<BaseEvmTypes> for ReloadInHook {
+            fn call_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                _result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth > 0 {
+                    interp.set_stop(InstrStop::Reload);
+                }
+            }
+        }
+
+        let mut code = call_code(Address::from([0x66; 20]));
+        code.extend([op::CALL, op::STOP]);
+        run_evm_with_inspector(code, &MessageExt::default(), 100_000, ReloadInHook);
     }
 
     #[test]
@@ -1351,7 +1374,7 @@ mod tests {
             CUSTOM_CALL,
             &[],
         );
-        let gas = full.steps.iter().find(|record| record.0 == op::GAS).unwrap();
+        let gas = full.steps.iter().find(|record| record.0 == op::GAS).unwrap().clone();
         // The instruction pushes a word after `call_with`, below the one that `GAS` pushes.
         assert_eq!(gas.2, [Word::ONE, Word::from(0x77)]);
 
@@ -1361,7 +1384,7 @@ mod tests {
             &[],
         );
         assert_eq!(result, expected);
-        assert_eq!(inspector.steps, core::slice::from_ref(gas));
+        assert_eq!(inspector.steps, [gas]);
     }
 
     #[test]
