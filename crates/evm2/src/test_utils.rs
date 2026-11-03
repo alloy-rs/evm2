@@ -330,11 +330,19 @@ impl Default for RunConfig<'_> {
             host: None,
             spec_id: SpecId::OSAKA,
             tx_env: TxEnvExt::default(),
-            message: MessageExt { gas_limit: 10_000, ..MessageExt::default() },
+            message: test_message(),
             gas_limit: 10_000,
             return_data: Bytes::new(),
         }
     }
+}
+
+pub(crate) fn test_message() -> Message<TestTypes> {
+    MessageExt { gas_limit: 10_000, ..MessageExt::default() }
+}
+
+pub(crate) fn test_host(block: BlockEnv<TestTypes>) -> TestHost {
+    TestHost { block, ..TestHost::default() }
 }
 
 pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {

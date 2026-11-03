@@ -90,18 +90,14 @@ pub fn slotnum(cx: _) -> Result<out> {
 mod tests {
     use crate::{
         SpecId,
-        env::{BlockEnv, BlockEnvExt, TxEnvExt},
+        env::{BlockEnvExt, TxEnvExt},
         interpreter::{InstrStop, MessageExt, Word, op},
-        test_utils::{RunConfig, TestHost, TestTypes, push, run},
+        test_utils::{RunConfig, TestHost, push, run, test_host},
         utils::{address_to_word, b256_to_word},
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256};
     use core::assert_matches;
-
-    fn test_host(block: BlockEnv<TestTypes>) -> TestHost {
-        TestHost { block, ..TestHost::default() }
-    }
 
     #[test]
     fn blockhash_opcode() {

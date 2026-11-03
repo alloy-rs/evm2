@@ -168,19 +168,15 @@ mod tests {
     use crate::{
         SpecId,
         env::TxEnvExt,
-        interpreter::{InstrStop, Message, MessageExt, Word, op},
+        interpreter::{InstrStop, MessageExt, Word, op},
         test_utils::{
-            RunConfig, TestHost, TestTypes, assert_stack, neg, push, run, run_stack, stack_code,
+            RunConfig, TestHost, assert_stack, neg, push, run, run_stack, stack_code, test_message,
         },
         utils::{address_to_word, b256_to_word},
     };
     use alloc::{vec, vec::Vec};
     use alloy_primitives::{Address, B256, Bytes};
     use core::assert_matches;
-
-    fn test_message() -> Message<TestTypes> {
-        MessageExt { gas_limit: 10_000, ..MessageExt::default() }
-    }
 
     #[test]
     fn address_opcode() {
