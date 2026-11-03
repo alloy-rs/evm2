@@ -29,7 +29,7 @@ use alloy_rpc_types_trace::geth::{
     AccountState, DiffMode, PreStateConfig, PreStateFrame, PreStateMode,
 };
 use evm2::{
-    AccountInfo, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, OpcodeSet, SpecId,
+    AccountInfo, EvmFeatures, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, OpcodeSet,
     TxResultWithState,
     env::BlockEnv,
     evm::{AccountChanges, DbResult, DynDatabase, PendingState},
@@ -420,8 +420,10 @@ impl<T: EvmTypes> Inspector<T> for PrestateInspector {
             Lookup::Account(address) => self.accounts.push(address),
             Lookup::SelfDestruct(account, beneficiary) => {
                 self.accounts.push(beneficiary);
-                // EIP-6780: from Cancun only a contract created in the same transaction goes.
-                if !interp.spec().enables(SpecId::CANCUN) || self.created.contains(&account) {
+                // EIP-6780 (Cancun): only a contract created in the same transaction goes.
+                if !interp.version().feature(EvmFeatures::EIP6780)
+                    || self.created.contains(&account)
+                {
                     self.deleted.insert(account);
                 }
             }
