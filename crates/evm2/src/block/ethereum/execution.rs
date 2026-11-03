@@ -486,7 +486,7 @@ fn execute_system_call<T: EvmTypes>(
                     message: alloc::format!("{reason:?}"),
                 }
             }
-            _ => BlockValidationError::Other(AnyError::new(SystemCallFailed { address, reason })),
+            _ => BlockValidationError::other(SystemCallFailed { address, reason }),
         }
         .into());
     }

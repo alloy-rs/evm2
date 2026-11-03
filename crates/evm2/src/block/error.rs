@@ -258,7 +258,7 @@ pub fn map_handler_error(error: HandlerError) -> BlockExecutionError {
         HandlerError::Fatal(_) | HandlerError::WrongTransactionType { .. } => {
             BlockExecutionError::other(error)
         }
-        error => BlockValidationError::Other(AnyError::new(error)).into(),
+        error => BlockValidationError::other(error).into(),
     }
 }
 
@@ -267,6 +267,6 @@ pub fn map_database_error(error: DatabaseError) -> BlockExecutionError {
     if error.is_fatal() {
         BlockExecutionError::other(error)
     } else {
-        BlockValidationError::Other(AnyError::new(error)).into()
+        BlockValidationError::other(error).into()
     }
 }
