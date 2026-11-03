@@ -528,6 +528,7 @@ mod tests {
     use crate::{
         BaseEvmConfig, EvmConfig, ExecutionConfig, ExecutionError, SpecId,
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
+        evm::inspector::tests::create_code,
         interpreter::{Interpreter, MessageResultExt, op},
         test_utils::{
             RunConfig, TestHost, TestInterpreter, TestTypes, legacy_bytecode, push, push_all, run,
@@ -576,19 +577,7 @@ mod tests {
         let target = Address::from([0x22; 20]);
         let error = ExecutionError::Fatal("child call failed".into());
         let mut host = TestHost { execute_error: Some(error.clone()), ..Default::default() };
-        let mut code = Vec::new();
-        push_all(
-            &mut code,
-            [
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                address_to_word(&target),
-                Word::from(1000),
-            ],
-        );
+        let mut code = crate::evm::inspector::tests::call_code(target);
         code.extend([op::CALL, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host));
@@ -927,8 +916,7 @@ mod tests {
     fn create_propagates_fatal_child_result() {
         let error = ExecutionError::Fatal("child create failed".into());
         let mut host = TestHost { execute_error: Some(error.clone()), ..Default::default() };
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         code.extend([op::CREATE, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
@@ -981,8 +969,7 @@ mod tests {
     #[test]
     fn create_too_deep_charges_create_gas() {
         let mut host = TestHost::default();
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         code.extend([op::CREATE, op::STOP]);
 
         let interp = run(RunConfig::new(code)
@@ -1002,8 +989,7 @@ mod tests {
         // the read would leak the address into the EIP-7928 block access list.
         let caller = Address::from([0x11; 20]);
         let mut host = TestHost { exists: false, ..Default::default() };
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interp = run(RunConfig::new(code)
@@ -1239,8 +1225,7 @@ mod tests {
             created_address: Some(created),
             ..MessageResultExt::default()
         };
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         let mut base_code = code.clone();
         base_code.extend([op::CREATE, op::STOP]);
         code.extend([HOOKED_CREATE, op::STOP]);
@@ -1263,8 +1248,7 @@ mod tests {
 
     #[test]
     fn create_with_skips_hooks_when_creation_is_refused_before_forward() {
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         let mut base_code = code.clone();
         base_code.extend([op::CREATE, op::STOP]);
         code.extend([HOOKED_CREATE, op::STOP]);

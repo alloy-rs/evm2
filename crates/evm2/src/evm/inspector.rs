@@ -439,7 +439,7 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         BaseEvmConfig, BaseEvmTypes, DatabaseError, Evm, EvmConfig, EvmTypesHost, ExecutionConfig,
@@ -703,7 +703,7 @@ mod tests {
         code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
     }
 
-    fn call_code(target: Address) -> Vec<u8> {
+    pub(crate) fn call_code(target: Address) -> Vec<u8> {
         let mut code = Vec::new();
         push_all(
             &mut code,
@@ -720,7 +720,7 @@ mod tests {
         code
     }
 
-    fn create_code() -> Vec<u8> {
+    pub(crate) fn create_code() -> Vec<u8> {
         let mut code = Vec::new();
         push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
         code
