@@ -19,15 +19,7 @@ use super::{IV, SIGMA, Word};
 // Y are words of input, chosen by the caller according to the message
 // schedule, SIGMA.
 #[inline(always)]
-pub(super) const fn g(
-    v: &mut [Word; 16],
-    a: usize,
-    b: usize,
-    c: usize,
-    d: usize,
-    x: Word,
-    y: Word,
-) {
+const fn g(v: &mut [Word; 16], a: usize, b: usize, c: usize, d: usize, x: Word, y: Word) {
     v[a] = v[a].wrapping_add(v[b]).wrapping_add(x);
     v[d] = (v[d] ^ v[a]).rotate_right(32);
     v[c] = v[c].wrapping_add(v[d]);

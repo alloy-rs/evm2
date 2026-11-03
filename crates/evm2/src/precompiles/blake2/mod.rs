@@ -129,7 +129,7 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{portable::g, *};
+    use super::*;
 
     /// Reference implementation: the compression function written with a runtime round index,
     /// as it stood before the rounds were unrolled with a constant schedule. Deliberately kept
@@ -141,6 +141,17 @@ mod tests {
         t: &[Word; 2],
         f: bool,
     ) {
+        fn g(v: &mut [Word; 16], a: usize, b: usize, c: usize, d: usize, x: Word, y: Word) {
+            v[a] = v[a].wrapping_add(v[b]).wrapping_add(x);
+            v[d] = (v[d] ^ v[a]).rotate_right(32);
+            v[c] = v[c].wrapping_add(v[d]);
+            v[b] = (v[b] ^ v[c]).rotate_right(24);
+            v[a] = v[a].wrapping_add(v[b]).wrapping_add(y);
+            v[d] = (v[d] ^ v[a]).rotate_right(16);
+            v[c] = v[c].wrapping_add(v[d]);
+            v[b] = (v[b] ^ v[c]).rotate_right(63);
+        }
+
         let mut v = [
             words[0],
             words[1],
