@@ -343,19 +343,15 @@ mod tests {
     use super::*;
     use crate::{
         block::bundle_state::OriginalValuesKnown,
-        evm::{
-            AccountChangeRef, AccountChanges, StateChangeSink, StorageChange, StorageOverlay,
-            StorageSlot as NativeSlot, Tracked,
-        },
+        evm::{AccountChangeRef, AccountChanges, StateChangeSink, StorageChange, StorageOverlay},
+        test_utils::storage_slot,
     };
 
     /// Builds a storage overlay from `(key, original, current)` slots.
     fn overlay(wiped: bool, slots: &[(U256, U256, U256)]) -> StorageOverlay {
         let mut storage = StorageOverlay { wiped, ..Default::default() };
         for &(key, original, current) in slots {
-            let slot =
-                NativeSlot { value: Tracked::from_parts(original, current), ..Default::default() };
-            storage.slots.insert(key, slot);
+            storage.slots.insert(key, storage_slot(original, current));
         }
         storage
     }

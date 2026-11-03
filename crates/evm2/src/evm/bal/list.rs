@@ -340,8 +340,9 @@ mod tests {
         bytecode::Bytecode,
         evm::{
             bal::{AccountInfoBal, BalChanges, BalCodeChange, StorageBal},
-            state::{Account, AccountFlags, AccountInfo, StorageOverlay, StorageSlot, Tracked},
+            state::{Account, AccountFlags, AccountInfo, StorageOverlay},
         },
+        test_utils::storage_slot,
     };
     use alloc::{vec, vec::Vec};
     use alloy_eip7928::{
@@ -470,10 +471,6 @@ mod tests {
         assert!(AlloyBal::from(&bal).is_empty());
     }
 
-    fn slot(original: U256, current: U256) -> StorageSlot {
-        StorageSlot { value: Tracked::from_parts(original, current), ..Default::default() }
-    }
-
     #[test]
     fn commit_builds_bal_from_pending_overlay() {
         let address = Address::with_last_byte(1);
@@ -485,8 +482,8 @@ mod tests {
             Some(AccountInfo::default().with_nonce(1).with_balance(U256::from(100))),
         );
         let mut overlay = StorageOverlay::default();
-        overlay.slots.insert(U256::from(5), slot(U256::ZERO, U256::from(42)));
-        overlay.slots.insert(U256::from(6), slot(U256::from(7), U256::from(7)));
+        overlay.slots.insert(U256::from(5), storage_slot(U256::ZERO, U256::from(42)));
+        overlay.slots.insert(U256::from(6), storage_slot(U256::from(7), U256::from(7)));
         let account = Account { storage: overlay, ..account };
         let pending = PendingState { accounts: AddressMap::from_iter([(address, account)]) };
 
@@ -521,7 +518,7 @@ mod tests {
         let account =
             Account::new(Some(AccountInfo::default().with_balance(U256::from(100))), None);
         let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
-        overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::from(42)));
+        overlay.slots.insert(U256::from(5), storage_slot(U256::from(42), U256::from(42)));
         let account = Account { storage: overlay, flags: AccountFlags::DESTROYED, ..account };
         let pending = PendingState { accounts: AddressMap::from_iter([(address, account)]) };
 
@@ -546,8 +543,8 @@ mod tests {
         // Only the slot that is nonzero after the wipe is recorded as one.
         let info = AccountInfo::default().with_balance(U256::from(100));
         let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
-        overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::ZERO));
-        overlay.slots.insert(U256::from(6), slot(U256::from(7), U256::from(8)));
+        overlay.slots.insert(U256::from(5), storage_slot(U256::from(42), U256::ZERO));
+        overlay.slots.insert(U256::from(6), storage_slot(U256::from(7), U256::from(8)));
         let account = Account {
             original: Some(info.clone()),
             present: Some(info),

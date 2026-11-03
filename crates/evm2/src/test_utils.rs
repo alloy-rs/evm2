@@ -5,7 +5,7 @@ use crate::{
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, BlockEnvExt, TxEnv, TxEnvExt},
     ethereum::{RecoveredTxEnvelope, TxEnvelope},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, SLoad, SStore, SelfDestructResult, StorageSlot, Tracked},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, Memory, Message, MessageExt, MessageKind,
         MessageResult, MessageResultExt, StackBacking, Word, op,
@@ -481,4 +481,8 @@ pub(crate) fn return_top_word(code: &mut Vec<u8>) {
 
 pub(crate) fn test_message() -> Message<TestTypes> {
     MessageExt { gas_limit: 10_000, ..MessageExt::default() }
+}
+
+pub(crate) fn storage_slot(original: Word, current: Word) -> StorageSlot {
+    StorageSlot { value: Tracked::from_parts(original, current), ..Default::default() }
 }
