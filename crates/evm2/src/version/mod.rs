@@ -3,11 +3,12 @@
 use crate::{
     EvmConfig, EvmTypesHost, SpecId,
     constants::{
-        CALL_DEPTH_LIMIT, MAX_CODE_SIZE, MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE,
-        MAX_INITCODE_SIZE_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
+        CALL_DEPTH_LIMIT, MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
+        MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
     },
     interpreter::{instructions as instr, op},
 };
+use alloy_eip7928::MAX_CODE_SIZE;
 use alloy_eips::{eip4844::MAX_BLOBS_PER_BLOCK_DENCUN, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 
 mod gas_params;
@@ -622,7 +623,7 @@ evm_versions! {
             MaxRefundQuotient: 2,
             CodeDepositCost: CODEDEPOSIT,
             TxTokenNonZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER,
-            TxTokenCost: STANDARD_TOKEN_COST,
+            TxTokenCost: alloy_eips::eip7623::STANDARD_TOKEN_COST as u32,
             TxBaseStipend: 21000,
         ],
     }
@@ -712,7 +713,7 @@ evm_versions! {
             SstoreResetWithoutColdLoadCost: SSTORE_RESET - ISTANBUL_SLOAD_GAS,
             SstoreSetRefund: SSTORE_SET - ISTANBUL_SLOAD_GAS,
             SstoreResetRefund: SSTORE_RESET - ISTANBUL_SLOAD_GAS,
-            TxTokenNonZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
+            TxTokenNonZeroByteMultiplier: alloy_eips::eip7623::NON_ZERO_BYTE_MULTIPLIER as u32,
         ],
     }
 
@@ -809,9 +810,10 @@ evm_versions! {
             EIP7702,
         ],
         dynamic_gas: [
-            TxEip7702PerEmptyAccountCost: EIP7702_PER_EMPTY_ACCOUNT_COST,
-            TxEip7702AuthRefund: EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST,
-            TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN,
+            TxEip7702PerEmptyAccountCost: alloy_eips::eip7702::constants::PER_EMPTY_ACCOUNT_COST as u32,
+            TxEip7702AuthRefund: alloy_eips::eip7702::constants::PER_EMPTY_ACCOUNT_COST as u32
+                - alloy_eips::eip7702::constants::PER_AUTH_BASE_COST as u32,
+            TxFloorCostPerToken: alloy_eips::eip7623::TOTAL_COST_FLOOR_PER_TOKEN as u32,
             TxFloorCostBase: 21000,
             // EIP-7623: zero calldata bytes count as one floor token.
             TxFloorZeroByteMultiplier: 1,
@@ -870,7 +872,7 @@ evm_versions! {
             // EIP-7976: the calldata floor charges every byte uniformly (64 gas
             // each), so zero bytes weigh the same as non-zero bytes in the
             // floor-tokens count.
-            TxFloorZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
+            TxFloorZeroByteMultiplier: alloy_eips::eip7623::NON_ZERO_BYTE_MULTIPLIER as u32,
             TxAccessListFloorByteMultiplier: EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER,
             // EIP-7702 under EIP-8037: per-authorization execution-gas refund. The
             // intrinsic per-auth execution charge bundles a worst-case

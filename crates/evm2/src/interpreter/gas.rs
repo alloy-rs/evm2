@@ -30,10 +30,7 @@ pub const CODEDEPOSIT: u32 = 200;
 pub const SSTORE_SET: u32 = 20000;
 pub const SSTORE_RESET: u32 = 5000;
 pub const REFUND_SSTORE_CLEARS: u32 = 15000;
-pub const STANDARD_TOKEN_COST: u32 = 4;
 pub const NON_ZERO_BYTE_MULTIPLIER: u32 = 17;
-pub const NON_ZERO_BYTE_MULTIPLIER_ISTANBUL: u32 = 4;
-pub const TOTAL_COST_FLOOR_PER_TOKEN: u32 = 10;
 pub const TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM: u32 = 16;
 pub const INITCODE_WORD_COST: u32 = 2;
 pub const CALL_STIPEND: u32 = 2300;
@@ -48,8 +45,6 @@ pub(crate) const EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE: u32 = 64;
 pub(crate) const EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER: u32 = 4;
 pub const WARM_STORAGE_READ_COST: u32 = 100;
 pub const WARM_SSTORE_RESET: u32 = SSTORE_RESET - COLD_SLOAD_COST;
-pub const EIP7702_PER_AUTH_BASE_COST: u32 = 12500;
-pub const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
 
 // EIP-8038: State-access gas cost update. Increases the gas cost of state-access
 // operations to reflect Ethereum's larger state. Values match the glamsterdam
@@ -59,9 +54,6 @@ pub const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
 // `WARM_STORAGE_READ_COST` (100) is reused throughout.
 /// Cold touch of an account (was 2,600 pre-EIP-8038).
 pub(crate) const EIP8038_COLD_ACCOUNT_ACCESS: u32 = 3000;
-/// Cold touch of a storage slot. Unchanged from the pre-EIP-8038 cost, but
-/// under EIP-8038 it is the *total* cold charge (the warm base is folded in).
-pub(crate) const EIP8038_COLD_STORAGE_ACCESS: u32 = 2100;
 /// First-time account-write surcharge (was 6,700 pre-EIP-8038).
 pub(crate) const EIP8038_ACCOUNT_WRITE: u32 = 9000;
 /// First-time storage-write surcharge (was 2,800 pre-EIP-8038).
@@ -71,7 +63,7 @@ pub(crate) const EIP8038_STORAGE_WRITE: u32 = 10000;
 /// Derived per the spec as `(STORAGE_WRITE + COLD_STORAGE_ACCESS) * 4800 / 5000`
 /// = 11,616.
 pub(crate) const EIP8038_STORAGE_CLEAR_REFUND: u32 =
-    (EIP8038_STORAGE_WRITE + EIP8038_COLD_STORAGE_ACCESS) * 4800 / 5000;
+    (EIP8038_STORAGE_WRITE + COLD_SLOAD_COST) * 4800 / 5000;
 /// State-access cost for contract deployment (was 7,000 pre-EIP-8038).
 ///
 /// Per the spec, `CREATE_ACCESS = ACCOUNT_WRITE + COLD_ACCOUNT_ACCESS` = 12,000.
@@ -86,13 +78,13 @@ pub(crate) const EIP8038_ACCESS_LIST_ADDRESS_COST: u32 =
 /// Access-list per-storage-key base cost (was 1,900 pre-EIP-8038). Derived per
 /// the spec as `COLD_STORAGE_ACCESS - WARM_ACCESS`.
 pub(crate) const EIP8038_ACCESS_LIST_STORAGE_KEY_COST: u32 =
-    EIP8038_COLD_STORAGE_ACCESS - WARM_STORAGE_READ_COST;
+    COLD_SLOAD_COST - WARM_STORAGE_READ_COST;
 /// Cold premium on top of `WARM_STORAGE_READ_COST` for account access.
 pub(crate) const EIP8038_COLD_ACCOUNT_ACCESS_ADDITIONAL: u32 =
     EIP8038_COLD_ACCOUNT_ACCESS - WARM_STORAGE_READ_COST;
 /// Cold premium on top of `WARM_STORAGE_READ_COST` for storage access.
 pub(crate) const EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL: u32 =
-    EIP8038_COLD_STORAGE_ACCESS - WARM_STORAGE_READ_COST;
+    COLD_SLOAD_COST - WARM_STORAGE_READ_COST;
 /// CALL value-transfer cost: `ACCOUNT_WRITE + CALL_STIPEND` per the EIP = 11,300.
 pub(crate) const EIP8038_CALL_VALUE: u32 = EIP8038_ACCOUNT_WRITE + CALL_STIPEND;
 /// Calldata bytes charged for one EIP-7702 authorization tuple (execution-specs
