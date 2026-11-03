@@ -2,7 +2,7 @@ use crate::{
     EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
     interpreter::{Host, Word},
-    utils::{WordExt, address_to_word, b256_to_word},
+    utils::{WordExt, b256_to_word},
 };
 use evm2_macros::instruction;
 
@@ -22,7 +22,7 @@ pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
 
 #[instruction]
 pub fn coinbase(cx: _) -> out {
-    out.write(address_to_word(&cx.state.host().block_env().beneficiary));
+    out.write(cx.state.host().block_env().beneficiary.into_word().into());
 }
 
 #[instruction]
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn coinbase_opcode() {
-        let beneficiary = Address::from([0x44; 20]);
+        let beneficiary = Address::repeat_byte(0x44);
         let mut host = test_host(BlockEnvExt { beneficiary, ..BlockEnvExt::default() });
         let interp = run(RunConfig::new([op::COINBASE, op::STOP]).host(&mut host));
         assert_matches!(interp.err, InstrStop::Stop);
@@ -194,18 +194,18 @@ mod tests {
     #[test]
     fn chainid_opcode() {
         let mut host = TestHost::default();
-        let tx_env = TxEnvExt { chain_id: Word::from(1), ..TxEnvExt::default() };
+        let tx_env = TxEnvExt { chain_id: Word::ONE, ..TxEnvExt::default() };
         let interp = run(RunConfig::new([op::CHAINID, op::STOP])
             .host(&mut host)
             .tx_env(tx_env)
             .spec(SpecId::ISTANBUL));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
     }
 
     #[test]
     fn selfbalance_opcode() {
-        let address = Address::from([0x66; 20]);
+        let address = Address::repeat_byte(0x66);
         let mut host = TestHost::default();
         let message = MessageExt { destination: address, gas_limit: 10_000, ..Default::default() };
         let interp =

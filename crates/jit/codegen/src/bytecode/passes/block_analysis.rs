@@ -2431,10 +2431,10 @@ pub(crate) mod tests {
         ",
         );
         // At inst 2 (ADD), operand 0 (TOS) = 0x01, operand 1 = 0x42.
-        assert_eq!(bytecode.const_operand(Inst::from_usize(2), 0), Some(U256::from(0x01)));
+        assert_eq!(bytecode.const_operand(Inst::from_usize(2), 0), Some(U256::ONE));
         assert_eq!(bytecode.const_operand(Inst::from_usize(2), 1), Some(U256::from(0x42)));
         // At inst 4 (MSTORE), operand 0 (TOS) = 0x00, operand 1 = 0x43 (folded ADD result).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(4), 0), Some(U256::from(0x00)));
+        assert_eq!(bytecode.const_operand(Inst::from_usize(4), 0), Some(U256::ZERO));
         assert_eq!(bytecode.const_operand(Inst::from_usize(4), 1), Some(U256::from(0x43)));
     }
 
@@ -2474,7 +2474,7 @@ pub(crate) mod tests {
         ",
         );
         assert_eq!(bytecode.const_output(Inst::from_usize(0)), Some(U256::from(0x42)));
-        assert_eq!(bytecode.const_output(Inst::from_usize(1)), Some(U256::from(0x01)));
+        assert_eq!(bytecode.const_output(Inst::from_usize(1)), Some(U256::ONE));
         assert_eq!(bytecode.const_output(Inst::from_usize(2)), Some(U256::from(0x43)));
         assert_eq!(bytecode.const_output(Inst::from_usize(3)), Some(U256::ZERO));
         // MSTORE has no outputs.
@@ -2546,12 +2546,12 @@ pub(crate) mod tests {
         assert_eq!(bytecode.const_operand(Inst::from_usize(5), 0), None);
 
         // ADD 1
-        assert_eq!(bytecode.const_operand(Inst::from_usize(2), 0), Some(U256::from(0x01)));
+        assert_eq!(bytecode.const_operand(Inst::from_usize(2), 0), Some(U256::ONE));
         assert_eq!(bytecode.const_operand(Inst::from_usize(2), 1), Some(U256::from(0x42)));
         assert_eq!(bytecode.const_output(Inst::from_usize(2)), Some(U256::from(0x43)));
 
         // ADD 2
-        assert_eq!(bytecode.const_operand(Inst::from_usize(8), 0), Some(U256::from(0x01)));
+        assert_eq!(bytecode.const_operand(Inst::from_usize(8), 0), Some(U256::ONE));
         assert_eq!(bytecode.const_operand(Inst::from_usize(8), 1), None);
         assert_eq!(bytecode.const_output(Inst::from_usize(8)), None);
 
@@ -3700,7 +3700,7 @@ mod tests_edge_cases {
         // DUP1 at inst 2: counter is loop-variant.
         assert_eq!(bytecode.const_operand(Inst::from_usize(2), 0), None);
         // ADD at inst 9: TOS=1 (const), second=counter (Top).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 0), Some(U256::from(1)));
+        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 0), Some(U256::ONE));
         assert_eq!(bytecode.const_operand(Inst::from_usize(9), 1), None);
     }
 
@@ -3912,9 +3912,9 @@ mod tests_edge_cases {
         );
         assert!(bytecode.has_dynamic_jumps);
         // Purely local push output preserved.
-        assert_eq!(bytecode.const_output(Inst::from_usize(8)), Some(U256::from(0x01)));
+        assert_eq!(bytecode.const_output(Inst::from_usize(8)), Some(U256::ONE));
         // ADD: local operand preserved, inherited operand restored to Top.
-        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 0), Some(U256::from(0x01)));
+        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 0), Some(U256::ONE));
         assert_eq!(bytecode.const_operand(Inst::from_usize(9), 1), None);
         assert_eq!(bytecode.const_output(Inst::from_usize(9)), None);
     }
@@ -3998,7 +3998,7 @@ mod tests_edge_cases {
         assert_eq!(bytecode.const_operand(Inst::from_usize(6), 1), Some(U256::from(0x0A)));
         assert_eq!(bytecode.const_output(Inst::from_usize(6)), Some(U256::from(0x15)));
         // MSTORE 1
-        assert_eq!(bytecode.const_operand(Inst::from_usize(8), 0), Some(U256::from(0)));
+        assert_eq!(bytecode.const_operand(Inst::from_usize(8), 0), Some(U256::ZERO));
         assert_eq!(bytecode.const_operand(Inst::from_usize(8), 1), Some(U256::from(0x15)));
         // MLOAD: single predecessor (no JUMPDEST), so cross-block value resolves.
         assert_eq!(bytecode.const_operand(Inst::from_usize(9), 0), Some(U256::from(0x69)));
@@ -4418,7 +4418,7 @@ mod tests_edge_cases {
     fn mload_known_word_after_mstore() {
         let known = Some(U256::from(0x80));
         assert_eq!(mload_0x40_after("PUSH 1 PUSH0 CALLDATALOAD MSTORE"), None);
-        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x40 MSTORE"), Some(U256::from(1)));
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x40 MSTORE"), Some(U256::ONE));
         assert_eq!(mload_0x40_after("PUSH0 CALLDATALOAD PUSH 0x40 MSTORE"), None);
         assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x21 MSTORE"), None);
         assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x5f MSTORE"), None);

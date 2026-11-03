@@ -1,6 +1,7 @@
 //! Call tracer regressions for halts before evm2 initializes the root frame.
 
 use super::*;
+use alloy_primitives::bytes;
 use alloy_rpc_types_trace::geth::{CallFrame, CallLogFrame};
 use evm2::interpreter::InstrStop;
 
@@ -34,8 +35,8 @@ fn runtime_oog_call_frames_and_reuse() {
             for (gas_limit, input, kind, halted) in [
                 (200_000, Bytes::new(), TxKind::Call(recipient), true),
                 (204_600, Bytes::new(), TxKind::Call(recipient), false),
-                (200_000, hex!("01020304").into(), TxKind::Call(recipient), true),
-                (200_000, hex!("00").into(), TxKind::Create, true),
+                (200_000, bytes!("01020304"), TxKind::Call(recipient), true),
+                (200_000, bytes!("00"), TxKind::Create, true),
                 (204_600, Bytes::new(), TxKind::Call(recipient), false),
             ] {
                 let res = evm

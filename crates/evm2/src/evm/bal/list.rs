@@ -389,7 +389,7 @@ mod tests {
                             AlloyStorageChange::new(idx(6), U256::from(60)),
                         ]),
                     ),
-                    (U256::from(1), BalChanges::default()),
+                    (U256::ONE, BalChanges::default()),
                     (
                         U256::from(2),
                         BalChanges::from(vec![
@@ -418,7 +418,7 @@ mod tests {
         );
 
         let account = &alloy_bal[0];
-        assert_eq!(account.storage_reads, vec![U256::from(1), U256::from(3)]);
+        assert_eq!(account.storage_reads, vec![U256::ONE, U256::from(3)]);
         assert_eq!(
             account.storage_changes.iter().map(|slot| slot.slot).collect::<Vec<_>>(),
             vec![U256::from(2), U256::from(4)]
@@ -595,7 +595,7 @@ mod tests {
         let alloy_bal = vec![AlloyAccountChanges {
             address,
             storage_changes: vec![AlloySlotChanges::new(
-                U256::from(1),
+                U256::ONE,
                 vec![AlloyStorageChange::new(idx(1), U256::from(10))],
             )],
             storage_reads: vec![U256::from(2)],

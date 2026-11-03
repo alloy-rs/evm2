@@ -738,7 +738,7 @@ mod tests {
 
     #[test]
     fn transfer_to_self_requires_balance() {
-        let address = Address::from([0x77; 20]);
+        let address = Address::repeat_byte(0x77);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(3)));
         let mut state = State::new(database);
@@ -751,7 +751,7 @@ mod tests {
     fn journaled_account_mutations_journal_and_roll_back() {
         use crate::{SpecId, Version, bytecode::Bytecode};
 
-        let address = Address::from([0x88; 20]);
+        let address = Address::repeat_byte(0x88);
         let mut state = State::new(CacheDB::default());
 
         let checkpoint = state.checkpoint();
@@ -787,7 +787,7 @@ mod tests {
     fn account_info_set_code_is_published_on_commit() {
         use alloy_primitives::Bytes;
 
-        let address = Address::from([0x8c; 20]);
+        let address = Address::repeat_byte(0x8c);
         let code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
         let mut state = State::new(CacheDB::default());
 
@@ -830,7 +830,7 @@ mod tests {
         // A hash that is not the keccak of the code proves `hash_slow` returns the seeded value
         // instead of hashing.
         let seed = B256::repeat_byte(0x5e);
-        let address = Address::from([0x8d; 20]);
+        let address = Address::repeat_byte(0x8d);
         let fresh = || Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
         assert_ne!(fresh().hash_slow(), seed);
 
@@ -842,7 +842,7 @@ mod tests {
         assert_eq!(state.account(&address).unwrap().load_code().unwrap().hash_slow(), seed);
         assert_eq!(state.account(&address).unwrap().original_code().unwrap().hash_slow(), seed);
 
-        let overlay_address = Address::from([0x8e; 20]);
+        let overlay_address = Address::repeat_byte(0x8e);
         state.account(&overlay_address).unwrap().set_code(seed, fresh());
         assert_eq!(state.account(&overlay_address).unwrap().load_code().unwrap().hash_slow(), seed);
     }
@@ -852,7 +852,7 @@ mod tests {
         use crate::{SpecId, Version, bytecode::Bytecode};
         use alloy_primitives::Bytes;
 
-        let address = Address::from([0x8b; 20]);
+        let address = Address::repeat_byte(0x8b);
         let original_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
         let original_code_hash = original_code.hash_slow();
         let mut database = CacheDB::default();
@@ -891,7 +891,7 @@ mod tests {
 
     #[test]
     fn journaled_account_read_only_handle_journals_nothing() {
-        let address = Address::from([0x89; 20]);
+        let address = Address::repeat_byte(0x89);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(5)));
         let mut state = State::new(database);
@@ -911,7 +911,7 @@ mod tests {
     fn journaled_account_skip_cold_load_signals_skip() {
         use crate::LoadError;
 
-        let address = Address::from([0x8a; 20]);
+        let address = Address::repeat_byte(0x8a);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(5)));
         let mut state = State::new(database);
@@ -996,7 +996,7 @@ mod tests {
                     assert_eq!((account.balance(), account.nonce()), (balance, nonce));
                     assert!(!account.is_touched());
                     assert!(!account.is_warm());
-                    account.set_balance(Word::from(1));
+                    account.set_balance(Word::ONE);
                     account.set_nonce(1);
                 }
                 assert_eq!(state.checkpoint().journal_len(), checkpoint.journal_len() + 1);

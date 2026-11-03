@@ -352,7 +352,7 @@ impl JsInspector {
             }
         });
 
-        let base_fee = block.basefee.try_into().unwrap_or(u64::MAX);
+        let base_fee = block.basefee.saturating_to::<u64>();
         let gas_tip = tx.effective_tip_per_gas(base_fee).unwrap_or_default();
 
         let ctx = JsEvmContext {
@@ -368,7 +368,7 @@ impl JsInspector {
             gas_used: result.tx_gas_used(),
             gas_price: U256::from(gas_tip),
             value: tx.value(),
-            block: block.number.try_into().unwrap_or(u64::MAX),
+            block: block.number.saturating_to::<u64>(),
             coinbase: block.beneficiary,
             output: output_bytes.unwrap_or_default(),
             transaction_ctx: self.transaction_context,
@@ -1308,7 +1308,7 @@ mod tests {
             AccountInfo {
                 code: Some(Bytecode::new_legacy(
                     /* PUSH1 1, PUSH1 1, STOP */
-                    contract.unwrap_or_else(|| hex!("6001600100").into()),
+                    contract.unwrap_or(bytes!("6001600100")),
                 )),
                 ..Default::default()
             },
@@ -1824,7 +1824,7 @@ mod tests {
         db.insert_account_info(
             &addr,
             AccountInfo {
-                code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
+                code: Some(Bytecode::new_legacy(bytes!("6001600100"))),
                 ..Default::default()
             },
         );
@@ -1902,7 +1902,7 @@ mod tests {
         db.insert_account_info(
             &child,
             AccountInfo {
-                code: Some(Bytecode::new_legacy(hex!("600100").into())),
+                code: Some(Bytecode::new_legacy(bytes!("600100"))),
                 ..Default::default()
             },
         );
@@ -2074,7 +2074,7 @@ mod tests {
             this.r=[a[0],a[32],capped.length,log.memory.slice(2**40,2**40).length,error];
         },fault:function(){},result:function(){return this.r}}"#;
         assert_eq!(
-            run_trace(tracer, Some(hex!("60ff60005300").into()), true),
+            run_trace(tracer, Some(bytes!("60ff60005300")), true),
             json!([255, 0, 1024 * 1024, 0, "TypeError"])
         );
     }

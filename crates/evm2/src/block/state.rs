@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn created_account_keeps_its_storage_wipe() {
         let address = Address::with_last_byte(1);
-        let info = AccountInfo { balance: U256::from(1), ..Default::default() };
+        let info = AccountInfo { balance: U256::ONE, ..Default::default() };
         let storage = overlay(true, &[]);
         let mut block = BlockState::new();
         block.commit_account_changes(
@@ -549,7 +549,7 @@ mod tests {
         let info = AccountInfo { nonce: 1, ..Default::default() };
         let mut block = BlockState::new();
         for (wiped, slots) in [
-            (false, &[(U256::from(3), U256::ZERO, U256::from(1))][..]),
+            (false, &[(U256::from(3), U256::ZERO, U256::ONE)][..]),
             (true, &[(U256::from(4), U256::ZERO, U256::from(2))][..]),
         ] {
             let storage = overlay(wiped, slots);

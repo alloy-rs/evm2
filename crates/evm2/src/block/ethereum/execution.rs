@@ -277,7 +277,7 @@ pub fn pre_execution_system_call_state_changes<T: EvmTypes>(
             .ok_or(BlockValidationError::MissingParentBeaconBlockRoot)?;
 
         if block_number == 0 {
-            if parent_beacon_block_root != B256::ZERO {
+            if !parent_beacon_block_root.is_zero() {
                 return Err(BlockValidationError::CancunGenesisParentBeaconBlockRootNotZero {
                     parent_beacon_block_root,
                 }

@@ -11,7 +11,9 @@ use crate::{
     },
 };
 use alloc::vec;
-use alloy_consensus::{Signed, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered};
+use alloy_consensus::{
+    SignableTransaction, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered,
+};
 use alloy_eips::{
     eip2935::HISTORY_STORAGE_CODE, eip4788::BEACON_ROOTS_CODE,
     eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_CODE, eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_CODE,
@@ -46,7 +48,7 @@ fn evm(spec: SpecId, gas_limit: u64) -> Evm<'static, BaseEvmTypes> {
 
 fn evm_with(spec: SpecId, gas_limit: u64, database: InMemoryDB) -> Evm<'static, BaseEvmTypes> {
     let block = BlockEnvExt {
-        number: U256::from(1),
+        number: U256::ONE,
         timestamp: U256::from(12),
         beneficiary: BENEFICIARY,
         gas_limit: U256::from(gas_limit),
@@ -79,14 +81,11 @@ fn transfer(gas_limit: u64) -> Recovered<EthereumTxEnvelope<TxEip4844>> {
         gas_price: 1,
         gas_limit,
         to: TxKind::Call(RECIPIENT),
-        value: U256::from(1),
+        value: U256::ONE,
         ..TxLegacy::default()
     };
-    let signature = Signature::new(U256::from(1), U256::from(1), false);
-    Recovered::new_unchecked(
-        EthereumTxEnvelope::Legacy(Signed::new_unhashed(tx, signature)),
-        SENDER,
-    )
+    let signature = Signature::new(U256::ONE, U256::ONE, false);
+    Recovered::new_unchecked(EthereumTxEnvelope::Legacy(tx.into_signed(signature)), SENDER)
 }
 
 fn blob_transfer() -> Recovered<EthereumTxEnvelope<TxEip4844>> {
@@ -96,11 +95,8 @@ fn blob_transfer() -> Recovered<EthereumTxEnvelope<TxEip4844>> {
         blob_versioned_hashes: vec![B256::ZERO],
         ..TxEip4844::default()
     };
-    let signature = Signature::new(U256::from(1), U256::from(1), false);
-    Recovered::new_unchecked(
-        EthereumTxEnvelope::Eip4844(Signed::new_unhashed(tx, signature)),
-        SENDER,
-    )
+    let signature = Signature::new(U256::ONE, U256::ONE, false);
+    Recovered::new_unchecked(EthereumTxEnvelope::Eip4844(tx.into_signed(signature)), SENDER)
 }
 
 fn balance(state: &BundleState, address: Address) -> Option<U256> {
@@ -126,7 +122,7 @@ fn executes_prague_block() {
     assert!(output.result.requests.is_empty());
 
     let state = &output.state;
-    assert_eq!(balance(state, RECIPIENT), Some(U256::from(1)));
+    assert_eq!(balance(state, RECIPIENT), Some(U256::ONE));
     // EIP-2935 stores the parent hash at slot `(number - 1) % 8191`.
     let parent_hash = U256::from_be_bytes(PARENT_HASH.0);
     assert_eq!(storage(state, HISTORY_STORAGE_ADDRESS, U256::ZERO), Some(parent_hash));

@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn transition_states() {
         // Dummy data
-        let address = Address::new([0x01; 20]);
+        let address = Address::repeat_byte(0x01);
         let acc1 = AccountInfo { balance: U256::from(10), nonce: 1, ..Default::default() };
 
         let mut bundle_state = BundleState::default();
@@ -886,11 +886,11 @@ mod tests {
     }
 
     const fn account1() -> Address {
-        Address::new([0x60; 20])
+        Address::repeat_byte(0x60)
     }
 
     const fn account2() -> Address {
-        Address::new([0x61; 20])
+        Address::repeat_byte(0x61)
     }
 
     fn slot1() -> U256 {
@@ -911,8 +911,8 @@ mod tests {
                     None,
                     Some(AccountInfo { nonce: 1, balance: U256::from(10), ..Default::default() }),
                     HashMap::from_iter([
-                        (slot1(), (U256::from(0), U256::from(10))),
-                        (slot2(), (U256::from(0), U256::from(15))),
+                        (slot1(), (U256::ZERO, U256::from(10))),
+                        (slot2(), (U256::ZERO, U256::from(15))),
                     ]),
                 ),
                 (
@@ -923,7 +923,7 @@ mod tests {
                 ),
             ],
             vec![vec![
-                (account1(), Some(None), vec![(slot1(), U256::from(0)), (slot2(), U256::from(0))]),
+                (account1(), Some(None), vec![(slot1(), U256::ZERO), (slot2(), U256::ZERO)]),
                 (account2(), Some(None), vec![]),
             ]],
             vec![],
@@ -938,7 +938,7 @@ mod tests {
                 account1(),
                 None,
                 Some(AccountInfo { nonce: 3, balance: U256::from(20), ..Default::default() }),
-                HashMap::from_iter([(slot1(), (U256::from(0), U256::from(15)))]),
+                HashMap::from_iter([(slot1(), (U256::ZERO, U256::from(15)))]),
             )],
             vec![vec![(
                 account1(),
@@ -958,7 +958,7 @@ mod tests {
             )
             .state_storage(
                 account1(),
-                HashMap::from_iter([(slot1(), (U256::from(0), U256::from(10)))]),
+                HashMap::from_iter([(slot1(), (U256::ZERO, U256::from(10)))]),
             )
             .state_address(account2())
             .state_present_account_info(
@@ -967,7 +967,7 @@ mod tests {
             )
             .revert_address(0, account1())
             .revert_account_info(0, account1(), Some(None))
-            .revert_storage(0, account1(), vec![(slot1(), U256::from(0))])
+            .revert_storage(0, account1(), vec![(slot1(), U256::ZERO)])
             .revert_account_info(0, account2(), Some(None))
             .build()
     }
@@ -981,7 +981,7 @@ mod tests {
             )
             .state_storage(
                 account1(),
-                HashMap::from_iter([(slot1(), (U256::from(0), U256::from(15)))]),
+                HashMap::from_iter([(slot1(), (U256::ZERO, U256::from(15)))]),
             )
             .revert_address(0, account1())
             .revert_account_info(
@@ -997,7 +997,7 @@ mod tests {
     /// to the status accumulated over the earlier blocks.
     #[test]
     fn extend_reverts_to_accumulated_status() {
-        let address = Address::new([0x70; 20]);
+        let address = Address::repeat_byte(0x70);
         let info = AccountInfo { nonce: 1, balance: U256::from(10), ..Default::default() };
         let destroy = TransitionAccount {
             info: None,
@@ -1062,7 +1062,7 @@ mod tests {
     /// blocks, not only the first one.
     #[test]
     fn extend_reverts_later_blocks_to_accumulated_status() {
-        let address = Address::new([0x71; 20]);
+        let address = Address::repeat_byte(0x71);
         let info = AccountInfo { nonce: 1, balance: U256::from(10), ..Default::default() };
         let changed = AccountInfo { balance: U256::from(11), ..info.clone() };
         let transition = |previous: &AccountInfo, next: &AccountInfo, from, to| TransitionAccount {
@@ -1386,7 +1386,7 @@ mod tests {
 
         // Test get_revert_storage_mut
         assert!(builder.get_revert_storage_mut().is_empty());
-        builder.get_revert_storage_mut().insert((0, account1()), vec![(slot1(), U256::from(0))]);
+        builder.get_revert_storage_mut().insert((0, account1()), vec![(slot1(), U256::ZERO)]);
         assert!(builder.get_revert_storage_mut().contains_key(&(0, account1())));
 
         // Test get_contracts_mut

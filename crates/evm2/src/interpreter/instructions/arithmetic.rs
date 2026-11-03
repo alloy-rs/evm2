@@ -56,7 +56,7 @@ pub fn exp(cx: _, [a, b]: [Word]) -> Result<out> {
 #[instruction]
 pub fn signextend([ext, value]: [Word]) -> out {
     if *ext < 31 {
-        let bit_index = (8 * ext.as_limbs()[0] + 7) as usize;
+        let bit_index = (8 * ext.wrapping_to::<u64>() + 7) as usize;
         let mask = (Word::ONE << bit_index) - Word::ONE;
         out.write(if value.bit(bit_index) { *value | !mask } else { *value & mask });
     }

@@ -262,7 +262,7 @@ mod tests {
             pair::{BYZANTIUM_PAIR_BASE, BYZANTIUM_PAIR_PER_POINT},
         },
     };
-    use alloy_primitives::hex;
+    use alloy_primitives::{B256, hex};
     use core::assert_matches;
 
     use super::*;
@@ -630,8 +630,7 @@ mod tests {
                 &mut GasTracker::new(260_000),
             )
         };
-        let mut one = [0u8; 32];
-        one[31] = 1;
+        let one: [u8; 32] = B256::with_last_byte(1).into();
         assert_eq!(pair_infinity_with(SUBGROUP_G2).unwrap().bytes(), &one);
         for g2 in TORSION_G2 {
             assert_matches!(

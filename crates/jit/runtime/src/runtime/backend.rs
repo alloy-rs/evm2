@@ -1571,7 +1571,7 @@ mod tests {
         let job = CompileJob {
             kind: CompilationKind::Jit,
             key: RuntimeCacheKey { code_hash: keccak256(BYTECODE_RET42), spec_id: SpecId::CANCUN },
-            bytecode: Bytes::copy_from_slice(BYTECODE_RET42),
+            bytecode: Bytes::from_static(BYTECODE_RET42),
             symbol_name: symbol_name.to_owned(),
             opt_level: config.tuning.jit_opt_level,
             sync_notifier: SyncNotifier::none(),

@@ -842,7 +842,7 @@ fn memory_write_range(op: u8, stack: &[U256]) -> Option<(usize, usize)> {
     let peek = |n: usize| stack.len().checked_sub(n + 1).map(|i| stack[i]);
     let (offset, size) = match op {
         opcode::MSTORE => (peek(0)?, U256::from(32)),
-        opcode::MSTORE8 => (peek(0)?, U256::from(1)),
+        opcode::MSTORE8 => (peek(0)?, U256::ONE),
         opcode::MCOPY | opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY => {
             (peek(0)?, peek(2)?)
         }
@@ -1581,14 +1581,14 @@ mod tests {
     #[test]
     fn test_stack_view_reconstructs_pre_execution_stack() {
         // SWAP1 touches the top two items, DUP1 one item, ADD two items
-        let pre = [U256::from(1), U256::from(2), U256::from(3)];
+        let pre = [U256::ONE, U256::from(2), U256::from(3)];
         for (op, post) in [
-            (opcode::SWAP1, vec![U256::from(1), U256::from(3), U256::from(2)]),
-            (opcode::DUP1, vec![U256::from(1), U256::from(2), U256::from(3), U256::from(3)]),
-            (opcode::ADD, vec![U256::from(1), U256::from(5)]),
-            (opcode::POP, vec![U256::from(1), U256::from(2)]),
+            (opcode::SWAP1, vec![U256::ONE, U256::from(3), U256::from(2)]),
+            (opcode::DUP1, vec![U256::ONE, U256::from(2), U256::from(3), U256::from(3)]),
+            (opcode::ADD, vec![U256::ONE, U256::from(5)]),
+            (opcode::POP, vec![U256::ONE, U256::from(2)]),
             // halted before pushing, e.g. out of gas after popping the inputs
-            (opcode::MSTORE, vec![U256::from(1)]),
+            (opcode::MSTORE, vec![U256::ONE]),
             (opcode::STOP, pre.to_vec()),
         ] {
             let mut view = StackView::default();
@@ -1637,7 +1637,7 @@ mod tests {
         let mut view = MemoryView::default();
         view.record(
             opcode::EXTCODECOPY,
-            &[U256::from(2), U256::ZERO, U256::from(4), U256::from(1)],
+            &[U256::from(2), U256::ZERO, U256::from(4), U256::ONE],
             &pre,
         );
         assert_eq!(view.patch_offset, 4);

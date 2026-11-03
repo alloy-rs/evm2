@@ -3,7 +3,7 @@
 use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ExecutionResult, SpecId, TxEnv,
 };
-use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
+use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
 use alloy_rpc_types_trace::otterscan::{InternalOperation, OperationType};
 use evm2_inspectors::otterscan::InternalOperationsInspector;
 
@@ -42,7 +42,7 @@ fn execute(code: Bytes, spec: SpecId, kind: TxKind) -> (ExecutionResult, Vec<Int
 #[test]
 fn excludes_top_level_calls_and_creations() {
     for kind in [TxKind::Call(CONTRACT), TxKind::Create] {
-        let (result, operations) = execute(hex!("00").into(), SpecId::CANCUN, kind);
+        let (result, operations) = execute(bytes!("00"), SpecId::CANCUN, kind);
         assert!(result.is_success());
         assert!(operations.is_empty());
     }
@@ -52,7 +52,7 @@ fn excludes_top_level_calls_and_creations() {
 fn includes_zero_value_creates() {
     // CREATE and CREATE2 with empty initcode and zero endowment.
     let (result, operations) = execute(
-        hex!("600060006000f0506000600060006000f55000").into(),
+        bytes!("600060006000f0506000600060006000f55000"),
         SpecId::CANCUN,
         TxKind::Call(CONTRACT),
     );
@@ -80,7 +80,9 @@ fn includes_zero_value_creates() {
 fn excludes_calls_without_transfers() {
     // Zero-value CALL, STATICCALL, DELEGATECALL, and value-bearing CALLCODE to 0x22.
     let (result, operations) = execute(
-        hex!("60006000600060006000602261fffff1506000600060006000602261fffffa506000600060006000602261fffff45060006000600060006001602261fffff25000").into(),
+        bytes!(
+            "60006000600060006000602261fffff1506000600060006000602261fffffa506000600060006000602261fffff45060006000600060006001602261fffff25000"
+        ),
         SpecId::CANCUN,
         TxKind::Call(CONTRACT),
     );
@@ -92,7 +94,7 @@ fn excludes_calls_without_transfers() {
 fn retains_reverted_transfers() {
     // Transfer 1 wei to 0x22, then revert the enclosing transaction.
     let (result, operations) = execute(
-        hex!("60006000600060006001602261fffff15060006000fd").into(),
+        bytes!("60006000600060006001602261fffff15060006000fd"),
         SpecId::CANCUN,
         TxKind::Call(CONTRACT),
     );
@@ -102,7 +104,7 @@ fn retains_reverted_transfers() {
         [InternalOperation {
             from: CONTRACT,
             to: Address::with_last_byte(0x22),
-            value: U256::from(1),
+            value: U256::ONE,
             r#type: OperationType::OpTransfer,
         }]
     );
@@ -111,11 +113,8 @@ fn retains_reverted_transfers() {
 #[test]
 fn retains_failed_creations() {
     // CREATE with initcode that immediately executes INVALID.
-    let (result, operations) = execute(
-        hex!("60fe600053600160006000f05000").into(),
-        SpecId::CANCUN,
-        TxKind::Call(CONTRACT),
-    );
+    let (result, operations) =
+        execute(bytes!("60fe600053600160006000f05000"), SpecId::CANCUN, TxKind::Call(CONTRACT));
     assert!(result.is_success());
     assert_eq!(
         operations,
@@ -131,7 +130,7 @@ fn retains_failed_creations() {
 #[test]
 fn records_selfdestruct_before_and_after_cancun() {
     for spec in [SpecId::SHANGHAI, SpecId::CANCUN] {
-        let (result, operations) = execute(hex!("6022ff").into(), spec, TxKind::Call(CONTRACT));
+        let (result, operations) = execute(bytes!("6022ff"), spec, TxKind::Call(CONTRACT));
         assert!(result.is_success());
         assert_eq!(
             operations,
@@ -149,7 +148,7 @@ fn records_selfdestruct_before_and_after_cancun() {
 fn preserves_execution_order() {
     // Create a contract whose initcode self-destructs, transfer 1 wei, then self-destruct.
     let (result, operations) = execute(
-        hex!("626022ff6000526003601d6000f05060006000600060006001603361fffff1506044ff").into(),
+        bytes!("626022ff6000526003601d6000f05060006000600060006001603361fffff1506044ff"),
         SpecId::CANCUN,
         TxKind::Call(CONTRACT),
     );
@@ -172,7 +171,7 @@ fn preserves_execution_order() {
             InternalOperation {
                 from: CONTRACT,
                 to: Address::with_last_byte(0x33),
-                value: U256::from(1),
+                value: U256::ONE,
                 r#type: OperationType::OpTransfer,
             },
             InternalOperation {

@@ -1,7 +1,7 @@
 //! Recording inputs is optional and does not affect execution.
 
 use crate::utils::{AccountInfo, Bytecode, CacheDB, EmptyDB, SpecId, TransactTo, TxEnv};
-use alloy_primitives::{Address, Bytes, U256, hex};
+use alloy_primitives::{Address, Bytes, U256, bytes, hex};
 use evm2::{
     BaseEvmTypes, Evm, ExecutionConfig, Inspector, Precompiles, Version,
     constants::CALL_DEPTH_LIMIT, ethereum::ethereum_tx_registry, interpreter::opcode::op,
@@ -261,7 +261,7 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
     let caller = Address::repeat_byte(0xaa);
     let child = Address::with_last_byte(0x43);
     // Send 1 wei to a child that executes STOP.
-    let code = Bytes::from_static(&hex!("5f5f5f5f600160435af100"));
+    let code = bytes!("5f5f5f5f600160435af100");
     for initial_call_depth in [0, 7, u16::MAX - CALL_DEPTH_LIMIT - 1] {
         for kind in [TransactTo::Call(Address::with_last_byte(0x42)), TransactTo::Create] {
             let target = kind.to().copied().unwrap_or_else(|| caller.create(0));
@@ -274,7 +274,7 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
                 );
                 db.insert_account_info(
                     &child,
-                    AccountInfo::default().with_code(Bytecode::new_raw(hex!("00").into())),
+                    AccountInfo::default().with_code(Bytecode::new_raw(bytes!("00"))),
                 );
                 if !kind.is_create() {
                     db.insert_account_info(

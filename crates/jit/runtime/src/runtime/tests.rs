@@ -521,7 +521,7 @@ fn prepare_aot_enqueue() {
     let tb = TestBackend::with_tuning(RuntimeTuning { jit_worker_count: 0, ..Default::default() });
     tb.prepare_aot(AotRequest {
         code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     });
 }
@@ -532,12 +532,12 @@ fn prepare_aot_batch_enqueue() {
     let reqs = vec![
         AotRequest {
             code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         },
         AotRequest {
             code_hash: alloy_primitives::keccak256(BYTECODE_ADD),
-            code: Bytes::copy_from_slice(BYTECODE_ADD),
+            code: Bytes::from_static(BYTECODE_ADD),
             spec_id: SpecId::CANCUN,
         },
     ];
@@ -559,7 +559,7 @@ fn prepare_aot_batch_never_blocks_when_startup_fails() {
     let worker = std::thread::spawn(move || {
         let reqs = vec![AotRequest {
             code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         }];
         // More requests than the channel can hold: deadlocks without the started check.
@@ -1204,7 +1204,7 @@ fn memory_budget_evicts_aot_entries() {
 
     tb.prepare_aot_sync(AotRequest {
         code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     })
     .unwrap();
@@ -1435,7 +1435,7 @@ fn prepare_aot_persist_and_load() {
     let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
     tb.prepare_aot_sync(AotRequest {
         code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     })
     .unwrap();
@@ -1514,7 +1514,7 @@ fn aot_artifacts_survive_restart() {
 
         tb.prepare_aot_sync(AotRequest {
             code_hash,
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         })
         .unwrap();
@@ -1556,7 +1556,7 @@ fn preload_aot_seeds_resident() {
 
         tb.prepare_aot_sync(AotRequest {
             code_hash,
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         })
         .unwrap();
@@ -1588,7 +1588,7 @@ fn preload_aot_skips_stale_abi_version() {
         });
         tb.prepare_aot_sync(AotRequest {
             code_hash,
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         })
         .unwrap();
@@ -1627,7 +1627,7 @@ fn preload_aot_skips_manifest_key_mismatch() {
         });
         tb.prepare_aot_sync(AotRequest {
             code_hash,
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         })
         .unwrap();
@@ -1650,7 +1650,7 @@ fn preload_aot_skips_manifest_key_mismatch() {
     // The probe rejects it too, so the artifact is recompiled.
     tb.prepare_aot_sync(AotRequest {
         code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     })
     .unwrap();
@@ -1688,7 +1688,7 @@ fn artifacts_are_scoped_to_compile_config() {
     let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
     let req = || AotRequest {
         code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     };
     let config = |gas_params| RuntimeConfig {
@@ -1736,7 +1736,7 @@ fn prepare_aot_already_persisted_not_resident() {
     // Compile and persist an AOT artifact.
     tb.prepare_aot_sync(AotRequest {
         code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     })
     .unwrap();
@@ -1751,7 +1751,7 @@ fn prepare_aot_already_persisted_not_resident() {
     // Requesting prepare_aot again should load from store without recompiling.
     tb.prepare_aot_sync(AotRequest {
         code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     })
     .unwrap();
@@ -1793,11 +1793,8 @@ fn prepare_aot_persists_jit_resident() {
     tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
     assert_eq!(tb.stats().compilations_dispatched, dispatched_before);
 
-    let req = AotRequest {
-        code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
-        spec_id: SpecId::CANCUN,
-    };
+    let req =
+        AotRequest { code_hash, code: Bytes::from_static(BYTECODE_RET42), spec_id: SpecId::CANCUN };
     tb.prepare_aot_sync(req.clone()).unwrap();
 
     assert_eq!(store.len(), 1);

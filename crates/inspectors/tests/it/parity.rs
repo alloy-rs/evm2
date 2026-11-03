@@ -4,7 +4,7 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output,
     SpecId, TransactTo, TxEnv, deploy_contract, inspect_deploy_contract, op, print_traces,
 };
-use alloy_primitives::{Address, U256, address, hex, map::HashSet};
+use alloy_primitives::{Address, U256, address, b256, bytes, hex, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
     filter::TraceFilter,
@@ -62,7 +62,7 @@ fn test_parity_selfdestruct(spec_id: SpecId) {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
-            data: hex!("43d726d6").into(),
+            data: bytes!("43d726d6"),
             nonce: 1,
             ..Default::default()
         })
@@ -137,7 +137,7 @@ fn test_parity_constructor_selfdestruct() {
                     caller: deployer,
                     gas_limit: 1000000,
                     kind: TransactTo::Call(addr),
-                    data: hex!("43d726d6").into(),
+                    data: bytes!("43d726d6"),
                     nonce: 1,
                     ..Default::default()
                 }
@@ -202,7 +202,7 @@ fn test_parity_call_selfdestruct() {
             caller,
             gas_limit: 10000000,
             kind: TransactTo::Call(to),
-            data: input.to_vec().into(),
+            data: input.into(),
             nonce: 0,
             ..Default::default()
         })
@@ -249,7 +249,7 @@ fn test_parity_call_selfdestruct_create() {
         "0x60806040526040516102283803806102288339818101604052810190610025919061011c565b335f5f6101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff1602179055503481604051610072906100b2565b61007c9190610156565b6040518091039082f0905080158015610097573d5f5f3e3d5ffd5b50508073ffffffffffffffffffffffffffffffffffffffff16ff5b60b88061017083390190565b5f5ffd5b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f6100eb826100c2565b9050919050565b6100fb816100e1565b8114610105575f5ffd5b50565b5f81519050610116816100f2565b92915050565b5f60208284031215610131576101306100be565b5b5f61013e84828501610108565b91505092915050565b610150816100e1565b82525050565b5f6020820190506101695f830184610147565b9291505056fe608060405260405160b838038060b88339818101604052810190602191906091565b8073ffffffffffffffffffffffffffffffffffffffff16ff5b5f5ffd5b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f606582603e565b9050919050565b607381605d565b8114607c575f5ffd5b50565b5f81519050608b81606c565b92915050565b5f6020828403121560a35760a2603a565b5b5f60ae84828501607f565b9150509291505056fe000000000000000000000000f2719d5f7ec66c38abd64bc5efda6876590b3b30"
     );
 
-    let value = U256::from(1);
+    let value = U256::ONE;
 
     let evm = Context::mainnet()
         .with_db(CacheDB::<EmptyDB>::default())
@@ -273,9 +273,9 @@ fn test_parity_call_selfdestruct_create() {
             caller,
             gas_limit: 10000000,
             kind: TransactTo::Create,
-            data: code.to_vec().into(),
+            data: code.into(),
             nonce: 24,
-            value: U256::from(1),
+            value: U256::ONE,
             ..Default::default()
         })
         .unwrap();
@@ -300,7 +300,7 @@ fn test_parity_call_selfdestruct_create() {
     let last = traces.len() - 1;
     let second_sd = Action::Selfdestruct(SelfdestructAction {
         address: address!("0x076af20059617d9bf2e49f4f19bd3f48d582dcef"),
-        balance: U256::from(0),
+        balance: U256::ZERO,
         refund_address: address!("0xf2719d5f7ec66c38abd64bc5efda6876590b3b30"),
     });
 
@@ -309,7 +309,7 @@ fn test_parity_call_selfdestruct_create() {
 
     let first_sd = Action::Selfdestruct(SelfdestructAction {
         address: address!("0x9f2e7bebe157dfd9f1322bd252f1a5af37629687"),
-        balance: U256::from(1),
+        balance: U256::ONE,
         refund_address: address!("0xf2719d5f7ec66c38abd64bc5efda6876590b3b30"),
     });
 
@@ -350,11 +350,9 @@ fn test_parity_statediff_blob_commit() {
             gas_limit: 1000000,
             kind: TransactTo::Call(to),
             gas_price: 150,
-            blob_hashes: vec![
+            blob_hashes: vec![b256!(
                 "0x01af2fd94f17364bc8ef371c4c90c3a33855ff972d10b9c03d0445b3fca063ea"
-                    .parse()
-                    .unwrap(),
-            ],
+            )],
             max_fee_per_blob_gas: 1000000000,
             ..Default::default()
         })
@@ -787,7 +785,7 @@ fn vmtrace_revert_keeps_its_execution_record() {
 fn vmtrace_call_pushes_result_and_copies_return_memory() {
     let trace = trace_vm_code(&hex!("602060205f5f5f604361fffff15f00"), &hex!("602a5f5260205ff3"));
     let call = &trace.ops[7];
-    assert_eq!(call.ex.as_ref().unwrap().push.as_slice(), &[U256::from(1)]);
+    assert_eq!(call.ex.as_ref().unwrap().push.as_slice(), &[U256::ONE]);
     let mem = call.ex.as_ref().unwrap().mem.as_ref().unwrap();
     assert_eq!(mem.off, 32);
     assert_eq!(mem.data.as_ref(), U256::from(42).to_be_bytes::<32>());
@@ -814,7 +812,7 @@ fn vmtrace_terminal_call_finalizes_delta_at_capture_limit() {
         let call = trace.ops.last().unwrap();
         assert_eq!(call.op.as_deref(), Some("CALL"));
         let ex = call.ex.as_ref().unwrap();
-        assert_eq!(ex.push, vec![U256::from(1)]);
+        assert_eq!(ex.push, vec![U256::ONE]);
         let mem = ex.mem.as_ref().unwrap();
         assert_eq!(mem.off, 32);
         assert_eq!(mem.data.as_ref(), &[42]);
@@ -912,7 +910,7 @@ fn vmtrace_precompile_does_not_steal_the_next_calls_subtrace() {
         trace_vm_code(&hex!("5f5f5f5f5f600461fffff1505f5f5f5f5f604361fffff100"), &hex!("60015000"));
     assert!(trace.ops[7].sub.as_ref().unwrap().ops.is_empty());
     assert_eq!(trace.ops[16].sub.as_ref().unwrap().ops.len(), 3);
-    assert_eq!(trace.ops[7].ex.as_ref().unwrap().push, vec![U256::from(1)]);
+    assert_eq!(trace.ops[7].ex.as_ref().unwrap().push, vec![U256::ONE]);
 }
 
 #[test]
@@ -970,9 +968,8 @@ fn reverted_create_reports_gas_and_revert_data() {
     let mut db = CacheDB::<EmptyDB>::default();
     db.insert_account_info(
         &factory,
-        AccountInfo::default().with_code(Bytecode::new_raw(
-            hex!("6b63deadbeef5f526004601cfd5f52600c60145ff000").into(),
-        )),
+        AccountInfo::default()
+            .with_code(Bytecode::new_raw(bytes!("6b63deadbeef5f526004601cfd5f52600c60145ff000"))),
     );
     let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
         TracingInspector::new(TracingInspectorConfig::default_parity()),
@@ -1091,7 +1088,7 @@ fn create_nonce_overflow_is_a_failed_frame() {
             &factory,
             AccountInfo {
                 nonce,
-                ..AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f5ff000").into()))
+                ..AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f5ff000")))
             },
         );
         let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
@@ -1127,7 +1124,7 @@ fn create_nonce_overflow_runs_no_frame_since_amsterdam() {
         &factory,
         AccountInfo {
             nonce: u64::MAX,
-            ..AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f5ff000").into()))
+            ..AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f5ff000")))
         },
     );
     let mut evm = Context::mainnet()
@@ -1153,7 +1150,7 @@ fn create_with_empty_initcode_runs_no_steps() {
         let mut db = CacheDB::<EmptyDB>::default();
         db.insert_account_info(
             &factory,
-            AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f5ff000").into())),
+            AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f5ff000"))),
         );
         let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
             TracingInspector::new(TracingInspectorConfig::default_parity()),
@@ -1170,7 +1167,7 @@ fn create_with_empty_initcode_runs_no_steps() {
 
 #[test]
 fn precompile_exclusion_uses_original_callee_with_delegation() {
-    let parent = Address::from([0x11; 20]);
+    let parent = Address::repeat_byte(0x11);
     for callee in [2, 0x55] {
         for opcode in [op::CALL, op::CALLCODE, op::DELEGATECALL, op::STATICCALL] {
             let mut code = vec![op::PUSH0, op::PUSH0, op::PUSH1, 4, op::PUSH0];

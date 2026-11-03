@@ -129,10 +129,10 @@ pub(crate) fn try_const_fold(
                 op::EXP => a.pow(b),
                 op::SIGNEXTEND => {
                     if a < U256::from(31) {
-                        let ext = a.as_limbs()[0];
+                        let ext = a.wrapping_to::<u64>();
                         let bit_index = (8 * ext + 7) as usize;
                         let bit = b.bit(bit_index);
-                        let mask = (U256::from(1) << bit_index) - U256::from(1);
+                        let mask = (U256::ONE << bit_index) - U256::ONE;
                         if bit { b | !mask } else { b & mask }
                     } else {
                         b
@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn const_fold_1_to_1() {
         // ISZERO.
-        assert_eq!(const_fold(op::ISZERO, &[U256::ZERO]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::ISZERO, &[U256::ZERO]), Some(U256::ONE));
         assert_eq!(const_fold(op::ISZERO, &[U256::from(42)]), Some(U256::ZERO));
 
         // NOT.
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn const_fold_add() {
         assert_eq!(const_fold(op::ADD, &[U256::from(3), U256::from(4)]), Some(U256::from(7)));
-        assert_eq!(const_fold(op::ADD, &[U256::MAX, U256::from(1)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::ADD, &[U256::MAX, U256::ONE]), Some(U256::ZERO));
     }
 
     #[test]
@@ -534,7 +534,7 @@ mod tests {
     fn const_fold_sub() {
         // SUB(10, 3) = 7.
         assert_eq!(const_fold(op::SUB, &[U256::from(10), U256::from(3)]), Some(U256::from(7)));
-        assert_eq!(const_fold(op::SUB, &[U256::ZERO, U256::from(1)]), Some(U256::MAX));
+        assert_eq!(const_fold(op::SUB, &[U256::ZERO, U256::ONE]), Some(U256::MAX));
     }
 
     #[test]
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn const_fold_mod() {
         // MOD(10, 3) = 1.
-        assert_eq!(const_fold(op::MOD, &[U256::from(10), U256::from(3)]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::MOD, &[U256::from(10), U256::from(3)]), Some(U256::ONE));
         assert_eq!(const_fold(op::MOD, &[U256::from(7), U256::ZERO]), Some(U256::ZERO));
     }
 
@@ -580,7 +580,7 @@ mod tests {
             Some(U256::from(4)),
         );
         assert_eq!(
-            const_fold(op::ADDMOD, &[U256::from(1), U256::from(2), U256::ZERO]),
+            const_fold(op::ADDMOD, &[U256::ONE, U256::from(2), U256::ZERO]),
             Some(U256::ZERO),
         );
     }
@@ -599,7 +599,7 @@ mod tests {
         // EXP(2, 10) = 1024.
         assert_eq!(const_fold(op::EXP, &[U256::from(2), U256::from(10)]), Some(U256::from(1024)));
         // EXP(5, 0) = 1.
-        assert_eq!(const_fold(op::EXP, &[U256::from(5), U256::ZERO]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::EXP, &[U256::from(5), U256::ZERO]), Some(U256::ONE));
     }
 
     #[test]
@@ -621,12 +621,12 @@ mod tests {
     #[test]
     fn const_fold_lt_gt_eq() {
         // LT(1, 2) = 1.
-        assert_eq!(const_fold(op::LT, &[U256::from(1), U256::from(2)]), Some(U256::from(1)));
-        assert_eq!(const_fold(op::LT, &[U256::from(2), U256::from(1)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::LT, &[U256::ONE, U256::from(2)]), Some(U256::ONE));
+        assert_eq!(const_fold(op::LT, &[U256::from(2), U256::ONE]), Some(U256::ZERO));
         // GT(2, 1) = 1.
-        assert_eq!(const_fold(op::GT, &[U256::from(2), U256::from(1)]), Some(U256::from(1)));
-        assert_eq!(const_fold(op::GT, &[U256::from(1), U256::from(2)]), Some(U256::ZERO));
-        assert_eq!(const_fold(op::EQ, &[U256::from(5), U256::from(5)]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::GT, &[U256::from(2), U256::ONE]), Some(U256::ONE));
+        assert_eq!(const_fold(op::GT, &[U256::ONE, U256::from(2)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::EQ, &[U256::from(5), U256::from(5)]), Some(U256::ONE));
         assert_eq!(const_fold(op::EQ, &[U256::from(5), U256::from(6)]), Some(U256::ZERO));
     }
 
@@ -634,11 +634,11 @@ mod tests {
     fn const_fold_slt_sgt() {
         let neg1 = U256::MAX;
         // SLT(-1, 1) = 1.
-        assert_eq!(const_fold(op::SLT, &[neg1, U256::from(1)]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::SLT, &[neg1, U256::ONE]), Some(U256::ONE));
         // SLT(1, -1) = 0.
-        assert_eq!(const_fold(op::SLT, &[U256::from(1), neg1]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::SLT, &[U256::ONE, neg1]), Some(U256::ZERO));
         // SGT(1, -1) = 1.
-        assert_eq!(const_fold(op::SGT, &[U256::from(1), neg1]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::SGT, &[U256::ONE, neg1]), Some(U256::ONE));
     }
 
     #[test]
@@ -670,26 +670,23 @@ mod tests {
     #[test]
     fn const_fold_shl_shr() {
         // SHL(1, 0x80) = 0x100.
-        assert_eq!(
-            const_fold(op::SHL, &[U256::from(1), U256::from(0x80)]),
-            Some(U256::from(0x100)),
-        );
-        assert_eq!(const_fold(op::SHL, &[U256::from(256), U256::from(1)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::SHL, &[U256::ONE, U256::from(0x80)]), Some(U256::from(0x100)),);
+        assert_eq!(const_fold(op::SHL, &[U256::from(256), U256::ONE]), Some(U256::ZERO));
         // SHR(1, 0x80) = 0x40.
-        assert_eq!(const_fold(op::SHR, &[U256::from(1), U256::from(0x80)]), Some(U256::from(0x40)),);
-        assert_eq!(const_fold(op::SHR, &[U256::from(256), U256::from(1)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::SHR, &[U256::ONE, U256::from(0x80)]), Some(U256::from(0x40)),);
+        assert_eq!(const_fold(op::SHR, &[U256::from(256), U256::ONE]), Some(U256::ZERO));
     }
 
     #[test]
     fn const_fold_sar() {
         // SAR(1, 2) = 1.
-        assert_eq!(const_fold(op::SAR, &[U256::from(1), U256::from(2)]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::SAR, &[U256::ONE, U256::from(2)]), Some(U256::ONE));
         // SAR(4, -1) = -1.
         assert_eq!(const_fold(op::SAR, &[U256::from(4), U256::MAX]), Some(U256::MAX));
         // SAR(256, -1) = -1.
         assert_eq!(const_fold(op::SAR, &[U256::from(256), U256::MAX]), Some(U256::MAX));
         // SAR(256, 1) = 0.
-        assert_eq!(const_fold(op::SAR, &[U256::from(256), U256::from(1)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::SAR, &[U256::from(256), U256::ONE]), Some(U256::ZERO));
     }
 
     /// Builds bytecode for N repetitions of `PUSH U256::MAX, PUSH U256::MAX, EXP, POP`.
@@ -836,7 +833,7 @@ mod tests {
     #[test]
     fn const_fold_gas_sync() {
         let mut interner: crate::bytecode::U256Interner = crate::bytecode::Interner::new();
-        let one = U256Imm::new(U256::from(1), &mut interner);
+        let one = U256Imm::new(U256::ONE, &mut interner);
         let two = U256Imm::new(U256::from(2), &mut interner);
         let three = U256Imm::new(U256::from(3), &mut interner);
         let c1 = AbsValue::Const(one);
@@ -879,7 +876,7 @@ mod tests {
             (250, 258),
             ((1 << 31) - 4, (1 << 31) - 1),
         ];
-        let consts = [U256::ZERO, U256::from(7), U256::from(225), U256::from(1) << 224, U256::MAX];
+        let consts = [U256::ZERO, U256::from(7), U256::from(225), U256::ONE << 224, U256::MAX];
         let mut inputs: Vec<_> =
             ranges.into_iter().map(|(lo, hi)| AbsValue::Range((lo..=hi).into())).collect();
         inputs.extend(consts.into_iter().map(|c| AbsValue::Const(U256Imm::new(c, interner))));
@@ -895,7 +892,7 @@ mod tests {
             AbsValue::Top => [0u64, 1, 2, 7, 31, 32, 255, 256, (1 << 31) - 1, 1 << 31]
                 .into_iter()
                 .map(U256::from)
-                .chain([U256::from(1) << 224, U256::from(1) << 255, U256::MAX - U256::from(1)])
+                .chain([U256::ONE << 224, U256::ONE << 255, U256::MAX - U256::ONE])
                 .chain([U256::MAX])
                 .collect(),
             AbsValue::ConstSet(_) => unreachable!(),
@@ -968,7 +965,7 @@ mod tests {
         let (c16, c40, c224, c255, c256) = (c(16), c(40), c(224), c(255), c(256));
         let (c0xffff, word) = (c(0xffff), c(0x1100_2233));
         let mut c = |v: U256| AbsValue::Const(U256Imm::new(v, &mut interner));
-        let (c_big, c_max) = (c(U256::from(1) << 226), c(U256::MAX));
+        let (c_big, c_max) = (c(U256::ONE << 226), c(U256::MAX));
         let top = AbsValue::Top;
 
         // (opcode, operands in natural order, expected bounds).

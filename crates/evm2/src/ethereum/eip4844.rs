@@ -217,7 +217,7 @@ mod tests {
                     gas_limit: 21_000,
                     max_fee_per_gas: 2,
                     max_fee_per_blob_gas,
-                    blob_versioned_hashes: vec![B256::from([1; 32])],
+                    blob_versioned_hashes: vec![B256::repeat_byte(1)],
                     to: Address::with_last_byte(0xbb),
                     ..Default::default()
                 }
@@ -249,7 +249,7 @@ mod tests {
     #[rstest::rstest]
     #[case(vec![], HandlerError::EmptyBlobs)]
     #[case(vec![B256::ZERO], HandlerError::BlobVersionNotSupported)]
-    #[case(vec![B256::from([1; 32]); 7], HandlerError::TooManyBlobs { have: 7, max: 6 })]
+    #[case(vec![B256::repeat_byte(1); 7], HandlerError::TooManyBlobs { have: 7, max: 6 })]
     fn blob_fee_simulation_still_validates_blobs(
         #[case] blobs: alloc::vec::Vec<B256>,
         #[case] expected: HandlerError,

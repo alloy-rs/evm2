@@ -687,7 +687,7 @@ mod tests {
         state.insert_account(
             prefunded_addr,
             Some(AccountInfo::default().with_balance(U256::from(10))),
-            Some(AccountInfo::default().with_balance(U256::from(1)).with_nonce(1)),
+            Some(AccountInfo::default().with_balance(U256::ONE).with_nonce(1)),
         );
         state.insert_account(empty_addr, None, Some(AccountInfo::default().with_nonce(1)));
 
@@ -779,7 +779,7 @@ mod tests {
             state.insert_account(
                 address,
                 None,
-                Some(AccountInfo::default().with_balance(U256::from(1))),
+                Some(AccountInfo::default().with_balance(U256::ONE)),
             );
         }
         // An account emptied by execution must retain its original prestate.

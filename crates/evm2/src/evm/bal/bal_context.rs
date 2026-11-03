@@ -398,7 +398,7 @@ mod tests {
         let code = Bytecode::new_raw(bytes!("6001"));
         let mut account = AccountBal::default();
         account.account_info.balance = vec![
-            BalanceChange::new(BlockAccessIndex::new(0), U256::from(1)),
+            BalanceChange::new(BlockAccessIndex::new(0), U256::ONE),
             BalanceChange::new(BlockAccessIndex::new(1), U256::from(7)),
             // Post-execution for a two-transaction block.
             BalanceChange::new(BlockAccessIndex::new(3), U256::from(42)),
@@ -414,7 +414,7 @@ mod tests {
 
         for (index, balance, nonce) in [
             (0, None, None),
-            (1, Some(U256::from(1)), None),
+            (1, Some(U256::ONE), None),
             (2, Some(U256::from(7)), None),
             (3, Some(U256::from(7)), Some(5)),
         ] {

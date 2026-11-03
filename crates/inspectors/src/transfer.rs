@@ -1,7 +1,7 @@
 //! Internal transfer inspector.
 
 use alloc::{vec, vec::Vec};
-use alloy_primitives::{Address, B256, Log, U256, address, b256};
+use alloy_primitives::{Address, B256, Log, U256, b256};
 use alloy_sol_types::SolValue;
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Inspector, InspectorConfig,
@@ -11,7 +11,7 @@ use evm2::{
 /// Sender of ETH transfer log per `eth_simulateV1` spec.
 ///
 /// <https://github.com/ethereum/execution-apis/pull/484>
-pub const TRANSFER_LOG_EMITTER: Address = address!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+pub const TRANSFER_LOG_EMITTER: Address = Address::repeat_byte(0xee);
 
 /// Topic of `Transfer(address,address,uint256)` event.
 pub const TRANSFER_EVENT_TOPIC: B256 =

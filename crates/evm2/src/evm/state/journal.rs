@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn destruct_change_rolls_back_to_checkpoint() {
-        let address = Address::from([0x33; 20]);
+        let address = Address::repeat_byte(0x33);
         let mut state = State::new(CacheDB::default());
 
         let checkpoint = state.checkpoint();
@@ -108,11 +108,11 @@ mod tests {
 
         let mut state = State::new(CacheDB::default());
         let kept = Log {
-            address: Address::from([0x44; 20]),
+            address: Address::repeat_byte(0x44),
             data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x01])),
         };
         let reverted = Log {
-            address: Address::from([0x55; 20]),
+            address: Address::repeat_byte(0x55),
             data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x02])),
         };
 
@@ -125,7 +125,7 @@ mod tests {
             &[
                 kept.clone(),
                 Log {
-                    address: Address::from([0x55; 20]),
+                    address: Address::repeat_byte(0x55),
                     data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x02])),
                 }
             ]
@@ -172,7 +172,7 @@ mod tests {
         let frame_account = Address::with_last_byte(0x11);
         let base_storage = Address::with_last_byte(0x12);
         let frame_storage = Address::with_last_byte(0x13);
-        let key = Word::from(1);
+        let key = Word::ONE;
         let mut state = State::new(CacheDB::default());
 
         state.prewarm(&base_account);
@@ -198,7 +198,7 @@ mod tests {
     fn warm_only_entries_do_not_emit_state_changes() {
         let account = Address::with_last_byte(0x14);
         let storage_account = Address::with_last_byte(0x15);
-        let key = Word::from(1);
+        let key = Word::ONE;
         let mut state = State::new(CacheDB::default());
 
         state.prewarm(&account);
@@ -218,7 +218,7 @@ mod tests {
     fn rollback_preserves_non_revertible_account_warmth_after_load() {
         let account = Address::with_last_byte(0x16);
         let mut database = CacheDB::default();
-        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::ONE));
         let mut state = State::new(database);
 
         state.prewarm(&account);
@@ -237,9 +237,9 @@ mod tests {
     #[test]
     fn rollback_preserves_non_revertible_storage_warmth_after_write() {
         let account = Address::with_last_byte(0x17);
-        let key = Word::from(1);
+        let key = Word::ONE;
         let mut database = CacheDB::default();
-        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::ONE));
         let mut state = State::new(database);
 
         state.prewarm_storage_slot(&account, key);
@@ -255,10 +255,10 @@ mod tests {
     #[test]
     fn rollback_reverts_storage_warmth_without_discarding_cached_value() {
         let account = Address::with_last_byte(0x18);
-        let key = Word::from(1);
+        let key = Word::ONE;
         let value = Word::from(9);
         let mut database = CacheDB::default();
-        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::ONE));
         database.insert_account_storage(&account, &key, &value);
         let mut state = State::new(database);
 

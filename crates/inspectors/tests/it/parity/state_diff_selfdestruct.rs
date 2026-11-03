@@ -1,5 +1,5 @@
 use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv};
-use alloy_primitives::{Address, B256, U64, U256, hex, map::HashSet};
+use alloy_primitives::{Address, B256, U64, U256, bytes, hex, map::HashSet};
 use alloy_rpc_types_trace::parity::{Delta, TraceType};
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
@@ -11,9 +11,8 @@ fn existing_account_selfdestruct_across_cancun() {
             let parent = Address::with_last_byte(0x43);
             // Read an unchanged slot, overwrite a nonzero slot, write a new slot, read zero,
             // then selfdestruct.
-            let code = Bytecode::new_raw(
-                hex!("600054506009600155600360025560035450600060045533ff").into(),
-            );
+            let code =
+                Bytecode::new_raw(bytes!("600054506009600155600360025560035450600060045533ff"));
             let mut db = CacheDB::<EmptyDB>::default();
             db.insert_account_info(
                 &target,
@@ -21,13 +20,13 @@ fn existing_account_selfdestruct_across_cancun() {
                     .with_code(code.clone()),
             );
             db.insert_account_storage(&target, &U256::ZERO, &U256::from(7));
-            db.insert_account_storage(&target, &U256::from(1), &U256::from(8));
+            db.insert_account_storage(&target, &U256::ONE, &U256::from(8));
             db.insert_account_storage(&target, &U256::from(4), &U256::from(10));
             db.insert_account_info(
                 &parent,
-                AccountInfo::default().with_code(Bytecode::new_raw(
-                    hex!("60006000600060006000604261fffff15060006000fd").into(),
-                )),
+                AccountInfo::default().with_code(Bytecode::new_raw(bytes!(
+                    "60006000600060006000604261fffff15060006000fd"
+                ))),
             );
             let mut evm = Context::mainnet()
                 .modify_cfg_chained(|cfg| cfg.spec = spec)
@@ -77,16 +76,16 @@ fn existing_account_selfdestruct_across_cancun() {
                 assert_eq!(diff.code, Delta::Unchanged);
                 assert_eq!(
                     diff.storage[&B256::with_last_byte(4)],
-                    Delta::changed(U256::from(10).into(), U256::ZERO.into())
+                    Delta::changed(B256::with_last_byte(10), B256::ZERO)
                 );
                 assert_eq!(diff.storage.len(), 3);
                 assert_eq!(
                     diff.storage[&B256::with_last_byte(1)],
-                    Delta::changed(U256::from(8).into(), U256::from(9).into())
+                    Delta::changed(B256::with_last_byte(8), B256::with_last_byte(9))
                 );
                 assert_eq!(
                     diff.storage[&B256::with_last_byte(2)],
-                    Delta::changed(U256::ZERO.into(), U256::from(3).into())
+                    Delta::changed(B256::ZERO, B256::with_last_byte(3))
                 );
             }
         }
@@ -117,7 +116,7 @@ fn created_account_selfdestruct_across_cancun() {
                     TxEnv::builder()
                         .caller(caller)
                         .kind(TransactTo::Create)
-                        .data(hex!("33ff").into())
+                        .data(bytes!("33ff"))
                         .gas_limit(100_000)
                         .build_fill(),
                 )
@@ -165,7 +164,7 @@ fn selfdestruct_preserves_balance_only_account() {
             TxEnv::builder()
                 .caller(caller)
                 .kind(TransactTo::Create)
-                .data(hex!("30ff").into())
+                .data(bytes!("30ff"))
                 .gas_limit(200_000)
                 .build_fill(),
         )
@@ -201,7 +200,7 @@ fn deleted_account_diff_does_not_depend_on_accessed_slots() {
             AccountInfo { balance: U256::from(69), nonce: 1, ..Default::default() }.with_code(code),
         );
         db.insert_account_storage(&target, &U256::ZERO, &U256::from(7));
-        db.insert_account_storage(&target, &U256::from(1), &U256::from(8));
+        db.insert_account_storage(&target, &U256::ONE, &U256::from(8));
         let mut evm = Context::mainnet()
             .modify_cfg_chained(|cfg| cfg.spec = SpecId::SHANGHAI)
             .with_db(db)

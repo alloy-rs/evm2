@@ -68,7 +68,7 @@ fn custom_opcode() -> HandlerResult<()> {
 }
 
 fn state_change_consumer() -> HandlerResult<()> {
-    let target = Address::from([0xcc; 20]);
+    let target = Address::repeat_byte(0xcc);
     let mut database = InMemoryDB::default();
     database.insert_account_info(&target, AccountInfo::default().with_nonce(1));
     let mut evm = custom_evm_with_database(database);
@@ -106,7 +106,7 @@ fn state_change_consumer() -> HandlerResult<()> {
     assert_eq!(consumer.storage_wipes, 0);
     assert_eq!(consumer.storage_changes.len(), 1);
     assert_eq!(storage_change.address, target);
-    assert_eq!(storage_change.key, U256::from(1));
+    assert_eq!(storage_change.key, U256::ONE);
     assert_eq!(storage_change.original, U256::ZERO);
     assert_eq!(storage_change.current, U256::from(0xdead_u64));
     Ok(())
@@ -125,7 +125,7 @@ fn l1_blocknumber_opcode() -> HandlerResult<()> {
     ]));
 
     let result = evm.transact(&tx)?.discard();
-    let expected = Bytes::copy_from_slice(&U256::from(CUSTOM_L1_BLOCK_NUMBER).to_be_bytes::<32>());
+    let expected = Bytes::from(U256::from(CUSTOM_L1_BLOCK_NUMBER).to_be_bytes::<32>());
 
     println!(
         "l1 blocknumber opcode: expected status=true stop=Return output={expected:?}; got status={} stop={:?} output={:?}",
@@ -238,7 +238,7 @@ fn custom_execution_config() -> ExecutionConfig<CustomTypes> {
 fn custom_opcode_tx(code: Bytes) -> Recovered<CustomEnvelope> {
     Recovered::new_unchecked(
         CustomEnvelope::ExecuteCode(ExecuteCodeTx {
-            target: Address::from([0xcc; 20]),
+            target: Address::repeat_byte(0xcc),
             gas_limit: 100_000,
             code,
         }),

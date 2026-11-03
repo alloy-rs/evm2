@@ -2,7 +2,7 @@
 
 use crate::interpreter::{InstrStop, Result, Word};
 use alloc::{borrow::Cow, vec};
-use alloy_primitives::{Address, B256, Bytes, b256};
+use alloy_primitives::{Address, B256, Bytes};
 use core::hint::cold_path;
 
 /// Returns the number of EVM words needed for `len` bytes.
@@ -14,7 +14,7 @@ pub const fn num_words(len: usize) -> usize {
 /// Converts an address to an EVM word.
 #[inline]
 pub fn address_to_word(address: &Address) -> Word {
-    Word::from_be_slice(address.as_slice())
+    address.into_word().into()
 }
 
 /// Converts a 256-bit hash to an EVM word.
@@ -287,10 +287,8 @@ pub const fn bool_to_bytes32(value: bool) -> Bytes {
 /// This is optimized to not allocate at runtime by using 2 static arrays.
 #[inline]
 const fn bool_to_b256(value: bool) -> &'static B256 {
-    const TRUE: &B256 =
-        &b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
-    const FALSE: &B256 =
-        &b256!("0x0000000000000000000000000000000000000000000000000000000000000000");
+    const TRUE: &B256 = &B256::with_last_byte(1);
+    const FALSE: &B256 = &B256::ZERO;
     if value { TRUE } else { FALSE }
 }
 
