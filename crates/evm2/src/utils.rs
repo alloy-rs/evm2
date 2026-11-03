@@ -132,6 +132,14 @@ pub(crate) unsafe fn write_word(dst: *mut Word, value: Word) {
                 options(nostack, preserves_flags),
             );
         },
+        // LLVM splits the word store into 8- and 16-byte stores, which the 16-byte loads that read
+        // it back cannot forward from, so store two 16-byte halves.
+        all(target_arch = "x86_64", not(miri)) => unsafe {
+            use core::arch::x86_64::{__m128i, _mm_set_epi64x, _mm_storeu_si128};
+            let [l0, l1, l2, l3] = value.into_limbs().map(|l| l as i64);
+            _mm_storeu_si128(dst.cast(), _mm_set_epi64x(l1, l0));
+            _mm_storeu_si128(dst.cast::<__m128i>().add(1), _mm_set_epi64x(l3, l2));
+        },
         _ => unsafe { dst.write(value) },
     }
 }
@@ -157,6 +165,15 @@ pub(crate) unsafe fn write_u64(dst: *mut Word, value: u64) {
                 tmp = out(ymm_reg) _tmp,
                 options(nostack, preserves_flags),
             );
+        },
+        // LLVM splits the word store into 8- and 16-byte stores, which the 16-byte loads that read
+        // it back cannot forward from, so store two 16-byte halves.
+        all(target_arch = "x86_64", not(miri)) => unsafe {
+            use core::arch::x86_64::{
+                __m128i, _mm_cvtsi64_si128, _mm_setzero_si128, _mm_storeu_si128,
+            };
+            _mm_storeu_si128(dst.cast(), _mm_cvtsi64_si128(value as i64));
+            _mm_storeu_si128(dst.cast::<__m128i>().add(1), _mm_setzero_si128());
         },
         _ => unsafe { dst.write(Word::from(value)) },
     }
