@@ -76,7 +76,7 @@ impl Bal {
             changes.sort();
             changes
         }));
-        alloy_bal.sort_unstable_by_key(|account| account.address);
+        alloy_bal.sort_unstable_by_key(|account| account.address());
         alloy_bal
     }
 
@@ -191,7 +191,7 @@ impl From<Bal> for AlloyBal {
                 .into_iter()
                 .map(|(address, account)| AlloyAccountChanges { address, ..account.into() }),
         );
-        alloy_bal.sort_unstable_by_key(|a| a.address);
+        alloy_bal.sort_unstable_by_key(|a| a.address());
         alloy_bal
     }
 }
@@ -213,7 +213,7 @@ impl TryFrom<&[AlloyAccountChanges]> for Bal {
         let mut accounts =
             AddressMap::with_capacity_and_hasher(alloy_bal.len(), Default::default());
         for alloy_account in alloy_bal {
-            accounts.insert(alloy_account.address, AccountBal::try_from(alloy_account)?);
+            accounts.insert(alloy_account.address(), AccountBal::try_from(alloy_account)?);
         }
 
         Ok(Self { accounts })
@@ -236,7 +236,7 @@ impl TryFrom<AlloyBal> for Bal {
         let mut accounts =
             AddressMap::with_capacity_and_hasher(alloy_bal.len(), Default::default());
         for alloy_account in alloy_bal {
-            let address = alloy_account.address;
+            let address = alloy_account.address();
             accounts.insert(address, AccountBal::try_from(alloy_account)?);
         }
 
@@ -269,7 +269,12 @@ impl core::fmt::Display for Bal {
             } else {
                 writeln!(f, "    Nonce writes:")?;
                 for change in &account.account_info.nonce.changes {
-                    writeln!(f, "      [{}] -> {}", change.block_access_index, change.new_nonce)?;
+                    writeln!(
+                        f,
+                        "      [{}] -> {}",
+                        change.block_access_index(),
+                        change.new_nonce()
+                    )?;
                 }
             }
 
@@ -282,7 +287,8 @@ impl core::fmt::Display for Bal {
                     writeln!(
                         f,
                         "      [{}] -> {}",
-                        change.block_access_index, change.post_balance
+                        change.block_access_index(),
+                        change.post_balance()
                     )?;
                 }
             }
@@ -413,7 +419,7 @@ mod tests {
         assert_eq!(alloy_bal, AlloyBal::from(bal));
 
         assert_eq!(
-            alloy_bal.iter().map(|account| account.address).collect::<Vec<_>>(),
+            alloy_bal.iter().map(|account| account.address()).collect::<Vec<_>>(),
             vec![low_address, high_address]
         );
 
@@ -443,7 +449,7 @@ mod tests {
             account
                 .balance_changes
                 .iter()
-                .map(|change| change.block_access_index)
+                .map(|change| change.block_access_index())
                 .collect::<Vec<_>>(),
             vec![idx(2), idx(5)]
         );
@@ -451,12 +457,16 @@ mod tests {
             account
                 .nonce_changes
                 .iter()
-                .map(|change| change.block_access_index)
+                .map(|change| change.block_access_index())
                 .collect::<Vec<_>>(),
             vec![idx(4), idx(9)]
         );
         assert_eq!(
-            account.code_changes.iter().map(|change| change.block_access_index).collect::<Vec<_>>(),
+            account
+                .code_changes
+                .iter()
+                .map(|change| change.block_access_index())
+                .collect::<Vec<_>>(),
             vec![idx(3), idx(7)]
         );
         assert_eq!(account.code_changes[0].new_code().as_ref(), &[3]);

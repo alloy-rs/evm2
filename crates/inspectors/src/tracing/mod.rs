@@ -135,7 +135,7 @@ impl TracingInspector {
 
     /// Returns whether recording omitted a byte buffer after reaching the budget.
     pub const fn limit_exceeded(&self) -> bool {
-        self.budget.exceeded
+        self.budget.exceeded()
     }
 
     /// Resets the inspector to its initial state of [Self::new].
@@ -160,7 +160,7 @@ impl TracingInspector {
 
         // if we record steps we can reuse the individual calltracestep vecs
         if config.record_steps {
-            for node in &mut traces.arena {
+            for node in traces.nodes_mut() {
                 // move out and store the reusable steps vec
                 let mut steps = mem::take(&mut node.trace.steps);
                 // ensure steps are cleared
@@ -301,7 +301,7 @@ impl TracingInspector {
     /// starting a new transaction: [`Self::fuse`]
     #[inline]
     pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
-        GethTraceBuilder::new_borrowed(&self.traces.arena).with_features(self.features)
+        GethTraceBuilder::new_borrowed(self.traces.nodes()).with_features(self.features)
     }
 
     /// Returns true if we're no longer in the context of the root call.
@@ -662,7 +662,7 @@ impl TracingInspector {
     ) {
         // The arena starts with a default root. After execution, call_end/create_end have set
         // its status if the root was recorded, even when it executed no opcodes.
-        if self.traces.arena[0].trace.status.is_some() || result.stop != InstrStop::OutOfGas {
+        if self.traces.arena[0].status().is_some() || result.stop != InstrStop::OutOfGas {
             return;
         }
 

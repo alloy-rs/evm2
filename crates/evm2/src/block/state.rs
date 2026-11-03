@@ -305,7 +305,7 @@ impl crate::evm::StateChangeSource for BundleSource<'_> {
         for (hash, code) in &self.0.contracts {
             sink.bytecode(*hash, code)?;
         }
-        for (address, account) in &self.0.state {
+        for (address, account) in self.0.state() {
             let current = account.info.as_ref();
             if account.status.was_destroyed() {
                 sink.storage_wipe(*address)?;

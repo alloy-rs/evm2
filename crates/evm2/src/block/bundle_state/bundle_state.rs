@@ -600,7 +600,7 @@ impl BundleState {
             for (&key, &slot) in account.storage.iter() {
                 // If storage was destroyed that means that storage was wiped.
                 // In that case we need to check if present storage value is different then ZERO.
-                let destroyed_and_not_zero = was_destroyed && !slot.present_value.is_zero();
+                let destroyed_and_not_zero = was_destroyed && !slot.present_value().is_zero();
 
                 // If account is not destroyed check if original values was changed,
                 // so we can update it.
@@ -610,7 +610,7 @@ impl BundleState {
                     || destroyed_and_not_zero
                     || not_destroyed_and_changed
                 {
-                    account_storage_changed.push((key, slot.present_value));
+                    account_storage_changed.push((key, slot.present_value()));
                 }
             }
 
@@ -674,7 +674,7 @@ impl BundleState {
                         for (key, storage_slot) in other_account.storage {
                             // Update present value or insert storage slot.
                             this.storage.entry(key).or_insert(storage_slot).present_value =
-                                storage_slot.present_value;
+                                storage_slot.present_value();
                         }
                     }
                     this.info = other_account.info;
@@ -728,7 +728,7 @@ impl BundleState {
                     // A `Destroyed` slot in `other` means the value before the wipe, which is
                     // this bundle's present value, not the database value.
                     for (key, value) in this_account.storage.drain() {
-                        let previous = RevertToSlot::Some(value.present_value);
+                        let previous = RevertToSlot::Some(value.present_value());
                         revert
                             .storage
                             .entry(key)

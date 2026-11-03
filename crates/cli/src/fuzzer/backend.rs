@@ -66,13 +66,13 @@ impl EvmBackend for Evm2Backend {
                 Ok(result) => {
                     let mut state = CanonicalState::default();
                     let Ok(tx_result) = result.commit_with(&mut state);
-                    let output = if tx_result.status || tx_result.stop == InstrStop::Revert {
+                    let output = if tx_result.is_success() || tx_result.stop == InstrStop::Revert {
                         Some(tx_result.output.to_vec())
                     } else {
                         None
                     };
                     receipts.push(TxReceipt {
-                        kind: if tx_result.status {
+                        kind: if tx_result.is_success() {
                             FuzzOutcomeKind::Success
                         } else {
                             FuzzOutcomeKind::RevertOrHalt

@@ -100,7 +100,7 @@ impl ReceiptBuilder for EthReceiptBuilder {
     ) -> ReceiptEnvelope {
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
         let receipt = Receipt {
-            status: Eip658Value::Eip658(result.status),
+            status: Eip658Value::Eip658(result.is_success()),
             cumulative_gas_used,
             logs: result.logs,
         };

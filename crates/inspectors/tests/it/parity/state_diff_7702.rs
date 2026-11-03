@@ -64,7 +64,7 @@ fn authorization_code_changes() {
             );
             let result = evm.transact(&tx).unwrap().detach();
             drop(evm);
-            assert_eq!(result.result.status, !revert);
+            assert_eq!(result.result.is_success(), !revert);
             let after = if delegate.is_zero() {
                 Bytecode::default()
             } else {

@@ -627,7 +627,7 @@ fn execute_block<'a>(
                         gas_used: gas.tx_gas_used(),
                         execution_gas_used: gas.regular_gas_used(),
                         state_gas_used: gas.state_gas_used(),
-                        success: receipt.status(),
+                        success: receipt.is_success(),
                         logs: receipt.logs(),
                     });
                     if let Some(base) = &receipt_base {
@@ -868,7 +868,7 @@ impl ReceiptBuilder for HarnessReceiptBuilder {
     ) -> ReceiptEnvelope {
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
         let receipt = Receipt {
-            status: Eip658Value::Eip658(result.status),
+            status: Eip658Value::Eip658(result.is_success()),
             cumulative_gas_used,
             logs: result.logs,
         };
@@ -1328,9 +1328,9 @@ fn format_bal_diff(
         fmt::Write,
     };
 
-    let built: BTreeMap<_, _> = built.iter().map(|account| (account.address, account)).collect();
+    let built: BTreeMap<_, _> = built.iter().map(|account| (account.address(), account)).collect();
     let expected: BTreeMap<_, _> =
-        expected.iter().map(|account| (account.address, account)).collect();
+        expected.iter().map(|account| (account.address(), account)).collect();
     let addresses: BTreeSet<_> = built.keys().chain(expected.keys()).copied().collect();
 
     let mut out = String::new();

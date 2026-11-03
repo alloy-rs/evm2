@@ -26,7 +26,7 @@ fn unset_interrupt_preserves_results() {
         }
         let (mut inspector, result) = run(inspector, &hex!("60015000"), TxKind::Call(TARGET));
         let result = result.unwrap();
-        assert!(result.result.status);
+        assert!(result.result.is_success());
         assert_eq!(
             inspector
                 .json_result(
@@ -284,7 +284,7 @@ fn hook_error_takes_precedence_over_a_later_interrupt() {
     let (mut inspector, result) =
         run(interruptible(script), &hex!("60015000"), TxKind::Call(TARGET));
     let result = result.unwrap();
-    assert!(result.result.status);
+    assert!(result.result.is_success());
     inspector.interrupt.as_ref().unwrap().interrupt();
     let error = inspector
         .json_result(

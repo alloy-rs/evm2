@@ -599,7 +599,7 @@ impl PreparedBench {
         let jit = self.run_jit()?;
         if self.assert_success {
             eyre::ensure!(
-                interpreter.status,
+                interpreter.is_success(),
                 "{} benchmark transaction failed:\n  interpreter: {:?}\n  JIT: {:?}",
                 self.name,
                 interpreter,
@@ -607,7 +607,7 @@ impl PreparedBench {
             );
         }
         eyre::ensure!(
-            interpreter.status == jit.status
+            interpreter.is_success() == jit.is_success()
                 && (!compare_gas
                     || (interpreter.output == jit.output
                         && interpreter.total_gas_spent == jit.total_gas_spent)),

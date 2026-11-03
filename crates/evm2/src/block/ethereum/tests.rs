@@ -116,7 +116,7 @@ fn executes_prague_block() {
 
     let output = executor.finish().unwrap();
     let [receipt] = output.result.receipts.as_slice() else { panic!("expected one receipt") };
-    assert!(receipt.status());
+    assert!(receipt.is_success());
     assert_eq!(receipt.cumulative_gas_used(), 21_000);
     assert_eq!(output.result.gas_used, 21_000);
     assert!(output.result.requests.is_empty());

@@ -205,7 +205,7 @@ fn test_debug_empty_tracer() {
         let tx = ctx.tx().envelope();
         let block = *ctx.block();
         let result = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
-        assert!(matches!(result, GethTrace::Default(_)));
+        assert!(result.is_default());
         let result = serde_json::to_value(result).unwrap();
         let logs = result["structLogs"].as_array().unwrap();
         assert!(!logs.is_empty());
@@ -2915,14 +2915,14 @@ fn mux_runs_nested_mux_and_erc7562_tracers() {
         panic!("expected a nested mux frame");
     };
     assert_eq!(nested.0.len(), 2);
-    assert!(matches!(
-        nested.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer)],
-        GethTrace::CallTracer(_)
-    ));
-    assert!(matches!(
-        nested.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::NoopTracer)],
-        GethTrace::NoopTracer(_)
-    ));
+    assert!(
+        nested.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer)]
+            .is_call()
+    );
+    assert!(
+        nested.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::NoopTracer)]
+            .is_noop()
+    );
 }
 
 /// The expected snapshots come from go-ethereum master a0cba163: the struct logger adds the slot
@@ -2964,7 +2964,7 @@ fn struct_log_storage_snapshots_match_geth() {
     let snapshots: Vec<_> = frame
         .struct_logs
         .iter()
-        .filter(|log| matches!(log.op.as_ref(), "SLOAD" | "SSTORE"))
+        .filter(|log| matches!(log.opcode(), "SLOAD" | "SSTORE"))
         .map(|log| (log.op.to_string(), log.storage.clone(), log.error.is_some()))
         .collect();
     let after_first = BTreeMap::from([(slot(5), value(7))]);
@@ -3025,7 +3025,7 @@ fn struct_log_storage_snapshots_follow_the_storage_context() {
     let logs: Vec<_> = frame
         .struct_logs
         .iter()
-        .filter(|log| matches!(log.op.as_ref(), "SLOAD" | "SSTORE"))
+        .filter(|log| matches!(log.opcode(), "SLOAD" | "SSTORE"))
         .map(|log| (log.depth, log.op.to_string(), log.storage.clone()))
         .collect();
     assert_eq!(

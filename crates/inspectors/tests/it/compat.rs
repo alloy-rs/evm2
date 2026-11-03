@@ -423,7 +423,7 @@ pub enum ExecutionResult {
 impl ExecutionResult {
     fn from_tx_result(result: TxResult) -> Self {
         let gas_used = result.tx_gas_used();
-        if result.status {
+        if result.is_success() {
             let output = if result.created_address.is_some() {
                 Output::Create(result.output, result.created_address)
             } else {

@@ -335,7 +335,7 @@ impl JsInspector {
         let mut output_bytes = None;
         let mut error = None;
 
-        if result.status {
+        if result.is_success() {
             output_bytes = Some(result.output.clone());
         } else if result.stop.is_frame_revert() {
             error = Some("execution reverted".to_string());
@@ -1326,7 +1326,7 @@ mod tests {
         let tx = Recovered::new_unchecked(tx, Address::ZERO);
         let res = evm.transact(&tx).expect("pass without error").detach();
 
-        assert_eq!(res.result.status, success);
+        assert_eq!(res.result.is_success(), success);
         let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
         let block = *evm.block_env();
         inspector.json_result(&res, &tx, &block, evm.database_mut())
@@ -1848,7 +1848,7 @@ mod tests {
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
-            assert!(res.result.status);
+            assert!(res.result.is_success());
             inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
             let block = *evm.block_env();
             assert_eq!(
@@ -1925,7 +1925,7 @@ mod tests {
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
-            assert!(res.result.status);
+            assert!(res.result.is_success());
             inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
             let block = *evm.block_env();
             assert_eq!(

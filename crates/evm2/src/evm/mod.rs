@@ -592,7 +592,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             "execution config spec mismatch"
         );
         let precompiles = boxed_precompile_provider(precompiles);
-        self.block = block;
+        self.set_block(block);
         self.replace_execution_config(execution_config, spec_id, registry, precompiles);
     }
 
@@ -621,7 +621,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             execution_config.base_spec_id(),
             "execution config spec mismatch"
         );
-        self.block = block;
+        self.set_block(block);
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
         self.refresh_runner_support();
@@ -2722,7 +2722,7 @@ mod tests {
         assert_eq!(error.to_string(), "test precompile error");
         evm.set_precompiles(Precompiles::base(SpecId::OSAKA));
         let next = evm.transact(&tx).unwrap().discard();
-        assert!(next.status);
+        assert!(next.is_success());
         assert!(error.downcast_ref::<TestPrecompileError>().is_some());
     }
 
@@ -3110,7 +3110,7 @@ mod tests {
             caller,
         );
         let executed = evm.transact_with_inspector(&tx, &mut OriginInspector(origin)).unwrap();
-        assert!(executed.commit().status);
+        assert!(executed.commit().is_success());
 
         let origin_word = Word::from_be_slice(origin.as_slice());
         assert_eq!(evm.state.storage_slot_untracked(&target, &Word::ZERO).unwrap(), origin_word);
@@ -3519,7 +3519,7 @@ mod tests {
             TxEnvelope::as_legacy,
             handler(|_| Ok(()), |req, ()| handle_lifecycle_tx(req)),
         );
-        assert!(evm.transact(&test_tx(9)).unwrap().commit().status);
+        assert!(evm.transact(&test_tx(9)).unwrap().commit().is_success());
     }
 
     #[test]
@@ -3713,10 +3713,10 @@ mod tests {
         // Taking the BAL yields a canonical EIP-7928 list and resets the index.
         let alloy = BlockAccessList::from(evm.state.take_bal_builder().expect("bal is present"));
         assert_eq!(alloy.len(), 1);
-        assert_eq!(alloy[0].address, LIFECYCLE_ACCOUNT);
+        assert_eq!(alloy[0].address(), LIFECYCLE_ACCOUNT);
         assert_eq!(alloy[0].storage_changes.len(), 1);
         assert_eq!(alloy[0].storage_changes[0].slot, LIFECYCLE_STORAGE_KEY);
-        assert_eq!(alloy[0].storage_changes[0].changes.len(), 2);
+        assert_eq!(alloy[0].storage_changes[0].len(), 2);
         assert_eq!(evm.state.bal_index(), BlockAccessIndex::PRE_EXECUTION);
         assert!(evm.state.bal_builder().is_none());
     }
@@ -4542,7 +4542,7 @@ mod tests {
         {
             assert_eq!(steps.load(Ordering::Relaxed), 0);
         }
-        assert!(evm.call_tx(&tx).unwrap().status);
+        assert!(evm.call_tx(&tx).unwrap().is_success());
     }
 
     #[test]
@@ -4746,7 +4746,7 @@ mod tests {
             caller,
         );
         let executed = evm.transact(&tx).unwrap();
-        assert!(executed.result().status);
+        assert!(executed.result().is_success());
         let pending = executed.detach().pending_state;
         assert_eq!(pending.account_info(&caller).unwrap().nonce, nonce + 1);
         assert_eq!(pending.account_info(&created).unwrap().nonce, 2);
@@ -4802,7 +4802,7 @@ mod tests {
             caller,
         );
         let executed = evm.transact(&tx).unwrap();
-        assert!(executed.result().status);
+        assert!(executed.result().is_success());
         for (address, touched) in [(target, true), (read, false), (child, false), (leaf, false)] {
             let changes = executed.account_changes().find(|c| c.address == address).unwrap();
             assert_eq!(changes.touched, touched, "{address}");
@@ -4827,7 +4827,7 @@ mod tests {
             caller,
         );
         let next = evm.transact(&tx).unwrap();
-        assert!(next.result().status);
+        assert!(next.result().is_success());
         assert!(!next.account_changes().find(|c| c.address == target).unwrap().touched);
     }
 
@@ -4859,7 +4859,7 @@ mod tests {
         );
 
         let executed = evm.transact(&tx).unwrap();
-        assert!(executed.result().status);
+        assert!(executed.result().is_success());
         let changes = executed.changes();
         assert!(!changes.is_empty());
         assert_eq!(changes.account_info(&caller).unwrap().nonce, 1);
@@ -4872,7 +4872,7 @@ mod tests {
         // Discarding after inspection leaves the accepted state unchanged, so the same transaction
         // executes again, and its detached state reports the same accounts.
         let executed = evm.transact(&tx).unwrap();
-        assert!(executed.result().status);
+        assert!(executed.result().is_success());
         let pending = executed.detach().pending_state;
         let mut detached =
             pending.changes().account_changes().map(|c| c.address).collect::<Vec<_>>();

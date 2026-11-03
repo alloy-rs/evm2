@@ -40,9 +40,10 @@ impl PreparedBench {
             panic!("{} benchmark transaction must execute: {err:?}", self.name)
         });
         assert!(
-            result.status,
+            result.is_success(),
             "{} benchmark transaction must succeed: {:?}",
-            self.name, result.stop
+            self.name,
+            result.stop
         );
     }
 

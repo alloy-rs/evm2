@@ -237,9 +237,9 @@ fn eip8037_sibling_refill_restores_parent_gas_left() {
 
     let baseline = run(false);
     let result = run(true);
-    assert!(baseline.status);
-    assert!(result.status);
-    assert_eq!(result.state_gas_spent, 0);
+    assert!(baseline.is_success());
+    assert!(result.is_success());
+    assert_eq!(result.state_gas_spent(), 0);
     assert_eq!(result.output.len(), 32);
     assert_eq!(result.output, baseline.output);
 }
@@ -288,8 +288,8 @@ fn eip2780_authorization_charges_no_state_gas_without_eip8037() {
     );
 
     let result = evm.transact(&tx).unwrap().detach();
-    assert!(result.result.status);
-    assert_eq!(result.result.state_gas_spent, 0);
+    assert!(result.result.is_success());
+    assert_eq!(result.result.state_gas_spent(), 0);
     let authority = result.pending_state.account_info(&authority).unwrap();
     assert_eq!(authority.nonce, 1);
     assert_eq!(authority.code_hash, Bytecode::new_eip7702(delegate).hash_slow());
@@ -448,7 +448,7 @@ fn log_collection_off_keeps_log_semantics() {
         let mut on = run(true);
         let off = run(false);
 
-        assert_eq!(on.status, status, "{name}");
+        assert_eq!(on.is_success(), status, "{name}");
         if let Some(output) = output {
             assert_eq!(on.output[..], output.to_be_bytes::<32>(), "{name}");
         }
@@ -478,7 +478,7 @@ fn log_collection_off_still_inspects_logs() {
     let inspected = evm.transact(&log_collection_tx()).unwrap().discard();
     let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
 
-    assert!(inspected.status);
+    assert!(inspected.is_success());
     assert!(inspected.logs.is_empty());
     assert_eq!(
         inspector.0.iter().map(|log| log.address).collect::<Vec<_>>(),

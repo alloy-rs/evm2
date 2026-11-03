@@ -115,9 +115,10 @@ impl PreparedBench {
             panic!("{} JIT benchmark transaction must execute: {err:?}", self.name)
         });
         assert!(
-            interpreter.status,
+            interpreter.is_success(),
             "{} benchmark transaction must succeed: {:?}",
-            self.name, interpreter.stop
+            self.name,
+            interpreter.stop
         );
         assert_eq!(interpreter, jit, "{} interpreter and JIT results differ", self.name);
     }

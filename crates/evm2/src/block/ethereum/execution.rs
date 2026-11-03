@@ -472,7 +472,7 @@ fn execute_system_call<T: EvmTypes>(
 ) -> Result<TxResult<T>, BlockExecutionError> {
     let executed = evm.system_call(SystemTx::new(address, data)).map_err(map_handler_error)?;
     // History and beacon-root calls accept reverts and halts, unlike request-producing calls.
-    if !executed.result().status
+    if !executed.result().is_success()
         && !matches!(address, BEACON_ROOTS_ADDRESS | HISTORY_STORAGE_ADDRESS)
     {
         let reason = executed.result().stop;

@@ -201,7 +201,7 @@ impl Erc7562Inspector {
                 used_opcodes: counters.used_opcodes,
                 contract_size: counters.contract_size,
                 // geth reports it for frames that exit with an out of gas error, not for the root.
-                out_of_gas: idx != 0 && node.trace.status.is_some_and(InstrStop::is_out_of_gas),
+                out_of_gas: idx != 0 && node.status().is_some_and(InstrStop::is_out_of_gas),
                 keccak: if idx == 0 { self.keccak.iter().cloned().collect() } else { Vec::new() },
                 calls: Vec::new(),
             };

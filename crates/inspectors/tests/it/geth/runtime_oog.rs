@@ -50,7 +50,7 @@ fn runtime_oog_call_frames_and_reuse() {
                     })
                     .unwrap();
                 let result = &res.tx_result.result;
-                assert_eq!(result.status, !halted);
+                assert_eq!(result.is_success(), !halted);
                 assert_eq!(result.tx_gas_used(), gas_limit);
                 let (ctx, inspector) = evm.ctx_inspector();
                 let tx = ctx.tx().envelope();

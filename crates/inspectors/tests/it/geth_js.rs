@@ -606,7 +606,7 @@ fn mux_runs_a_js_tracer_next_to_a_built_in_tracer() {
 
     let GethTrace::JS(steps) = &frame.0[&js_key] else { panic!("expected a JS result") };
     assert_eq!(steps.as_u64(), Some(3));
-    assert!(matches!(frame.0[&call_key], GethTrace::CallTracer(_)));
+    assert!(frame.0[&call_key].is_call());
 }
 
 #[test]

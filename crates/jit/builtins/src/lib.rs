@@ -522,7 +522,7 @@ pub unsafe fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
     ecx.interpreter_mut().set_gas(gas);
     let result = unsafe { ecx.interpreter_mut().run_external_instruction(pc, len) };
     ecx.gas = ecx.interpreter().gas();
-    ecx.return_data_len = ecx.interpreter().return_data().len();
+    ecx.return_data_len = ecx.return_data().len();
     ecx.refresh_memory_cache();
     let new_len = result?;
     // Compiled code relies on the opcode's stack effect, and on memory never shrinking.

@@ -236,7 +236,7 @@ mod tests {
         let result = evm.transact(&tx).map(|executed| executed.commit());
         assert_eq!(result.as_ref().map(|_| ()).map_err(Clone::clone), expected);
         if let Ok(result) = result {
-            assert!(result.status);
+            assert!(result.is_success());
             assert_eq!(result.tx_gas_used(), 21_000);
             // Disabling validation does not disable charging the actual blob base fee.
             let account = evm.state_mut().account(&caller).unwrap();

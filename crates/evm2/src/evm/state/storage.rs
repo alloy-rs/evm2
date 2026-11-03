@@ -348,7 +348,7 @@ impl StorageSlotHandle<'_, '_> {
         if previous == value {
             return;
         }
-        self.slot.value.current = value;
+        self.slot.value.set_current(value);
         self.inner.push_journal(|| JournalEntry::StorageChange {
             address: *self.address,
             key: self.key,
