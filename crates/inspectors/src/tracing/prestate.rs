@@ -319,15 +319,8 @@ impl PrestateInspector {
         let back = |index: usize| stack.len().checked_sub(index + 1).map(|at| stack[at]);
         if interp.opcode() == op::CREATE {
             back(2)?;
-            let nonce = interp
-                .host()
-                .state_mut()
-                .account_info_untracked(&account)
-                .ok()
-                .flatten()
-                .unwrap_or_default()
-                .nonce;
-            return Some(account.create(nonce));
+            let info = interp.host().state_mut().account_info_untracked(&account).ok()?;
+            return Some(account.create(info.unwrap_or_default().nonce));
         }
         let (offset, size, salt) = (back(1)?, back(2)?, back(3)?);
         // The operands are truncated to 64 bits, and geth fails on a negative one.
