@@ -52,10 +52,13 @@ fn test_calltracer_invalid_opcode_errors() {
                     ..Default::default()
                 },
             );
-            let mut parent_code = hex!("60006000600060006000").to_vec();
-            parent_code.push(op::PUSH20);
-            parent_code.extend_from_slice(account.as_slice());
-            parent_code.extend_from_slice(&hex!("61fffff15000"));
+            let parent_code = [
+                &hex!("60006000600060006000")[..],
+                &[op::PUSH20][..],
+                account.as_slice(),
+                &hex!("61fffff15000")[..],
+            ]
+            .concat();
             db.insert_account_info(
                 &parent,
                 AccountInfo {
@@ -2005,13 +2008,15 @@ fn test_geth_calltracer_logs_delegatecall() {
 
     // Proxy bytecode: DELEGATECALL(gas=0xFFFF, addr=implementation, 0, 0, 0, 0); STOP
     let proxy_code = {
-        let mut code = Vec::new();
-        code.extend_from_slice(&hex!("6000600060006000")); // retSize, retOffset, argsSize, argsOffset
-        code.push(0x73); // PUSH20
-        code.extend_from_slice(implementation.as_slice()); // implementation address
-        code.extend_from_slice(&hex!("61FFFF")); // PUSH2 gas
-        code.push(0xF4); // DELEGATECALL
-        code.push(0x00); // STOP
+        let code = [
+            &hex!("6000600060006000")[..], // retSize, retOffset, argsSize, argsOffset
+            &[0x73][..],                   // PUSH20
+            implementation.as_slice(),     // implementation address
+            &hex!("61FFFF")[..],           // PUSH2 gas
+            &[0xF4][..],                   // DELEGATECALL
+            &[0x00][..],                   // STOP
+        ]
+        .concat();
         Bytes::from(code)
     };
 
@@ -2549,9 +2554,9 @@ fn test_debug_default_tracer_moves_stacks() {
     let caller = address!("1000000000000000000000000000000000000001");
     let callee = address!("1000000000000000000000000000000000000002");
     // Call the callee with zero arguments, then push a value.
-    let mut caller_code = hex!("6000600060006000600073").to_vec();
-    caller_code.extend_from_slice(callee.as_slice());
-    caller_code.extend_from_slice(&hex!("5af150600700"));
+    let caller_code =
+        [&hex!("6000600060006000600073")[..], callee.as_slice(), &hex!("5af150600700")[..]]
+            .concat();
 
     for disable_stack in [false, true] {
         for limit in [None, Some(0), Some(1000)] {

@@ -189,9 +189,8 @@ fn test_geth_jstracer_proxy_contract() {
     evm.ctx().db_mut().load_account(deployer).info.balance = U256::from(1_000_000);
 
     // Set input data for ProxyFactory.transfer(address)
-    let mut input_data = hex!("1a695230").to_vec(); // keccak256("transfer(address)")[:4]
-    input_data.extend_from_slice(&[0u8; 12]); // Pad with zeros
-    input_data.extend_from_slice(token_addr.as_slice());
+    // keccak256("transfer(address)")[:4], zero padding, then the address.
+    let input_data = [&hex!("1a695230")[..], &[0u8; 12][..], token_addr.as_slice()].concat();
     println!("token {token_addr:?} proxy: {proxy_addr:?}");
 
     let code = r#"

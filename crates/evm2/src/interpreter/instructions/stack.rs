@@ -133,10 +133,7 @@ mod tests {
 
     fn assert_push_opcode(opcode: u8, n: usize) {
         for bytes in [vec![0; n], vec![n as u8; n], (1..=n as u8).collect::<Vec<_>>()] {
-            let mut code = Vec::new();
-            code.push(opcode);
-            code.extend_from_slice(&bytes);
-            code.push(op::STOP);
+            let code = [&[opcode][..], &bytes[..], &[op::STOP][..]].concat();
 
             let interp = run(RunConfig::new(code));
             assert_matches!(interp.err, InstrStop::Stop);

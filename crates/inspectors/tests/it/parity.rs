@@ -410,9 +410,8 @@ fn test_parity_delegatecall_selfdestruct() {
         .unwrap();
 
     // Prepare the input data for the close(address) function call
-    let mut input_data = hex!("c74073a1").to_vec(); // keccak256("close(address)")[:4]
-    input_data.extend_from_slice(&[0u8; 12]); // Pad with zeros
-    input_data.extend_from_slice(target_addr.as_slice());
+    // keccak256("close(address)")[:4], zero padding, then the address.
+    let input_data = [&hex!("c74073a1")[..], &[0u8; 12][..], target_addr.as_slice()].concat();
 
     // Call DelegateCall contract with SelfDestructTarget address
     let mut evm =
