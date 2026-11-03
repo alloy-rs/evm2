@@ -59,13 +59,27 @@ impl TestBackend {
         Self::new(RuntimeConfig { enabled: true, tuning, ..Default::default() })
     }
 
+    /// Creates a backend with `enabled: false` and the given tuning overrides.
+    fn disabled_with_tuning(tuning: RuntimeTuning) -> Self {
+        Self::new(RuntimeConfig { enabled: false, tuning, ..Default::default() })
+    }
+
+    /// Creates a backend with `blocking: true` and the given tuning overrides.
+    fn blocking_with_tuning(tuning: RuntimeTuning) -> Self {
+        Self::new(RuntimeConfig { blocking: true, tuning, ..Default::default() })
+    }
+
+    /// Creates a backend with `enabled: true`, the given store, and the given tuning overrides.
+    fn with_store(store: Arc<dyn ArtifactStore>, tuning: RuntimeTuning) -> Self {
+        Self::new(RuntimeConfig { enabled: true, store: Some(store), tuning, ..Default::default() })
+    }
+
     /// Creates a backend with `enabled: true`, 1 worker, and the given tuning overrides.
     fn with_tuning_1w(tuning: RuntimeTuning) -> Self {
         Self::with_tuning(RuntimeTuning { jit_worker_count: 1, ..tuning })
     }
 
     /// Creates a backend with `enabled: true`, 1 worker, and default tuning.
-    #[cfg(feature = "llvm")]
     fn default_1w() -> Self {
         Self::with_tuning_1w(RuntimeTuning::default())
     }
@@ -294,9 +308,8 @@ fn aot_out_of_process_is_rejected() {
 
 #[test]
 fn zero_workers_fails_sync_compile_without_blocking() {
-    let tb = TestBackend::new(RuntimeConfig {
-        blocking: true,
-        tuning: RuntimeTuning { jit_worker_count: 0, ..Default::default() },
+    let tb = TestBackend::blocking_with_tuning(RuntimeTuning {
+        jit_worker_count: 0,
         ..Default::default()
     });
 
@@ -311,9 +324,8 @@ fn zero_workers_fails_sync_compile_without_blocking() {
 
 #[test]
 fn blocking_pending_job_cap_counts_fallback() {
-    let tb = TestBackend::new(RuntimeConfig {
-        blocking: true,
-        tuning: RuntimeTuning { jit_max_pending_jobs: 0, ..Default::default() },
+    let tb = TestBackend::blocking_with_tuning(RuntimeTuning {
+        jit_max_pending_jobs: 0,
         ..Default::default()
     });
 
@@ -347,13 +359,9 @@ fn blocking_sync_compile_timeout_counts_fallback() {
 #[test]
 #[cfg(feature = "llvm")]
 fn blocking_mode_compiles_bytecode_over_max_len() {
-    let tb = TestBackend::new(RuntimeConfig {
-        blocking: true,
-        tuning: RuntimeTuning {
-            jit_worker_count: 1,
-            jit_max_bytecode_len: 4,
-            ..Default::default()
-        },
+    let tb = TestBackend::blocking_with_tuning(RuntimeTuning {
+        jit_worker_count: 1,
+        jit_max_bytecode_len: 4,
         ..Default::default()
     });
 
@@ -364,7 +372,7 @@ fn blocking_mode_compiles_bytecode_over_max_len() {
 
 #[test]
 fn lookup_disabled() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: false, ..Default::default() });
+    let tb = TestBackend::disabled_with_tuning(Default::default());
 
     let req = TestBackend::req_cancun(&[0x00]);
     let decision = tb.lookup(req);
@@ -377,7 +385,7 @@ fn lookup_disabled() {
 
 #[test]
 fn lookup_miss_when_enabled() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
+    let tb = TestBackend::with_tuning(Default::default());
 
     let decision = tb.lookup(TestBackend::req_cancun(&[0x00]));
     assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::NotReady)));
@@ -389,7 +397,7 @@ fn lookup_miss_when_enabled() {
 
 #[test]
 fn set_enabled_toggle() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: false, ..Default::default() });
+    let tb = TestBackend::disabled_with_tuning(Default::default());
     let req = TestBackend::req_cancun(&[0x00]);
 
     assert!(matches!(
@@ -438,7 +446,7 @@ fn pause_processes_lookup_events() {
 
 #[test]
 fn lookup_increments_miss_counter() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
+    let tb = TestBackend::with_tuning(Default::default());
 
     for _ in 0..10 {
         let _ = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
@@ -462,7 +470,7 @@ fn drop_shuts_down_backend() {
 
 #[test]
 fn backend_clone() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
+    let tb = TestBackend::with_tuning(Default::default());
     let b2 = tb.backend.clone();
 
     let _ = tb.lookup(TestBackend::req_cancun(&[0x00]));
@@ -583,7 +591,7 @@ fn prepare_aot_batch_never_blocks_when_startup_fails() {
 
 #[test]
 fn clear_resident() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
+    let tb = TestBackend::with_tuning(Default::default());
     tb.clear_resident();
 
     let decision = tb.lookup(TestBackend::req_cancun(&[0x00]));
@@ -620,9 +628,8 @@ fn pause_resume_never_block_without_backend_thread() {
     // after `channel_capacity` sends and block the caller forever (observed in production as a
     // consensus-engine deadlock after exactly capacity/2 blocks). They must be skipped, not
     // queued, while the backend is not started.
-    let tb = TestBackend::new(RuntimeConfig {
-        enabled: false,
-        tuning: RuntimeTuning { channel_capacity: 2, ..Default::default() },
+    let tb = TestBackend::disabled_with_tuning(RuntimeTuning {
+        channel_capacity: 2,
         ..Default::default()
     });
 
@@ -686,9 +693,8 @@ fn clear_commands_are_queued_after_startup_takes_config() {
         (JitBackend::clear_persisted, Command::ClearPersisted),
         (JitBackend::clear_all, Command::ClearAll),
     ] {
-        let tb = TestBackend::new(RuntimeConfig {
-            enabled: false,
-            tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+        let tb = TestBackend::disabled_with_tuning(RuntimeTuning {
+            channel_capacity: 1,
             ..Default::default()
         });
         let mut guard = tb.inner.lazy_spawn.lock().unwrap();
@@ -743,9 +749,8 @@ fn clear_commands_racing_with_startup_reach_store() {
 
 #[test]
 fn clear_commands_never_block_after_startup_receiver_disconnects() {
-    let tb = TestBackend::new(RuntimeConfig {
-        enabled: false,
-        tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+    let tb = TestBackend::disabled_with_tuning(RuntimeTuning {
+        channel_capacity: 1,
         ..Default::default()
     });
     drop(tb.inner.lazy_spawn.lock().unwrap().take().unwrap());
@@ -802,7 +807,7 @@ fn clear_commands_after_failed_spawn_reach_store_and_allow_retry() {
 #[test]
 fn pause_resume_depth_tracking_with_backend_thread() {
     // With the backend running, pause/resume still track depth and deliver commands.
-    let tb = TestBackend::with_tuning_1w(RuntimeTuning::default());
+    let tb = TestBackend::default_1w();
 
     tb.pause();
     tb.pause();
@@ -851,9 +856,8 @@ fn blocking_out_of_process_pause_resume_does_not_stop_helper() {
 #[test]
 #[cfg(feature = "llvm")]
 fn blocking_mode() {
-    let tb = TestBackend::new(RuntimeConfig {
-        blocking: true,
-        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+    let tb = TestBackend::blocking_with_tuning(RuntimeTuning {
+        jit_worker_count: 1,
         ..Default::default()
     });
 
@@ -1031,11 +1035,8 @@ fn compile_jit_sync_blocks() {
 
 #[test]
 fn sync_compile_wait_times_out() {
-    let tb = TestBackend::new(RuntimeConfig {
-        tuning: RuntimeTuning {
-            sync_compile_timeout: std::time::Duration::from_millis(1),
-            ..Default::default()
-        },
+    let tb = TestBackend::disabled_with_tuning(RuntimeTuning {
+        sync_compile_timeout: std::time::Duration::from_millis(1),
         ..Default::default()
     });
     let (_tx, rx) = chan::bounded(1);
@@ -1524,11 +1525,7 @@ fn aot_artifacts_survive_restart() {
 
     // Second backend: should preload the artifact at startup.
     {
-        let tb = TestBackend::new(RuntimeConfig {
-            enabled: true,
-            store: Some(store),
-            ..Default::default()
-        });
+        let tb = TestBackend::with_store(store, Default::default());
 
         let decision = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
         assert!(
@@ -1564,11 +1561,7 @@ fn preload_aot_seeds_resident() {
 
     // Second backend: preloaded AOT should be available immediately.
     {
-        let tb = TestBackend::new(RuntimeConfig {
-            enabled: true,
-            store: Some(store),
-            ..Default::default()
-        });
+        let tb = TestBackend::with_store(store, Default::default());
         assert_eq!(tb.stats().resident_entries, 1);
     }
 }
@@ -1639,12 +1632,10 @@ fn preload_aot_skips_manifest_key_mismatch() {
     let mismatched_store = Arc::new(RuntimeArtifactStore::new().unwrap());
     mismatched_store.store(&key, &manifest, &std::fs::read(&stored.object_path).unwrap()).unwrap();
 
-    let tb = TestBackend::new(RuntimeConfig {
-        enabled: true,
-        store: Some(mismatched_store),
-        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
-        ..Default::default()
-    });
+    let tb = TestBackend::with_store(
+        mismatched_store,
+        RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+    );
     assert_eq!(tb.stats().resident_entries, 0);
 
     // The probe rejects it too, so the artifact is recompiled.
