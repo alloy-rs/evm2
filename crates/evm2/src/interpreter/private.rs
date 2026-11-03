@@ -1,14 +1,28 @@
 use super::{Gas, InterpreterState, Pc, Result, StackMut, Word};
 use crate::EvmTypesHost;
+use bitflags::bitflags;
 
 /// Function signature of an `#[instruction]`.
 pub(crate) type InstructionImplFn<T> =
     fn(pc: &mut Pc, stack: StackMut<'_>, state: &mut InterpreterState<'_, '_, T>) -> Result;
 
+bitflags! {
+    /// Properties of an [`Instruction`] that the dispatch acts on.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct InstructionFlags: u64 {
+        /// The instruction needs mutable gas state.
+        const DYNAMIC_GAS = 1 << 0;
+        /// The instruction may run inspector hooks or host code that read the interpreter, so the
+        /// dispatch stores the latest pc, stack length and gas into it first. Implies
+        /// [`Self::DYNAMIC_GAS`].
+        const HOOKED = 1 << 1;
+    }
+}
+
 /// EVM instruction implementation.
 pub trait Instruction<T: EvmTypesHost = crate::BaseEvmTypes> {
-    /// Whether this instruction needs mutable gas state.
-    const DYNAMIC_GAS: bool = true;
+    /// The properties of this instruction.
+    const FLAGS: InstructionFlags = InstructionFlags::DYNAMIC_GAS;
 
     /// Executes this instruction.
     fn execute(pc: &mut Pc, stack: StackMut<'_>, state: &mut InterpreterState<'_, '_, T>)
