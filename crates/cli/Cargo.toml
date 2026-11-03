@@ -49,6 +49,7 @@ zstd.workspace = true
 evm2-jit-context = { workspace = true, optional = true }
 evm2-jit-llvm = { workspace = true, optional = true }
 evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
+evm2-superinstr = { workspace = true, optional = true }
 libloading = { version = "0.9", optional = true }
 open = { version = "5", optional = true }
 
@@ -73,6 +74,7 @@ jit = [
     "dep:libloading",
     "dep:open",
 ]
+superinstr = ["evm2-eest/superinstr", "dep:evm2-superinstr"]
 # Faster but possibly less portable allocators. `mimalloc` takes precedence over `jemalloc`.
 jemalloc = ["dep:tikv-jemallocator"]
 mimalloc = ["dep:mimalloc"]

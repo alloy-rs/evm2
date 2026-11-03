@@ -3,6 +3,12 @@ use std::{num::NonZeroUsize, ops::RangeInclusive, path::PathBuf};
 const DEFAULT_MAX_CONCURRENT_REQUESTS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 const DEFAULT_RPC_RETRIES: u32 = 3;
 
+/// Backends `--superinstr` excludes.
+#[cfg(all(feature = "superinstr", feature = "jit"))]
+const SUPERINSTR_CONFLICTS: &[&str] = &["jit", "aot"];
+#[cfg(all(feature = "superinstr", not(feature = "jit")))]
+const SUPERINSTR_CONFLICTS: &[&str] = &[];
+
 #[derive(Debug, clap::Parser)]
 #[command(name = "evm2", version, about = "Capture and replay Ethereum execution fixtures.")]
 pub(crate) struct Args {
@@ -61,6 +67,10 @@ pub(crate) struct Replay {
     #[cfg(feature = "jit")]
     #[arg(long, conflicts_with = "jit")]
     pub(crate) aot: bool,
+    /// Replay through the superinstruction backend.
+    #[cfg(feature = "superinstr")]
+    #[arg(long, conflicts_with_all = SUPERINSTR_CONFLICTS)]
+    pub(crate) superinstr: bool,
     /// Print database method call counts after execution.
     #[arg(long)]
     pub(crate) db_stats: bool,
