@@ -13,10 +13,6 @@ core::cfg_select! {
         mod packed;
         use packed as imp;
     }
-    dispatch_single_return => {
-        mod single_return;
-        use single_return as imp;
-    }
     _ => {
         mod unpacked;
         use unpacked as imp;
