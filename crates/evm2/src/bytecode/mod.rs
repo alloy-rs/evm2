@@ -7,7 +7,7 @@ use crate::{
 };
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
-use analysis::{analyze_legacy, pad_legacy};
+use analysis::pad_legacy;
 use core::{cmp::Ordering, fmt, hash};
 use thiserror::Error;
 
@@ -17,6 +17,7 @@ mod jump_table;
 #[cfg(feature = "serde")]
 mod serde_impl;
 
+pub use analysis::analyze_legacy;
 pub use jump_table::{JumpTable, JumpTableRef};
 
 /// EIP-7702 decode errors.
@@ -505,13 +506,13 @@ mod tests {
         raw[..2].copy_from_slice(EIP7702_MAGIC_BYTES);
         raw[2] = 1;
         assert_eq!(
-            Bytecode::new_eip7702_raw(Bytes::copy_from_slice(&raw)),
+            Bytecode::new_eip7702_raw(Bytes::from(raw)),
             Err(Eip7702DecodeError::UnsupportedVersion)
         );
 
         raw[2] = EIP7702_VERSION;
         raw[3..7].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
-        let raw = Bytes::copy_from_slice(&raw);
+        let raw = Bytes::from(raw);
         let bytecode = Bytecode::new_eip7702_raw(raw.clone()).unwrap();
         assert!(bytecode.is_eip7702());
         assert_eq!(bytecode.eip7702_address(), Some(Address::from_slice(&raw[3..])));
@@ -520,7 +521,7 @@ mod tests {
 
     #[test]
     fn eip7702_from_address() {
-        let address = Address::new([0x01; 20]);
+        let address = Address::repeat_byte(0x01);
         let bytecode = Bytecode::new_eip7702(address);
         assert_eq!(bytecode.eip7702_address(), Some(address));
         assert_eq!(bytecode.original_bytes().len(), EIP7702_BYTECODE_LEN);
@@ -529,7 +530,7 @@ mod tests {
 
     #[test]
     fn from_stored_accepts_non_designator_magic_as_legacy() {
-        let address = Address::new([0x01; 20]);
+        let address = Address::repeat_byte(0x01);
         let designator = Bytecode::new_eip7702(address).original_bytes();
         let from_designator = Bytecode::from_stored(designator.clone());
         assert_eq!(from_designator.kind(), BytecodeKind::Eip7702);
@@ -645,7 +646,7 @@ mod tests {
     fn existing_zero_suffix_is_original_code() {
         let mut raw = [0; 34];
         raw[0] = op::PUSH32;
-        let raw = Bytes::copy_from_slice(&raw);
+        let raw = Bytes::from(raw);
         let bytecode = Bytecode::new_legacy(raw.clone());
         assert_eq!(bytecode.bytes().as_ptr(), raw.as_ptr());
         assert_eq!(bytecode.len(), raw.len());

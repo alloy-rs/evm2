@@ -609,17 +609,14 @@ pub fn populate_state_diff(
             entry.balance = if original.balance == info.balance {
                 Delta::Unchanged
             } else {
-                Delta::Changed(ChangedType { from: original.balance, to: info.balance })
+                Delta::changed(original.balance, info.balance)
             };
 
             // this is relevant for the caller and contracts
             entry.nonce = if original.nonce == info.nonce {
                 Delta::Unchanged
             } else {
-                Delta::Changed(ChangedType {
-                    from: U64::from(original.nonce),
-                    to: U64::from(info.nonce),
-                })
+                Delta::changed(U64::from(original.nonce), U64::from(info.nonce))
             };
         }
     }

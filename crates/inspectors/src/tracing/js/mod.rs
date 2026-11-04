@@ -335,7 +335,7 @@ impl JsInspector {
         let mut output_bytes = None;
         let mut error = None;
 
-        if result.status {
+        if result.is_success() {
             output_bytes = Some(result.output.clone());
         } else if result.stop.is_frame_revert() {
             error = Some("execution reverted".to_string());
@@ -352,7 +352,7 @@ impl JsInspector {
             }
         });
 
-        let base_fee = block.basefee.try_into().unwrap_or(u64::MAX);
+        let base_fee = block.basefee.saturating_to::<u64>();
         let gas_tip = tx.effective_tip_per_gas(base_fee).unwrap_or_default();
 
         let ctx = JsEvmContext {
@@ -368,7 +368,7 @@ impl JsInspector {
             gas_used: result.tx_gas_used(),
             gas_price: U256::from(gas_tip),
             value: tx.value(),
-            block: block.number.try_into().unwrap_or(u64::MAX),
+            block: block.number.saturating_to::<u64>(),
             coinbase: block.beneficiary,
             output: output_bytes.unwrap_or_default(),
             transaction_ctx: self.transaction_context,
@@ -1137,7 +1137,7 @@ mod tests {
         BaseEvmTypes, Evm, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         ethereum::{TxEnvelope, ethereum_tx_registry, intrinsic_and_floor_gas},
-        evm::{AccountInfo, CacheDB, EmptyDB},
+        evm::{AccountInfo, InMemoryDB},
         interpreter::{Host, op},
     };
     use serde_json::json;
@@ -1301,7 +1301,7 @@ mod tests {
         tx: TxEnvelope,
     ) -> Result<serde_json::Value, JsInspectorError> {
         let addr = Address::repeat_byte(0x01);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
 
         // Insert the caller
         db.insert_account_info(
@@ -1314,7 +1314,7 @@ mod tests {
             AccountInfo {
                 code: Some(Bytecode::new_legacy(
                     /* PUSH1 1, PUSH1 1, STOP */
-                    contract.unwrap_or_else(|| hex!("6001600100").into()),
+                    contract.unwrap_or(bytes!("6001600100")),
                 )),
                 ..Default::default()
             },
@@ -1332,7 +1332,7 @@ mod tests {
         let tx = Recovered::new_unchecked(tx, Address::ZERO);
         let res = evm.transact(&tx).expect("pass without error").detach();
 
-        assert_eq!(res.result.status, success);
+        assert_eq!(res.result.is_success(), success);
         let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
         let block = *evm.block_env();
         inspector.json_result(&res, &tx, &block, evm.database_mut())
@@ -1822,7 +1822,7 @@ mod tests {
             result: function() { return this.count; }
         }"#;
         let addr = Address::repeat_byte(0x01);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &Address::ZERO,
             AccountInfo { balance: U256::from(1e18), ..Default::default() },
@@ -1830,7 +1830,7 @@ mod tests {
         db.insert_account_info(
             &addr,
             AccountInfo {
-                code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
+                code: Some(Bytecode::new_legacy(bytes!("6001600100"))),
                 ..Default::default()
             },
         );
@@ -1847,7 +1847,7 @@ mod tests {
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
-            assert!(res.result.status);
+            assert!(res.result.is_success());
             inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
             let block = *evm.block_env();
             assert_eq!(
@@ -1893,7 +1893,7 @@ mod tests {
             bytecode.extend_from_slice(&hex!("61fffff150")); // PUSH2 gas, CALL, POP
         }
         bytecode.push(0x00);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &addr,
             AccountInfo { code: Some(Bytecode::new_legacy(bytecode.into())), ..Default::default() },
@@ -1901,7 +1901,7 @@ mod tests {
         db.insert_account_info(
             &child,
             AccountInfo {
-                code: Some(Bytecode::new_legacy(hex!("600100").into())),
+                code: Some(Bytecode::new_legacy(bytes!("600100"))),
                 ..Default::default()
             },
         );
@@ -1917,7 +1917,7 @@ mod tests {
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
-            assert!(res.result.status);
+            assert!(res.result.is_success());
             inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
             let block = *evm.block_env();
             assert_eq!(
@@ -2007,7 +2007,7 @@ mod tests {
         ] {
             let caller = Address::repeat_byte(0xaa);
             let nonce = 7;
-            let mut db = CacheDB::new(EmptyDB::default());
+            let mut db = InMemoryDB::default();
             db.insert_account_info(&caller, AccountInfo { nonce, ..AccountInfo::default() });
             let script = r#"{
                 fault: function() {},
@@ -2066,7 +2066,7 @@ mod tests {
             this.r=[a[0],a[32],capped.length,log.memory.slice(2**40,2**40).length,error];
         },fault:function(){},result:function(){return this.r}}"#;
         assert_eq!(
-            run_trace(tracer, Some(hex!("60ff60005300").into()), true),
+            run_trace(tracer, Some(bytes!("60ff60005300")), true),
             json!([255, 0, 1024 * 1024, 0, "TypeError"])
         );
     }

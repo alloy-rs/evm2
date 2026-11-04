@@ -161,7 +161,7 @@ fn prepare_call<T: EvmTypesHost>(
         return Err(InstrStop::CallNotAllowedInsideStatic);
     }
 
-    let local_gas_limit = u64::try_from(local_gas_limit).unwrap_or(u64::MAX);
+    let local_gas_limit = local_gas_limit.saturating_to::<u64>();
     let (input_range, prepared_return_memory_range) = get_memory_input_and_out_ranges(
         gas,
         state,
@@ -382,7 +382,7 @@ pub fn create_with<T: EvmTypesHost>(
     let current = state.message();
     let caller = current.destination;
     let depth = current.depth.saturating_add(1);
-    let salt = salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default();
+    let salt = salt.map(B256::from).unwrap_or_default();
 
     // Derive the created contract address once. CREATE needs the creator's (pre-bump) nonce; the
     // caller is the currently-executing contract, already warm and in the access list, so this read
@@ -541,19 +541,19 @@ mod tests {
 
     #[test]
     fn call_opcode() {
-        let target = Address::from([0x22; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let caller = Address::repeat_byte(0x11);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                address_to_word(&target),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -565,7 +565,7 @@ mod tests {
             ..Default::default()
         }));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Call);
         assert_eq!(host.calls[0].destination, target);
@@ -574,7 +574,7 @@ mod tests {
 
     #[test]
     fn call_propagates_fatal_child_result() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let error = ExecutionError::Fatal("child call failed".into());
         let mut host = TestHost { execute_error: Some(error.clone()), ..Default::default() };
         let mut code = crate::test_utils::call_code(target);
@@ -589,18 +589,18 @@ mod tests {
 
     #[test]
     fn call_propagates_static_flag() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
                 Word::ZERO,
-                address_to_word(&target),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -615,7 +615,7 @@ mod tests {
 
     #[test]
     fn call_too_deep_charges_dynamic_gas() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut host = TestHost { is_cold: true, is_empty: true, ..Default::default() };
         let mut code = Vec::new();
         push_all(
@@ -625,8 +625,8 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                Word::from(1),
-                address_to_word(&target),
+                Word::ONE,
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -678,7 +678,7 @@ mod tests {
 
     #[test]
     fn call_too_deep_charges_pre_spurious_empty_account() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut host = TestHost { exists: false, is_empty: true, ..Default::default() };
         let mut code = Vec::new();
         push_all(
@@ -689,7 +689,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::ZERO,
             ],
         );
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn call_too_deep_skips_pre_spurious_touched_empty_account_cost() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut host =
             TestHost { exists: false, is_empty: true, is_touched: true, ..Default::default() };
         let mut code = Vec::new();
@@ -720,7 +720,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::ZERO,
             ],
         );
@@ -739,18 +739,18 @@ mod tests {
 
     #[test]
     fn callcode_propagates_static_flag_and_allows_apparent_value() {
-        let code_address = Address::from([0x33; 20]);
+        let code_address = Address::repeat_byte(0x33);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
                 Word::from(7),
-                address_to_word(&code_address),
+                code_address.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -766,19 +766,19 @@ mod tests {
 
     #[test]
     fn callcode_opcode() {
-        let code_address = Address::from([0x33; 20]);
-        let destination = Address::from([0x11; 20]);
+        let code_address = Address::repeat_byte(0x33);
+        let destination = Address::repeat_byte(0x11);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
                 Word::from(7),
-                address_to_word(&code_address),
+                code_address.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -789,7 +789,7 @@ mod tests {
             .message(MessageExt { destination, ..Default::default() })
             .gas_limit(20_000));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
         assert_eq!(host.calls[0].kind, MessageKind::CallCode);
         assert_eq!(host.calls[0].destination, destination);
         assert_eq!(host.calls[0].code_address, code_address);
@@ -798,18 +798,18 @@ mod tests {
 
     #[test]
     fn delegatecall_opcode() {
-        let code_address = Address::from([0x44; 20]);
-        let caller = Address::from([0x55; 20]);
+        let code_address = Address::repeat_byte(0x44);
+        let caller = Address::repeat_byte(0x55);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                address_to_word(&code_address),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                code_address.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -822,7 +822,7 @@ mod tests {
             ..Default::default()
         }));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
         assert_eq!(host.calls[0].kind, MessageKind::DelegateCall);
         assert_eq!(host.calls[0].caller, caller);
         assert_eq!(host.calls[0].value, Word::from(9));
@@ -849,17 +849,17 @@ mod tests {
 
     #[test]
     fn staticcall_opcode() {
-        let target = Address::from([0x66; 20]);
+        let target = Address::repeat_byte(0x66);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                address_to_word(&target),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -867,7 +867,7 @@ mod tests {
 
         let interp = run(RunConfig::new(code).host(&mut host));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
         assert_eq!(host.calls[0].kind, MessageKind::StaticCall);
         assert!(host.call_static_flags[0]);
 
@@ -892,7 +892,7 @@ mod tests {
 
     #[test]
     fn create_opcode() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let mut host = TestHost {
             execute_result: MessageResultExt {
                 stop: InstrStop::Return,
@@ -902,7 +902,7 @@ mod tests {
             ..Default::default()
         };
         let mut code = Vec::new();
-        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
         code.extend([op::CREATE, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
@@ -928,7 +928,7 @@ mod tests {
 
     #[test]
     fn create_clears_return_data_on_success() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let mut host = TestHost {
             execute_result: MessageResultExt {
                 stop: InstrStop::Return,
@@ -939,12 +939,12 @@ mod tests {
             ..Default::default()
         };
         let mut code = Vec::new();
-        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [address_to_word(&created), Word::ZERO]);
+        assert_eq!(interp.stack(), [created.into_word().into(), Word::ZERO]);
     }
 
     #[test]
@@ -958,7 +958,7 @@ mod tests {
             ..Default::default()
         };
         let mut code = Vec::new();
-        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
@@ -987,7 +987,7 @@ mod tests {
     fn create_too_deep_clears_return_data_and_skips_destination_read_eip8037() {
         // EIP-8037: a create failing the depth pre-check must not access the destination —
         // the read would leak the address into the EIP-7928 block access list.
-        let caller = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0x11);
         let mut host = TestHost { exists: false, ..Default::default() };
         let mut code = create_code();
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
@@ -1022,7 +1022,7 @@ mod tests {
 
     #[test]
     fn create2_opcode() {
-        let created = Address::from([0x88; 20]);
+        let created = Address::repeat_byte(0x88);
         let mut host = TestHost {
             execute_result: MessageResultExt {
                 stop: InstrStop::Return,
@@ -1032,7 +1032,7 @@ mod tests {
             ..Default::default()
         };
         let mut code = Vec::new();
-        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0), Word::from(0)]);
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO, Word::ZERO]);
         code.extend([op::CREATE2, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
@@ -1057,8 +1057,8 @@ mod tests {
 
     #[test]
     fn selfdestruct_opcode() {
-        let contract = Address::from([0x11; 20]);
-        let target = Address::from([0x99; 20]);
+        let contract = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x99);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push(&mut code, address_to_word(&target));
@@ -1157,7 +1157,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::from(value),
-                address_to_word(&Address::from([0x22; 20])),
+                Address::repeat_byte(0x22).into_word().into(),
                 Word::from(5_000),
             ],
         );
@@ -1177,7 +1177,7 @@ mod tests {
 
         assert_matches!(base.err, InstrStop::Stop);
         assert_matches!(hooked.err, InstrStop::Stop);
-        assert_eq!(hooked.stack(), [Word::from(1)]);
+        assert_eq!(hooked.stack(), [Word::ONE]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].gas_limit, base_host.calls[0].gas_limit - KEPT_GAS);
         assert_eq!(hooked.gas_remaining(), base.gas_remaining() + KEPT_GAS - AFTER_FEE);
@@ -1219,7 +1219,7 @@ mod tests {
 
     #[test]
     fn create_with_hooks_adjust_child_and_caller_gas() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let execute_result = MessageResultExt {
             stop: InstrStop::Return,
             created_address: Some(created),

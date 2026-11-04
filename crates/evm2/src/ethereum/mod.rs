@@ -985,7 +985,7 @@ mod tests {
         BaseEvmTypes, ExecutionConfig, Precompiles,
         constants::MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
         env::BlockEnvExt,
-        evm::InMemoryDB,
+        evm::{InMemoryDB, handler::TxHandlerHooks},
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
@@ -997,8 +997,6 @@ mod tests {
     fn adjusted_floor_gas_controls_validation_and_settlement(
         #[values(31_049, 31_050)] gas_limit: u64,
     ) {
-        use crate::evm::handler::TxHandlerHooks;
-
         struct CalldataSurcharge;
 
         impl TxHandlerHooks<BaseEvmTypes> for CalldataSurcharge {
@@ -1054,7 +1052,7 @@ mod tests {
             );
         } else {
             let result = result.unwrap();
-            assert!(result.status);
+            assert!(result.is_success());
             assert_eq!(result.total_gas_spent, 31_020);
             assert_eq!(result.floor_gas, 31_050);
             assert_eq!(result.tx_gas_used(), 31_050);
@@ -1294,7 +1292,7 @@ mod tests {
             caller,
         );
 
-        assert!(evm.transact(&tx).unwrap().commit().status);
+        assert!(evm.transact(&tx).unwrap().commit().is_success());
         let reward = evm.read_account_info(&beneficiary).unwrap().unwrap().balance;
         assert_eq!(reward, U256::from(21_000 * beneficiary_gas_price));
     }
@@ -1529,7 +1527,7 @@ mod tests {
 
     #[rstest::rstest]
     #[case::call_zero_value(TxKind::Call(Address::ZERO), U256::ZERO, 15_000, 12_700)]
-    #[case::call_with_value(TxKind::Call(Address::ZERO), U256::from(1), 21_000, 18_700)]
+    #[case::call_with_value(TxKind::Call(Address::ZERO), U256::ONE, 21_000, 18_700)]
     #[case::self_transfer_zero_value(
         TxKind::Call(Address::with_last_byte(0xaa)),
         U256::ZERO,
@@ -1538,12 +1536,12 @@ mod tests {
     )]
     #[case::self_transfer_with_value(
         TxKind::Call(Address::with_last_byte(0xaa)),
-        U256::from(1),
+        U256::ONE,
         12_000,
         10_000
     )]
     #[case::create_zero_value(TxKind::Create, U256::ZERO, 24_000, 22_000)]
-    #[case::create_with_value(TxKind::Create, U256::from(1), 24_000, 22_000)]
+    #[case::create_with_value(TxKind::Create, U256::ONE, 24_000, 22_000)]
     fn eip2780_intrinsic_and_floor_gas_read_base_costs_from_gas_params(
         #[case] to: TxKind,
         #[case] value: U256,
@@ -1668,7 +1666,7 @@ mod tests {
                             if value == 2 {
                                 assert_eq!(result.stop, InstrStop::OutOfFunds, "{case}");
                             } else {
-                                assert_eq!(result.status, input[0] == op::STOP, "{case}");
+                                assert_eq!(result.is_success(), input[0] == op::STOP, "{case}");
                             }
                             let nonce = evm.read_account_info(&caller).unwrap().unwrap().nonce;
                             assert_eq!(nonce, 11, "{case}");

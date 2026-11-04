@@ -483,22 +483,12 @@ fn pre_block_system_calls<T: EvmTypes>(
     if spec.enables(SpecId::CANCUN)
         && let Some(beacon_root) = env.current_beacon_root
     {
-        commit_system_call(
-            evm,
-            post,
-            BEACON_ROOTS_ADDRESS,
-            Bytes::copy_from_slice(beacon_root.as_slice()),
-        );
+        commit_system_call(evm, post, BEACON_ROOTS_ADDRESS, Bytes::from(beacon_root));
     }
     if spec.enables(SpecId::PRAGUE)
         && let Some(previous_hash) = env.previous_hash
     {
-        commit_system_call(
-            evm,
-            post,
-            HISTORY_STORAGE_ADDRESS,
-            Bytes::copy_from_slice(previous_hash.as_slice()),
-        );
+        commit_system_call(evm, post, HISTORY_STORAGE_ADDRESS, Bytes::from(previous_hash));
     }
 }
 
@@ -509,7 +499,7 @@ fn commit_system_call<T: EvmTypes>(
     data: Bytes,
 ) {
     let executed = evm.system_call(SystemTx::new(address, data)).expect("system call errored");
-    assert!(executed.result().status, "pre-block system call failed: {address}");
+    assert!(executed.result().is_success(), "pre-block system call failed: {address}");
     let Ok(_) = executed.commit_with(post);
 }
 
@@ -561,9 +551,7 @@ fn parse_block(env: &Env, blob_params: Option<&BlobParams>) -> BlockEnv {
         gas_limit: env.current_gas_limit,
         basefee: env.current_base_fee.unwrap_or_default(),
         difficulty: env.current_difficulty,
-        prevrandao: env
-            .current_random
-            .map_or(U256::ZERO, |random| U256::from_be_slice(random.as_slice())),
+        prevrandao: env.current_random.map_or(U256::ZERO, |random| random.into()),
         blob_basefee: env
             .current_excess_blob_gas
             .zip(blob_params)
@@ -655,7 +643,6 @@ fn access_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::LogData;
     use evm2::interpreter::op;
 
     #[cfg(feature = "jit")]
@@ -717,23 +704,24 @@ mod tests {
 
     #[test]
     fn logs_hash_hashes_logs() {
-        let log = Log {
-            address: Address::from([0x22; 20]),
-            data: LogData::new_unchecked(vec![B256::with_last_byte(1)], Bytes::from_static(&[2])),
-        };
+        let log = Log::new_unchecked(
+            Address::repeat_byte(0x22),
+            vec![B256::with_last_byte(1)],
+            Bytes::from_static(&[2]),
+        );
 
         assert_ne!(logs_hash(&[log]), B256::ZERO);
     }
 
     #[test]
     fn build_tx_builds_legacy_transaction() {
-        let caller = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0x11);
         let raw = TransactionParts {
             data: vec![Bytes::from_static(&[0xaa])],
             gas_limit: vec![U256::from(21_000)],
             gas_price: Some(U256::from(7)),
             sender: Some(caller),
-            to: Some(Address::from([0x22; 20])),
+            to: Some(Address::repeat_byte(0x22)),
             value: vec![U256::from(3)],
             ..TransactionParts::default()
         };
@@ -749,15 +737,15 @@ mod tests {
 
     #[test]
     fn build_tx_builds_eip2930_transaction() {
-        let caller = Address::from([0x11; 20]);
-        let access_address = Address::from([0x33; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let access_address = Address::repeat_byte(0x33);
         let raw = TransactionParts {
             tx_type: Some(1),
             data: vec![Bytes::new()],
             gas_limit: vec![U256::from(25_300)],
             gas_price: Some(U256::from(7)),
             sender: Some(caller),
-            to: Some(Address::from([0x22; 20])),
+            to: Some(Address::repeat_byte(0x22)),
             value: vec![U256::ZERO],
             access_lists: vec![Some(vec![crate::tx::AccessListItem {
                 address: access_address,
@@ -777,16 +765,16 @@ mod tests {
 
     #[test]
     fn build_tx_uses_indexed_access_list() {
-        let caller = Address::from([0x11; 20]);
-        let first_address = Address::from([0x33; 20]);
-        let second_address = Address::from([0x44; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let first_address = Address::repeat_byte(0x33);
+        let second_address = Address::repeat_byte(0x44);
         let raw = TransactionParts {
             tx_type: Some(1),
             data: vec![Bytes::new(), Bytes::from_static(&[0xaa])],
             gas_limit: vec![U256::from(25_300)],
             gas_price: Some(U256::from(7)),
             sender: Some(caller),
-            to: Some(Address::from([0x22; 20])),
+            to: Some(Address::repeat_byte(0x22)),
             value: vec![U256::ZERO],
             access_lists: vec![
                 Some(vec![crate::tx::AccessListItem {
@@ -811,8 +799,8 @@ mod tests {
 
     #[cfg(feature = "jit")]
     fn execute_simple_call(mode: ExecutionMode) -> SpecOutcome {
-        let caller = Address::from([0x11; 20]);
-        let target = Address::from([0x22; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x22);
         let env = Env {
             current_chain_id: Some(U256::ONE),
             current_coinbase: Address::ZERO,
@@ -842,7 +830,7 @@ mod tests {
             target,
             AccountInfo {
                 balance: U256::ZERO,
-                code: Bytes::copy_from_slice(BYTECODE_RET42),
+                code: Bytes::from_static(BYTECODE_RET42),
                 nonce: 0,
                 storage: BTreeMap::new(),
             },
@@ -878,9 +866,9 @@ mod tests {
 
     #[cfg(feature = "jit")]
     fn execute_amsterdam_target(mode: ExecutionMode, target_code: Bytes) -> SpecOutcome {
-        let caller = Address::from([0x11; 20]);
-        let target = Address::from([0x22; 20]);
-        let coinbase = Address::from([0xcb; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x22);
+        let coinbase = Address::repeat_byte(0xcb);
         let env = Env {
             current_chain_id: Some(U256::ONE),
             current_coinbase: coinbase,
@@ -946,7 +934,7 @@ mod tests {
 
     #[cfg(feature = "jit")]
     fn execute_amsterdam_value_call_to_empty_coinbase(mode: ExecutionMode) -> SpecOutcome {
-        execute_amsterdam_target(mode, call_value_to(Address::from([0xcb; 20])))
+        execute_amsterdam_target(mode, call_value_to(Address::repeat_byte(0xcb)))
     }
 
     #[cfg(feature = "jit")]

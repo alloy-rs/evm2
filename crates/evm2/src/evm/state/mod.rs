@@ -862,8 +862,8 @@ impl<'a> State<'a> {
     pub fn rollback(&mut self, checkpoint: StateCheckpoint, features: EvmFeatures) {
         // Restoring an older snapshot can leave active cursors past the current lengths. Preserve
         // shorter prefixes and revert only entries beyond each cursor.
-        self.logs.truncate(checkpoint.logs_len);
-        while self.journal.len() > checkpoint.journal_len {
+        self.logs.truncate(checkpoint.logs_len());
+        while self.journal.len() > checkpoint.journal_len() {
             let Some(entry) = self.journal.pop() else {
                 unreachable!("journal length is checked above")
             };
@@ -885,7 +885,7 @@ impl<'a> State<'a> {
                         .get_mut(&address)
                         .and_then(|account| account.storage.slots.get_mut(&key))
                     {
-                        slot.value.current = previous;
+                        slot.value.set_current(previous);
                     }
                 }
                 JournalEntry::TransientStorageChange { address, key, previous } => match previous {
@@ -1096,10 +1096,10 @@ mod tests {
     fn created_account_reads_old_storage_as_zero() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
-        let (loaded, unloaded, fresh) = (Word::from(1), Word::from(2), Word::from(3));
+        let (loaded, unloaded, fresh) = (Word::ONE, Word::from(2), Word::from(3));
         let features = EvmFeatures::empty();
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         db.insert_account_storage(&address, &loaded, &Word::from(5));
         db.insert_account_storage(&address, &unloaded, &Word::from(6));
         db.insert_account_storage(&address, &fresh, &Word::from(7));
@@ -1132,7 +1132,7 @@ mod tests {
     fn marked_created_account_reads_and_commits_its_baseline() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
-        let (written, unwritten) = (Word::from(1), Word::from(2));
+        let (written, unwritten) = (Word::ONE, Word::from(2));
         let features = EvmFeatures::empty();
         let mut db = CacheDB::default();
         db.insert_account_info(&address, AccountInfo::default().with_nonce(1));
@@ -1159,7 +1159,7 @@ mod tests {
         let other = Address::with_last_byte(3);
         state
             .overlay_db_mut()
-            .insert_account_info(&other, AccountInfo::default().with_balance(Word::from(1)));
+            .insert_account_info(&other, AccountInfo::default().with_balance(Word::ONE));
         state.overlay_db_mut().insert_account_storage(&other, &unwritten, &Word::from(6));
         state.create_account(&caller, &other, &Word::ZERO, features).unwrap().unwrap();
         state.account(&other).unwrap().mark_created();
@@ -1174,7 +1174,7 @@ mod tests {
         let written = Word::from(2);
         let version = Version::base(crate::SpecId::CANCUN);
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         let mut state = State::new(db);
 
         state.create_account(&caller, &address, &Word::ZERO, version.features).unwrap().unwrap();
@@ -1191,10 +1191,10 @@ mod tests {
     fn eip8246_created_survivor_keeps_old_storage() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
-        let (written, old) = (Word::from(1), Word::from(2));
+        let (written, old) = (Word::ONE, Word::from(2));
         let version = Version::base(crate::SpecId::AMSTERDAM);
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         db.insert_account_storage(&address, &old, &Word::from(6));
         let mut state = State::new(db);
 
@@ -1215,10 +1215,10 @@ mod tests {
     #[test]
     fn eip8246_marked_created_survivor_wipes_storage() {
         let address = Address::with_last_byte(2);
-        let (written, earlier) = (Word::from(1), Word::from(2));
+        let (written, earlier) = (Word::ONE, Word::from(2));
         let version = Version::base(crate::SpecId::AMSTERDAM);
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         // A slot the account's creation wrote before the transaction was suspended.
         db.insert_account_storage(&address, &earlier, &Word::from(6));
         let mut state = State::new(db);
@@ -1238,10 +1238,10 @@ mod tests {
     #[test]
     fn rollback_of_storage_discard_restores_storage_baseline() {
         let address = Address::with_last_byte(2);
-        let key = Word::from(1);
+        let key = Word::ONE;
         let features = Version::base(crate::SpecId::CANCUN).features;
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         db.insert_account_storage(&address, &key, &Word::from(6));
         let mut state = State::new(db);
 
@@ -1260,10 +1260,10 @@ mod tests {
     fn rollback_of_creation_keeps_slots_read_as_zero() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
-        let (read, written, empty) = (Word::from(1), Word::from(2), Word::from(3));
+        let (read, written, empty) = (Word::ONE, Word::from(2), Word::from(3));
         let version = Version::base(crate::SpecId::CANCUN);
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         db.insert_account_storage(&address, &read, &Word::from(6));
         db.insert_account_storage(&address, &written, &Word::from(7));
         let mut state = State::new(db);
@@ -1288,10 +1288,10 @@ mod tests {
     fn rollback_keeps_slot_read_as_zero_under_the_creation() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
-        let key = Word::from(1);
+        let key = Word::ONE;
         let features = Version::base(crate::SpecId::CANCUN).features;
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         db.insert_account_storage(&address, &key, &Word::from(6));
         let mut state = State::new(db);
 
@@ -1308,10 +1308,10 @@ mod tests {
     #[test]
     fn rollback_of_creation_mark_leaves_slots_alone() {
         let address = Address::with_last_byte(2);
-        let (read, zero) = (Word::from(1), Word::from(2));
+        let (read, zero) = (Word::ONE, Word::from(2));
         let features = Version::base(crate::SpecId::CANCUN).features;
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         db.insert_account_storage(&address, &read, &Word::from(6));
         let mut state = State::new(db);
 
@@ -1329,10 +1329,10 @@ mod tests {
     fn finalization_wipe_after_rolled_back_creation_reads_zero() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
-        let key = Word::from(1);
+        let key = Word::ONE;
         let version = Version::base(crate::SpecId::LONDON);
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         db.insert_account_storage(&address, &key, &Word::from(6));
         let mut state = State::new(db);
 
@@ -1352,10 +1352,10 @@ mod tests {
     fn rollback_of_creation_keeps_slots_loaded_under_it() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
-        let (before, under) = (Word::from(1), Word::from(2));
+        let (before, under) = (Word::ONE, Word::from(2));
         let features = Version::base(crate::SpecId::CANCUN).features;
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         let mut state = State::new(db);
         assert_eq!(state.storage_slot(&address, before).unwrap().current(), Word::ZERO);
         // Only a reread can observe these values, and rollback does not reread.
@@ -1375,10 +1375,10 @@ mod tests {
     #[test]
     fn rollback_keeps_zero_of_slot_written_through_the_creating_handle() {
         let address = Address::with_last_byte(2);
-        let key = Word::from(1);
+        let key = Word::ONE;
         let features = Version::base(crate::SpecId::CANCUN).features;
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         db.insert_account_storage(&address, &key, &Word::from(6));
         let mut state = State::new(db);
 
@@ -1397,10 +1397,10 @@ mod tests {
     fn later_transactions_read_old_storage_of_created_account_as_zero() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
-        let (cached, unloaded, written) = (Word::from(1), Word::from(2), Word::from(3));
+        let (cached, unloaded, written) = (Word::ONE, Word::from(2), Word::from(3));
         let version = Version::base(crate::SpecId::CANCUN);
         let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
         db.insert_account_storage(&address, &cached, &Word::from(5));
         db.insert_account_storage(&address, &unloaded, &Word::from(6));
         let mut state = State::new(db);
@@ -1422,7 +1422,7 @@ mod tests {
     fn account_storage_handle_reuses_pooled_slot_map() {
         let address = Address::with_last_byte(1);
         let mut state = State::new(EmptyDB::default());
-        let key = Word::from(1);
+        let key = Word::ONE;
         state.storage_slot(&address, key).unwrap();
         let expected_capacity = state.accounts[&address].storage.slots.capacity();
         assert!(expected_capacity > 0);
@@ -1438,7 +1438,7 @@ mod tests {
     #[test]
     fn clone_preserves_state_and_detaches_database() {
         let address = Address::with_last_byte(42);
-        let key = Word::from(1);
+        let key = Word::ONE;
         let mut db = CacheDB::default();
         db.insert_account_info(&address, AccountInfo::default());
         db.insert_account_storage(&address, &key, &Word::from(10));
@@ -1464,13 +1464,13 @@ mod tests {
     fn clone_with_uses_database_and_preserves_state() {
         let address = Address::with_last_byte(42);
         let mut state = State::new(EmptyDB::default());
-        state.tstore(&address, &Word::ZERO, &Word::from(1));
+        state.tstore(&address, &Word::ZERO, &Word::ONE);
         let mut db = CacheDB::default();
         db.insert_account_info(&address, AccountInfo::default());
 
         let mut cloned = state.clone_with(db);
 
-        assert_eq!(cloned.tload(&address, &Word::ZERO), Word::from(1));
+        assert_eq!(cloned.tload(&address, &Word::ZERO), Word::ONE);
         assert!(cloned.account_info_untracked(&address).unwrap().is_some());
     }
 
@@ -1492,7 +1492,7 @@ mod tests {
     #[test]
     fn set_storage_warm_preserves_loaded_values() {
         let address = Address::with_last_byte(42);
-        let key = Word::from(1);
+        let key = Word::ONE;
         for prewarmed in [false, true] {
             let mut state = State::new(EmptyDB::default());
             state.set_storage_warm(&address, key, true);
@@ -1520,7 +1520,7 @@ mod tests {
     #[test]
     fn set_account_warm_preserves_loaded_values() {
         let address = Address::with_last_byte(42);
-        let key = Word::from(1);
+        let key = Word::ONE;
         for prewarmed in [false, true] {
             let mut state = State::new(EmptyDB::default());
             state.set_account_warm(&address, true);
@@ -1667,23 +1667,23 @@ mod tests {
 
     #[test]
     fn loaded_accounts_include_reads_and_absent_accounts() {
-        let read = Address::from([0x74; 20]);
-        let absent = Address::from([0x75; 20]);
-        let accepted = Address::from([0x76; 20]);
+        let read = Address::repeat_byte(0x74);
+        let absent = Address::repeat_byte(0x75);
+        let accepted = Address::repeat_byte(0x76);
         let mut database = CacheDB::default();
-        database.insert_account_info(&read, AccountInfo::default().with_balance(Word::from(1)));
-        database.insert_account_storage(&read, &Word::from(1), &Word::from(10));
+        database.insert_account_info(&read, AccountInfo::default().with_balance(Word::ONE));
+        database.insert_account_storage(&read, &Word::ONE, &Word::from(10));
         let mut state = State::new(database);
-        state.account(&accepted).unwrap().set_balance(Word::from(1));
+        state.account(&accepted).unwrap().set_balance(Word::ONE);
         state.commit_transaction();
 
-        state.storage_slot(&read, Word::from(1)).unwrap();
+        state.storage_slot(&read, Word::ONE).unwrap();
         state.storage_slot(&read, Word::from(2)).unwrap();
         state.account(&absent).unwrap();
 
         assert_eq!(
             sorted_loaded_accounts(&state),
-            [(read, vec![Word::from(1), Word::from(2)]), (absent, vec![])]
+            [(read, vec![Word::ONE, Word::from(2)]), (absent, vec![])]
         );
     }
 
@@ -1691,7 +1691,7 @@ mod tests {
     fn loaded_accounts_include_reads_in_reverted_frames() {
         let read = Address::with_last_byte(0x77);
         let mut database = CacheDB::default();
-        database.insert_account_info(&read, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&read, AccountInfo::default().with_balance(Word::ONE));
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();

@@ -250,7 +250,7 @@ fn storage_snapshots_accumulate_and_skip_failed_steps() {
     let mut sload = test_step(1, op::SLOAD);
     sload.storage_change = Some(Box::new(StorageChange {
         key: U256::ZERO,
-        value: U256::from(1),
+        value: U256::ONE,
         had_value: None,
         reason: StorageChangeReason::SLOAD,
     }));
@@ -277,7 +277,7 @@ fn storage_snapshots_accumulate_and_skip_failed_steps() {
         assert!(frame.struct_logs[0].storage.is_none());
         assert_eq!(
             frame.struct_logs[1].storage,
-            (!disable_storage).then(|| BTreeMap::from([(B256::ZERO, U256::from(1).into())]))
+            (!disable_storage).then(|| BTreeMap::from([(B256::ZERO, B256::with_last_byte(1))]))
         );
         assert!(frame.struct_logs[2].storage.is_none());
         assert!(frame.struct_logs[3].storage.is_none());

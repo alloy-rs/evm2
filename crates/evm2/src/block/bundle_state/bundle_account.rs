@@ -59,7 +59,7 @@ impl BundleAccount {
     /// In case we know that account is newly created or destroyed, return
     /// `Some(U256::ZERO)`
     pub fn storage_slot(&self, slot: U256) -> Option<U256> {
-        let slot = self.storage.get(&slot).map(|s| s.present_value);
+        let slot = self.storage.get(&slot).map(|s| s.present_value());
         if slot.is_some() {
             slot
         } else if self.status.is_storage_known() {
@@ -149,7 +149,7 @@ impl BundleAccount {
              storage_update: StorageWithOriginalValues| {
                 this_storage.reserve(storage_update.len());
                 for (key, value) in storage_update {
-                    this_storage.entry(key).or_insert(value).present_value = value.present_value;
+                    this_storage.entry(key).or_insert(value).present_value = value.present_value();
                 }
             };
 
@@ -158,9 +158,7 @@ impl BundleAccount {
                 updated_storage
                     .iter()
                     .filter(|s| s.1.is_changed())
-                    .map(|(key, value)| {
-                        (*key, RevertToSlot::Some(value.previous_or_original_value))
-                    })
+                    .map(|(key, value)| (*key, RevertToSlot::Some(value.original_value())))
                     .collect()
             };
 
@@ -297,7 +295,7 @@ impl BundleAccount {
                             let previous_storage = if transition.storage_was_destroyed {
                                 let mut storage = core::mem::take(&mut self.storage)
                                     .into_iter()
-                                    .map(|t| (t.0, RevertToSlot::Some(t.1.present_value)))
+                                    .map(|t| (t.0, RevertToSlot::Some(t.1.present_value())))
                                     .collect::<U256Map<_>>();
                                 for key in updated_storage.keys() {
                                     // As it is not existing inside Destroyed storage this means

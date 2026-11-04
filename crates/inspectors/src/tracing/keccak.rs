@@ -11,7 +11,10 @@
 
 use crate::tracing::{TraceLimits, limits::TraceBudget};
 use alloc::{borrow::Cow, vec};
-use alloy_primitives::{B256, Bytes, hex, keccak256, map::HashMap};
+use alloy_primitives::{
+    Bytes, hex, keccak256,
+    map::{B256Map, HashMap},
+};
 use evm2::{
     EvmTypes, Inspector, InspectorConfig, OpcodeSet,
     interpreter::{Interpreter, opcode::op},
@@ -38,7 +41,7 @@ pub struct LimitExceeded;
 #[derive(Clone, Debug)]
 pub struct Keccak256PreimageInspector {
     /// The map of hash to preimage.
-    inner: HashMap<B256, Bytes>,
+    inner: B256Map<Bytes>,
     /// The bytes of the recorded preimages.
     budget: TraceBudget,
 }
@@ -98,7 +101,7 @@ impl<T: EvmTypes> Inspector<T> for Keccak256PreimageInspector {
         // The stack can be too small if the operation is about to fail.
         let &[.., length, offset] = interp.stack().as_slice() else { return };
         // The operands are truncated to 64 bits.
-        let (offset, length) = (offset.as_limbs()[0], length.as_limbs()[0]);
+        let (offset, length) = (offset.wrapping_to::<u64>(), length.wrapping_to::<u64>());
         let memory = interp.memory().as_slice();
         if let Some(preimage) = memory_copy_padded(memory, offset, length) {
             let hash = keccak256(&preimage);

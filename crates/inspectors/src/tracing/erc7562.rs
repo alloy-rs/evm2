@@ -203,7 +203,7 @@ impl Erc7562Inspector {
                 // geth's OnExit checks ErrOutOfGas / ErrCodeStoreOutOfGas, not the bare
                 // ErrGasUintOverflow of an oversized memory operand. The root is excluded.
                 out_of_gas: idx != 0
-                    && node.trace.status.is_some_and(|status| {
+                    && node.status().is_some_and(|status| {
                         status.is_out_of_gas() && status != InstrStop::InvalidOperandOOG
                     }),
                 keccak: if idx == 0 { self.keccak.iter().cloned().collect() } else { Vec::new() },
@@ -238,7 +238,7 @@ impl Erc7562Inspector {
         length: Option<U256>,
     ) -> Option<Cow<'a, [u8]>> {
         // The operands are truncated to 64 bits, and geth fails on a negative one.
-        let (offset, length) = (offset?.as_limbs()[0], length?.as_limbs()[0]);
+        let (offset, length) = (offset?.wrapping_to::<u64>(), length?.wrapping_to::<u64>());
         i64::try_from(offset).ok()?;
         i64::try_from(length).ok()?;
         memory_copy_padded(interp.memory().as_slice(), offset, length)

@@ -263,8 +263,8 @@ mod tests {
 
     #[test]
     fn system_call_uses_system_sender_without_fee_accounting() {
-        let contract = Address::from([0x42; 20]);
-        let beneficiary = Address::from([0x99; 20]);
+        let contract = Address::repeat_byte(0x42);
+        let beneficiary = Address::repeat_byte(0x99);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::CALLER,
             op::PUSH1,
@@ -289,7 +289,7 @@ mod tests {
 
         let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
-        assert!(result.result.status);
+        assert!(result.result.is_success());
         assert!(result.result.tx_gas_used() < SYSTEM_CALL_GAS_LIMIT);
         let unchanged = |address| {
             result.pending_state.accounts.get(address).is_none_or(|entry| !entry.is_changed())
@@ -305,8 +305,8 @@ mod tests {
 
     #[test]
     fn system_call_uses_custom_caller() {
-        let caller = Address::from([0x11; 20]);
-        let contract = Address::from([0x42; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::CALLER,
             op::PUSH1,
@@ -333,7 +333,7 @@ mod tests {
             .unwrap()
             .detach();
 
-        assert!(result.result.status);
+        assert!(result.result.is_success());
         let storage =
             &result.pending_state.accounts.get(&contract).expect("storage changed").storage.slots;
         let caller = address_to_word(&caller);
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn system_call_starts_with_warm_system_contract() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::EXTCODESIZE, op::STOP]));
         let mut database = InMemoryDB::default();
@@ -358,7 +358,7 @@ mod tests {
 
         let outcome = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().discard();
 
-        assert!(outcome.status);
+        assert!(outcome.is_success());
         assert!(
             outcome.tx_gas_used() < 1_000,
             "system contract should be warm before execution, got {} gas used",
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn system_call_to_missing_code_is_noop() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -379,14 +379,14 @@ mod tests {
 
         let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
-        assert!(result.result.status);
+        assert!(result.result.is_success());
         assert_eq!(result.result.tx_gas_used(), 0);
         assert!(!result.pending_state.is_changed());
     }
 
     #[test]
     fn system_call_reverts_state_changes() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
             1,
@@ -411,7 +411,7 @@ mod tests {
 
         let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
-        assert!(!result.result.status);
+        assert!(!result.result.is_success());
         assert_eq!(result.result.stop, InstrStop::Revert);
         assert!(!result.pending_state.is_changed());
     }
@@ -470,7 +470,7 @@ mod tests {
         #[case] gas_limit: Option<u64>,
         #[case] expected_limit: u64,
     ) {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         // Return the gas available at the start of execution (after GAS charges its own cost).
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::GAS,
@@ -497,15 +497,15 @@ mod tests {
 
         let result = evm.system_call(tx).unwrap().discard();
 
-        assert!(result.status);
+        assert!(result.is_success());
         assert_eq!(U256::from_be_slice(&result.output), U256::from(expected_limit - 2));
         assert_eq!(result.total_gas_spent, 15);
-        assert_eq!(result.state_gas_spent, 0);
+        assert_eq!(result.state_gas_spent(), 0);
     }
 
     #[test]
     fn system_call_exhausts_configured_gas_limit() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
             1,
@@ -528,7 +528,7 @@ mod tests {
             .unwrap()
             .detach();
 
-        assert!(!result.result.status);
+        assert!(!result.result.is_success());
         assert_eq!(result.result.stop, InstrStop::OutOfGas);
         assert_eq!(result.result.total_gas_spent, 3_000);
         assert!(!result.pending_state.is_changed());
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn system_call_total_includes_reservoir_funded_state_gas() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
             1,
@@ -560,15 +560,15 @@ mod tests {
         // (PUSH1, PUSH0, cold SSTORE) from `gas_limit`.
         let state_gas = evm.version().gas_params.get(GasId::SstoreSetState);
         let regular_gas = 3 + 2 + 2_100 + 10_000;
-        assert!(result.status);
-        assert_eq!(result.state_gas_spent, state_gas);
+        assert!(result.is_success());
+        assert_eq!(result.state_gas_spent(), state_gas);
         assert_eq!(result.total_gas_spent, regular_gas + state_gas);
         assert_eq!(result.execution_gas_spent(), regular_gas);
     }
 
     #[test]
     fn system_call_total_covers_state_gas_with_unbounded_gas_limit() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
             1,
@@ -589,8 +589,8 @@ mod tests {
         let tx = SystemTx::new(contract, Bytes::new()).with_gas_limit(u64::MAX);
         let result = evm.system_call(tx).unwrap().discard();
 
-        assert!(result.status);
-        assert!(result.total_gas_spent >= result.state_gas_spent);
+        assert!(result.is_success());
+        assert!(result.total_gas_spent >= result.state_gas_spent());
         assert_eq!(result.execution_gas_spent(), 3 + 2 + 2_100 + 10_000);
     }
 
@@ -633,7 +633,7 @@ mod tests {
         #[case] expected_calls: usize,
         #[case] expected_steps: usize,
     ) {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH0, op::STOP]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
@@ -648,7 +648,7 @@ mod tests {
         evm.set_inspect_system_calls(inspect);
 
         let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
-        assert!(result.result.status);
+        assert!(result.result.is_success());
 
         let inspector = evm.clear_inspector_as::<CountingInspector>().expect("inspector kept");
         assert_eq!(inspector.calls, expected_calls);

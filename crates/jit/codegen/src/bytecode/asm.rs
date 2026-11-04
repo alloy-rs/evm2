@@ -562,12 +562,13 @@ fn parse_items<'a>(tokens: &[Token<'a>]) -> Result<Vec<Item<'a>>> {
                                 push_kind: PushKind::Fixed(imm_len),
                             }));
                         } else {
-                            if matches!(
-                                tokens.get(i),
-                                Some(Token { kind: TokenKind::Number(_), .. })
-                            ) {
-                                eyre::bail!("unexpected immediate for opcode {opc}");
-                            }
+                            eyre::ensure!(
+                                !matches!(
+                                    tokens.get(i),
+                                    Some(Token { kind: TokenKind::Number(_), .. })
+                                ),
+                                "unexpected immediate for opcode {opc}"
+                            );
                             items.push(Item::Inst(Inst {
                                 opcode,
                                 imm: None,

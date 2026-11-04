@@ -13,7 +13,6 @@ use crate::{
     evm::handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     interpreter::GasTracker,
     registry::{HandlerError, HandlerResult, TxRequest},
-    utils::b256_to_word,
 };
 use alloy_consensus::transaction::TxEip4844Variant;
 use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, VERSIONED_HASH_VERSION_KZG};
@@ -116,7 +115,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         origin: caller,
         gas_price,
         chain_id: U256::from(req.host.version().chain_id),
-        blob_hashes: tx.blob_versioned_hashes.iter().copied().map(b256_to_word).collect(),
+        blob_hashes: tx.blob_versioned_hashes.iter().copied().map(Into::into).collect(),
         ext: T::TxEnvExt::default(),
         _non_exhaustive: (),
     };
@@ -218,7 +217,7 @@ mod tests {
                     gas_limit: 21_000,
                     max_fee_per_gas: 2,
                     max_fee_per_blob_gas,
-                    blob_versioned_hashes: vec![B256::from([1; 32])],
+                    blob_versioned_hashes: vec![B256::repeat_byte(1)],
                     to: Address::with_last_byte(0xbb),
                     ..Default::default()
                 }
@@ -238,7 +237,7 @@ mod tests {
         let result = evm.transact(&tx).map(|executed| executed.commit());
         assert_eq!(result.as_ref().map(|_| ()).map_err(Clone::clone), expected);
         if let Ok(result) = result {
-            assert!(result.status);
+            assert!(result.is_success());
             assert_eq!(result.tx_gas_used(), 21_000);
             // Disabling validation does not disable charging the actual blob base fee.
             let account = evm.state_mut().account(&caller).unwrap();
@@ -250,7 +249,7 @@ mod tests {
     #[rstest::rstest]
     #[case(vec![], HandlerError::EmptyBlobs)]
     #[case(vec![B256::ZERO], HandlerError::BlobVersionNotSupported)]
-    #[case(vec![B256::from([1; 32]); 7], HandlerError::TooManyBlobs { have: 7, max: 6 })]
+    #[case(vec![B256::repeat_byte(1); 7], HandlerError::TooManyBlobs { have: 7, max: 6 })]
     fn blob_fee_simulation_still_validates_blobs(
         #[case] blobs: alloc::vec::Vec<B256>,
         #[case] expected: HandlerError,

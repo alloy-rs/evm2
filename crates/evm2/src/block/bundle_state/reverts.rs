@@ -172,7 +172,7 @@ impl AccountRevert {
         // As those values got destroyed.
         let mut previous_storage: U256Map<RevertToSlot> = previous_storage
             .drain()
-            .map(|(key, value)| (key, RevertToSlot::Some(value.present_value)))
+            .map(|(key, value)| (key, RevertToSlot::Some(value.present_value())))
             .collect();
         for (key, _) in updated_storage {
             previous_storage.entry(key).or_insert(RevertToSlot::Destroyed);
@@ -220,7 +220,7 @@ impl AccountRevert {
             .iter_mut()
             .map(|(key, value)| {
                 // Take previous value and set ZERO as storage got destroyed.
-                (*key, RevertToSlot::Some(value.present_value))
+                (*key, RevertToSlot::Some(value.present_value()))
             })
             .collect();
 
