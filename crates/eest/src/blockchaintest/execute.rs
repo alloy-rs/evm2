@@ -39,14 +39,14 @@ use alloy_primitives::{Address, B256, Bloom, Bytes, Signature, U256, aliases::U5
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
+    BaseEvmTypes, Evm, EvmTypes, SpecId, TxResult,
     block::{
         BlockExecutor as _, BundleSource, ReceiptBuilder, ReceiptBuilderCtx,
         bundle_state::BundleRetention,
         ethereum::{EthBlockExecutionCtx, EthBlockExecutor, EthBlockRules},
     },
     env::{BlockEnv, BlockEnvExt},
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    ethereum::RecoveredTxEnvelope,
     evm::{
         AccountInfo as EvmAccountInfo, Bal, CONSOLIDATION_REQUEST_ADDRESS, DbStats, DbStatsCounts,
         InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
@@ -510,21 +510,9 @@ fn execute_block<'a>(
     let receipt_base = (compare_receipt_root && !spec.enables(SpecId::BYZANTIUM))
         .then(|| initial_database.clone());
     let mut evm = if db_stats {
-        Evm::<BaseEvmTypes>::new(
-            spec,
-            next_block_env,
-            ethereum_tx_registry(spec),
-            DbStats::new(initial_database),
-            Precompiles::base(spec),
-        )
+        Evm::<BaseEvmTypes>::ethereum(spec, next_block_env, DbStats::new(initial_database))
     } else {
-        Evm::<BaseEvmTypes>::new(
-            spec,
-            next_block_env,
-            ethereum_tx_registry(spec),
-            initial_database,
-            Precompiles::base(spec),
-        )
+        Evm::<BaseEvmTypes>::ethereum(spec, next_block_env, initial_database)
     };
     resources.configure_evm(&mut evm);
     if trace {

@@ -11,10 +11,10 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_eip7928::{BalanceChange, BlockAccessList, NonceChange, StorageChange};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles, SpecId,
+    BaseEvmTypes, Evm, SpecId,
     bytecode::Bytecode,
     env::BlockEnvExt,
-    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    ethereum::{RecoveredTxEnvelope, TxEnvelope},
     evm::{AccountInfo, BlockAccessIndex, InMemoryDB, SystemTx},
     interpreter::op,
 };
@@ -136,13 +136,7 @@ fn block_evm() -> Evm<'static, BaseEvmTypes> {
     );
 
     let spec = SpecId::AMSTERDAM;
-    Evm::new(
-        spec,
-        BlockEnvExt::default(),
-        ethereum_tx_registry(spec),
-        database,
-        Precompiles::base(spec),
-    )
+    Evm::ethereum(spec, BlockEnvExt::default(), database)
 }
 
 fn transfer(from: Address, to: Address, value: u64, nonce: u64) -> RecoveredTxEnvelope {

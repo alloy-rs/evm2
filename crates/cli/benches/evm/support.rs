@@ -1,10 +1,7 @@
 use crate::fixture::Suites;
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles, SpecId,
-    env::BlockEnv,
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::InMemoryDB,
+    BaseEvmTypes, Evm, SpecId, env::BlockEnv, ethereum::RecoveredTxEnvelope, evm::InMemoryDB,
 };
 use evm2_cli::evm_bench::BenchCase;
 use std::borrow::Cow;
@@ -69,7 +66,7 @@ struct Runner {
 impl Runner {
     fn new(prepared: &PreparedBench) -> Self {
         Self {
-            evm: new_evm(prepared.spec, prepared.block, prepared.db.clone()),
+            evm: BenchEvm::ethereum(prepared.spec, prepared.block, prepared.db.clone()),
             tx: prepared.tx.clone(),
         }
     }
@@ -77,8 +74,4 @@ impl Runner {
     fn run(&mut self) -> evm2::registry::HandlerResult<evm2::TxResult> {
         self.evm.transact(&self.tx).map(evm2::ExecutedTx::commit)
     }
-}
-
-fn new_evm(spec: SpecId, block: BlockEnv, db: InMemoryDB) -> BenchEvm {
-    Evm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
 }

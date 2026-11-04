@@ -25,9 +25,9 @@ use alloy_trie::{
 };
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
+    BaseEvmTypes, Evm, EvmTypes, SpecId, TxResult,
     env::{BlockEnv, BlockEnvExt},
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    ethereum::RecoveredTxEnvelope,
     evm::{
         AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, DbStats, DbStatsCounts,
         HISTORY_STORAGE_ADDRESS, InMemoryDB, SystemTx,
@@ -366,21 +366,9 @@ fn execute_spec(
 ) -> Result<SpecOutcome, Box<SpecFailure>> {
     let db_stats = db_stats_counts.is_some();
     let mut evm = if db_stats {
-        Evm::<BaseEvmTypes>::new(
-            spec,
-            block,
-            ethereum_tx_registry(spec),
-            DbStats::new(database.clone()),
-            Precompiles::base(spec),
-        )
+        Evm::<BaseEvmTypes>::ethereum(spec, block, DbStats::new(database.clone()))
     } else {
-        Evm::<BaseEvmTypes>::new(
-            spec,
-            block,
-            ethereum_tx_registry(spec),
-            database.clone(),
-            Precompiles::base(spec),
-        )
+        Evm::<BaseEvmTypes>::ethereum(spec, block, database.clone())
     };
     resources.configure_evm(&mut evm);
     if trace {

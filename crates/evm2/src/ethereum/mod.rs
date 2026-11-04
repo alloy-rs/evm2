@@ -1096,13 +1096,8 @@ mod tests {
             }),
             caller,
         );
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::BERLIN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::BERLIN),
-            database,
-            Precompiles::base(SpecId::BERLIN),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::BERLIN, BlockEnvExt::default(), database);
 
         assert_eq!(
             evm.transact(&tx).map(|executed| executed.discard()),
@@ -1464,12 +1459,10 @@ mod tests {
         #[values(MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM + 1)]
         gas_limit: u64,
     ) {
-        let mut evm = Evm::<BaseEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::ethereum(
             SpecId::AMSTERDAM,
             BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::AMSTERDAM),
             InMemoryDB::default(),
-            Precompiles::base(SpecId::AMSTERDAM),
         );
         let tx = Recovered::new_unchecked(
             TxEnvelope::Eip2930(TxEip2930 {

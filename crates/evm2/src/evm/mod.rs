@@ -3094,13 +3094,8 @@ mod tests {
                 AccountInfo::default().with_nonce(1).with_code(legacy_bytecode(code)),
             );
         }
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            database,
-            Precompiles::base(SpecId::CANCUN),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, BlockEnvExt::default(), database);
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
                 to: TxKind::Call(target),
@@ -4515,13 +4510,8 @@ mod tests {
             TxEnvelope::Legacy(TxLegacy { gas_limit: 1_000_000, to, ..TxLegacy::default() }),
             caller,
         );
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::OSAKA),
-            database,
-            Precompiles::base(SpecId::OSAKA),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::OSAKA, BlockEnvExt::default(), database);
         let error = ExecutionError::Fatal("inspector failed".into());
         let steps = Arc::new(AtomicUsize::new(0));
         evm.set_inspector(FailingInspector {
@@ -4787,13 +4777,8 @@ mod tests {
                 AccountInfo::default().with_nonce(1).with_code(legacy_bytecode(code)),
             );
         }
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            database,
-            Precompiles::base(SpecId::CANCUN),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, BlockEnvExt::default(), database);
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
                 to: TxKind::Call(target),
@@ -4843,13 +4828,8 @@ mod tests {
             &target,
             AccountInfo::default().with_nonce(1).with_code(legacy_bytecode(code)),
         );
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            database,
-            Precompiles::base(SpecId::CANCUN),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, BlockEnvExt::default(), database);
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
                 to: TxKind::Call(target),

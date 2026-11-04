@@ -292,12 +292,10 @@ mod tests {
             ..Default::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
-        let mut host = Evm::<BaseEvmTypes>::new(
+        let mut host = Evm::<BaseEvmTypes>::ethereum(
             SpecId::CANCUN,
             BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
             EmptyDB::default(),
-            Precompiles::base(SpecId::CANCUN),
         );
 
         assert_eq!(run_interpreter(&JitBackend::disabled(), &mut interpreter, &mut host), None);
@@ -312,12 +310,10 @@ mod tests {
             ..Default::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
-        let mut host = Evm::<BaseEvmTypes>::new(
+        let mut host = Evm::<BaseEvmTypes>::ethereum(
             SpecId::CANCUN,
             BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
             EmptyDB::default(),
-            Precompiles::base(SpecId::CANCUN),
         );
 
         let backend = blocking_backend();
@@ -378,13 +374,8 @@ mod tests {
                 .with_code(Bytecode::new_legacy(Bytes::copy_from_slice(BYTECODE_RET42))),
         );
         let backend = blocking_backend();
-        let mut host = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            database,
-            Precompiles::base(SpecId::CANCUN),
-        );
+        let mut host =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, BlockEnvExt::default(), database);
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         // The call output overwrites the word stored before it.
         let mut code = vec![op::PUSH1, 0x69, op::PUSH0, op::MSTORE];
@@ -424,13 +415,8 @@ mod tests {
         let mut database = InMemoryDB::default();
         database.insert_account_info(&creator, AccountInfo::default());
         let backend = blocking_backend();
-        let mut host = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            database,
-            Precompiles::base(SpecId::CANCUN),
-        );
+        let mut host =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, BlockEnvExt::default(), database);
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         let code = [
             op::PUSH10,
@@ -494,13 +480,8 @@ mod tests {
             ]))),
         );
         let backend = blocking_backend();
-        let mut host = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            database,
-            Precompiles::base(SpecId::CANCUN),
-        );
+        let mut host =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, BlockEnvExt::default(), database);
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         let code = vec![
             op::PUSH1,
@@ -563,13 +544,8 @@ mod tests {
             AccountInfo::default().with_balance(initial_beneficiary_balance),
         );
         let backend = blocking_backend();
-        let mut host = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            database,
-            Precompiles::base(SpecId::CANCUN),
-        );
+        let mut host =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, BlockEnvExt::default(), database);
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         let code = vec![
             op::PUSH1,
@@ -641,13 +617,8 @@ mod tests {
                     .with_code(Bytecode::new_legacy(Bytes::from(staticcall_gas_leaf_code()))),
             );
             let backend = blocking_backend();
-            let mut host = Evm::<BaseEvmTypes>::new(
-                SpecId::CANCUN,
-                BlockEnvExt::default(),
-                ethereum_tx_registry(SpecId::CANCUN),
-                database,
-                Precompiles::base(SpecId::CANCUN),
-            );
+            let mut host =
+                Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, BlockEnvExt::default(), database);
             host.tx_env_mut().gas_price = Word::from(10);
             host.state_mut().prewarm(&caller);
             host.state_mut().prewarm(&outer);
@@ -723,12 +694,10 @@ mod tests {
                         AccountInfo::default()
                             .with_code(Bytecode::new_legacy(Bytes::from_static(BYTECODE_RET42))),
                     );
-                    let mut host = Evm::<BaseEvmTypes>::new(
+                    let mut host = Evm::<BaseEvmTypes>::ethereum(
                         SpecId::PRAGUE,
                         BlockEnvExt::default(),
-                        ethereum_tx_registry(SpecId::PRAGUE),
                         database,
-                        Precompiles::base(SpecId::PRAGUE),
                     );
                     host.warm_precompiles();
                     host.state_mut().prewarm(&caller);

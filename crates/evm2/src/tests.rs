@@ -304,13 +304,7 @@ fn unsigned(authorization: Authorization) -> SignedAuthorization {
 }
 
 fn absent_authority_evm(spec: SpecId, touched: Address) -> TestEvm {
-    let mut evm = TestEvm::new(
-        spec,
-        BlockEnvExt::default(),
-        ethereum_tx_registry(spec),
-        InMemoryDB::default(),
-        Precompiles::base(spec),
-    );
+    let mut evm = TestEvm::ethereum(spec, BlockEnvExt::default(), InMemoryDB::default());
     evm.state.account(&touched).unwrap().touch();
     evm
 }
@@ -634,13 +628,7 @@ fn apply_auth_list_accepts_custom_filtered_authorizations() {
     for address in [applied, skipped] {
         database.insert_account_info(&address, AccountInfo::default().with_nonce(1));
     }
-    let mut evm = TestEvm::new(
-        SpecId::PRAGUE,
-        BlockEnvExt::default(),
-        ethereum_tx_registry(SpecId::PRAGUE),
-        database,
-        Precompiles::base(SpecId::PRAGUE),
-    );
+    let mut evm = TestEvm::ethereum(SpecId::PRAGUE, BlockEnvExt::default(), database);
     let mut refunds = AuthRefunds::new(evm.version());
 
     let oog = apply_auth_list(

@@ -2,10 +2,10 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, hex, keccak256, map::B256Map};
 use clap::ValueEnum;
 use evm2::{
-    BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId, Version,
+    BaseEvmTypes, Evm, InterpreterRunner, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, BlockEnvExt},
-    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    ethereum::{RecoveredTxEnvelope, TxEnvelope},
     evm::{AccountInfo, InMemoryDB},
     interpreter::{InstrStop, Interpreter},
 };
@@ -619,13 +619,7 @@ impl PreparedBench {
     }
 
     fn new_evm(&self) -> Evm<'static, BaseEvmTypes> {
-        Evm::new(
-            self.spec_id,
-            self.block,
-            ethereum_tx_registry(self.spec_id),
-            self.db.clone(),
-            Precompiles::base(self.spec_id),
-        )
+        Evm::ethereum(self.spec_id, self.block, self.db.clone())
     }
 }
 

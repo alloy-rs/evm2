@@ -954,12 +954,10 @@ mod tests {
     #[test]
     fn system_call_async_succeeds_after_database_error() {
         let contract = Address::from([0x42; 20]);
-        let mut evm = Evm::<BaseEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::ethereum(
             SpecId::OSAKA,
             BlockEnvExt::default(),
-            crate::ethereum::ethereum_tx_registry(SpecId::OSAKA),
             Db::new(FailOnceAccountDb { fail_next_account: true }),
-            Precompiles::base(SpecId::OSAKA),
         );
         let tx = Recovered::new_unchecked(
             crate::ethereum::TxEnvelope::Legacy(TxLegacy {
@@ -983,12 +981,10 @@ mod tests {
         let caller = Address::ZERO;
         let contract = Address::from([0x42; 20]);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
-        let mut evm = Evm::<BaseEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::ethereum(
             SpecId::OSAKA,
             BlockEnvExt::default(),
-            crate::ethereum::ethereum_tx_registry(SpecId::OSAKA),
             AsyncDb::new(CancellingDb { contract, code }),
-            Precompiles::base(SpecId::OSAKA),
         );
         evm.evm_is_send::<AsyncDb<CancellingDb>, Precompiles<BaseEvmTypes>>();
         let tx = Recovered::new_unchecked(

@@ -5,9 +5,9 @@ use alloy_eip2930::AccessList;
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypesHost, Inspector, InspectorConfig, NoopInspector, Precompiles,
-    TxResult, TxResultWithState, env as evm_env,
-    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    BaseEvmTypes, Evm, EvmTypesHost, Inspector, InspectorConfig, NoopInspector, TxResult,
+    TxResultWithState, env as evm_env,
+    ethereum::{RecoveredTxEnvelope, TxEnvelope},
     evm::PendingState,
     interpreter::{Interpreter, Message, MessageResult},
     registry::HandlerError,
@@ -302,13 +302,7 @@ impl Context {
         tx: TxEnv,
         inspector: Option<*mut I>,
     ) -> Result<ResultAndState, HandlerError> {
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            self.spec,
-            self.block,
-            ethereum_tx_registry(self.spec),
-            self.db.clone(),
-            Precompiles::base(self.spec),
-        );
+        let mut evm = Evm::<BaseEvmTypes>::ethereum(self.spec, self.block, self.db.clone());
         if let Some(inspector) = inspector {
             evm.set_inspector(RawInspector { inspector });
         }

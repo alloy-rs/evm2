@@ -447,7 +447,7 @@ mod tests {
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
-        ethereum::{TxEnvelope, ethereum_tx_registry},
+        ethereum::TxEnvelope,
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
             GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageKind,
@@ -2115,13 +2115,8 @@ mod tests {
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::OSAKA),
-            database,
-            Precompiles::base(SpecId::OSAKA),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::OSAKA, BlockEnvExt::default(), database);
         evm.set_inspector(SharedE2eInspector::default());
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
@@ -2155,13 +2150,8 @@ mod tests {
             &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::AMSTERDAM,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::AMSTERDAM),
-            database,
-            Precompiles::base(SpecId::AMSTERDAM),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::AMSTERDAM, BlockEnvExt::default(), database);
         evm.set_inspector(SharedE2eInspector::default());
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
@@ -2191,13 +2181,8 @@ mod tests {
             &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::OSAKA),
-            database,
-            Precompiles::base(SpecId::OSAKA),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::OSAKA, BlockEnvExt::default(), database);
         evm.set_inspector(SharedE2eInspector::default());
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
@@ -2285,13 +2270,8 @@ mod tests {
                 &target,
                 AccountInfo::default().with_code(legacy_bytecode(code.clone())),
             );
-            let mut evm = Evm::<BaseEvmTypes>::new(
-                SpecId::OSAKA,
-                BlockEnvExt::default(),
-                ethereum_tx_registry(SpecId::OSAKA),
-                database,
-                Precompiles::base(SpecId::OSAKA),
-            );
+            let mut evm =
+                Evm::<BaseEvmTypes>::ethereum(SpecId::OSAKA, BlockEnvExt::default(), database);
             evm.set_inspector(CheckpointInspector::default());
             let tx = Recovered::new_unchecked(
                 TxEnvelope::Legacy(TxLegacy {
@@ -2378,13 +2358,8 @@ mod tests {
             &target,
             AccountInfo::default().with_nonce(1).with_code(legacy_bytecode(code)),
         );
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::OSAKA),
-            database,
-            Precompiles::base(SpecId::OSAKA),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::OSAKA, BlockEnvExt::default(), database);
         evm.set_inspector(CheckpointInspector::default());
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {

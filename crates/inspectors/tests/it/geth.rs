@@ -643,13 +643,7 @@ fn test_geth_erc7562_bounds_retained_preimages() {
     for (limit, preimages) in [(121, Some(2)), (120, None)] {
         let mut inspector = Erc7562Inspector::new(Erc7562Config::default())
             .with_limits(TraceLimits::default().set_max_recorded_bytes(Some(limit)));
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            spec,
-            block,
-            ethereum_tx_registry(spec),
-            db.clone(),
-            Precompiles::base(spec),
-        );
+        let mut evm = Evm::<BaseEvmTypes>::ethereum(spec, block, db.clone());
         evm.set_inspector(&mut inspector);
         let tx = TxEnv {
             gas_limit: 1_000_000,
@@ -714,21 +708,9 @@ fn test_geth_erc7562_reports_a_failed_state_read() {
     for fails in [false, true] {
         let mut inspector = Erc7562Inspector::new(Erc7562Config::default());
         let mut evm = if fails {
-            Evm::<BaseEvmTypes>::new(
-                spec,
-                block,
-                ethereum_tx_registry(spec),
-                NoStorageDb(db.clone()),
-                Precompiles::base(spec),
-            )
+            Evm::<BaseEvmTypes>::ethereum(spec, block, NoStorageDb(db.clone()))
         } else {
-            Evm::<BaseEvmTypes>::new(
-                spec,
-                block,
-                ethereum_tx_registry(spec),
-                db.clone(),
-                Precompiles::base(spec),
-            )
+            Evm::<BaseEvmTypes>::ethereum(spec, block, db.clone())
         };
         evm.set_inspector(&mut inspector);
         let res = evm.transact(&envelope).unwrap().detach();
@@ -759,13 +741,7 @@ fn test_geth_erc7562_contract_size_reads_accepted_state() {
     let mut inspector =
         DebugInspector::new(GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default()))
             .unwrap();
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        spec,
-        block,
-        ethereum_tx_registry(spec),
-        db.clone(),
-        Precompiles::base(spec),
-    );
+    let mut evm = Evm::<BaseEvmTypes>::ethereum(spec, block, db.clone());
     // The code is in the accepted state only, like that of an earlier transaction of the block.
     evm.overlay_db_mut().insert_account_info(
         &target,

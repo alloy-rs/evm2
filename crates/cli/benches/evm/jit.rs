@@ -2,9 +2,9 @@ use crate::fixture::Suites;
 use alloy_primitives::{B256, hex, map::B256Map};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
-    BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId,
+    BaseEvmTypes, Evm, InterpreterRunner, SpecId,
     env::BlockEnv,
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    ethereum::RecoveredTxEnvelope,
     evm::InMemoryDB,
     interpreter::{InstrStop, Interpreter},
 };
@@ -171,7 +171,7 @@ impl PreparedBench {
     }
 
     fn run_interpreter(&self) -> evm2::registry::HandlerResult<evm2::TxResult> {
-        let mut evm = new_evm(self.spec, self.block, self.db.clone());
+        let mut evm = BenchEvm::ethereum(self.spec, self.block, self.db.clone());
         evm.transact(&self.tx).map(evm2::ExecutedTx::commit)
     }
 
@@ -188,7 +188,7 @@ struct Runner {
 
 impl Runner {
     fn new(prepared: &PreparedBench) -> Self {
-        let mut evm = new_evm(prepared.spec, prepared.block, prepared.db.clone());
+        let mut evm = BenchEvm::ethereum(prepared.spec, prepared.block, prepared.db.clone());
         evm.set_interpreter_runner(FixedJitRunner { functions: Arc::clone(&prepared.functions) });
         Self { evm, tx: prepared.tx.clone() }
     }
@@ -216,10 +216,6 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter.prepare_run(host);
         Some(unsafe { func.call_with_interpreter(interpreter) })
     }
-}
-
-fn new_evm(spec: SpecId, block: BlockEnv, db: InMemoryDB) -> BenchEvm {
-    Evm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
 }
 
 fn new_compiler(opt_level: OptimizationLevel) -> LlvmCompiler {

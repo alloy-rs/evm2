@@ -4,8 +4,8 @@ use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, Bytes, U256, hex, map::HashSet};
 use alloy_rpc_types_trace::parity::{TraceResults, TraceType};
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles,
-    ethereum::{LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    BaseEvmTypes, Evm,
+    ethereum::{LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope},
 };
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
@@ -16,13 +16,7 @@ fn trace(db: CacheDB<EmptyDB>, tx: TxEnv) -> TraceResults {
 fn trace_envelope(mut db: CacheDB<EmptyDB>, tx: RecoveredTxEnvelope) -> TraceResults {
     let types = HashSet::from_iter([TraceType::VmTrace]);
     let mut inspector = TracingInspector::new(TracingInspectorConfig::from_parity_config(&types));
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        SpecId::PRAGUE,
-        Default::default(),
-        ethereum_tx_registry(SpecId::PRAGUE),
-        db.clone(),
-        Precompiles::base(SpecId::PRAGUE),
-    );
+    let mut evm = Evm::<BaseEvmTypes>::ethereum(SpecId::PRAGUE, Default::default(), db.clone());
     evm.set_inspector(&mut inspector);
     let result = evm.transact(&tx).unwrap().detach();
     drop(evm);

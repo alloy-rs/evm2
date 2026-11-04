@@ -1123,10 +1123,9 @@ mod tests {
     use alloc::vec::Vec;
     use alloy_primitives::Address;
     use evm2::{
-        BaseEvmTypes, Evm, Precompiles, SpecId,
+        BaseEvmTypes, Evm, SpecId,
         constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
-        ethereum::ethereum_tx_registry,
         evm::{AccountInfo, EmptyDB, InMemoryDB, inspector::Inspector},
         interpreter::{GasTracker, Message, MessageResult, MessageResultExt, op},
     };
@@ -1206,13 +1205,7 @@ mod tests {
     }
 
     fn base_evm(spec_id: SpecId) -> Evm<'static, BaseEvmTypes> {
-        Evm::<BaseEvmTypes>::new(
-            spec_id,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(spec_id),
-            EmptyDB::default(),
-            Precompiles::base(spec_id),
-        )
+        Evm::<BaseEvmTypes>::ethereum(spec_id, BlockEnvExt::default(), EmptyDB::default())
     }
 
     fn prepare_frame<'ctx, 'frame, 'host>(
@@ -1497,13 +1490,8 @@ mod tests {
                     &contract,
                     AccountInfo { balance, nonce, ..Default::default() },
                 );
-                let mut host = Evm::<BaseEvmTypes>::new(
-                    SpecId::AMSTERDAM,
-                    BlockEnvExt::default(),
-                    ethereum_tx_registry(SpecId::AMSTERDAM),
-                    db,
-                    Precompiles::base(SpecId::AMSTERDAM),
-                );
+                let mut host =
+                    Evm::<BaseEvmTypes>::ethereum(SpecId::AMSTERDAM, BlockEnvExt::default(), db);
                 host.set_inspector(MessageInspector::default());
                 let message = MessageExt {
                     depth,

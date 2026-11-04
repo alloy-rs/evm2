@@ -49,13 +49,7 @@ fn inspect_with_limits(
         );
     }
     let mut inspector = TracingInspector::new(config).with_limits(limits);
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        SpecId::PRAGUE,
-        Default::default(),
-        ethereum_tx_registry(SpecId::PRAGUE),
-        db,
-        Precompiles::base(SpecId::PRAGUE),
-    );
+    let mut evm = Evm::<BaseEvmTypes>::ethereum(SpecId::PRAGUE, Default::default(), db);
     evm.set_inspector(&mut inspector);
     let tx = TxEnv::builder()
         .gas_limit(1_000_000)

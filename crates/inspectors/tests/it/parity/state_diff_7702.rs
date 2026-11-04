@@ -3,9 +3,9 @@ use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, U64, U256, hex, map::HashSet};
 use alloy_rpc_types_trace::parity::{Delta, TraceType};
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles, SpecId,
+    BaseEvmTypes, Evm, SpecId,
     bytecode::Bytecode,
-    ethereum::{LazyTxEip7702, TxEnvelope, ethereum_tx_registry},
+    ethereum::{LazyTxEip7702, TxEnvelope},
     evm::{AccountInfo, CacheDB, EmptyDB},
 };
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
@@ -36,13 +36,8 @@ fn authorization_code_changes() {
                 )),
             );
             let mut inspector = TracingInspector::new(TracingInspectorConfig::default_parity());
-            let mut evm = Evm::<BaseEvmTypes>::new(
-                SpecId::PRAGUE,
-                Default::default(),
-                ethereum_tx_registry(SpecId::PRAGUE),
-                db.clone(),
-                Precompiles::base(SpecId::PRAGUE),
-            );
+            let mut evm =
+                Evm::<BaseEvmTypes>::ethereum(SpecId::PRAGUE, Default::default(), db.clone());
             evm.set_inspector(&mut inspector);
             let tx = Recovered::new_unchecked(
                 TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(

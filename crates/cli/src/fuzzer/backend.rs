@@ -51,13 +51,7 @@ impl EvmBackend for Evm2Backend {
             evm.set_database(evm2_db(case));
             evm
         } else {
-            self.evm.insert(Evm::new(
-                case.spec,
-                case.block.evm2(),
-                ethereum_tx_registry(case.spec),
-                evm2_db(case),
-                Precompiles::base(case.spec),
-            ))
+            self.evm.insert(Evm::ethereum(case.spec, case.block.evm2(), evm2_db(case)))
         };
         let mut receipts = Vec::with_capacity(1 + case.extra_txs.len());
         for tx in case.txs() {

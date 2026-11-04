@@ -1128,9 +1128,9 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
     use boa_engine::error::{EngineError, RuntimeLimitError};
     use evm2::{
-        BaseEvmTypes, Evm, Precompiles, SpecId, Version,
+        BaseEvmTypes, Evm, SpecId, Version,
         bytecode::Bytecode,
-        ethereum::{TxEnvelope, ethereum_tx_registry, intrinsic_and_floor_gas},
+        ethereum::{TxEnvelope, intrinsic_and_floor_gas},
         evm::{AccountInfo, CacheDB, EmptyDB},
         interpreter::{Host, op},
     };
@@ -1314,12 +1314,10 @@ mod tests {
             },
         );
 
-        let mut evm = Evm::<BaseEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::ethereum(
             SpecId::CANCUN,
             evm2::env::BlockEnvExt { basefee, ..Default::default() },
-            ethereum_tx_registry(SpecId::CANCUN),
             db,
-            Precompiles::base(SpecId::CANCUN),
         );
         evm.set_inspector(insp);
 
@@ -1830,13 +1828,8 @@ mod tests {
         );
 
         let mut inspector = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            evm2::env::BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            db,
-            Precompiles::base(SpecId::CANCUN),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, evm2::env::BlockEnvExt::default(), db);
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
                 gas_limit: 1_000_000,
@@ -1907,13 +1900,8 @@ mod tests {
             },
         );
         let mut inspector = JsInspector::new(code.to_string(), json!({})).unwrap();
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            evm2::env::BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            db,
-            Precompiles::base(SpecId::CANCUN),
-        );
+        let mut evm =
+            Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, evm2::env::BlockEnvExt::default(), db);
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
                 gas_limit: 1_000_000,
@@ -2022,13 +2010,8 @@ mod tests {
                 result: function(ctx) { return toHex(ctx.to); }
             }"#;
             let inspector = JsInspector::new(script.to_string(), serde_json::Value::Null).unwrap();
-            let mut evm = Evm::<BaseEvmTypes>::new(
-                spec,
-                evm2::env::BlockEnvExt::default(),
-                ethereum_tx_registry(spec),
-                db,
-                Precompiles::base(spec),
-            );
+            let mut evm =
+                Evm::<BaseEvmTypes>::ethereum(spec, evm2::env::BlockEnvExt::default(), db);
             evm.set_inspector(inspector);
             let gas_limit = if runtime_oog {
                 let version = Version::base(spec);

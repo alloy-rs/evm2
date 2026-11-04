@@ -1,10 +1,9 @@
 use super::*;
 use crate::{
-    BaseEvmTypes, Precompiles, SpecId,
+    BaseEvmTypes, SpecId,
     block::BlockExecutionError,
     bytecode::Bytecode,
     env::BlockEnvExt,
-    ethereum::ethereum_tx_registry,
     evm::{
         AccountInfo, BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
         InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
@@ -52,7 +51,7 @@ fn evm_with(spec: SpecId, gas_limit: u64, database: InMemoryDB) -> Evm<'static, 
         gas_limit: U256::from(gas_limit),
         ..BlockEnvExt::default()
     };
-    Evm::new(spec, block, ethereum_tx_registry(spec), database, Precompiles::base(spec))
+    Evm::ethereum(spec, block, database)
 }
 
 fn ctx<'a>() -> EthBlockExecutionCtx<'a> {

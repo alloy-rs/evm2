@@ -1,9 +1,8 @@
 use super::*;
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles,
+    BaseEvmTypes, Evm,
     bytecode::Bytecode,
     env::{BlockEnv, BlockEnvExt, TxEnv},
-    ethereum::ethereum_tx_registry,
     evm::{AccountInfo, InMemoryDB},
     interpreter::{Gas, InstrStop, Interpreter, Message},
 };
@@ -348,13 +347,7 @@ impl HostState {
 }
 
 fn prepare_host(spec_id: SpecId) -> Evm<'static, BaseEvmTypes> {
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        spec_id,
-        def_block_env(),
-        ethereum_tx_registry(spec_id),
-        def_database(),
-        Precompiles::base(spec_id),
-    );
+    let mut evm = Evm::<BaseEvmTypes>::ethereum(spec_id, def_block_env(), def_database());
     *evm.tx_env_mut() = def_tx_env();
     for address in [Address::ZERO, DEF_ADDR, DEF_CALLER, OTHER_ADDR, Address::with_last_byte(0x69)]
     {

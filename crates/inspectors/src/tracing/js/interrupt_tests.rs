@@ -6,10 +6,10 @@ use alloy_primitives::hex;
 use boa_engine::NativeFunction;
 use boa_gc::{Finalize, Trace};
 use evm2::{
-    BaseEvmTypes, Precompiles, SpecId,
+    BaseEvmTypes, SpecId,
     bytecode::Bytecode,
     env::BlockEnvExt,
-    ethereum::{TxEnvelope, ethereum_tx_registry},
+    ethereum::TxEnvelope,
     evm::{AccountInfo, CacheDB, EmptyDB},
     registry::HandlerError,
 };
@@ -144,12 +144,10 @@ fn interrupt_before_step_end_skips_callback_and_preserves_error() {
         inspector.step_end(&mut interp);
         assert!(!inspector.pending_steps[0].active);
         assert_eq!(interp.result(), Err(InstrStop::FatalExternalError));
-        let mut evm = Evm::<BaseEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::ethereum(
             SpecId::CANCUN,
             BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
             EmptyDB::default(),
-            Precompiles::base(SpecId::CANCUN),
         );
         assert_eq!(interp.run(&mut evm).unwrap_err().to_string(), error.to_string());
     }
@@ -252,13 +250,7 @@ fn run(
         &TARGET,
         AccountInfo::default().with_code(Bytecode::new_raw(code.to_vec().into())),
     );
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        SpecId::CANCUN,
-        BlockEnvExt::default(),
-        ethereum_tx_registry(SpecId::CANCUN),
-        db,
-        Precompiles::base(SpecId::CANCUN),
-    );
+    let mut evm = Evm::<BaseEvmTypes>::ethereum(SpecId::CANCUN, BlockEnvExt::default(), db);
     evm.set_inspector(inspector);
     let result = evm.transact(&transaction(kind)).map(|result| result.detach());
     (*evm.clear_inspector_as::<JsInspector>().unwrap(), result)
