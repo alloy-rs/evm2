@@ -1,4 +1,5 @@
 use super::*;
+use alloy_primitives::address;
 use evm2::{
     BaseEvmTypes, Evm, Precompiles,
     bytecode::Bytecode,
@@ -58,11 +59,11 @@ impl DefEnv {
 pub fn def_env() -> DefEnv {
     DefEnv {
         tx: DefTx {
-            caller: Address::new(hex!("cc0102030405060708090a0b0c0d0e0f101112dd")),
+            caller: address!("cc0102030405060708090a0b0c0d0e0f101112dd"),
             blob_hashes: vec![B256::repeat_byte(0x01), B256::repeat_byte(0x02)],
         },
         block: DefBlock {
-            coinbase: Address::new(hex!("cb1112131415161718191a1b1c1d1e1f202122ee")),
+            coinbase: address!("cb1112131415161718191a1b1c1d1e1f202122ee"),
             timestamp: uint!(0x01_0000000000000002_0000000000001234_U256),
             number: DEF_BN,
             difficulty: uint!(0x03_0000000000000004_000000000000cdef_U256),
@@ -187,8 +188,8 @@ pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
 pub fn def_storage() -> &'static HashMap<U256, U256> {
     DEF_STORAGE.get_or_init(|| {
         let mut map = HashMap::default();
-        map.insert(U256::from(0), U256::from(1));
-        map.insert(U256::from(1), U256::from(2));
+        map.insert(U256::ZERO, U256::ONE);
+        map.insert(U256::ONE, U256::from(2));
         map.insert(U256::from(69), U256::from(42));
         map
     })
@@ -318,7 +319,7 @@ fn def_database() -> InMemoryDB {
     for (key, value) in def_storage() {
         database.insert_account_storage(&DEF_ADDR, key, value);
     }
-    for number in [DEF_BN - U256::from(1), DEF_BN - U256::from(255), DEF_BN - U256::from(256)] {
+    for number in [DEF_BN - U256::ONE, DEF_BN - U256::from(255), DEF_BN - U256::from(256)] {
         database.insert_block_hash(&number, &number.into());
     }
     database
@@ -334,8 +335,8 @@ pub struct HostState {
 impl HostState {
     fn from_evm(evm: &mut Evm<'_, BaseEvmTypes>) -> Self {
         let keys = [
-            U256::from(0),
-            U256::from(1),
+            U256::ZERO,
+            U256::ONE,
             U256::from(69),
             U256::from(70),
             U256::from(200),
@@ -375,14 +376,9 @@ fn prepare_host(spec_id: SpecId) -> Evm<'static, BaseEvmTypes> {
     {
         evm.state_mut().prewarm(&address);
     }
-    for key in [
-        U256::from(0),
-        U256::from(1),
-        U256::from(69),
-        U256::from(70),
-        U256::from(200),
-        U256::from(0xff),
-    ] {
+    for key in
+        [U256::ZERO, U256::ONE, U256::from(69), U256::from(70), U256::from(200), U256::from(0xff)]
+    {
         evm.state_mut().prewarm_storage_slot(&DEF_ADDR, key);
     }
     evm

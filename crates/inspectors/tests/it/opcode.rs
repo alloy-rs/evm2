@@ -6,7 +6,7 @@ use evm2_inspectors::opcode::OpcodeGasInspector;
 #[test]
 fn opcode_gas_records_parent_call_after_child_execution() {
     let child = address!("0000000000000000000000000000000000001234");
-    let parent = address!("0000000000000000000000000000000000000022");
+    let parent = Address::with_last_byte(0x22);
 
     let parent_code = Bytecode::new_legacy(
         [
@@ -77,7 +77,7 @@ fn opcode_gas_records_parent_call_after_child_execution() {
 
 #[test]
 fn opcode_gas_excludes_uncharged_sentry_gas() {
-    let target = address!("0000000000000000000000000000000000000022");
+    let target = Address::with_last_byte(0x22);
     let code = Bytecode::new_legacy([op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP].into());
     for (gas_limit, expected_cost, success) in
         [(23_306, 0, false), (24_000, 2_994, false), (100_000, 22_100, true)]
@@ -108,7 +108,7 @@ fn opcode_gas_excludes_uncharged_sentry_gas() {
 
 #[test]
 fn opcode_gas_preserves_cold_call_out_of_gas() {
-    let target = address!("0000000000000000000000000000000000000022");
+    let target = Address::with_last_byte(0x22);
     let code = Bytecode::new_legacy(
         [
             op::PUSH1,

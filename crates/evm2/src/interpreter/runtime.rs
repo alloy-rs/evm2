@@ -836,8 +836,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
-        self.0.pc = pc.as_ptr();
-        self.0.stack_len = stack_len;
+        self.set_pc_stack_len(pc.as_ptr(), stack_len);
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
@@ -846,8 +845,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
-        self.0.pc = pc.as_ptr();
-        self.0.stack_len = stack_len;
+        self.set_pc_stack_len(pc.as_ptr(), stack_len);
         let reload = self.0.result == Err(InstrStop::Reload);
         if reload {
             cold_path();

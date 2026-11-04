@@ -495,6 +495,7 @@ unsafe impl Trace for PrecompileList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::uint;
 
     #[test]
     fn test_install_bigint() {
@@ -520,13 +521,10 @@ mod tests {
         // Test various U256 values through to_bigint
         let test_cases = vec![
             (U256::ZERO, "0"),
-            (U256::from(1u64), "1"),
+            (U256::ONE, "1"),
             (U256::from(42u64), "42"),
             (U256::from(u64::MAX), "18446744073709551615"),
-            (
-                U256::from_str_radix("123456789012345678901234567890", 10).unwrap(),
-                "123456789012345678901234567890",
-            ),
+            (uint!(123456789012345678901234567890_U256), "123456789012345678901234567890"),
         ];
 
         for (value, expected) in test_cases {
@@ -538,9 +536,9 @@ mod tests {
 
         // Values above 64 and 128 bits take different construction paths
         for value in [
-            U256::from(u64::MAX) + U256::from(1),
+            U256::from(u64::MAX) + U256::ONE,
             U256::from(u128::MAX),
-            U256::from(u128::MAX) + U256::from(1),
+            U256::from(u128::MAX) + U256::ONE,
             U256::from_limbs([
                 0x0123456789abcdef,
                 0xfedcba9876543210,

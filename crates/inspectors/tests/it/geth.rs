@@ -10,7 +10,7 @@ use crate::utils::{
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{
-    Address, B256, Bytes, Log, TxKind, U256, address, hex, keccak256, map::HashMap,
+    Address, B256, Bytes, Log, TxKind, U256, address, bytes, hex, keccak256, map::HashMap,
 };
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
@@ -109,7 +109,7 @@ fn test_calltracer_eip7702_call_targets() {
             db.insert_account_info(
                 &implementation,
                 AccountInfo {
-                    code: Some(Bytecode::new_raw(hex!("602a60005260206000f3").into())),
+                    code: Some(Bytecode::new_raw(bytes!("602a60005260206000f3"))),
                     ..Default::default()
                 },
             );
@@ -462,7 +462,7 @@ fn test_geth_erc7562_counts_like_geth() {
     }
     code.push(op::STOP);
     let target_code = Bytes::from_static(&[op::STOP]);
-    let failing_code = Bytes::from_static(&hex!("6001600020"));
+    let failing_code = bytes!("6001600020");
 
     let mut db = CacheDB::<EmptyDB>::default();
     for (address, code) in [
@@ -570,7 +570,7 @@ fn test_geth_erc7562_accessed_slots_and_ignored_opcodes() {
         &contract,
         AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
     );
-    db.insert_account_storage(&contract, &U256::from(1), &U256::from(0x2a));
+    db.insert_account_storage(&contract, &U256::ONE, &U256::from(0x2a));
     db.insert_account_storage(&contract, &U256::from(2), &U256::from(0x2b));
 
     // Only `SLOAD` and `STOP` are ignored, which is not the default list.
@@ -817,7 +817,7 @@ fn test_geth_erc7562_records_warm_first_reads() {
                     },
                 );
             }
-            db.insert_account_storage(&outer, &U256::from(1), &U256::from(0x2a));
+            db.insert_account_storage(&outer, &U256::ONE, &U256::from(0x2a));
         });
 
     let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default());
@@ -839,8 +839,8 @@ fn test_geth_erc7562_records_warm_first_reads() {
     let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
     let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
 
-    let slot = B256::from(U256::from(1));
-    let value = B256::from(U256::from(0x2a));
+    let slot = B256::with_last_byte(1);
+    let value = B256::with_last_byte(0x2a);
     assert_eq!(frame.accessed_slots.reads[&slot], vec![value]);
     assert_eq!(frame.calls.len(), 1);
     assert_eq!(frame.calls[0].accessed_slots.reads[&slot], vec![value]);
@@ -935,7 +935,7 @@ fn test_geth_state_gas_tracer() {
     let (trace, gas) = trace_contract(
         SpecId::AMSTERDAM,
         GethDebugTracingOptions::state_gas_tracer(),
-        hex!("600160005500").into(),
+        bytes!("600160005500"),
     );
     assert!(gas.state_gas_spent() > 0);
 
@@ -1309,7 +1309,7 @@ fn test_geth_calltracer_top_call_reverting() {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
-            data: hex!("0332ed13").into(), // nestedEmitWithFailureAfterNestedEmit() selector
+            data: bytes!("0332ed13"), // nestedEmitWithFailureAfterNestedEmit() selector
             nonce: 1,
             ..Default::default()
         })
@@ -1342,7 +1342,7 @@ fn test_geth_calltracer_top_call_reverting() {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr2),
-            data: hex!("0332ed13").into(), // nestedEmitWithFailureAfterNestedEmit() selector
+            data: bytes!("0332ed13"), // nestedEmitWithFailureAfterNestedEmit() selector
             nonce: 1,
             ..Default::default()
         })
@@ -1399,7 +1399,7 @@ fn test_geth_calltracer_nested_revert() {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
-            data: hex!("c8cc8494").into(), // nestedRevert() selector
+            data: bytes!("c8cc8494"), // nestedRevert() selector
             nonce: 1,
             ..Default::default()
         })
@@ -1432,7 +1432,7 @@ fn test_geth_calltracer_nested_revert() {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr2),
-            data: hex!("c8cc8494").into(), // nestedRevert() selector
+            data: bytes!("c8cc8494"), // nestedRevert() selector
             nonce: 1,
             ..Default::default()
         })
@@ -1469,7 +1469,7 @@ fn test_geth_calltracer_nested_revert() {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr3),
-            data: hex!("c8cc8494").into(), // nestedRevert() selector
+            data: bytes!("c8cc8494"), // nestedRevert() selector
             nonce: 1,
             ..Default::default()
         })
@@ -1527,7 +1527,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
                 caller: deployer,
                 gas_limit: 1000000,
                 kind: TransactTo::Call(addr),
-                data: hex!("8384a002").into(), // nestedEmitWithSuccess() selector
+                data: bytes!("8384a002"), // nestedEmitWithSuccess() selector
                 nonce: 1,
                 ..Default::default()
             })
@@ -1663,7 +1663,7 @@ fn test_geth_calltracer_null_bytes_revert_reason_omitted() {
         .inspect_tx(TxEnv {
             caller: deployer,
             kind: TxKind::Call(addr),
-            data: hex!("3bc5de30").into(), // call function selector
+            data: bytes!("3bc5de30"), // call function selector
             gas_limit: 1_000_000,
             nonce: 1, // Set correct nonce after contract deployment
             ..Default::default()
@@ -1807,7 +1807,7 @@ fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
-            data: hex!("43d726d6").into(),
+            data: bytes!("43d726d6"),
             nonce: 1,
             ..Default::default()
         })
@@ -2015,8 +2015,8 @@ fn test_geth_calltracer_logs_address_regular() {
 /// rather than reconstructing it from `execution_address()`.
 #[test]
 fn test_geth_calltracer_logs_delegatecall() {
-    let proxy = address!("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-    let implementation = address!("0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+    let proxy = Address::repeat_byte(0xaa);
+    let implementation = Address::repeat_byte(0xbb);
     let caller = address!("0xa000000000000000000000000000000000000099");
 
     // Implementation bytecode: LOG0(offset=0, size=0); STOP
@@ -2106,7 +2106,7 @@ fn test_geth_opcode_limit_end_to_end() {
     use serde_json::{Value, json};
 
     let account = address!("1000000000000000000000000000000000000001");
-    let child = address!("00000000000000000000000000000000000000ff");
+    let child = Address::with_last_byte(0xff);
     for terminal in [op::RETURN, op::REVERT] {
         let run = |options: Value| {
             let options: GethDebugTracingOptions = serde_json::from_value(options).unwrap();
@@ -2116,8 +2116,7 @@ fn test_geth_opcode_limit_end_to_end() {
             code.push(terminal);
             let context =
                 Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-                    for (addr, code) in
-                        [(account, Bytes::from(code)), (child, hex!("60015000").into())]
+                    for (addr, code) in [(account, Bytes::from(code)), (child, bytes!("60015000"))]
                     {
                         db.insert_account_info(
                             &addr,
@@ -2250,7 +2249,7 @@ fn geth_json_len(log: &serde_json::Value) -> usize {
 #[test]
 fn test_geth_opcode_limit() {
     let account = address!("1000000000000000000000000000000000000001");
-    let child = address!("00000000000000000000000000000000000000ff");
+    let child = Address::with_last_byte(0xff);
     for terminal in [op::RETURN, op::REVERT, op::INVALID] {
         // Call a child, then return/revert with one byte (0x2a), or halt exceptionally.
         let mut code = hex!("6000600060006000600060ff61fffff150602a60005360016000").to_vec();
@@ -2259,7 +2258,7 @@ fn test_geth_opcode_limit() {
             let context =
                 Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
                     for (addr, code) in
-                        [(account, Bytes::from(code.clone())), (child, hex!("60015000").into())]
+                        [(account, Bytes::from(code.clone())), (child, bytes!("60015000"))]
                     {
                         db.insert_account_info(
                             &addr,
@@ -2294,7 +2293,7 @@ fn test_geth_opcode_limit() {
         assert_eq!(full.failed, terminal != op::RETURN);
         assert_eq!(
             full.return_value,
-            if terminal == op::INVALID { Bytes::new() } else { hex!("2a").into() }
+            if terminal == op::INVALID { Bytes::new() } else { bytes!("2a") }
         );
         // Includes caps before CALL, on CALL, in the child, and after returning to the parent. The
         // limit counts bytes of JSON, and the first `steps - 1` steps let `steps` steps through.
@@ -2375,10 +2374,7 @@ fn test_geth_struct_log_out_of_gas_cost() {
         .modify_db_chained(|db| {
             db.insert_account_info(
                 &contract,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(code.to_vec().into())),
-                    ..Default::default()
-                },
+                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
             );
         });
 
@@ -2512,7 +2508,7 @@ fn test_debug_call_log_index_seed_and_reset() {
                         &account,
                         AccountInfo {
                             // PUSH0 PUSH0 LOG0 STOP.
-                            code: Some(Bytecode::new_raw(hex!("5f5fa000").into())),
+                            code: Some(Bytecode::new_raw(bytes!("5f5fa000"))),
                             ..Default::default()
                         },
                     );
@@ -2558,7 +2554,7 @@ fn test_debug_call_log_index_seed_and_reset() {
 #[test]
 fn test_geth_4byte_tracer_skips_precompiles() {
     // STATICCALL the sha256 precompile with 36 bytes, then an empty account with 4 bytes.
-    let code = hex!("600060006024600060025afa50600060006004600061dead5afa5000").into();
+    let code = bytes!("600060006024600060025afa50600060006004600061dead5afa5000");
     let opts = serde_json::from_value(serde_json::json!({ "tracer": "4byteTracer" })).unwrap();
     let (trace, _) = trace_contract(SpecId::PRAGUE, opts, code);
 
@@ -2768,8 +2764,7 @@ fn keccak256_preimage_tracer_collects_padded_preimages() {
         })
         .unwrap();
 
-    let mut word = [0; 32];
-    word[31] = 0x2a;
+    let word: [u8; 32] = B256::with_last_byte(0x2a).into();
     let mut padded = [0; 0x40];
     padded[..0x10].copy_from_slice(&word[0x10..]);
     let expected = serde_json::Value::Object(
@@ -3043,17 +3038,14 @@ fn mux_runs_nested_mux_and_erc7562_tracers() {
 fn struct_log_storage_snapshots_match_geth() {
     let account = address!("1000000000000000000000000000000000000001");
     let slot = |slot: u8| B256::with_last_byte(slot);
-    let value = |value: u8| U256::from(value).into();
+    let value = |value: u8| B256::with_last_byte(value);
     // SLOAD 5 (holds 7), SSTORE 5 = 7 (unchanged), SLOAD 5 (warm), SSTORE 6 = 1, SLOAD 6, and an
     // SSTORE that runs out of gas, which fails before it runs.
     let code = hex!("60055450600760055560055450600160065560065450600160075500");
     let mut db = CacheDB::<EmptyDB>::default();
     db.insert_account_info(
         &account,
-        AccountInfo {
-            code: Some(Bytecode::new_raw(Bytes::from(code.to_vec()))),
-            ..Default::default()
-        },
+        AccountInfo { code: Some(Bytecode::new_raw(Bytes::from(code))), ..Default::default() },
     );
     db.insert_account_storage(&account, &U256::from(5), &U256::from(7));
     let mut inspector = DebugInspector::new(Default::default()).unwrap();
@@ -3096,8 +3088,8 @@ fn struct_log_storage_snapshots_match_geth() {
 #[test]
 fn struct_log_storage_snapshots_follow_the_storage_context() {
     let parent = address!("1000000000000000000000000000000000000001");
-    let writer = address!("00000000000000000000000000000000000000c0");
-    let static_writer = address!("00000000000000000000000000000000000000d0");
+    let writer = Address::with_last_byte(0xc0);
+    let static_writer = Address::with_last_byte(0xd0);
     // The parent delegatecalls the writer, loads the slot it wrote, then static calls the second
     // writer.
     let parent_code = hex!(
@@ -3135,7 +3127,7 @@ fn struct_log_storage_snapshots_follow_the_storage_context() {
     let trace = inspector.get_result(None, &tx, &block, &result.tx_result, ctx.db_mut()).unwrap();
     let GethTrace::Default(frame) = trace else { panic!("expected a default trace") };
 
-    let snapshot = BTreeMap::from([(B256::with_last_byte(1), U256::from(2).into())]);
+    let snapshot = BTreeMap::from([(B256::with_last_byte(1), B256::with_last_byte(2))]);
     let logs: Vec<_> = frame
         .struct_logs
         .iter()
@@ -3158,7 +3150,7 @@ fn struct_log_storage_snapshots_follow_the_storage_context() {
 fn test_geth_prestate_diff_omits_empty_accounts() {
     let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
     let coinbase = address!("2adc25665018aa1fe0e6bc666dac8fc2697ff9ba");
-    let recipient = address!("2222222222222222222222222222222222222222");
+    let recipient = Address::repeat_byte(0x22);
 
     let mut db = CacheDB::new(EmptyDB::default());
     db.insert_account_info(
@@ -3223,7 +3215,7 @@ fn test_geth_prestate_diff_omits_empty_accounts() {
 fn test_geth_prestate_diff_reports_cleared_code() {
     let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
     let authority = address!("7e5f4552091a69125d5dfcb7b8c2659029395bdf");
-    let delegation = Bytes::from(hex!("ef0100000000000000000000000000000000000000aaaa"));
+    let delegation = bytes!("ef0100000000000000000000000000000000000000aaaa");
 
     let mut db = CacheDB::new(EmptyDB::default());
     db.insert_account_info(
@@ -3233,7 +3225,7 @@ fn test_geth_prestate_diff_reports_cleared_code() {
     db.insert_account_info(
         &authority,
         AccountInfo {
-            balance: U256::from(1),
+            balance: U256::ONE,
             code_hash: alloy_primitives::keccak256(&delegation),
             code: Some(Bytecode::new_raw(delegation.clone())),
             ..Default::default()
@@ -3245,7 +3237,7 @@ fn test_geth_prestate_diff_reports_cleared_code() {
         .build_mainnet();
 
     // Signed by the key of `authority`; delegates to the zero address, which clears the code.
-    let authorization = Authorization { chain_id: U256::from(1), address: Address::ZERO, nonce: 0 };
+    let authorization = Authorization { chain_id: U256::ONE, address: Address::ZERO, nonce: 0 };
     let signature = sign_message(B256::with_last_byte(1), authorization.signature_hash()).unwrap();
     let authorization = authorization.into_signed(signature);
     assert_eq!(authorization.recover_authority().unwrap(), authority);
@@ -3259,7 +3251,7 @@ fn test_geth_prestate_diff_reports_cleared_code() {
         .inspect_tx(TxEnv {
             caller: sender,
             gas_limit: 100_000,
-            kind: TransactTo::Call(address!("2222222222222222222222222222222222222222")),
+            kind: TransactTo::Call(Address::repeat_byte(0x22)),
             authorization_list: vec![authorization],
             ..Default::default()
         })
@@ -3286,10 +3278,10 @@ fn test_geth_prestate_diff_reports_cleared_code() {
 /// selfdestructs it, and returns the contract and the prestate frame.
 fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreStateFrame) {
     let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
-    let contract = address!("1111111111111111111111111111111111111111");
+    let contract = Address::repeat_byte(0x11);
 
     // SLOAD 1, SLOAD 2, SELFDESTRUCT to the beneficiary.
-    let code = Bytes::from(hex!("6001545060025450733333333333333333333333333333333333333333ff"));
+    let code = bytes!("6001545060025450733333333333333333333333333333333333333333ff");
     let mut db = CacheDB::new(EmptyDB::default());
     db.insert_account_info(
         &sender,
@@ -3304,7 +3296,7 @@ fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreSt
             Some(Bytecode::new_raw(code)),
         ),
     );
-    db.insert_account_storage(&contract, &U256::from(1), &U256::from(0x2a));
+    db.insert_account_storage(&contract, &U256::ONE, &U256::from(0x2a));
     let evm = Context::mainnet()
         .with_db(db)
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
@@ -3336,7 +3328,7 @@ fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreSt
 /// read, including unchanged and zero ones.
 #[test]
 fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
-    let beneficiary = address!("3333333333333333333333333333333333333333");
+    let beneficiary = Address::repeat_byte(0x33);
     let (contract, frame) =
         trace_london_selfdestruct(PreStateConfig { diff_mode: Some(true), ..Default::default() });
     let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
@@ -3518,7 +3510,7 @@ fn run_spy(config: TracingInspectorConfig, all: bool) -> SteppedSpy<TracingInspe
         &Address::with_last_byte(0x43),
         AccountInfo::default().with_code(Bytecode::new_raw(
             // SSTORE(1, 7), SLOAD(0), STOP.
-            hex!("6007" "6001" "55" "5f54" "50" "00").to_vec().into(),
+            bytes!("6007" "6001" "55" "5f54" "50" "00"),
         )),
     );
     let mut spy =

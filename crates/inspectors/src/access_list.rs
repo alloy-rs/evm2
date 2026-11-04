@@ -128,10 +128,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
             op::SLOAD | op::SSTORE => {
                 if let Some([slot]) = interp.stack().peekn() {
                     let cur_contract = interp.message().destination;
-                    self.touched_slots
-                        .entry(cur_contract)
-                        .or_default()
-                        .insert(B256::from(slot.to_be_bytes()));
+                    self.touched_slots.entry(cur_contract).or_default().insert(B256::from(slot));
                 }
             }
             op::EXTCODECOPY

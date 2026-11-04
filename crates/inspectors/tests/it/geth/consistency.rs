@@ -1,6 +1,7 @@
 //! Multiplexed tracer configuration and flat-call root gas.
 
 use super::*;
+use alloy_primitives::bytes;
 use serde_json::{Value, json};
 
 #[test]
@@ -32,7 +33,7 @@ fn flat_call_root_gas_matches_mux() {
         db.insert_account_info(
             &target,
             AccountInfo {
-                code: Some(Bytecode::new_raw(hex!("600160005200").into())),
+                code: Some(Bytecode::new_raw(bytes!("600160005200"))),
                 ..Default::default()
             },
         );

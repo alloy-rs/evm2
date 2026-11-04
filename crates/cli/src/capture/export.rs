@@ -173,7 +173,7 @@ fn export_state(capture: &CapturedCase, state: &CapturedState) -> EestState {
 fn parent_header(first: &Block) -> BlockHeader {
     let mut header = first.block_header.clone().expect("exported blocks include headers");
     header.hash = header.parent_hash;
-    header.number = header.number.saturating_sub(U256::from(1));
+    header.number = header.number.saturating_sub(U256::ONE);
     header.gas_used = U256::ZERO;
     header.transactions_trie = B256::ZERO;
     header.receipt_trie = B256::ZERO;

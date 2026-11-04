@@ -548,7 +548,7 @@ mod tests {
         test_utils::{handle_test_tx, test_tx},
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, B256, Bytes, TxKind, hex};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, bytes};
     use core::{
         assert_matches, convert::Infallible, fmt, future::Future, pin::Pin, ptr::NonNull,
         task::Poll,
@@ -895,7 +895,7 @@ mod tests {
 
     #[test]
     fn system_call_async_to_missing_code_is_noop() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn system_call_async_send_future_is_send() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -938,7 +938,7 @@ mod tests {
     #[should_panic = "async EVM execution requires EVM erased fields to be verified as Send with Evm::evm_is_send"]
     fn system_call_async_send_panics_after_overlay_db_mut_replaces_database() {
         let marker = Rc::new(());
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -954,7 +954,7 @@ mod tests {
 
     #[test]
     fn system_call_async_succeeds_after_database_error() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -982,7 +982,7 @@ mod tests {
     #[test]
     fn dropping_transact_async_discards_nonce_after_cancelled_db_future() {
         let caller = Address::ZERO;
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
@@ -1066,12 +1066,11 @@ mod tests {
             }
         }
 
-        let caller = Address::from([0xaa; 20]);
-        let target = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0xaa);
+        let target = Address::repeat_byte(0x11);
         // SLOAD 0, add 1, SSTORE 0, then CALL self with all but 1024 gas remaining.
-        let code = Bytecode::new_legacy(Bytes::from_static(&hex!(
-            "60005460010160005560006000600060006000306104005a03f100"
-        )));
+        let code =
+            Bytecode::new_legacy(bytes!("60005460010160005560006000600060006000306104005a03f100"));
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &caller,

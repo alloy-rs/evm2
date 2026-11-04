@@ -51,7 +51,7 @@ fn authorization_code_changes() {
                         to: target,
                         gas_limit: 100_000,
                         authorization_list: vec![SignedAuthorization::new_unchecked(
-                            Authorization { chain_id: U256::from(1), address: delegate, nonce: 1 },
+                            Authorization { chain_id: U256::ONE, address: delegate, nonce: 1 },
                             0,
                             U256::ZERO,
                             U256::ZERO,

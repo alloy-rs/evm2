@@ -76,7 +76,7 @@ mod tests {
 
         let interp = run(RunConfig::new([op::PUSH1, 0x01, op::PUSH1, 0x02, op::POP, op::STOP]));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
     }
 
     #[test]
@@ -291,8 +291,8 @@ mod tests {
         let interp = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack().len(), 18);
-        assert_eq!(interp.stack()[17], Word::from(1));
-        assert_eq!(interp.stack()[0], Word::from(1));
+        assert_eq!(interp.stack()[17], Word::ONE);
+        assert_eq!(interp.stack()[0], Word::ONE);
         for i in 1..17 {
             assert_eq!(interp.stack()[i], 0);
         }
@@ -305,7 +305,7 @@ mod tests {
         let interp = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack().len(), 146);
-        assert_eq!(interp.stack()[145], Word::from(1));
+        assert_eq!(interp.stack()[145], Word::ONE);
     }
 
     #[test]
@@ -316,7 +316,7 @@ mod tests {
         let interp = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack().len(), 18);
-        assert_eq!(interp.stack()[17], Word::from(1));
+        assert_eq!(interp.stack()[17], Word::ONE);
         assert_eq!(interp.stack()[0], Word::from(2));
         for i in 1..17 {
             assert_eq!(interp.stack()[i], 0);
@@ -348,7 +348,7 @@ mod tests {
         ])
         .spec(SpecId::AMSTERDAM));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1), Word::from(0), Word::from(2)]);
+        assert_eq!(interp.stack(), [Word::ONE, Word::ZERO, Word::from(2)]);
 
         let mut code = Vec::new();
         for value in 0..23 {

@@ -8,7 +8,7 @@ extern crate tracing;
 use alloy_primitives::map::{FxBuildHasher, HashSet};
 use evm2_jit_backend::{
     Backend, BackendConfig, BackendTypes, Builder, CallConv, IntCC, OptimizationLevel, Result,
-    TailCallKind, TypeMethods, U256, eyre, format_bytes,
+    TailCallKind, TypeMethods, U256, eyre, eyre::OptionExt, format_bytes,
 };
 use llvm_sys::{
     LLVMCallConv, LLVMIntPredicate, LLVMLinkage, LLVMModuleFlagBehavior, LLVMTailCallKind,
@@ -510,7 +510,7 @@ impl EvmLlvmBackend {
                 if aot { LLVMRelocMode::LLVMRelocPIC } else { LLVMRelocMode::LLVMRelocStatic },
                 LLVMCodeModel::LLVMCodeModelDefault,
             )
-            .ok_or_else(|| eyre::eyre!("failed to create target machine"))?;
+            .ok_or_eyre("failed to create target machine")?;
 
         // In JIT mode, ORC owns the context via a ThreadSafeContext so that modules can be
         // safely transferred to the JIT without double-ownership issues with the TLS context.

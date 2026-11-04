@@ -7,7 +7,7 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ResultAndState, SpecId, TestDbExt,
     TransactTo, TxEnv, deploy_contract,
 };
-use alloy_primitives::{Address, U256, address, hex, map::HashMap};
+use alloy_primitives::{Address, U256, address, bytes, hex, map::HashMap};
 use alloy_rpc_types_trace::geth::{
     GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
     mux::MuxConfig,
@@ -105,7 +105,7 @@ fn test_geth_jstracer_revert() {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
-            data: hex!("c2985578").into(), // call foo
+            data: bytes!("c2985578"), // call foo
             nonce: 1,
             ..Default::default()
         })
@@ -126,7 +126,7 @@ fn test_geth_jstracer_revert() {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
-            data: hex!("febb0f7e").into(), // call bar
+            data: bytes!("febb0f7e"), // call bar
             nonce: 1,
             ..Default::default()
         })
@@ -238,7 +238,7 @@ fn test_geth_jstracer_proxy_contract() {
 #[test]
 fn test_geth_jstracer_records_call_step_before_nested_execution() {
     let child = address!("0000000000000000000000000000000000001234");
-    let parent = address!("0000000000000000000000000000000000000022");
+    let parent = Address::with_last_byte(0x22);
 
     let child_code =
         Bytecode::new_legacy([0x60, 1, 0x60, 0x40, 0x52, 0x60, 1, 0x60, 1, 0x01, 0x00].into());
@@ -446,7 +446,7 @@ fn test_geth_debug_inspector_jstracer() {
             db.insert_account_info(
                 &account,
                 AccountInfo {
-                    code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
+                    code: Some(Bytecode::new_legacy(bytes!("6001600100"))),
                     ..Default::default()
                 },
             );
@@ -527,14 +527,14 @@ fn test_geth_jstracer_get_code_does_not_load_the_account() {
             db.insert_account_info(
                 &target,
                 AccountInfo {
-                    code: Some(Bytecode::new_legacy(hex!("00").into())),
+                    code: Some(Bytecode::new_legacy(bytes!("00"))),
                     ..Default::default()
                 },
             );
             db.insert_account_info(
                 &observed,
                 AccountInfo {
-                    code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
+                    code: Some(Bytecode::new_legacy(bytes!("6001600100"))),
                     ..Default::default()
                 },
             );
@@ -579,11 +579,11 @@ fn test_geth_jstracer_get_code_does_not_load_the_account() {
 fn mux_runs_a_js_tracer_next_to_a_built_in_tracer() {
     let code = "{ steps: 0, step: function() { this.steps++; }, fault: function() {}, \
                 result: function() { return this.steps; } }";
-    let contract = address!("0000000000000000000000000000000000000042");
+    let contract = Address::with_last_byte(0x42);
     let mut db = CacheDB::new(EmptyDB::default());
     db.insert_account_info(
         &contract,
-        AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f00").into())),
+        AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f00"))),
     );
     let js_key = GethDebugTracerType::JsTracer(code.to_string());
     let call_key = GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer);

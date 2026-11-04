@@ -263,8 +263,8 @@ mod tests {
 
     #[test]
     fn system_call_uses_system_sender_without_fee_accounting() {
-        let contract = Address::from([0x42; 20]);
-        let beneficiary = Address::from([0x99; 20]);
+        let contract = Address::repeat_byte(0x42);
+        let beneficiary = Address::repeat_byte(0x99);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::CALLER,
             op::PUSH1,
@@ -305,8 +305,8 @@ mod tests {
 
     #[test]
     fn system_call_uses_custom_caller() {
-        let caller = Address::from([0x11; 20]);
-        let contract = Address::from([0x42; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::CALLER,
             op::PUSH1,
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn system_call_starts_with_warm_system_contract() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::EXTCODESIZE, op::STOP]));
         let mut database = InMemoryDB::default();
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn system_call_to_missing_code_is_noop() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn system_call_reverts_state_changes() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
             1,
@@ -470,7 +470,7 @@ mod tests {
         #[case] gas_limit: Option<u64>,
         #[case] expected_limit: u64,
     ) {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         // Return the gas available at the start of execution (after GAS charges its own cost).
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::GAS,
@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn system_call_exhausts_configured_gas_limit() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
             1,
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn system_call_total_includes_reservoir_funded_state_gas() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
             1,
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn system_call_total_covers_state_gas_with_unbounded_gas_limit() {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
             1,
@@ -633,7 +633,7 @@ mod tests {
         #[case] expected_calls: usize,
         #[case] expected_steps: usize,
     ) {
-        let contract = Address::from([0x42; 20]);
+        let contract = Address::repeat_byte(0x42);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH0, op::STOP]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));

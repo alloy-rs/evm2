@@ -369,14 +369,14 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_call_executes_message() {
-        let target = Address::from([0x22; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let caller = Address::repeat_byte(0x11);
         let mut database = InMemoryDB::default();
         database.insert_account_info(&caller, AccountInfo::default());
         database.insert_account_info(
             &target,
             AccountInfo::default()
-                .with_code(Bytecode::new_legacy(Bytes::copy_from_slice(BYTECODE_RET42))),
+                .with_code(Bytecode::new_legacy(Bytes::from_static(BYTECODE_RET42))),
         );
         let backend = blocking_backend();
         let mut host = Evm::<BaseEvmTypes>::new(
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_create_executes_message() {
-        let creator = Address::from([0x33; 20]);
+        let creator = Address::repeat_byte(0x33);
         let mut database = InMemoryDB::default();
         database.insert_account_info(&creator, AccountInfo::default());
         let backend = blocking_backend();
@@ -465,7 +465,7 @@ mod tests {
         let message = MessageExt {
             gas_limit: 1_000_000,
             destination: creator,
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            code: Bytecode::new_legacy(Bytes::from(code)),
             ..MessageExt::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_staticcall_zeros_child_callvalue() {
-        let caller = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0x11);
         let target = Address::with_last_byte(0x68);
         let mut database = InMemoryDB::default();
         database.insert_account_info(&caller, AccountInfo::default());
@@ -538,7 +538,7 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_staticcall_child_callvalue_does_not_transfer() {
-        let caller = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0x11);
         let child = Address::with_last_byte(0x68);
         let beneficiary = Address::with_last_byte(0x69);
         let initial_beneficiary_balance = Word::from(7);
@@ -607,18 +607,17 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_dynamic_call_to_staticcall_loop_matches_interpreter_gas() {
-        let caller = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0x11);
         let outer = Address::with_last_byte(0xfd);
         let middle = Address::with_last_byte(0xed);
         let leaf = Address::with_last_byte(0xdd);
         let outer_code = dynamic_call_outer_code();
-        let mut input = [0u8; 32];
-        input[12..].copy_from_slice(middle.as_slice());
+        let input = middle.into_word().0;
         let message = MessageExt {
             gas_limit: 0xcd79195900 - 21_368,
             destination: outer,
             caller,
-            input: Bytes::copy_from_slice(&input),
+            input: Bytes::from(input),
             value: Word::from(10),
             code: Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code)),
             code_address: outer,
@@ -630,7 +629,7 @@ mod tests {
                 .insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(100)));
             database
                 .insert_account_info(&outer, AccountInfo::default().with_balance(Word::from(10)));
-            database.insert_account_storage(&outer, &Word::from(1), &Word::from(1));
+            database.insert_account_storage(&outer, &Word::ONE, &Word::ONE);
             database.insert_account_info(
                 &middle,
                 AccountInfo::default()
@@ -672,6 +671,7 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_precompile_dispatch_uses_original_callee() {
+        use alloy_primitives::bytes;
         let sha256 = Address::with_last_byte(2);
         let delegate = Address::with_last_byte(0x33);
         let parent = Address::with_last_byte(0x44);
@@ -709,7 +709,7 @@ mod tests {
                     call_target: parent,
                     code_address: parent,
                     caller,
-                    input: hex!("01020304").into(),
+                    input: bytes!("01020304"),
                     code: Bytecode::new_legacy(code.into()),
                     ..Default::default()
                 };
@@ -927,7 +927,7 @@ mod tests {
                     let returned = Word::from_be_slice(&compiled.0.output);
                     if descendants == 1023 {
                         let expected = if kind == MessageKind::Call {
-                            Word::from(1)
+                            Word::ONE
                         } else {
                             address_to_word(&destination)
                         };
@@ -954,7 +954,7 @@ mod tests {
 mod custom_host_tests {
     use super::{tests::blocking_backend, *};
     use crate::runtime::{HostConfig, RuntimeConfig};
-    use alloy_primitives::{Address, Bytes, U256};
+    use alloy_primitives::{Address, B256, Bytes, U256};
     use evm2::{
         BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, ExecutionConfig, ExecutionError,
         OpcodeConfig, SpecId,
@@ -1083,7 +1083,7 @@ mod custom_host_tests {
         cx.gas.spend(7)?;
         // Rewrites existing memory, which compiled code must not assume it still knows.
         if cx.state.memory().len() >= 32 {
-            cx.state.memory().set(0, &Word::from(2_u64).to_be_bytes::<32>());
+            cx.state.memory().set(0, B256::with_last_byte(2).as_slice());
         }
         *out = Word::from(0xbeef_u64);
     }

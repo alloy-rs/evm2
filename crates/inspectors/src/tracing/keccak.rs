@@ -98,7 +98,7 @@ impl<T: EvmTypes> Inspector<T> for Keccak256PreimageInspector {
         // The stack can be too small if the operation is about to fail.
         let &[.., length, offset] = interp.stack().as_slice() else { return };
         // The operands are truncated to 64 bits.
-        let (offset, length) = (offset.as_limbs()[0], length.as_limbs()[0]);
+        let (offset, length) = (offset.wrapping_to::<u64>(), length.wrapping_to::<u64>());
         let memory = interp.memory().as_slice();
         if let Some(preimage) = memory_copy_padded(memory, offset, length) {
             let hash = keccak256(&preimage);

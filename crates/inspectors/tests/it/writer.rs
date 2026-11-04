@@ -312,7 +312,7 @@ fn test_receive_vs_fallback_empty_calldata() {
         "00"   // Runtime code: STOP
     );
 
-    let caller = address!("0x0000000000000000000000000000000000000001");
+    let caller = Address::with_last_byte(1);
     let mut db = CacheDB::new(EmptyDB::default());
     db.insert_account_info(
         &caller,
@@ -334,7 +334,7 @@ fn test_receive_vs_fallback_empty_calldata() {
             TxEnv::builder()
                 .caller(caller)
                 .data(bytes!()) // Empty calldata.
-                .value(U256::from(1)) // Nonzero value.
+                .value(U256::ONE) // Nonzero value.
                 .kind(TransactTo::Call(address))
                 .gas_priority_fee(None)
                 .nonce(1)

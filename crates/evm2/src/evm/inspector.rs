@@ -915,7 +915,7 @@ mod tests {
 
     /// Code that stores, loads, logs, calls a child that loads a slot, and creates.
     fn config_test_code() -> (InMemoryDB, Vec<u8>) {
-        let child = Address::from([0x66; 20]);
+        let child = Address::repeat_byte(0x66);
         let mut db = InMemoryDB::default();
         db.insert_account_info(
             &child,
@@ -1142,7 +1142,7 @@ mod tests {
         message_op: u8,
         immediates: &[u8],
     ) -> (MessageResult<BaseEvmTypes>, ConfigInspector) {
-        let mut code = call_code(Address::from([0x66; 20]));
+        let mut code = call_code(Address::repeat_byte(0x66));
         code.push(message_op);
         code.extend(immediates);
         code.extend([op::GAS, op::POP, op::STOP]);
@@ -1234,7 +1234,7 @@ mod tests {
 
     #[test]
     fn answered_call_can_change_the_parent_steps() {
-        let mut code = call_code(Address::from([0x66; 20]));
+        let mut code = call_code(Address::repeat_byte(0x66));
         code.extend([op::CALL, op::GAS, op::POP, op::STOP]);
         let answer = MessageResultExt {
             stop: InstrStop::Return,
@@ -1284,7 +1284,7 @@ mod tests {
 
     #[test]
     fn child_message_can_change_the_parent_steps() {
-        let mut code = call_code(Address::from([0x66; 20]));
+        let mut code = call_code(Address::repeat_byte(0x66));
         code.extend([op::CALL, op::GAS, op::POP, op::STOP]);
         let run = |inspector| {
             run_evm_with_inspector(code.clone(), &MessageExt::default(), 100_000, inspector)
@@ -1418,7 +1418,7 @@ mod tests {
                 Some(MessageResultExt {
                     stop: InstrStop::Return,
                     gas: GasTracker::new(100),
-                    created_address: Some(Address::from([0x77; 20])),
+                    created_address: Some(Address::repeat_byte(0x77)),
                     ..Default::default()
                 })
             }
@@ -1455,7 +1455,7 @@ mod tests {
         }
 
         for (mut code, opcode) in
-            [(call_code(Address::from([0x66; 20])), op::CALL), (create_code(), op::CREATE)]
+            [(call_code(Address::repeat_byte(0x66)), op::CALL), (create_code(), op::CREATE)]
         {
             code.extend([opcode, op::GAS, op::STOP]);
             let (result, inspector, _) = run_evm_with_inspector(
@@ -1542,7 +1542,7 @@ mod tests {
         );
 
         assert_eq!(result.stop, InstrStop::Revert);
-        assert_eq!(inspector.stack, [Word::from(1), Word::from(2)]);
+        assert_eq!(inspector.stack, [Word::ONE, Word::from(2)]);
         assert_eq!(inspector.steps, 3);
         assert_eq!(inspector.step_ends, 2);
         assert_eq!(result.gas.remaining(), 123);
@@ -1583,7 +1583,7 @@ mod tests {
         );
 
         assert_eq!(result.stop, InstrStop::Revert);
-        assert_eq!(inspector.stack, [Word::from(1)]);
+        assert_eq!(inspector.stack, [Word::ONE]);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
         assert_eq!(result.gas.remaining(), 123);
@@ -1591,7 +1591,7 @@ mod tests {
 
     #[test]
     fn call_too_deep_is_inspected_without_executing() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut code = call_code(target);
         code.extend([op::CALL, op::STOP]);
 
@@ -1624,7 +1624,7 @@ mod tests {
 
     #[test]
     fn call_inspector_override_skips_execution_and_still_calls_end() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let inspector = OverrideCallInspector {
             result: MessageResultExt {
                 stop: InstrStop::Return,
@@ -1651,7 +1651,7 @@ mod tests {
 
     #[test]
     fn call_inspector_override_wins_at_max_depth() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let inspector = OverrideCallInspector {
             result: MessageResultExt { stop: InstrStop::Return, ..Default::default() },
             min_depth: CALL_DEPTH_LIMIT + 1,
@@ -1671,7 +1671,7 @@ mod tests {
 
         assert_matches!(result.stop, InstrStop::Return);
         // The override wins over the call depth check: the call succeeds.
-        assert_eq!(Word::from_be_slice(&result.output), Word::from(1));
+        assert_eq!(Word::from_be_slice(&result.output), Word::ONE);
         assert_eq!(inspector.call_depth, Some(CALL_DEPTH_LIMIT + 1));
         assert_eq!(inspector.call_end_stop, Some(InstrStop::Return));
     }
@@ -1696,8 +1696,8 @@ mod tests {
             }
         }
 
-        let target = Address::from([0x22; 20]);
-        let replacement = Address::from([0x33; 20]);
+        let target = Address::repeat_byte(0x22);
+        let replacement = Address::repeat_byte(0x33);
         let mut db = InMemoryDB::default();
         db.insert_account_info(
             &Address::ZERO,
@@ -1775,7 +1775,7 @@ mod tests {
             }
         }
 
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut code = call_code(target);
         code.extend([op::CALL, op::POP, op::RETURNDATASIZE]);
         return_top_word(&mut code);
@@ -1807,7 +1807,7 @@ mod tests {
 
     #[test]
     fn create_inspector_override_skips_execution_and_still_calls_end() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let inspector =
             OverrideCreateInspector { created, create_depth: None, create_end_stop: None };
         let mut code = create_code();
@@ -1825,7 +1825,7 @@ mod tests {
 
     #[test]
     fn create_inspector_sees_derived_destination() {
-        let contract = Address::from([0x11; 20]);
+        let contract = Address::repeat_byte(0x11);
         let expected = contract.create(0);
         let mut code = create_code();
         code.extend([op::CREATE, op::STOP]);
@@ -1843,10 +1843,10 @@ mod tests {
 
     #[test]
     fn amsterdam_create_preaccess_failure_does_not_fire_create_hook() {
-        let contract = Address::from([0x11; 20]);
+        let contract = Address::repeat_byte(0x11);
         for is_create2 in [false, true] {
             for (balance, nonce, value, depth) in [
-                (Word::from(1), 0, Word::from(2), 0),
+                (Word::ONE, 0, Word::from(2), 0),
                 (Word::MAX, u64::MAX, Word::ZERO, 0),
                 (Word::MAX, 0, Word::ZERO, CALL_DEPTH_LIMIT),
             ] {
@@ -1883,7 +1883,7 @@ mod tests {
 
     #[test]
     fn create_inspector_override_wins_at_max_depth() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let inspector =
             OverrideCreateInspector { created, create_depth: None, create_end_stop: None };
         let mut code = create_code();
@@ -1933,7 +1933,7 @@ mod tests {
             }
         }
 
-        let created = Address::from([0x88; 20]);
+        let created = Address::repeat_byte(0x88);
         let mut code = create_code();
         code.extend([op::CREATE]);
         return_top_word(&mut code);
@@ -1951,7 +1951,7 @@ mod tests {
 
     #[test]
     fn log_opcode_is_inspected_and_emitted_to_host() {
-        let contract = Address::from([0x11; 20]);
+        let contract = Address::repeat_byte(0x11);
         let code = Vec::from([op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
 
         let (result, inspector, evm) = run_evm_with_inspector(
@@ -2012,8 +2012,8 @@ mod tests {
 
     #[test]
     fn selfdestruct_is_inspected_from_opcode() {
-        let contract = Address::from([0x11; 20]);
-        let target = Address::from([0x99; 20]);
+        let contract = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x99);
         let value = Word::from(0xbeef);
         let mut db = InMemoryDB::default();
         db.insert_account_info(&contract, AccountInfo::default().with_balance(value));
@@ -2035,8 +2035,8 @@ mod tests {
 
     #[test]
     fn selfdestruct_dynamic_gas_oog_is_not_inspected() {
-        let contract = Address::from([0x11; 20]);
-        let target = Address::from([0x99; 20]);
+        let contract = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x99);
         let mut db = InMemoryDB::default();
         db.insert_account_info(&contract, AccountInfo::default());
         let mut code = Vec::new();
@@ -2058,7 +2058,7 @@ mod tests {
     #[test]
     fn selfdestruct_host_error_is_not_inspected() {
         // Host failures are injected through the mock host; this intentionally uses [`TestHost`].
-        let target = Address::from([0x99; 20]);
+        let target = Address::repeat_byte(0x99);
         let mut host = TestHost {
             selfdestruct_error: Some(
                 DatabaseError::new(crate::AnyError::from("selfdestruct failed"), true).into(),
@@ -2084,8 +2084,8 @@ mod tests {
 
     #[test]
     fn evm_transaction_inspects_interpreter_steps_and_logs() {
-        let caller = Address::from([0xaa; 20]);
-        let contract = Address::from([0xbb; 20]);
+        let caller = Address::repeat_byte(0xaa);
+        let contract = Address::repeat_byte(0xbb);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
             0,
@@ -2133,8 +2133,8 @@ mod tests {
 
     #[test]
     fn evm_transaction_inspects_eip7708_transfer_log() {
-        let caller = Address::from([0xaa; 20]);
-        let target = Address::from([0xbb; 20]);
+        let caller = Address::repeat_byte(0xaa);
+        let target = Address::repeat_byte(0xbb);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &caller,
@@ -2170,7 +2170,7 @@ mod tests {
 
     #[test]
     fn evm_create_transaction_initializes_interpreter_with_create_hook() {
-        let caller = Address::from([0xaa; 20]);
+        let caller = Address::repeat_byte(0xaa);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &caller,
@@ -2243,8 +2243,8 @@ mod tests {
             }
         }
 
-        let caller = Address::from([0xaa; 20]);
-        let target = Address::from([0xbb; 20]);
+        let caller = Address::repeat_byte(0xaa);
+        let target = Address::repeat_byte(0xbb);
         // CALL(gas, 0x44, 0, 0, 0, 0, 0), then STOP.
         let code = vec![
             op::PUSH0,
@@ -2340,8 +2340,8 @@ mod tests {
             }
         }
 
-        let caller = Address::from([0xaa; 20]);
-        let target = Address::from([0xbb; 20]);
+        let caller = Address::repeat_byte(0xaa);
+        let target = Address::repeat_byte(0xbb);
         // MSTORE8(0, 0), CREATE(0, 0, 1) with a one byte STOP initcode, then STOP.
         let code = vec![
             op::PUSH0,
@@ -2733,7 +2733,7 @@ mod tests {
 
     #[test]
     fn tuple_inspector_forwards_hooks_and_prefers_first_override() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut code = call_code(target);
         code.extend([op::CALL, op::POP, op::RETURNDATASIZE]);
         return_top_word(&mut code);
@@ -2767,12 +2767,12 @@ mod tests {
             50_000,
             (override_inspector(&[0xaa]), override_inspector(&[0xaa, 0xbb, 0xcc])),
         );
-        assert_eq!(Word::from_be_slice(&result.output), Word::from(1));
+        assert_eq!(Word::from_be_slice(&result.output), Word::ONE);
     }
 
     #[test]
     fn option_inspector_forwards_hooks_only_when_present() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut code = call_code(target);
         code.extend([op::CALL, op::STOP]);
 

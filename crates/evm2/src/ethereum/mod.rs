@@ -1529,7 +1529,7 @@ mod tests {
 
     #[rstest::rstest]
     #[case::call_zero_value(TxKind::Call(Address::ZERO), U256::ZERO, 15_000, 12_700)]
-    #[case::call_with_value(TxKind::Call(Address::ZERO), U256::from(1), 21_000, 18_700)]
+    #[case::call_with_value(TxKind::Call(Address::ZERO), U256::ONE, 21_000, 18_700)]
     #[case::self_transfer_zero_value(
         TxKind::Call(Address::with_last_byte(0xaa)),
         U256::ZERO,
@@ -1538,12 +1538,12 @@ mod tests {
     )]
     #[case::self_transfer_with_value(
         TxKind::Call(Address::with_last_byte(0xaa)),
-        U256::from(1),
+        U256::ONE,
         12_000,
         10_000
     )]
     #[case::create_zero_value(TxKind::Create, U256::ZERO, 24_000, 22_000)]
-    #[case::create_with_value(TxKind::Create, U256::from(1), 24_000, 22_000)]
+    #[case::create_with_value(TxKind::Create, U256::ONE, 24_000, 22_000)]
     fn eip2780_intrinsic_and_floor_gas_read_base_costs_from_gas_params(
         #[case] to: TxKind,
         #[case] value: U256,

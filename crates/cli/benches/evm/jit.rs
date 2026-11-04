@@ -1,5 +1,5 @@
 use crate::fixture::Suites;
-use alloy_primitives::{B256, hex, map::B256Map};
+use alloy_primitives::{B256, map::B256Map};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
     BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId,
@@ -84,7 +84,7 @@ impl PreparedBench {
         let mut functions = B256Map::default();
         for account in accounts {
             let func = *compiler.functions.entry((account.code_hash, spec)).or_insert_with(|| {
-                let name = format!("contract_{}_{spec:?}", hex::encode(account.code_hash));
+                let name = format!("contract_{:x}_{spec:?}", account.code_hash);
                 let func = unsafe {
                     compiler.compiler.jit(&name, account.bytecode.as_ref(), spec).unwrap_or_else(
                         |err| panic!("{} benchmark JIT compilation failed: {err:?}", bench.name),

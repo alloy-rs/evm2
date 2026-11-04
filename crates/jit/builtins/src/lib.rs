@@ -783,14 +783,14 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
         CallKind::Call | CallKind::CallCode => {
             pop!(sp; value);
             let value = value.to_u256();
-            if call_kind == CallKind::Call && ecx.is_static() && value != U256::ZERO {
+            if call_kind == CallKind::Call && ecx.is_static() && !value.is_zero() {
                 return Err(InstrStop::CallNotAllowedInsideStatic.into());
             }
             value
         }
         CallKind::DelegateCall | CallKind::StaticCall => U256::ZERO,
     };
-    let transfers_value = value != U256::ZERO;
+    let transfers_value = !value.is_zero();
 
     pop!(sp; in_offset, in_len, out_offset, out_len);
 
@@ -1232,8 +1232,8 @@ mod tests {
 
     #[test]
     fn call_builtin_executes_message() {
-        let target = Address::from([0x22; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let caller = Address::repeat_byte(0x11);
         let child_output = Bytes::from_static(&[0xaa, 0xbb, 0xcc]);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector {
@@ -1268,7 +1268,7 @@ mod tests {
             let sp = frame.stack.as_mut_ptr();
             unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::Call) };
 
-            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
             assert_eq!(frame.ecx.return_data(), child_output.as_ref());
             assert_eq!(frame.ecx.memory().slice(8, 2), &[0xaa, 0xbb]);
             let output = b"frame-output";
@@ -1290,9 +1290,9 @@ mod tests {
 
     #[test]
     fn callcode_builtin_maps_message_fields() {
-        let target = Address::from([0x22; 20]);
-        let destination = Address::from([0x33; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let destination = Address::repeat_byte(0x33);
+        let caller = Address::repeat_byte(0x11);
         let stack_value = Word::from(0x12);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
@@ -1313,7 +1313,7 @@ mod tests {
             let sp = frame.stack.as_mut_ptr();
             unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::CallCode) };
 
-            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
         }
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
@@ -1328,9 +1328,9 @@ mod tests {
 
     #[test]
     fn delegatecall_builtin_maps_message_fields() {
-        let target = Address::from([0x22; 20]);
-        let destination = Address::from([0x33; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let destination = Address::repeat_byte(0x33);
+        let caller = Address::repeat_byte(0x11);
         let current_value = Word::from(0x99);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
@@ -1351,7 +1351,7 @@ mod tests {
             let sp = frame.stack.as_mut_ptr();
             unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::DelegateCall) };
 
-            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
         }
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
@@ -1366,9 +1366,9 @@ mod tests {
 
     #[test]
     fn staticcall_builtin_maps_message_fields() {
-        let target = Address::from([0x22; 20]);
-        let destination = Address::from([0x33; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let destination = Address::repeat_byte(0x33);
+        let caller = Address::repeat_byte(0x11);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
         let message = MessageExt {
@@ -1388,7 +1388,7 @@ mod tests {
             let sp = frame.stack.as_mut_ptr();
             unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::StaticCall) };
 
-            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
         }
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
@@ -1403,7 +1403,7 @@ mod tests {
 
     #[test]
     fn create_builtin_executes_message() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let initcode = [op::STOP];
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector {
@@ -1445,7 +1445,7 @@ mod tests {
 
     #[test]
     fn create2_builtin_maps_salt() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let initcode = [op::STOP];
         let salt = EvmWord::from(Word::from(0xabcdu64));
         let mut host = base_evm(SpecId::CANCUN);
@@ -1490,10 +1490,10 @@ mod tests {
 
     #[test]
     fn create_builtin_preaccess_failure_skips_child_message() {
-        let contract = Address::from([0x11; 20]);
+        let contract = Address::repeat_byte(0x11);
         for create_kind in [CreateKind::Create, CreateKind::Create2] {
             for (balance, nonce, value, depth) in [
-                (Word::ZERO, 0, Word::from(1), 0),
+                (Word::ZERO, 0, Word::ONE, 0),
                 (Word::MAX, u64::MAX, Word::ZERO, 0),
                 (Word::MAX, 0, Word::ZERO, CALL_DEPTH_LIMIT),
             ] {

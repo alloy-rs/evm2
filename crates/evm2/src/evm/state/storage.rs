@@ -386,59 +386,59 @@ mod tests {
 
     #[test]
     fn storage_change_rolls_back_to_checkpoint() {
-        let address = Address::from([0x11; 20]);
+        let address = Address::repeat_byte(0x11);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default());
-        database.insert_account_storage(&address, &Word::from(1), &Word::from(10));
+        database.insert_account_storage(&address, &Word::ONE, &Word::from(10));
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
-        state.storage_slot(&address, Word::from(1)).unwrap().write(Word::from(20));
-        state.storage_slot(&address, Word::from(1)).unwrap().write(Word::from(30));
+        state.storage_slot(&address, Word::ONE).unwrap().write(Word::from(20));
+        state.storage_slot(&address, Word::ONE).unwrap().write(Word::from(30));
 
-        assert_eq!(state.storage_slot(&address, Word::from(1)).unwrap().current(), Word::from(30));
+        assert_eq!(state.storage_slot(&address, Word::ONE).unwrap().current(), Word::from(30));
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert_eq!(state.storage_slot(&address, Word::from(1)).unwrap().current(), Word::from(10));
+        assert_eq!(state.storage_slot(&address, Word::ONE).unwrap().current(), Word::from(10));
     }
 
     #[test]
     fn transient_storage_change_rolls_back_to_checkpoint() {
-        let address = Address::from([0x22; 20]);
+        let address = Address::repeat_byte(0x22);
         let mut state = State::new(CacheDB::default());
 
-        state.tstore(&address, &Word::from(1), &Word::from(10));
+        state.tstore(&address, &Word::ONE, &Word::from(10));
         let checkpoint = state.checkpoint();
-        state.tstore(&address, &Word::from(1), &Word::from(20));
+        state.tstore(&address, &Word::ONE, &Word::from(20));
 
-        assert_eq!(state.tload(&address, &Word::from(1)), Word::from(20));
+        assert_eq!(state.tload(&address, &Word::ONE), Word::from(20));
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert_eq!(state.tload(&address, &Word::from(1)), Word::from(10));
+        assert_eq!(state.tload(&address, &Word::ONE), Word::from(10));
     }
 
     #[test]
     fn take_transient_storage_only_drains_requested_account() {
-        let address = Address::from([0x22; 20]);
-        let other = Address::from([0x23; 20]);
+        let address = Address::repeat_byte(0x22);
+        let other = Address::repeat_byte(0x23);
         let mut state = State::new(CacheDB::default());
 
-        state.tstore(&address, &Word::from(1), &Word::from(10));
+        state.tstore(&address, &Word::ONE, &Word::from(10));
         state.tstore(&address, &Word::from(2), &Word::from(20));
-        state.tstore(&other, &Word::from(1), &Word::from(30));
+        state.tstore(&other, &Word::ONE, &Word::from(30));
 
         let mut slots = state.take_transient_storage(&address);
         slots.sort_unstable_by_key(|(key, _)| *key);
-        assert_eq!(slots, vec![(Word::from(1), Word::from(10)), (Word::from(2), Word::from(20))]);
-        assert_eq!(state.tload(&address, &Word::from(1)), Word::ZERO);
-        assert_eq!(state.tload(&other, &Word::from(1)), Word::from(30));
+        assert_eq!(slots, vec![(Word::ONE, Word::from(10)), (Word::from(2), Word::from(20))]);
+        assert_eq!(state.tload(&address, &Word::ONE), Word::ZERO);
+        assert_eq!(state.tload(&other, &Word::ONE), Word::from(30));
     }
 
     #[test]
     fn storage_wipe_preserves_warm_slots_in_merged_storage_map() {
         let account = Address::with_last_byte(0x19);
-        let warm_key = Word::from(1);
+        let warm_key = Word::ONE;
         let cold_key = Word::from(2);
         let mut database = CacheDB::default();
-        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::ONE));
         database.insert_account_storage(&account, &warm_key, &Word::from(3));
         database.insert_account_storage(&account, &cold_key, &Word::from(4));
         let mut state = State::new(database);
@@ -464,8 +464,8 @@ mod tests {
 
     #[test]
     fn journaled_storage_mutations_journal_and_roll_back() {
-        let address = Address::from([0x33; 20]);
-        let key = Word::from(1);
+        let address = Address::repeat_byte(0x33);
+        let key = Word::ONE;
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default());
         database.insert_account_storage(&address, &key, &Word::from(10));
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn journaled_storage_read_only_handle_journals_nothing() {
-        let address = Address::from([0x34; 20]);
+        let address = Address::repeat_byte(0x34);
         let key = Word::from(7);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default());
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn fused_slot_load_warms_once_and_reverts() {
-        let address = Address::from([0x35; 20]);
+        let address = Address::repeat_byte(0x35);
         let key = Word::from(8);
         let mut state = State::new(CacheDB::default());
         let checkpoint = state.checkpoint();
@@ -551,7 +551,7 @@ mod tests {
 
     #[test]
     fn storage_handle_reports_warmth_before_loading() {
-        let address = Address::from([0x35; 20]);
+        let address = Address::repeat_byte(0x35);
         let key = Word::from(9);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default());
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn storage_slot_warm_honors_prewarm_after_load() {
-        let address = Address::from([0x36; 20]);
+        let address = Address::repeat_byte(0x36);
         let key = Word::from(11);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default());

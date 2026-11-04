@@ -38,7 +38,7 @@ pub(crate) fn require_non_staticcall<T: EvmTypesHost>(
 
 #[inline]
 pub(crate) fn word_to_u64_saturated(value: U256) -> u64 {
-    value.try_into().unwrap_or(u64::MAX)
+    value.saturating_to::<u64>()
 }
 
 // JIT code writes stack words with 8-byte stores, so read them back with scalar loads. The
@@ -56,7 +56,7 @@ pub(crate) fn word_to_usize(value: U256) -> Result<usize, InstrStop> {
 /// Converts a word to `usize`, saturating on overflow.
 #[inline]
 pub(crate) fn word_to_usize_saturated(value: U256) -> usize {
-    value.try_into().unwrap_or(usize::MAX)
+    value.saturating_to::<usize>()
 }
 
 /// Loads an account, handling cold load gas accounting.

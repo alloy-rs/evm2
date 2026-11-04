@@ -1081,11 +1081,7 @@ fn block_env_from_header(
         gas_limit: header.gas_limit,
         basefee: header.base_fee_per_gas.unwrap_or_default(),
         difficulty: header.difficulty,
-        prevrandao: if header.difficulty.is_zero() {
-            U256::from_be_slice(header.mix_hash.as_slice())
-        } else {
-            U256::ZERO
-        },
+        prevrandao: if header.difficulty.is_zero() { header.mix_hash.into() } else { U256::ZERO },
         blob_basefee,
         slot_num: header.slot_number.unwrap_or_default(),
         ext: (),
@@ -1195,9 +1191,9 @@ fn validate_post_state(
             .unwrap_or_default();
         if actual_code != expected_account.code.as_ref() {
             return Err(TestErrorKind::UnexpectedFailure(format!(
-                "code mismatch for {address}: got 0x{}, expected 0x{}",
-                alloy_primitives::hex::encode(actual_code),
-                alloy_primitives::hex::encode(&expected_account.code)
+                "code mismatch for {address}: got {}, expected {}",
+                alloy_primitives::hex::encode_prefixed(actual_code),
+                alloy_primitives::hex::encode_prefixed(&expected_account.code)
             )));
         }
 
@@ -2194,7 +2190,7 @@ mod tests {
     fn execute_simple_storage_block(mode: ExecutionMode) -> ExecuteSummary {
         let secret = B256::with_last_byte(1);
         let caller = recover_address(secret.as_slice()).unwrap();
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let unsigned = TxLegacy {
             chain_id: Some(1),
             nonce: 0,
@@ -2220,7 +2216,7 @@ mod tests {
             target,
             Account {
                 balance: U256::ZERO,
-                code: Bytes::copy_from_slice(BYTECODE_STORE42),
+                code: Bytes::from_static(BYTECODE_STORE42),
                 nonce: U256::ZERO,
                 storage: BTreeMap::new(),
             },
@@ -2242,7 +2238,7 @@ mod tests {
             target,
             Account {
                 balance: U256::ZERO,
-                code: Bytes::copy_from_slice(BYTECODE_STORE42),
+                code: Bytes::from_static(BYTECODE_STORE42),
                 nonce: U256::ZERO,
                 storage: target_storage,
             },

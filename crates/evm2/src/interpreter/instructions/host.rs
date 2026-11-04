@@ -143,7 +143,7 @@ fn log_common<T: EvmTypesHost>(
 
     let mut topics = [B256::ZERO; 4];
     for (topic, word) in topics.iter_mut().zip(stack.popn_dyn(n)?) {
-        *topic = B256::from(word.to_be_bytes::<32>());
+        *topic = B256::from(word);
     }
     let destination = &cx.state.message().destination;
     let (memory, host) = cx.state.0.memory_host();
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn sload_opcode() {
         let mut host = TestHost::default();
-        host.storage.insert(StorageKey::new(Address::ZERO, Word::from(1)), Word::from(0xbeef));
+        host.storage.insert(StorageKey::new(Address::ZERO, Word::ONE), Word::from(0xbeef));
 
         let mut code = Vec::new();
         push(&mut code, 1);
@@ -202,7 +202,7 @@ mod tests {
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [Word::from(0xbeef)]);
         assert_eq!(
-            host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))),
+            host.storage.get(&StorageKey::new(Address::ZERO, Word::ONE)),
             Some(&Word::from(0xbeef))
         );
     }
@@ -218,7 +218,7 @@ mod tests {
         let interp = run(RunConfig::new(code).host(&mut host).staticcall());
         assert_matches!(interp.err, InstrStop::StateChangeDuringStaticCall);
         assert!(interp.stack().is_empty());
-        assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))), None);
+        assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::ONE)), None);
     }
 
     #[test]
@@ -235,7 +235,7 @@ mod tests {
 
         assert_matches!(interp.err, InstrStop::StateChangeDuringStaticCall);
         assert!(interp.stack().is_empty());
-        assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))), None);
+        assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::ONE)), None);
     }
 
     #[test]
@@ -249,7 +249,7 @@ mod tests {
         let interp =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::ISTANBUL).gas_limit(2306));
         assert_matches!(interp.err, InstrStop::ReentrancySentryOOG);
-        assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))), None);
+        assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::ONE)), None);
     }
 
     #[test]
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn sstore_reset_to_original_records_refund() {
         let mut host = TestHost::default();
-        host.storage.insert(StorageKey::new(Address::ZERO, Word::from(0)), Word::from(5));
+        host.storage.insert(StorageKey::new(Address::ZERO, Word::ZERO), Word::from(5));
         let mut code = Vec::new();
         push(&mut code, 7);
         push(&mut code, 0);
@@ -334,7 +334,7 @@ mod tests {
     fn tload_opcode() {
         let mut host = TestHost::default();
         host.transient_storage
-            .insert(StorageKey::new(Address::ZERO, Word::from(1)), Word::from(0xcafe));
+            .insert(StorageKey::new(Address::ZERO, Word::ONE), Word::from(0xcafe));
 
         let mut code = Vec::new();
         push(&mut code, 1);
@@ -364,7 +364,7 @@ mod tests {
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [Word::from(0xcafe)]);
         assert_eq!(
-            host.transient_storage.get(&StorageKey::new(Address::ZERO, Word::from(1))),
+            host.transient_storage.get(&StorageKey::new(Address::ZERO, Word::ONE)),
             Some(&Word::from(0xcafe))
         );
 
@@ -386,10 +386,7 @@ mod tests {
         let interp = run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN).staticcall());
         assert_matches!(interp.err, InstrStop::StateChangeDuringStaticCall);
         assert!(interp.stack().is_empty());
-        assert_eq!(
-            host.transient_storage.get(&StorageKey::new(Address::ZERO, Word::from(1))),
-            None
-        );
+        assert_eq!(host.transient_storage.get(&StorageKey::new(Address::ZERO, Word::ONE)), None);
     }
 
     fn log_code<const N: usize>(offset: usize, len: usize, topics: [Word; N]) -> Vec<u8> {
@@ -410,7 +407,7 @@ mod tests {
     #[test]
     fn log0_opcode() {
         let mut host = TestHost::default();
-        let address = Address::from([0x11; 20]);
+        let address = Address::repeat_byte(0x11);
         let message = MessageExt { destination: address, gas_limit: 10_000, ..Default::default() };
         let interp = run(RunConfig::new(log_code(30, 2, [])).host(&mut host).message(message));
         assert_matches!(interp.err, InstrStop::Stop);
@@ -424,9 +421,9 @@ mod tests {
     #[test]
     fn log1_opcode() {
         let mut host = TestHost::default();
-        let interp = run(RunConfig::new(log_code(30, 2, [Word::from(1)])).host(&mut host));
+        let interp = run(RunConfig::new(log_code(30, 2, [Word::ONE])).host(&mut host));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(host.logs[0].topics(), &[B256::from(Word::from(1).to_be_bytes::<32>())]);
+        assert_eq!(host.logs[0].topics(), &[B256::with_last_byte(1)]);
         assert_eq!(host.logs[0].data.data, Bytes::from_static(&[0xbe, 0xef]));
     }
 
@@ -434,15 +431,9 @@ mod tests {
     fn log2_opcode() {
         let mut host = TestHost::default();
         let interp =
-            run(RunConfig::new(log_code(30, 0, [Word::from(1), Word::from(2)])).host(&mut host));
+            run(RunConfig::new(log_code(30, 0, [Word::ONE, Word::from(2)])).host(&mut host));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(
-            host.logs[0].topics(),
-            &[
-                B256::from(Word::from(1).to_be_bytes::<32>()),
-                B256::from(Word::from(2).to_be_bytes::<32>()),
-            ]
-        );
+        assert_eq!(host.logs[0].topics(), &[B256::with_last_byte(1), B256::with_last_byte(2),]);
         assert!(host.logs[0].data.data.is_empty());
     }
 
@@ -450,7 +441,7 @@ mod tests {
     fn log3_opcode() {
         let mut host = TestHost::default();
         let interp =
-            run(RunConfig::new(log_code(30, 1, [Word::from(1), Word::from(2), Word::from(3)]))
+            run(RunConfig::new(log_code(30, 1, [Word::ONE, Word::from(2), Word::from(3)]))
                 .host(&mut host));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(host.logs[0].topics().len(), 3);
@@ -463,7 +454,7 @@ mod tests {
         let interp = run(RunConfig::new(log_code(
             30,
             1,
-            [Word::from(1), Word::from(2), Word::from(3), Word::from(4)],
+            [Word::ONE, Word::from(2), Word::from(3), Word::from(4)],
         ))
         .host(&mut host));
         assert_matches!(interp.err, InstrStop::Stop);

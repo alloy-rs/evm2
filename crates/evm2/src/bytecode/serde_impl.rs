@@ -90,7 +90,7 @@ fn from_old<E: Error>(old: BytecodeSerdeOld) -> Result<Bytecode, E> {
 mod tests {
     use super::*;
     use crate::bytecode::BytecodeKind;
-    use alloy_primitives::hex;
+    use alloy_primitives::{bytes, hex};
 
     #[test]
     fn serde_roundtrip() {
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_legacy_with_eip7702_magic() {
-        let bytes = Bytes::from_static(&hex!("ef0100"));
+        let bytes = bytes!("ef0100");
         let bytecode = Bytecode::new_legacy(bytes.clone());
 
         let json = serde_json::to_string(&bytecode).unwrap();
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn messagepack_revm_cases() {
-        let legacy = Bytes::from_static(&hex!("5b6000"));
+        let legacy = bytes!("5b6000");
         let delegated_address = Address::with_last_byte(0x42);
         let cases = [
             (revm_bytecode::Bytecode::new_legacy(legacy.clone()), Bytecode::new_legacy(legacy)),
