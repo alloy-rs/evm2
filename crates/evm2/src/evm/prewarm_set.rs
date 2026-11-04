@@ -20,7 +20,7 @@
 use crate::{interpreter::Word, utils::BitArray};
 use alloy_primitives::{
     Address,
-    map::{AddressMap, U256Set},
+    map::{AddressMap, HashSet},
 };
 
 /// Short-address optimization cap. Addresses with 18 leading zero bytes whose last two bytes are
@@ -68,7 +68,7 @@ pub struct PrewarmSet {
     /// [`Self::warm`] and [`Self::warm_storage`]: they are warmed
     /// before or alongside execution and survive [`crate::evm::State::rollback`]. An address
     /// present with an empty slot set is warm with no warm storage slots.
-    access_list: AddressMap<U256Set>,
+    access_list: AddressMap<HashSet<Word>>,
     /// Bit vector of warm short addresses. An address shorter than [`SHORT_ADDRESS_CAP`] sets
     /// its bit here for faster access; precompiles and other low-numbered addresses land here.
     short_addresses: ShortAddresses,
