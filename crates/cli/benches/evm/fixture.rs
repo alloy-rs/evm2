@@ -35,7 +35,7 @@ impl Suites {
     }
 }
 
-fn workspace_path(path: &str) -> PathBuf {
+pub(crate) fn workspace_path(path: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
 }
 

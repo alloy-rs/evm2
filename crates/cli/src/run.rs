@@ -530,7 +530,7 @@ impl PreparedBench {
         compiler: &mut LlvmCompiler,
         mut functions: B256Map<EvmCompilerFn>,
     ) -> eyre::Result<Self> {
-        let (name, accounts, block, db, tx) = parse_bench(bench)?;
+        let PreparedBenchParts { name, accounts, block, db, tx } = parse_bench(bench)?;
         for account in &accounts {
             if account.bytecode.is_empty() || functions.contains_key(&account.code_hash) {
                 continue;
@@ -560,7 +560,7 @@ impl PreparedBench {
         symbol_name: &str,
         entry_bytecode: &[u8],
     ) -> eyre::Result<(Self, libloading::Library)> {
-        let (name, _, block, db, tx) = parse_bench(bench)?;
+        let PreparedBenchParts { name, block, db, tx, .. } = parse_bench(bench)?;
         let lib = unsafe { libloading::Library::new(lib_path) }?;
         // The library holds only the entry contract; other contracts run on the interpreter.
         let func = unsafe {
@@ -655,8 +655,14 @@ struct ParsedAccount {
     code_hash: B256,
 }
 
-type PreparedBenchParts =
-    (Cow<'static, str>, Vec<ParsedAccount>, BlockEnv, InMemoryDB, RecoveredTxEnvelope);
+#[derive(Debug)]
+struct PreparedBenchParts {
+    name: Cow<'static, str>,
+    accounts: Vec<ParsedAccount>,
+    block: BlockEnv,
+    db: InMemoryDB,
+    tx: RecoveredTxEnvelope,
+}
 
 fn parse_bench(bench: &Bench) -> eyre::Result<PreparedBenchParts> {
     match &bench.source {
@@ -686,7 +692,7 @@ fn parse_fixture_bench(bench: &Bench, fixture_path: &str) -> eyre::Result<Prepar
         accounts.push(ParsedAccount { bytecode, code_hash });
     }
     let tx = build_fixture_tx(unit, post, bench)?;
-    Ok((Cow::Owned(case_name.to_owned()), accounts, block, db, tx))
+    Ok(PreparedBenchParts { name: Cow::Owned(case_name.to_owned()), accounts, block, db, tx })
 }
 
 fn parse_bytecode_bench(bench: &Bench, bytecode: &[u8]) -> eyre::Result<PreparedBenchParts> {
@@ -709,13 +715,13 @@ fn parse_bytecode_bench(bench: &Bench, bytecode: &[u8]) -> eyre::Result<Prepared
         value: U256::ZERO,
         input: bench.calldata.clone().map(Bytes::from).unwrap_or_default(),
     };
-    Ok((
-        bench.name.clone(),
-        vec![ParsedAccount { bytecode, code_hash }],
-        BlockEnvExt::default(),
+    Ok(PreparedBenchParts {
+        name: bench.name.clone(),
+        accounts: vec![ParsedAccount { bytecode, code_hash }],
+        block: BlockEnvExt::default(),
         db,
-        Recovered::new_unchecked(TxEnvelope::Legacy(tx), BENCH_CALLER),
-    ))
+        tx: Recovered::new_unchecked(TxEnvelope::Legacy(tx), BENCH_CALLER),
+    })
 }
 
 fn parse_suite(fixture_json: &str) -> eyre::Result<StateTestSuite> {
