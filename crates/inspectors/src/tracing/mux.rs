@@ -7,7 +7,7 @@ use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256, map::HashMap};
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerConfig,
-    GethDebugTracerType, GethDebugTracingOptions, NoopFrame, PreStateConfig, StateGasTrace,
+    GethDebugTracerType, GethDebugTracingOptions, NoopFrame, StateGasTrace,
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
@@ -35,7 +35,6 @@ pub struct MuxInspector {
 #[derive(Clone, Debug)]
 enum TraceConfig {
     Call(CallConfig),
-    PreState(PreStateConfig),
     FlatCall(FlatCallConfig),
     StateGas,
     Noop,
@@ -71,14 +70,6 @@ impl MuxInspector {
                         .merge(TracingInspectorConfig::from_geth_call_config(&call_config));
                     configs.push((builtin, TraceConfig::Call(call_config)));
                 }
-                GethDebugBuiltInTracerType::PreStateTracer => {
-                    let prestate_config =
-                        tracer_config.unwrap_or_default().into_pre_state_config()?;
-
-                    inspector_config
-                        .merge(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
-                    configs.push((builtin, TraceConfig::PreState(prestate_config)));
-                }
                 GethDebugBuiltInTracerType::NoopTracer => {
                     configs.push((builtin, TraceConfig::Noop));
                 }
@@ -94,6 +85,7 @@ impl MuxInspector {
                     configs.push((builtin, TraceConfig::FlatCall(flatcall_config)));
                 }
                 GethDebugBuiltInTracerType::MuxTracer
+                | GethDebugBuiltInTracerType::PreStateTracer
                 | GethDebugBuiltInTracerType::Erc7562Tracer => {
                     children.push(Self::child(tracer_type, tracer_config)?);
                 }
@@ -204,16 +196,6 @@ impl MuxInspector {
                         inspector
                             .geth_builder()
                             .geth_call_traces_with_result_gas(*call_config, &result.result)
-                            .into()
-                    } else {
-                        continue;
-                    }
-                }
-                TraceConfig::PreState(prestate_config) => {
-                    if let Some(inspector) = &self.tracing {
-                        inspector
-                            .geth_builder()
-                            .geth_prestate_traces(result, prestate_config, db)?
                             .into()
                     } else {
                         continue;

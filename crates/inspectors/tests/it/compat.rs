@@ -5,8 +5,8 @@ use alloy_eip2930::AccessList;
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypesHost, Inspector, InspectorConfig, NoopInspector, Precompiles,
-    TxResult, TxResultWithState, env as evm_env,
+    BaseEvmTypes, Evm, EvmFeatures, EvmTypesHost, ExecutionConfig, Inspector, InspectorConfig,
+    NoopInspector, Precompiles, TxResult, TxResultWithState, Version, env as evm_env,
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::PendingState,
     interpreter::{Interpreter, Message, MessageResult},
@@ -131,6 +131,7 @@ pub struct Context {
     pub(crate) tx: TxEnv,
     block: evm_env::BlockEnv,
     pub(crate) spec: SpecId,
+    nonce_check: bool,
 }
 
 impl Default for Context {
@@ -146,6 +147,7 @@ impl Context {
             tx: TxEnv::default(),
             block: evm_env::BlockEnvExt::default(),
             spec: SpecId::OSAKA,
+            nonce_check: true,
         }
     }
 
@@ -160,9 +162,10 @@ impl Context {
     }
 
     pub fn modify_cfg_chained(mut self, f: impl FnOnce(&mut CfgEnv)) -> Self {
-        let mut cfg = CfgEnv { spec: self.spec };
+        let mut cfg = CfgEnv { spec: self.spec, nonce_check: self.nonce_check };
         f(&mut cfg);
         self.spec = cfg.spec;
+        self.nonce_check = cfg.nonce_check;
         self
     }
 
@@ -195,6 +198,7 @@ impl Context {
 #[derive(Clone, Copy, Debug)]
 pub struct CfgEnv {
     pub spec: SpecId,
+    pub nonce_check: bool,
 }
 
 #[derive(Debug)]
@@ -302,7 +306,12 @@ impl Context {
         tx: TxEnv,
         inspector: Option<*mut I>,
     ) -> Result<ResultAndState, HandlerError> {
-        let mut evm = Evm::<BaseEvmTypes>::new(
+        let mut version = Version::new(self.spec);
+        if !self.nonce_check {
+            version.features.remove(EvmFeatures::NONCE_CHECK);
+        }
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(self.spec, version),
             self.spec,
             self.block,
             ethereum_tx_registry(self.spec),

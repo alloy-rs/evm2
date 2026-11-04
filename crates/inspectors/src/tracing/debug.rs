@@ -1,6 +1,6 @@
 use crate::tracing::{
     Erc7562Inspector, FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
-    MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
+    MuxInspector, PrestateInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
     utils::transaction_info,
 };
 use alloc::vec::Vec;
@@ -8,8 +8,8 @@ use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256};
 use alloy_rpc_types_trace::geth::{
     CallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
-    GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace, NoopFrame, PreStateConfig,
-    StateGasTrace, erc7562::Erc7562Config, mux::MuxConfig,
+    GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace, NoopFrame, StateGasTrace,
+    erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
     DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, NoopInspector,
@@ -38,7 +38,7 @@ pub enum DebugInspector {
     /// CallTracer
     CallTracer(TracingInspector, CallConfig),
     /// PreStateTracer
-    PreStateTracer(TracingInspector, PreStateConfig),
+    PreStateTracer(PrestateInspector),
     /// Noop tracer
     Noop(NoopInspector),
     /// EIP-8037 state-gas tracer
@@ -64,9 +64,7 @@ impl DebugInspector {
         Ok(match self {
             Self::FourByte(inspector) => Self::FourByte(inspector.clone()),
             Self::CallTracer(inspector, config) => Self::CallTracer(inspector.clone(), *config),
-            Self::PreStateTracer(inspector, config) => {
-                Self::PreStateTracer(inspector.clone(), *config)
-            }
+            Self::PreStateTracer(inspector) => Self::PreStateTracer(inspector.clone()),
             Self::Noop(inspector) => Self::Noop(inspector.clone()),
             Self::StateGasTracer(inspector) => Self::StateGasTracer(inspector.clone()),
             Self::Mux(inspector, config) => Self::Mux(inspector.try_clone()?, config.clone()),
@@ -108,12 +106,7 @@ impl DebugInspector {
                     GethDebugBuiltInTracerType::PreStateTracer => {
                         let config = tracer_config.into_pre_state_config()?;
 
-                        Self::PreStateTracer(
-                            TracingInspector::new(
-                                TracingInspectorConfig::from_geth_prestate_config(&config),
-                            ),
-                            config,
-                        )
+                        Self::PreStateTracer(PrestateInspector::new(config))
                     }
                     GethDebugBuiltInTracerType::NoopTracer => Self::Noop(NoopInspector::default()),
                     GethDebugBuiltInTracerType::StateGasTracer => {
@@ -183,9 +176,9 @@ impl DebugInspector {
                 core::mem::take(inspector);
             }
             Self::CallTracer(inspector, _)
-            | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
             | Self::Default(inspector, _) => inspector.fuse(),
+            Self::PreStateTracer(inspector) => inspector.clear(),
             Self::Erc7562Tracer(inspector) => inspector.fuse(),
             Self::Keccak256Preimage(inspector) => inspector.clear(),
             Self::Noop(_) | Self::StateGasTracer(_) => {}
@@ -213,7 +206,6 @@ impl DebugInspector {
     pub fn set_next_log_index(&mut self, index: usize) {
         match self {
             Self::CallTracer(inspector, _)
-            | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
             | Self::Default(inspector, _) => inspector.set_next_log_index(index),
             Self::Erc7562Tracer(inspector) => inspector.set_next_log_index(index),
@@ -251,14 +243,10 @@ impl DebugInspector {
                     .geth_call_traces_with_result_gas(*config, &res.result)
                     .into()
             }
-            Self::PreStateTracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx.gas_limit());
-                inspector
-                    .geth_builder()
-                    .geth_prestate_traces(res, config, db)
-                    .map_err(DebugInspectorError::Database)?
-                    .into()
-            }
+            Self::PreStateTracer(inspector) => inspector
+                .frame(tx, block_env, res, db)
+                .map_err(DebugInspectorError::Database)?
+                .into(),
             Self::Noop(_) => NoopFrame::default().into(),
             Self::StateGasTracer(_) => StateGasTrace {
                 gas_used: res.result.tx_gas_used(),
@@ -330,7 +318,7 @@ macro_rules! delegate {
         match $self {
             Self::FourByte($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::CallTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
-            Self::PreStateTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::PreStateTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::FlatCallTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Erc7562Tracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Default($insp, _) => Inspector::<T>::$method($insp, $($arg),*),

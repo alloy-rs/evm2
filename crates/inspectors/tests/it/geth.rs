@@ -4,8 +4,8 @@ mod consistency;
 mod runtime_oog;
 
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
-    TxEnv, deploy_contract, op,
+    AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, ResultAndState,
+    SpecId, TestEvm, TransactTo, TxEnv, deploy_contract, op,
 };
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
@@ -26,8 +26,8 @@ use evm2::{
 };
 use evm2_inspectors::tracing::{
     DebugInspector, Erc7562Error, Erc7562Inspector, KECCAK256_PREIMAGE_TRACER,
-    Keccak256PreimageInspector, MEMORY_PAD_LIMIT, MuxInspector, TraceLimitBehavior, TraceLimits,
-    TracingInspector, TracingInspectorConfig,
+    Keccak256PreimageInspector, MEMORY_PAD_LIMIT, MuxInspector, PrestateInspector,
+    TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1513,31 +1513,19 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
         disable_storage: Some(false),
     };
 
-    let mut insp = TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(
-        &prestate_config_no_code,
-    ));
-    let mut db = evm.ctx.db.clone();
-
-    let res = {
-        let mut evm_with_insp = evm.with_inspector(&mut insp);
-        evm_with_insp
-            .inspect_tx(TxEnv {
-                caller: deployer,
-                gas_limit: 1000000,
-                kind: TransactTo::Call(addr),
-                data: hex!("8384a002").into(), // nestedEmitWithSuccess() selector
-                nonce: 1,
-                ..Default::default()
-            })
-            .unwrap()
-    };
+    let (res, frame) = trace_prestate(
+        evm,
+        prestate_config_no_code,
+        TxEnv {
+            caller: deployer,
+            gas_limit: 1000000,
+            kind: TransactTo::Call(addr),
+            data: hex!("8384a002").into(), // nestedEmitWithSuccess() selector
+            nonce: 1,
+            ..Default::default()
+        },
+    );
     assert!(res.result.is_success());
-
-    let frame = insp
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config_no_code, &mut db)
-        .unwrap();
 
     // Verify that code is not present in either pre or post states when disable_code=true
     match frame {
@@ -1569,33 +1557,21 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
         disable_storage: Some(false),
     };
 
-    let mut insp2 = TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(
-        &prestate_config_with_code,
-    ));
     let evm2 = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
-    let mut db2 = evm2.ctx.db.clone();
-
-    let res2 = {
-        let mut evm2_with_insp = evm2.with_inspector(&mut insp2);
-        // Deploy contract during traced transaction so code appears in diff
-        evm2_with_insp
-            .inspect_tx(TxEnv {
-                caller: deployer,
-                gas_limit: 1000000,
-                kind: TransactTo::Create,
-                data: code.into(),
-                nonce: 0,
-                ..Default::default()
-            })
-            .unwrap()
-    };
+    // Deploy contract during traced transaction so code appears in diff
+    let (res2, frame2) = trace_prestate(
+        evm2,
+        prestate_config_with_code,
+        TxEnv {
+            caller: deployer,
+            gas_limit: 1000000,
+            kind: TransactTo::Create,
+            data: code.into(),
+            nonce: 0,
+            ..Default::default()
+        },
+    );
     assert!(res2.result.is_success());
-
-    let frame2 = insp2
-        .with_transaction_gas_used(res2.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res2.tx_result, &prestate_config_with_code, &mut db2)
-        .unwrap();
 
     // Verify that code IS present when disable_code=false
     match frame2 {
@@ -1795,32 +1771,19 @@ fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
         disable_code: Some(false),
         disable_storage: Some(false),
     };
-    let insp =
-        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
-
-    let mut evm = evm.with_inspector(insp);
-
-    let res = evm
-        .inspect_tx(TxEnv {
+    let (res, frame) = trace_prestate(
+        evm,
+        prestate_config,
+        TxEnv {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
             data: hex!("43d726d6").into(),
             nonce: 1,
             ..Default::default()
-        })
-        .unwrap();
-
+        },
+    );
     assert!(res.result.is_success(), "{res:#?}");
-
-    // Get the prestate diff traces
-    let mut db = evm.ctx.db.clone();
-    let insp = evm.into_inspector();
-    let frame = insp
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
-        .unwrap();
 
     match frame {
         PreStateFrame::Diff(diff_mode) => {
@@ -3069,27 +3032,19 @@ fn test_geth_prestate_diff_omits_empty_accounts() {
         .build_mainnet();
 
     let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
-    let mut db = evm.ctx.db.clone();
-    let res = evm
-        .with_inspector(&mut insp)
-        .inspect_tx(TxEnv {
+    let (res, frame) = trace_prestate(
+        evm,
+        prestate_config,
+        TxEnv {
             caller: sender,
             gas_limit: 100_000,
             gas_price: 0x600,
             kind: TransactTo::Call(recipient),
             value: U256::from(5),
             ..Default::default()
-        })
-        .unwrap();
+        },
+    );
     assert!(res.result.is_success(), "{res:#?}");
-
-    let frame = insp
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
-        .unwrap();
 
     // Output of geth's `evm t8n --trace.tracer prestateTracer --trace.jsonconfig
     // '{"diffMode":true}'`.
@@ -3145,26 +3100,18 @@ fn test_geth_prestate_diff_reports_cleared_code() {
     assert_eq!(authorization.recover_authority().unwrap(), authority);
 
     let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
-    let mut db = evm.ctx.db.clone();
-    let res = evm
-        .with_inspector(&mut insp)
-        .inspect_tx(TxEnv {
+    let (res, frame) = trace_prestate(
+        evm,
+        prestate_config,
+        TxEnv {
             caller: sender,
             gas_limit: 100_000,
             kind: TransactTo::Call(address!("2222222222222222222222222222222222222222")),
             authorization_list: vec![authorization],
             ..Default::default()
-        })
-        .unwrap();
+        },
+    );
     assert!(res.result.is_success(), "{res:#?}");
-
-    let frame = insp
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
-        .unwrap();
     let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
 
     assert_eq!(diff.pre[&authority].code, Some(delegation));
@@ -3205,25 +3152,17 @@ fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreSt
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
         .build_mainnet();
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
-    let mut db = evm.ctx.db.clone();
-    let res = evm
-        .with_inspector(&mut insp)
-        .inspect_tx(TxEnv {
+    let (res, frame) = trace_prestate(
+        evm,
+        prestate_config,
+        TxEnv {
             caller: sender,
             gas_limit: 100_000,
             kind: TransactTo::Call(contract),
             ..Default::default()
-        })
-        .unwrap();
+        },
+    );
     assert!(res.result.is_success(), "{res:#?}");
-
-    let frame = insp
-        .with_transaction_gas_used(res.result.tx_gas_used())
-        .geth_builder()
-        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
-        .unwrap();
     (contract, frame)
 }
 
@@ -3393,7 +3332,7 @@ fn tracing_inspector_steps_only_what_its_config_records() {
         ..TracingInspectorConfig::default_geth()
     };
 
-    // The call tracer, the prestate tracer and the parity traces other than `vmTrace` record no
+    // The call tracer and the parity traces other than `vmTrace` record no
     // steps, and the struct logger, `vmTrace` and an unfiltered config step every opcode.
     for config in [
         TracingInspectorConfig::none(),
@@ -3401,7 +3340,6 @@ fn tracing_inspector_steps_only_what_its_config_records() {
             with_log: Some(true),
             ..Default::default()
         }),
-        TracingInspectorConfig::from_geth_prestate_config(&PreStateConfig::default()),
         TracingInspectorConfig::from_flat_call_config(&FlatCallConfig::default()),
         TracingInspectorConfig::default_parity(),
         TracingInspectorConfig::parity_statediff(),
@@ -3473,4 +3411,532 @@ fn tracing_inspector_traces_the_same_with_the_steps_it_asks_for_and_with_every_s
 
 fn set_len(set: OpcodeSet) -> usize {
     (0..=u8::MAX).filter(|op| set.contains(*op)).count()
+}
+
+/// An opcode that looks an account or slot up adds it to the prestate when it completes, and adds
+/// nothing when its step ends in a halt, like geth, which skips an opcode that fails before its
+/// body.
+#[test]
+fn test_geth_prestate_skips_a_lookup_that_halts() {
+    let (caller, root, static_callee, poor_callee) = (
+        address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+        address!("1000000000000000000000000000000000000001"),
+        address!("1000000000000000000000000000000000000002"),
+        address!("1000000000000000000000000000000000000003"),
+    );
+    let (kept, dropped) = (
+        address!("2000000000000000000000000000000000000001"),
+        address!("2000000000000000000000000000000000000002"),
+    );
+    let push_address = |code: &mut Vec<u8>, address: Address| {
+        code.push(op::PUSH20);
+        code.extend_from_slice(address.as_slice());
+    };
+    // The root makes a static call, which reads slot 1 and then fails to write slot 2. It calls an
+    // account with too little gas for its `BALANCE` of a cold account, and then runs a `BALANCE`
+    // of its own.
+    let mut code = Vec::new();
+    code.extend_from_slice(&hex!("6000600060006000"));
+    push_address(&mut code, static_callee);
+    code.extend_from_slice(&[op::GAS, op::STATICCALL, op::POP]);
+    code.extend_from_slice(&hex!("60006000600060006000"));
+    push_address(&mut code, poor_callee);
+    code.extend_from_slice(&hex!("6064"));
+    code.extend_from_slice(&[op::CALL, op::POP]);
+    push_address(&mut code, kept);
+    code.extend_from_slice(&[op::BALANCE, op::STOP]);
+    let static_code = hex!("6001545060076002555b00");
+    let mut poor_code = Vec::new();
+    push_address(&mut poor_code, dropped);
+    poor_code.extend_from_slice(&[op::BALANCE, op::STOP]);
+
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &caller,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    for (address, code) in [
+        (root, Bytes::from(code)),
+        (static_callee, Bytes::from(static_code.to_vec())),
+        (poor_callee, Bytes::from(poor_code)),
+    ] {
+        db.insert_account_info(
+            &address,
+            AccountInfo {
+                nonce: 1,
+                code_hash: keccak256(&code),
+                code: Some(Bytecode::new_raw(code)),
+                ..Default::default()
+            },
+        );
+    }
+    for address in [kept, dropped] {
+        db.insert_account_info(
+            &address,
+            AccountInfo { balance: U256::from(1), ..Default::default() },
+        );
+    }
+    db.insert_account_storage(&static_callee, &U256::from(1), &U256::from(0x2a));
+    db.insert_account_storage(&static_callee, &U256::from(2), &U256::from(0x2b));
+    let evm = Context::mainnet().with_db(db).build_mainnet();
+    let (res, frame) = trace_prestate(
+        evm,
+        PreStateConfig::default(),
+        TxEnv { caller, gas_limit: 1_000_000, kind: TransactTo::Call(root), ..Default::default() },
+    );
+    assert!(res.result.is_success(), "{res:#?}");
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+
+    // The `BALANCE` that completed names its account, and the one that ran out of gas does not.
+    assert!(prestate.0.contains_key(&kept));
+    assert!(!prestate.0.contains_key(&dropped));
+    // The `SLOAD` that completed names its slot, and the `SSTORE` that failed does not.
+    assert_eq!(
+        prestate.0[&static_callee].storage,
+        BTreeMap::from([(B256::with_last_byte(1), B256::with_last_byte(0x2a))])
+    );
+}
+
+/// The prestate inspector asks for the steps of the opcodes that look an account or slot up, or
+/// create one, and leaves calls to the call hook.
+#[test]
+fn test_geth_prestate_inspector_steps_only_lookup_opcodes() {
+    let inspector = PrestateInspector::new(PreStateConfig::default());
+    let steps = Inspector::<BaseEvmTypes>::inspector_config(&inspector).steps();
+    let lookups = [
+        op::SLOAD,
+        op::SSTORE,
+        op::EXTCODECOPY,
+        op::EXTCODEHASH,
+        op::EXTCODESIZE,
+        op::BALANCE,
+        op::SELFDESTRUCT,
+        op::CREATE,
+        op::CREATE2,
+    ];
+    assert_eq!(steps, lookups.into_iter().collect::<OpcodeSet>());
+}
+
+/// geth names the delegation target that the recipient of a transaction has before the
+/// authorizations apply, and the callee's target of a call, and it does not name the target that an
+/// authorization of the transaction sets.
+#[test]
+fn test_geth_prestate_names_delegation_targets() {
+    let (sender, root) = (
+        address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+        address!("1000000000000000000000000000000000000001"),
+    );
+    let authority = address!("7e5f4552091a69125d5dfcb7b8c2659029395bdf");
+    let (old_target, new_target, called, called_target) = (
+        address!("aaaa000000000000000000000000000000000001"),
+        address!("bbbb000000000000000000000000000000000002"),
+        address!("cccc000000000000000000000000000000000003"),
+        address!("dddd000000000000000000000000000000000004"),
+    );
+    let delegation_to = |target: Address| {
+        let mut code = vec![0xef, 0x01, 0x00];
+        code.extend_from_slice(target.as_slice());
+        Bytes::from(code)
+    };
+    let funded = AccountInfo { balance: U256::from(1), ..Default::default() };
+    let with_code = |code: Bytes| AccountInfo {
+        balance: U256::from(1),
+        code_hash: keccak256(&code),
+        code: Some(Bytecode::new_raw(code)),
+        ..Default::default()
+    };
+    // The root calls an account that delegates to `called_target`.
+    let mut root_code = hex!("60006000600060006000").to_vec();
+    root_code.push(op::PUSH20);
+    root_code.extend_from_slice(called.as_slice());
+    root_code.extend_from_slice(&[op::GAS, op::CALL, op::STOP]);
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(&authority, with_code(delegation_to(old_target)));
+    db.insert_account_info(&root, with_code(Bytes::from(root_code)));
+    db.insert_account_info(&called, with_code(delegation_to(called_target)));
+    for address in [old_target, new_target, called_target] {
+        db.insert_account_info(&address, funded.clone());
+    }
+
+    // Signed by the key of `authority`; moves its delegation to `new_target`.
+    let authorization = Authorization { chain_id: U256::from(1), address: new_target, nonce: 0 };
+    let signature = sign_message(B256::with_last_byte(1), authorization.signature_hash()).unwrap();
+    let authorization = authorization.into_signed(signature);
+    assert_eq!(authorization.recover_authority().unwrap(), authority);
+
+    for (to, expected) in [
+        (authority, [authority, old_target].as_slice()),
+        (root, [root, called, called_target].as_slice()),
+    ] {
+        let evm = Context::mainnet()
+            .with_db(db.clone())
+            .modify_cfg_chained(|cfg| cfg.spec = SpecId::PRAGUE)
+            .build_mainnet();
+        let (res, frame) = trace_prestate(
+            evm,
+            PreStateConfig::default(),
+            TxEnv {
+                caller: sender,
+                gas_limit: 200_000,
+                kind: TransactTo::Call(to),
+                authorization_list: vec![authorization.clone()],
+                ..Default::default()
+            },
+        );
+        assert!(res.result.is_success(), "{res:#?}");
+        let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+        let named: Vec<_> = prestate.0.keys().copied().filter(|a| *a != sender).collect();
+        let mut expected = expected.to_vec();
+        // The authority is named whoever the recipient is.
+        if !expected.contains(&authority) {
+            expected.push(authority);
+        }
+        expected.sort();
+        assert_eq!(named, expected, "to {to}");
+    }
+}
+
+/// Before Prague, code shaped like a delegation designator is plain code, and geth names no target
+/// for it.
+#[test]
+fn test_geth_prestate_names_no_delegation_target_before_prague() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let recipient = address!("1000000000000000000000000000000000000001");
+    let target = address!("aaaa000000000000000000000000000000000001");
+    let mut code = vec![0xef, 0x01, 0x00];
+    code.extend_from_slice(target.as_slice());
+    let code = Bytes::from(code);
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &recipient,
+        AccountInfo {
+            balance: U256::from(1),
+            code_hash: keccak256(&code),
+            code: Some(Bytecode::new_raw(code)),
+            ..Default::default()
+        },
+    );
+    db.insert_account_info(&target, AccountInfo { balance: U256::from(1), ..Default::default() });
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet();
+
+    let (_, frame) = trace_prestate(
+        evm,
+        PreStateConfig::default(),
+        TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            kind: TransactTo::Call(recipient),
+            ..Default::default()
+        },
+    );
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+    assert!(prestate.0.contains_key(&recipient));
+    assert!(!prestate.0.contains_key(&target), "{prestate:#?}");
+}
+
+/// A transaction that halts on its charges before any call runs gives the inspector no call hook,
+/// and geth still names the delegation target of the recipient.
+#[test]
+fn test_geth_prestate_names_the_delegation_target_without_a_call() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let recipient = address!("1000000000000000000000000000000000000001");
+    let target = address!("aaaa000000000000000000000000000000000001");
+    let mut code = vec![0xef, 0x01, 0x00];
+    code.extend_from_slice(target.as_slice());
+    let code = Bytes::from(code);
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &recipient,
+        AccountInfo {
+            balance: U256::from(1),
+            code_hash: keccak256(&code),
+            code: Some(Bytecode::new_raw(code)),
+            ..Default::default()
+        },
+    );
+    db.insert_account_info(&target, AccountInfo { balance: U256::from(1), ..Default::default() });
+    let mut evm = Context::mainnet()
+        .with_db(db.clone())
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::PRAGUE)
+        .build_mainnet();
+    let tx = TxEnv {
+        caller: sender,
+        gas_limit: 100_000,
+        kind: TransactTo::Call(recipient),
+        ..Default::default()
+    };
+    // No inspector ran, as when the transaction halts before its first call.
+    let res = evm.inspect_tx(tx.clone()).unwrap();
+    let block = *evm.ctx.block();
+    let mut inspector = PrestateInspector::new(PreStateConfig::default());
+    let frame = inspector.frame(&tx.envelope(), &block, &res.tx_result, &mut db).unwrap();
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+    assert!(prestate.0.contains_key(&target), "{prestate:#?}");
+}
+
+/// The addresses that `CREATE` and `CREATE2` create are named, including ones that already hold a
+/// balance.
+#[test]
+fn test_geth_prestate_names_created_addresses() {
+    let (sender, root) = (
+        address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+        address!("1000000000000000000000000000000000000001"),
+    );
+    let created = root.create(1);
+    let created2 = root.create2(B256::ZERO, keccak256([]));
+    // CREATE and CREATE2 of empty init code, which stay empty.
+    let code = Bytes::from(hex!("5f5f5ff0505f5f5f5ff55000"));
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &root,
+        AccountInfo {
+            nonce: 1,
+            code_hash: keccak256(&code),
+            code: Some(Bytecode::new_raw(code)),
+            ..Default::default()
+        },
+    );
+    for (address, balance) in [(created, 5), (created2, 6)] {
+        db.insert_account_info(
+            &address,
+            AccountInfo { balance: U256::from(balance), ..Default::default() },
+        );
+    }
+    let evm = Context::mainnet().with_db(db).build_mainnet();
+    let (res, frame) = trace_prestate(
+        evm,
+        PreStateConfig::default(),
+        TxEnv {
+            caller: sender,
+            gas_limit: 200_000,
+            kind: TransactTo::Call(root),
+            ..Default::default()
+        },
+    );
+    assert!(res.result.is_success(), "{res:#?}");
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+    assert_eq!(prestate.0[&created].balance, Some(U256::from(5)));
+    assert_eq!(prestate.0[&created2].balance, Some(U256::from(6)));
+}
+
+/// A `CREATE` that evm2 refuses for a balance too low for its value still names the address it
+/// would create, like geth, and a `CREATE` that runs init code names it along with what the init
+/// code looks up.
+#[test]
+fn test_geth_prestate_names_the_address_of_a_refused_create() {
+    let (sender, root, looked_up) = (
+        address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b"),
+        address!("1000000000000000000000000000000000000001"),
+        address!("2000000000000000000000000000000000000001"),
+    );
+    let created = root.create(1);
+    // Init code that looks `looked_up` up.
+    let mut init_code = vec![op::PUSH20];
+    init_code.extend_from_slice(looked_up.as_slice());
+    init_code.extend_from_slice(&[op::BALANCE, op::STOP]);
+
+    // `root` has no balance, so a value of one makes its `CREATE` fail and the init code never
+    // runs.
+    for (value, runs_init_code) in [(1u8, false), (0, true)] {
+        // `root` stores the init code in memory and runs a `CREATE` of it.
+        let mut code = vec![op::PUSH32];
+        code.extend_from_slice(&[&[0; 32 - 23][..], &init_code].concat());
+        code.extend_from_slice(&hex!("5f52"));
+        code.extend_from_slice(&[
+            op::PUSH1,
+            23,
+            op::PUSH1,
+            9,
+            op::PUSH1,
+            value,
+            op::CREATE,
+            op::STOP,
+        ]);
+        let code = Bytes::from(code);
+        for spec in [SpecId::PRAGUE, SpecId::AMSTERDAM] {
+            let mut db = CacheDB::new(EmptyDB::default());
+            db.insert_account_info(
+                &sender,
+                AccountInfo {
+                    balance: U256::from(100_000_000_000_000_000u64),
+                    ..Default::default()
+                },
+            );
+            db.insert_account_info(
+                &root,
+                AccountInfo {
+                    nonce: 1,
+                    code_hash: keccak256(&code),
+                    code: Some(Bytecode::new_raw(code.clone())),
+                    ..Default::default()
+                },
+            );
+            for (address, balance) in [(looked_up, 1), (created, 5)] {
+                db.insert_account_info(
+                    &address,
+                    AccountInfo { balance: U256::from(balance), ..Default::default() },
+                );
+            }
+            let evm = Context::mainnet()
+                .with_db(db)
+                .modify_cfg_chained(|cfg| cfg.spec = spec)
+                .build_mainnet();
+            let (res, frame) = trace_prestate(
+                evm,
+                PreStateConfig::default(),
+                TxEnv {
+                    caller: sender,
+                    gas_limit: 200_000,
+                    kind: TransactTo::Call(root),
+                    ..Default::default()
+                },
+            );
+            assert!(res.result.is_success(), "{spec:?}: {res:#?}");
+            let PreStateFrame::Default(prestate) = frame else {
+                panic!("expected a prestate frame")
+            };
+            let context = format!("{spec:?}, value {value}");
+            assert!(prestate.0.contains_key(&created), "{context}");
+            assert_eq!(prestate.0.contains_key(&looked_up), runs_init_code, "{context}");
+        }
+    }
+}
+
+/// geth names the address of a `CREATE2` when the opcode starts and never takes the name back, so a
+/// `SELFDESTRUCT` of a contract that a colliding `CREATE2` named drops its post state from the diff
+/// after Cancun although the contract survives.
+#[test]
+fn test_geth_prestate_diff_selfdestruct_after_colliding_create2() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let factory = address!("1111111111111111111111111111111111111111");
+    let init_code_hash = alloy_primitives::keccak256([0u8]);
+    let victim = factory.create2(B256::ZERO, init_code_hash);
+
+    // CREATE2 of the one-byte init code `00` with salt 0, which collides with `victim`; then CALL
+    // `victim`.
+    let mut factory_code = hex!("600060015f5ff5505f5f5f5f5f73").to_vec();
+    factory_code.extend_from_slice(victim.as_slice());
+    factory_code.extend_from_slice(&hex!("5af150"));
+    // SSTORE 7 at slot 0, SELFDESTRUCT to the zero address.
+    let victim_code = Bytes::from(hex!("60075f555fff"));
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &factory,
+        AccountInfo {
+            balance: U256::from(1),
+            nonce: 1,
+            code_hash: alloy_primitives::keccak256(&factory_code),
+            code: Some(Bytecode::new_raw(factory_code.into())),
+            ..Default::default()
+        },
+    );
+    db.insert_account_info(
+        &victim,
+        AccountInfo {
+            balance: U256::from(1),
+            nonce: 1,
+            code_hash: alloy_primitives::keccak256(&victim_code),
+            code: Some(Bytecode::new_raw(victim_code)),
+            ..Default::default()
+        },
+    );
+    db.insert_account_storage(&victim, &U256::ZERO, &U256::from(5));
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet();
+
+    let (res, frame) = trace_prestate(
+        evm,
+        PreStateConfig { diff_mode: Some(true), ..Default::default() },
+        TxEnv {
+            caller: sender,
+            gas_limit: 8_000_000,
+            kind: TransactTo::Call(factory),
+            ..Default::default()
+        },
+    );
+    assert!(res.result.is_success(), "{res:#?}");
+    let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
+
+    // Matches geth's `evm t8n --state.fork Cancun` with the prestate tracer in diff mode.
+    assert!(!diff.post.contains_key(&victim));
+    assert_eq!(diff.pre[&victim].storage[&B256::ZERO], B256::with_last_byte(5));
+}
+
+/// A create transaction whose nonce differs from the nonce of its sender, which only runs with the
+/// nonce check off, creates its contract from the nonce of the transaction.
+#[test]
+fn test_geth_prestate_diff_names_the_create_of_a_transaction_nonce() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.nonce_check = false)
+        .build_mainnet();
+
+    // Init code that returns one byte of code.
+    let init_code = Bytes::from(hex!("60006000f3"));
+    let (res, frame) = trace_prestate(
+        evm,
+        PreStateConfig { diff_mode: Some(true), ..Default::default() },
+        TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            kind: TransactTo::Create,
+            data: init_code,
+            nonce: 7,
+            ..Default::default()
+        },
+    );
+    assert!(res.result.is_success(), "{res:#?}");
+    let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
+
+    assert!(diff.post.contains_key(&sender.create(7)), "{diff:#?}");
+    assert!(!diff.post.contains_key(&sender.create(0)), "{diff:#?}");
+}
+
+/// Runs a transaction with a [`PrestateInspector`] and returns the result and the frame.
+fn trace_prestate(
+    evm: TestEvm,
+    config: PreStateConfig,
+    tx: TxEnv,
+) -> (ResultAndState, PreStateFrame) {
+    let mut db = evm.ctx.db.clone();
+    let block = *evm.ctx.block();
+    let mut insp = PrestateInspector::new(config);
+    let res = evm.with_inspector(&mut insp).inspect_tx(tx.clone()).unwrap();
+    let frame = insp.frame(&tx.envelope(), &block, &res.tx_result, &mut db).unwrap();
+    (res, frame)
 }
