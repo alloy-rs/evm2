@@ -1134,7 +1134,7 @@ mod extensions {
         },
         precompile::{PrecompileOutput, PrecompileProvider},
         precompiles::{MovePrecompileError, PrecompileId},
-        registry::HandlerError,
+        registry::{FrameTransactionError, HandlerError},
     };
     use std::borrow::Cow;
 
@@ -1562,9 +1562,7 @@ mod extensions {
             } else {
                 assert_eq!(
                     evm.transact(&tx(frames)).unwrap_err(),
-                    HandlerError::InvalidFrameTransaction(
-                        "EIP-8141 SENDER frame executed before execution approval"
-                    )
+                    HandlerError::InvalidFrameTransaction(FrameTransactionError::SenderNotApproved)
                 );
                 assert_eq!(evm.state_mut().account(&SENDER).unwrap().nonce(), 0);
                 assert_eq!(evm.ext().calls.len(), 2);

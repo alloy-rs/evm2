@@ -30,7 +30,7 @@ use evm2::{
         handler::DefaultTxHandlerHooks,
     },
     interpreter::{GasTracker, InstrStop},
-    registry::{HandlerError, TxRegistry},
+    registry::{FrameTransactionError, HandlerError, TxRegistry},
     version::GasId,
 };
 use k256::ecdsa::SigningKey;
@@ -855,12 +855,16 @@ fn payment_approval_honors_balance_top_up_independently_of_fee_and_balance_check
                     if balance_check && initial_balance < escrow {
                         assert_eq!(
                             prefix.unwrap_err(),
-                            HandlerError::InvalidFrameTransaction("EIP-8141 VERIFY frame failed"),
+                            HandlerError::InvalidFrameTransaction(
+                                FrameTransactionError::VerifyFrameFailed
+                            ),
                             "{label}"
                         );
                         assert_eq!(
                             evm.transact(&tx).unwrap_err(),
-                            HandlerError::InvalidFrameTransaction("EIP-8141 VERIFY frame failed"),
+                            HandlerError::InvalidFrameTransaction(
+                                FrameTransactionError::VerifyFrameFailed
+                            ),
                             "{label}"
                         );
                         assert_eq!(
@@ -975,7 +979,10 @@ fn unsuccessful_prefix_frames_report_the_revm_validation_error() {
             frame(FrameMode::Default, BODY),
         ]));
         let error = evm.validate_frame_prefix(&tx, 2).unwrap_err();
-        assert_eq!(error.to_string(), "EIP-8141 validation prefix contains an unsuccessful frame");
+        assert_eq!(
+            error,
+            HandlerError::InvalidFrameTransaction(FrameTransactionError::UnsuccessfulPrefixFrame)
+        );
         assert_eq!(evm.state_mut().account(&SENDER).unwrap().nonce(), 0);
     }
 }
@@ -992,6 +999,14 @@ mod handler_hooks {
         static CALLS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
     }
 
+    #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+    enum HookError {
+        #[error("preparation hook failed")]
+        Preparation,
+        #[error("settlement hook failed")]
+        Settlement,
+    }
+
     struct Hooks<const FAIL: u8>;
 
     impl<const FAIL: u8> TxHandlerHooks<BaseEvmTypes> for Hooks<FAIL> {
@@ -1005,7 +1020,7 @@ mod handler_hooks {
             assert_eq!(sender.nonce(), 0);
             assert_eq!(sender.balance(), U256::from(1_000_000_000));
             if FAIL == 1 {
-                return Err(HandlerError::InvalidFrameTransaction("preparation hook failed"));
+                return Err(HandlerError::external(HookError::Preparation));
             }
             Ok(())
         }
@@ -1019,7 +1034,7 @@ mod handler_hooks {
             CALLS.with_borrow_mut(|calls| calls.push("settle"));
             assert_eq!(host.state_mut().account(&SENDER)?.nonce(), 1);
             if FAIL == 2 {
-                return Err(HandlerError::InvalidFrameTransaction("settlement hook failed"));
+                return Err(HandlerError::external(HookError::Settlement));
             }
             DefaultTxHandlerHooks::settle_frame_transaction(host, envelope, prepared, result)
         }
@@ -1077,17 +1092,18 @@ mod handler_hooks {
     }
 
     #[rstest::rstest]
-    #[case(1, "preparation hook failed", vec!["prepare"])]
-    #[case(2, "settlement hook failed", vec!["prepare", "settle"])]
+    #[case(1, HookError::Preparation, vec!["prepare"])]
+    #[case(2, HookError::Settlement, vec!["prepare", "settle"])]
     fn hook_errors_discard_approval_and_fees(
         #[case] stage: u8,
-        #[case] message: &'static str,
+        #[case] expected: HookError,
         #[case] calls: Vec<&'static str>,
     ) {
         let mut evm = if stage == 1 { evm::<1>() } else { evm::<2>() };
         let tx = transaction();
         CALLS.with_borrow_mut(Vec::clear);
-        assert_eq!(evm.transact(&tx).unwrap_err(), HandlerError::InvalidFrameTransaction(message));
+        let error = evm.transact(&tx).unwrap_err();
+        assert_eq!(error.external_ref::<HookError>(), Some(&expected));
         assert_eq!(CALLS.with_borrow(Clone::clone), calls);
         assert_eq!(evm.state_mut().account(&SENDER).unwrap().nonce(), 0);
         assert_eq!(evm.state_mut().account(&SENDER).unwrap().balance(), U256::from(1_000_000_000));
@@ -1116,7 +1132,7 @@ fn gas_reservations_accept_the_u64_boundary_and_reject_one_more() {
             }
             assert_eq!(
                 FrameGas::calculate(&overflow, &version),
-                Err(HandlerError::InvalidFrameTransaction("EIP-8141 derived gas limit overflow")),
+                Err(HandlerError::InvalidFrameTransaction(FrameTransactionError::GasLimitOverflow)),
             );
         }
     }
@@ -1139,7 +1155,7 @@ fn saturated_frame_budget_sums_are_rejected_even_with_zero_data_prices() {
         }
         assert_eq!(
             FrameGas::calculate(&tx, &version),
-            Err(HandlerError::InvalidFrameTransaction("EIP-8141 derived gas limit overflow")),
+            Err(HandlerError::InvalidFrameTransaction(FrameTransactionError::GasLimitOverflow)),
         );
     }
 }
@@ -1166,7 +1182,7 @@ fn custom_data_weights_price_zero_bytes_and_reject_cost_overflow() {
         overflow.gas_params.set(GasId::TxFloorCostPerToken, u32::MAX);
         assert_eq!(
             FrameGas::calculate(&tx, &overflow),
-            Err(HandlerError::InvalidFrameTransaction("EIP-8141 derived gas limit overflow")),
+            Err(HandlerError::InvalidFrameTransaction(FrameTransactionError::GasLimitOverflow)),
         );
         overflow.gas_params.set(GasId::TxTokenCost, 0);
         overflow.gas_params.set(GasId::TxFloorCostPerToken, 0);

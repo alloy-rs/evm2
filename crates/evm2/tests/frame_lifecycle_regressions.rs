@@ -10,8 +10,12 @@ use alloy_eips::eip8141::{
 use alloy_primitives::{Address, B256, U256};
 use common::{APPROVE_BOTH, BODY, SENDER, recovered, set_version, stored};
 use evm2::{
-    BaseEvmTypes, Evm, EvmFeatures, SpecId, bytecode::Bytecode, evm::AccountInfo,
-    interpreter::InstrStop, registry::HandlerError, version::GasId,
+    BaseEvmTypes, Evm, EvmFeatures, SpecId,
+    bytecode::Bytecode,
+    evm::AccountInfo,
+    interpreter::InstrStop,
+    registry::{FrameTransactionError, HandlerError},
+    version::GasId,
 };
 
 const FAILURE: Address = Address::with_last_byte(0xc0);
@@ -70,7 +74,7 @@ fn reserved_zero_signature_message_is_rejected_even_with_placeholders() {
                 &mut evm,
                 &tx,
                 HandlerError::InvalidFrameTransaction(
-                    "EIP-8141 explicit signature message must be a non-zero 32-byte digest",
+                    FrameTransactionError::InvalidSignatureMessage,
                 ),
             );
             assert_eq!(nonce(&mut evm, U256::ZERO), U256::ZERO);
@@ -204,7 +208,7 @@ fn mismatched_lane_invalidates_before_any_key_is_consumed() {
     let tx = recovered(payload(vec![frame(FrameMode::Verify, SENDER, 3)], keys.clone()));
     assert!(matches!(
         evm.transact(&tx),
-        Err(HandlerError::InvalidFrameTransaction("EIP-8250 nonce sequence mismatch"))
+        Err(HandlerError::InvalidFrameTransaction(FrameTransactionError::NonceSequenceMismatch))
     ));
     assert_eq!(nonce(&mut evm, keys[0]), U256::ZERO);
     assert_eq!(nonce(&mut evm, keys[1]), U256::from(9));
@@ -325,7 +329,7 @@ fn overlapping_and_disjoint_domains_advance_independently_between_transactions()
     stale_overlap.nonce = 1;
     assert!(matches!(
         evm.transact(&recovered(stale_overlap)),
-        Err(HandlerError::InvalidFrameTransaction("EIP-8250 nonce sequence mismatch"))
+        Err(HandlerError::InvalidFrameTransaction(FrameTransactionError::NonceSequenceMismatch))
     ));
     for (key, expected) in [(0, 0), (7, 1), (9, 2), (11, 1)] {
         assert_eq!(nonce(&mut evm, U256::from(key)), U256::from(expected));
