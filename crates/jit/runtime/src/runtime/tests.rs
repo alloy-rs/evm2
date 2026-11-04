@@ -256,6 +256,74 @@ impl ArtifactStore for CountingStore {
     }
 }
 
+#[cfg(feature = "llvm")]
+#[derive(Clone, Copy, Debug)]
+enum AotFailure {
+    Persist,
+    ReloadMissing,
+    ReloadError,
+    Link,
+    NoStore,
+}
+
+#[cfg(feature = "llvm")]
+struct AotFailureStore {
+    inner: RuntimeArtifactStore,
+    failure: AotFailure,
+}
+
+#[cfg(feature = "llvm")]
+impl ArtifactStore for AotFailureStore {
+    fn load_all(&self) -> eyre::Result<Vec<(ArtifactKey, StoredArtifact)>> {
+        self.inner.load_all()
+    }
+
+    fn load(&self, key: &ArtifactKey) -> eyre::Result<Option<StoredArtifact>> {
+        let Some(mut stored) = self.inner.load(key)? else { return Ok(None) };
+        match self.failure {
+            AotFailure::ReloadMissing => return Ok(None),
+            AotFailure::ReloadError => eyre::bail!("injected AOT reload failure"),
+            // A malformed symbol makes linking fail without handing invalid object bytes to LLVM.
+            AotFailure::Link => stored.manifest.symbol_name.push('\0'),
+            _ => {}
+        }
+        Ok(Some(stored))
+    }
+
+    fn store(
+        &self,
+        key: &ArtifactKey,
+        manifest: &ArtifactManifest,
+        object_bytes: &[u8],
+    ) -> eyre::Result<()> {
+        if matches!(self.failure, AotFailure::Persist) {
+            eyre::bail!("injected AOT persist failure");
+        }
+        self.inner.store(key, manifest, object_bytes)
+    }
+
+    fn delete(&self, key: &ArtifactKey) -> eyre::Result<()> {
+        self.inner.delete(key)
+    }
+
+    fn clear(&self) -> eyre::Result<()> {
+        self.inner.clear()
+    }
+}
+
+#[cfg(feature = "llvm")]
+static STALE_RESULT_GATE: Mutex<Option<(chan::Sender<()>, chan::Receiver<()>)>> = Mutex::new(None);
+
+#[cfg(feature = "llvm")]
+fn gated_builtin_address(builtin: evm2_jit_builtins::Builtin) -> usize {
+    let gate = STALE_RESULT_GATE.lock().unwrap().take();
+    if let Some((entered, release)) = gate {
+        entered.send(()).unwrap();
+        release.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+    }
+    builtin.addr::<evm2::BaseEvmTypes>()
+}
+
 // ===========================================================================
 // Tests: startup / basic.
 // ===========================================================================
@@ -983,27 +1051,53 @@ fn failed_compile_is_not_retried_until_cleared() {
 #[test]
 #[cfg(feature = "llvm")]
 fn clear_resident_discards_inflight_jit() {
-    let tb =
-        TestBackend::with_tuning_1w(RuntimeTuning { jit_hot_threshold: 1, ..Default::default() });
+    for clear in [JitBackend::clear_resident, JitBackend::clear_all] {
+        let (entered_tx, entered_rx) = chan::bounded(1);
+        let (release_tx, release_rx) = chan::bounded(1);
+        *STALE_RESULT_GATE.lock().unwrap() = Some((entered_tx, release_rx));
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: true,
+            // SAFETY: the resolver returns the base host's unchanged builtin addresses.
+            host: unsafe {
+                HostConfig::for_types::<evm2::BaseEvmTypes>().with_resolver(gated_builtin_address)
+            },
+            tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+            ..Default::default()
+        });
 
-    let req = || TestBackend::req_cancun(BYTECODE_RET42);
+        std::thread::scope(|scope| {
+            let compiling = scope.spawn(|| {
+                tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+            });
+            entered_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            clear(&tb);
+            // An ineligible request completes without a worker. Its notification proves the
+            // earlier clear command was processed, while the real compilation is still held.
+            tb.compile_jit_sync(TestBackend::req_cancun(&[])).unwrap();
+            assert_eq!(tb.stats().pending_jobs, 1);
+            release_tx.send(()).unwrap();
+            compiling.join().unwrap();
+        });
 
-    // Trigger JIT promotion.
-    for _ in 0..5 {
-        let _ = tb.lookup(req());
+        let stats = tb.stats();
+        assert_eq!(stats.compilations_dispatched, 1);
+        assert_eq!(stats.compilations_succeeded, 0);
+        assert_eq!(stats.compilations_failed, 0);
+        assert_eq!(stats.pending_jobs, 0);
+        assert_eq!(stats.compilations_discarded, 1);
+        assert!(
+            tb.get_compiled(alloy_primitives::keccak256(BYTECODE_RET42), SpecId::CANCUN).is_none()
+        );
+
+        // The new generation still compiles and notifies normally.
+        tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+        assert!(
+            tb.get_compiled(alloy_primitives::keccak256(BYTECODE_RET42), SpecId::CANCUN).is_some()
+        );
+        assert_eq!(tb.stats().pending_jobs, 0);
+        assert_eq!(tb.stats().compilations_succeeded, 1);
+        assert_eq!(tb.stats().compilations_discarded, 1);
     }
-
-    // Immediately clear — in-flight JIT results should be discarded.
-    tb.clear_resident();
-
-    // Give time for worker to finish and backend to process.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    // The result from the old generation should have been discarded.
-    assert!(
-        matches!(tb.lookup(req()), LookupDecision::Unavailable(LookupMissReason::NotReady)),
-        "stale JIT result should not appear after clear_resident",
-    );
 }
 
 #[test]
@@ -1445,6 +1539,107 @@ fn prepare_aot_persist_and_load() {
     let p = tb.get_compiled(code_hash, SpecId::CANCUN).unwrap();
     assert_eq!(p.kind, ProgramKind::Aot);
     assert_eq!(store.len(), 1);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn failed_aot_persist_is_not_retried_until_cleared() {
+    let mut dispatches = Vec::new();
+    for failure in [
+        AotFailure::Persist,
+        AotFailure::ReloadMissing,
+        AotFailure::ReloadError,
+        AotFailure::Link,
+        AotFailure::NoStore,
+    ] {
+        let store = (!matches!(failure, AotFailure::NoStore)).then(|| {
+            Arc::new(AotFailureStore { inner: RuntimeArtifactStore::new().unwrap(), failure })
+                as Arc<dyn ArtifactStore>
+        });
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: true,
+            aot: store.is_some(),
+            store,
+            tuning: RuntimeTuning {
+                jit_worker_count: 1,
+                jit_hot_threshold: 1,
+                idle_evict_duration: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let req = || AotRequest {
+            code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
+            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            spec_id: SpecId::CANCUN,
+        };
+
+        // Duplicate requests must all be notified even when persistence/linking fails.
+        tb.prepare_aot_batch_sync(vec![req(), req(), req()]).unwrap();
+        assert_eq!(tb.stats().compilations_failed, 1, "failure case {failure:?}");
+        for _ in 0..10 {
+            if !matches!(failure, AotFailure::NoStore) {
+                let misses = tb.stats().lookup_misses;
+                let _ = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+                tb.wait_stats(|s| s.lookup_misses > misses);
+            }
+            // Also acts as a completion barrier and checks suppressed requests notify callers.
+            tb.prepare_aot_sync(req()).unwrap();
+        }
+        let attempts = tb.stats().compilations_dispatched;
+        eprintln!("{failure:?}: dispatched {attempts} AOT attempts before clear");
+        dispatches.push(attempts);
+
+        tb.clear_resident();
+        tb.prepare_aot_sync(req()).unwrap();
+        assert_eq!(tb.stats().compilations_dispatched, attempts + 1);
+        assert_eq!(tb.stats().compilations_failed, attempts + 1);
+
+        // In JIT mode an explicit AOT failure must not suppress the other compilation kind.
+        // In AOT mode even compile_jit_sync deliberately requests AOT output.
+        if matches!(failure, AotFailure::NoStore) {
+            tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+            let program = tb.get_compiled(req().code_hash, SpecId::CANCUN).unwrap();
+            assert_eq!(program.kind, ProgramKind::Jit);
+            assert_eq!(tb.stats().compilations_succeeded, 1);
+        }
+        assert_eq!(tb.stats().pending_jobs, 0);
+    }
+    assert_eq!(dispatches, vec![1; 5]);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn failed_aot_persist_allows_jit_retry() {
+    for failure in
+        [AotFailure::Persist, AotFailure::ReloadMissing, AotFailure::ReloadError, AotFailure::Link]
+    {
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: true,
+            store: Some(Arc::new(AotFailureStore {
+                inner: RuntimeArtifactStore::new().unwrap(),
+                failure,
+            })),
+            tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+            ..Default::default()
+        });
+        let req = TestBackend::req_cancun(BYTECODE_RET42);
+        tb.prepare_aot_sync(AotRequest {
+            code_hash: req.key.code_hash,
+            code: req.code.clone(),
+            spec_id: req.key.spec_id,
+        })
+        .unwrap();
+        assert_eq!(tb.stats().compilations_failed, 1);
+        tb.compile_jit_sync(req.clone()).unwrap();
+        assert_eq!(
+            tb.get_compiled(req.key.code_hash, req.key.spec_id).unwrap().kind,
+            ProgramKind::Jit
+        );
+        assert_eq!(tb.stats().compilations_dispatched, 2);
+        assert_eq!(tb.stats().compilations_succeeded, 1);
+        assert_eq!(tb.stats().pending_jobs, 0);
+    }
 }
 
 #[test]
