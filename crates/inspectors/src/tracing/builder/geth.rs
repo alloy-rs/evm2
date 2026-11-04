@@ -1,24 +1,20 @@
 //! Geth trace builder
 use crate::tracing::{
-    final_refunded,
-    tx_state::TxState,
-    types::{CallKind, CallTraceNode, CallTraceStepStackItem},
+    types::{CallKind, CallTraceNode, CallTraceStepStackItem, StorageChange},
     utils::load_account_code,
 };
-use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, format, vec, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, vec, vec::Vec};
 use alloy_primitives::{
     Address, B256, Bytes, U256,
-    map::{AddressSet, Entry, HashMap},
+    map::{AddressMap, AddressSet, HashMap},
 };
 use alloy_rpc_types_trace::geth::{
     AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode, GethDefaultTracingOptions,
-    PreStateConfig, PreStateFrame, PreStateMode, StructLog,
-    erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
+    PreStateConfig, PreStateFrame, PreStateMode, StructLog, erc7562::CallFrameType,
 };
 use evm2::{
     EvmFeatures, EvmTypesHost, TxResultExt, TxResultWithState,
-    evm::{DbResult, DynDatabase},
-    interpreter::{InstrStop, op},
+    evm::{DbResult, DynDatabase, PendingState},
 };
 
 /// The smallest size in bytes of the JSON of a struct log,
@@ -83,11 +79,11 @@ fn struct_log_json_len(log: &StructLog) -> usize {
 }
 
 /// A frame awaiting tree assembly, with visibility inherited by children in the forward pass.
-struct PendingCallFrame<T> {
+struct PendingCallFrame {
     /// Whether this call and its ancestors permit descendant logs. Independent of whether
     /// the frame itself contains logs.
     logs_visible: bool,
-    frame: T,
+    frame: CallFrame,
 }
 
 #[cfg(test)]
@@ -145,7 +141,7 @@ impl<'a> GethTraceBuilder<'a> {
         &self,
         main_trace_node: &CallTraceNode,
         opts: &GethDefaultTracingOptions,
-        storage: &mut HashMap<Address, BTreeMap<B256, B256>>,
+        storage: &mut AddressMap<BTreeMap<B256, B256>>,
         struct_logs: &mut Vec<StructLog>,
         mut stacks: Option<&mut [StackSnapshots]>,
     ) {
@@ -184,7 +180,8 @@ impl<'a> GethTraceBuilder<'a> {
             // SLOADs and SSTOREs, unless the opcode fails before it runs.
             if opts.is_storage_enabled()
                 && !step.is_error()
-                && let Some((key, value)) = step.storage_slot.as_deref().copied()
+                && let Some(StorageChange { key, value, .. }) =
+                    step.storage_change.as_deref().copied()
             {
                 let contract_storage = storage.entry(trace_node.execution_address()).or_default();
                 contract_storage.insert(key.into(), value.into());
@@ -230,7 +227,7 @@ impl<'a> GethTraceBuilder<'a> {
     ) -> DefaultFrame {
         self.geth_traces_inner(
             gas.tx_gas_used(),
-            Some((gas.execution_gas_spent(), gas.state_gas_spent(), final_refunded(gas))),
+            Some((gas.execution_gas_spent(), gas.state_gas_spent(), gas.final_refunded())),
             return_value,
             opts,
             None,
@@ -301,7 +298,7 @@ impl<'a> GethTraceBuilder<'a> {
         self.geth_call_traces_inner(
             opts,
             gas.tx_gas_used(),
-            Some((gas.execution_gas_spent(), gas.state_gas_spent(), final_refunded(gas))),
+            Some((gas.execution_gas_spent(), gas.state_gas_spent(), gas.final_refunded())),
         )
     }
 
@@ -403,19 +400,18 @@ impl<'a> GethTraceBuilder<'a> {
         prestate_config: &PreStateConfig,
         db: &mut dyn DynDatabase,
     ) -> DbResult<PreStateFrame> {
-        let state = TxState::from_pending(pending_state);
         let code_enabled = prestate_config.code_enabled();
         let storage_enabled = prestate_config.storage_enabled();
         if prestate_config.is_diff_mode() {
-            self.geth_prestate_diff_traces(&state, db, code_enabled, storage_enabled)
+            self.geth_prestate_diff_traces(pending_state, db, code_enabled, storage_enabled)
         } else {
-            self.geth_prestate_pre_traces(&state, db, code_enabled, storage_enabled)
+            self.geth_prestate_pre_traces(pending_state, db, code_enabled, storage_enabled)
         }
     }
 
     fn geth_prestate_pre_traces(
         &self,
-        state: &TxState,
+        state: &PendingState,
         db: &mut dyn DynDatabase,
         code_enabled: bool,
         storage_enabled: bool,
@@ -423,8 +419,8 @@ impl<'a> GethTraceBuilder<'a> {
         let mut prestate = PreStateMode::default();
 
         // we only want changed accounts for things like balance changes etc
-        for (addr, loaded_acc) in state.accounts.iter() {
-            let addr = *addr;
+        for loaded_acc in state.account_changes() {
+            let addr = loaded_acc.address;
             let db_acc = db.get_account(&addr)?.unwrap_or_default();
             // Geth omits accounts that were empty before execution, even if fees fund them.
             // Check the original code hash before applying the disableCode output option.
@@ -436,8 +432,8 @@ impl<'a> GethTraceBuilder<'a> {
 
             // insert the original value of all loaded storage slots
             if storage_enabled {
-                for (key, slot) in loaded_acc.storage.iter() {
-                    acc_state.storage.insert((*key).into(), slot.original.into());
+                for (key, slot) in &loaded_acc.storage.slots {
+                    acc_state.storage.insert((*key).into(), slot.value.original.into());
                 }
             }
 
@@ -449,21 +445,21 @@ impl<'a> GethTraceBuilder<'a> {
 
     fn geth_prestate_diff_traces(
         &self,
-        state: &TxState,
+        state: &PendingState,
         db: &mut dyn DynDatabase,
         code_enabled: bool,
         storage_enabled: bool,
     ) -> DbResult<PreStateFrame> {
         let mut state_diff = DiffMode::default();
         let mut empty_before = AddressSet::default();
-        for (addr, changed_acc) in state.accounts.iter() {
-            let addr = *addr;
+        for changed_acc in state.account_changes() {
+            let addr = changed_acc.address;
             let db_acc = db.get_account(&addr)?.unwrap_or_default();
 
             let pre_code = if code_enabled { load_account_code(db, &db_acc)? } else { None };
 
             // deleted accounts are treated as drained: the post info is empty
-            let info = changed_acc.current.clone().unwrap_or_default();
+            let info = changed_acc.current.cloned().unwrap_or_default();
 
             let mut post_state = AccountState::from_account_info(
                 info.nonce,
@@ -493,11 +489,11 @@ impl<'a> GethTraceBuilder<'a> {
                 // Geth keeps the pre state of a selfdestructed account as it looked it up, with
                 // every slot the transaction touched, unchanged and zero ones included.
                 if changed_acc.selfdestructed {
-                    for (key, slot) in changed_acc.storage.iter() {
-                        pre_state.storage.insert((*key).into(), slot.original.into());
+                    for (key, slot) in &changed_acc.storage.slots {
+                        pre_state.storage.insert((*key).into(), slot.value.original.into());
                     }
                 } else {
-                    for (key, slot) in changed_acc.changed_storage() {
+                    for (key, slot) in changed_acc.storage.changed_slots() {
                         if !slot.original.is_zero() {
                             pre_state.storage.insert((*key).into(), slot.original.into());
                         }
@@ -551,180 +547,6 @@ impl<'a> GethTraceBuilder<'a> {
         pre.retain(|addr, _pre_state| !empty_before.contains(addr));
     }
 
-    /// Traces ERC-7562 calls using the call tracer.
-    pub fn geth_erc7562_traces(
-        &self,
-        opts: Erc7562Config,
-        gas_used: u64,
-        db: &mut dyn DynDatabase,
-    ) -> DbResult<Erc7562Frame> {
-        if self.nodes.is_empty() {
-            return Ok(Default::default());
-        }
-
-        let include_logs = opts.with_log.unwrap_or_default();
-        // only the root frame's own fields are needed, its children are assembled below
-        let mut top_call = {
-            let root_logs_visible = include_logs && !self.nodes[0].trace.is_error();
-            let mut root = self.nodes[0].geth_empty_call_frame(root_logs_visible);
-            root.gas_used = U256::from(gas_used);
-            Some(root)
-        };
-
-        let mut frames: Vec<PendingCallFrame<Erc7562Frame>> = Vec::with_capacity(self.nodes.len());
-
-        for (idx, node) in self.nodes.iter().enumerate() {
-            let trace = &node.trace;
-
-            let mut accessed_slots = AccessedSlots::default();
-            let mut used_opcodes = HashMap::default();
-            let mut contract_size = HashMap::default();
-            let mut ext_code_access_info = Vec::new();
-            let mut keccak = Vec::new();
-            let mut out_of_gas = trace.status.is_some_and(InstrStop::is_out_of_gas);
-
-            for step in &trace.steps {
-                let op = step.op.get();
-                out_of_gas |= step.status.is_some_and(InstrStop::is_out_of_gas);
-
-                // Skip if opcode is ignored
-                if opts.ignored_opcodes.contains(&op) {
-                    continue;
-                }
-
-                // Count used opcodes
-                *used_opcodes.entry(op).or_insert(0) += 1;
-
-                // Accessed storage slots
-                match op {
-                    op::SLOAD => {
-                        if let Some(stack) = &step.stack
-                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
-                        {
-                            let slot: B256 = (*slot).into();
-                            let already_read = accessed_slots.reads.contains_key(&slot);
-                            let already_written = accessed_slots.writes.contains_key(&slot);
-                            if !already_read
-                                && !already_written
-                                && let Some(change) = &step.storage_change
-                            {
-                                let value: B256 = change.value.into();
-                                accessed_slots.reads.entry(slot).or_default().push(value);
-                            }
-                        }
-                    }
-                    op::SSTORE => {
-                        if let Some(stack) = &step.stack
-                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
-                        {
-                            let slot: B256 = (*slot).into();
-                            *accessed_slots.writes.entry(slot).or_insert(0) += 1;
-                        }
-                    }
-                    op::TLOAD => {
-                        if let Some(stack) = &step.stack
-                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
-                        {
-                            let slot: B256 = (*slot).into();
-                            *accessed_slots.transient_reads.entry(slot).or_insert(0) += 1;
-                        }
-                    }
-                    op::TSTORE => {
-                        if let Some(stack) = &step.stack
-                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
-                        {
-                            let slot: B256 = (*slot).into();
-                            *accessed_slots.transient_writes.entry(slot).or_insert(0) += 1;
-                        }
-                    }
-                    _ => {}
-                }
-
-                if matches!(op, op::EXTCODESIZE | op::EXTCODECOPY | op::EXTCODEHASH)
-                    && let Some(stack) = &step.stack
-                    && let Some(item) = stack.get(stack.len().saturating_sub(1))
-                {
-                    let address = Address::from_word((*item).into());
-                    ext_code_access_info.push(format!("{address:?}"));
-                    if let Entry::Vacant(e) = contract_size.entry(address)
-                        && let Some(account) = db.get_account(&address)?
-                        && let Some(code) = load_account_code(db, &account)?
-                    {
-                        e.insert(ContractSize { contract_size: code.len() as u64, opcode: op });
-                    }
-                }
-
-                // KECCAK preimages from returndata
-                if op == op::KECCAK256
-                    && step.status.is_none()
-                    && let (Some(stack), Some(memory)) = (&step.stack, &step.memory)
-                    && stack.len() >= 2
-                {
-                    let offset = stack[stack.len() - 1];
-                    let len = stack[stack.len() - 2];
-                    if let (Ok(offset), Ok(len)) = (usize::try_from(offset), usize::try_from(len)) {
-                        let mut data = vec![0; len];
-                        if offset < memory.0.len() {
-                            let end = (offset + len).min(memory.0.len());
-                            let copy_len = end - offset;
-                            data[..copy_len].copy_from_slice(&memory.0[offset..end]);
-                        }
-                        keccak.push(Bytes::from(data));
-                    }
-                }
-            }
-
-            let include_logs = include_logs
-                && !trace.is_error()
-                && node.parent.is_none_or(|parent| frames[parent].logs_visible);
-            let call_frame = if idx == 0 {
-                top_call.take().unwrap()
-            } else {
-                self.nodes[idx].geth_empty_call_frame(include_logs)
-            };
-
-            let call_frame_type = Self::convert_call_kind(node.kind());
-
-            frames.push(PendingCallFrame {
-                logs_visible: include_logs,
-                frame: Erc7562Frame {
-                    call_frame_type,
-                    from: call_frame.from,
-                    gas: call_frame.gas.to(),
-                    gas_used: call_frame.gas_used.to(),
-                    to: call_frame.to,
-                    input: call_frame.input,
-                    output: call_frame.output,
-                    error: call_frame.error,
-                    revert_reason: call_frame.revert_reason,
-                    logs: call_frame.logs,
-                    value: call_frame.value,
-                    accessed_slots,
-                    ext_code_access_info,
-                    used_opcodes,
-                    contract_size,
-                    out_of_gas,
-                    keccak,
-                    calls: vec![],
-                },
-            });
-        }
-
-        // Assemble tree, see `geth_call_traces_inner` for the ordering logic
-        loop {
-            let PendingCallFrame { mut frame, .. } = frames.pop().expect("call frames not empty");
-            let idx = frames.len();
-            frame.calls.reverse();
-            let node = &self.nodes[idx];
-            if let Some(parent) = node.parent {
-                frames[parent].frame.calls.push(frame);
-            } else {
-                debug_assert!(frames.is_empty(), "only one root node has no parent");
-                return Ok(frame);
-            }
-        }
-    }
-
     /// Converts a CallKind to a CallFrameType.
     pub const fn convert_call_kind(kind: CallKind) -> CallFrameType {
         match kind {
@@ -742,16 +564,13 @@ impl<'a> GethTraceBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracing::{
-        tx_state::TxAccount,
-        types::{CallLog, CallTrace},
-    };
+    use crate::tracing::types::{CallLog, CallTrace};
     use alloy_primitives::{B256, U256, address};
     use evm2::{
         AccountInfo, DatabaseError,
         bytecode::Bytecode,
-        evm::{CacheDB, DbResult, DynDatabase, EmptyDB},
-        interpreter::{InstrStop, Word},
+        evm::{DbResult, DynDatabase, InMemoryDB},
+        interpreter::{InstrStop, Word, op},
     };
 
     struct FailingDb {
@@ -838,20 +657,11 @@ mod tests {
                     CallConfig { with_log: Some(with_log), ..Default::default() },
                     0,
                 );
-                let erc = builder
-                    .geth_erc7562_traces(
-                        Erc7562Config { with_log: Some(with_log), ..Default::default() },
-                        0,
-                        &mut EmptyDB::default(),
-                    )
-                    .unwrap();
-                let mut pending = vec![(&call, &erc)];
+                let mut pending = vec![&call];
                 let mut visited = Vec::new();
-                while let Some((call, erc)) = pending.pop() {
+                while let Some(call) = pending.pop() {
                     let idx = call.to.unwrap().as_slice()[19] as usize;
                     visited.push(idx);
-                    assert_eq!(call.to, erc.to);
-                    assert_eq!(call.logs, erc.logs);
                     let visible = with_log && !root_failed && (idx == 0 || idx >= 5);
                     assert_eq!(call.logs.len(), if visible { 2 } else { 0 }, "node {idx}");
                     if visible {
@@ -861,8 +671,7 @@ mod tests {
                             assert_eq!(log.data, Some(Bytes::from(vec![idx as u8, log_idx as u8])));
                         }
                     }
-                    assert_eq!(call.calls.len(), erc.calls.len());
-                    pending.extend(call.calls.iter().zip(&erc.calls).rev());
+                    pending.extend(call.calls.iter().rev());
                 }
                 assert_eq!(visited, [0, 1, 2, 3, 4, 5, 6]);
             }
@@ -870,30 +679,19 @@ mod tests {
     }
 
     #[test]
-    fn prestate_diff_keeps_prefunded_created_accounts() {
-        let mut state = TxState::default();
+    fn prestate_diff_keeps_prefunded_accounts() {
+        let mut state = PendingState::default();
         let prefunded_addr = address!("1000000000000000000000000000000000000001");
         let empty_addr = address!("2000000000000000000000000000000000000002");
 
-        state.accounts.insert(
+        state.insert_account(
             prefunded_addr,
-            TxAccount {
-                original: Some(AccountInfo::default().with_balance(U256::from(10))),
-                current: Some(AccountInfo::default().with_balance(U256::from(1)).with_nonce(1)),
-                created: true,
-                ..TxAccount::default()
-            },
+            Some(AccountInfo::default().with_balance(U256::from(10))),
+            Some(AccountInfo::default().with_balance(U256::ONE).with_nonce(1)),
         );
-        state.accounts.insert(
-            empty_addr,
-            TxAccount {
-                current: Some(AccountInfo::default().with_nonce(1)),
-                created: true,
-                ..TxAccount::default()
-            },
-        );
+        state.insert_account(empty_addr, None, Some(AccountInfo::default().with_nonce(1)));
 
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &prefunded_addr,
             AccountInfo::default().with_balance(U256::from(10)),
@@ -919,18 +717,15 @@ mod tests {
 
     #[test]
     fn prestate_diff_loads_post_code_from_state_changes() {
-        let mut state = TxState::default();
+        let mut state = PendingState::default();
         let address = address!("1000000000000000000000000000000000000001");
         let code = Bytecode::new_legacy(vec![op::PUSH1, 0x01, op::STOP].into());
         // the changed account from the state output always holds the code
         let account = AccountInfo::default().with_nonce(1).with_code(code.clone());
 
-        state.accounts.insert(
-            address,
-            TxAccount { current: Some(account), created: true, ..TxAccount::default() },
-        );
+        state.insert_account(address, None, Some(account));
 
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         let builder = GethTraceBuilder::new(Vec::new());
         let frame = builder.geth_prestate_diff_traces(&state, &mut db, true, false).unwrap();
 
@@ -948,16 +743,9 @@ mod tests {
 
     #[test]
     fn prestate_propagates_db_account_errors() {
-        let mut state = TxState::default();
+        let mut state = PendingState::default();
         let address = address!("1000000000000000000000000000000000000001");
-        state.accounts.insert(
-            address,
-            TxAccount {
-                current: Some(AccountInfo::default().with_nonce(1)),
-                created: true,
-                ..TxAccount::default()
-            },
-        );
+        state.insert_account(address, None, Some(AccountInfo::default().with_nonce(1)));
 
         let error = DatabaseError::new(evm2::AnyError::from("test database error"), true);
         let mut db = FailingDb::new(error.clone());
@@ -977,7 +765,7 @@ mod tests {
         let nonce_account = Address::with_last_byte(4);
         let contract = Address::with_last_byte(5);
         let code = Bytecode::new_legacy(Bytes::from_static(&[0x00]));
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(&empty_beneficiary, AccountInfo::default());
         db.insert_account_info(
             &funded_beneficiary,
@@ -986,19 +774,17 @@ mod tests {
         db.insert_account_info(&nonce_account, AccountInfo::default().with_nonce(1));
         db.insert_account_info(&contract, AccountInfo::default().with_code(code.clone()));
 
-        let mut state = TxState::default();
+        let mut state = PendingState::default();
         for address in [absent_beneficiary, empty_beneficiary] {
-            state.accounts.insert(
+            state.insert_account(
                 address,
-                TxAccount {
-                    current: Some(AccountInfo::default().with_balance(U256::from(1))),
-                    ..Default::default()
-                },
+                None,
+                Some(AccountInfo::default().with_balance(U256::ONE)),
             );
         }
         // An account emptied by execution must retain its original prestate.
         for address in [funded_beneficiary, nonce_account, contract] {
-            state.accounts.insert(address, TxAccount::default());
+            state.insert_account(address, None, None);
         }
 
         let builder = GethTraceBuilder::new(Vec::new());

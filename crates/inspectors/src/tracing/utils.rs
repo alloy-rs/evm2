@@ -9,7 +9,7 @@ use alloy_primitives::{Bytes, hex};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
-    AccountInfo, EvmTypesHost, SpecId,
+    AccountInfo, EvmTypesHost,
     env::BlockEnv,
     evm::{DbResult, DynDatabase},
     interpreter::InstrStop,
@@ -127,13 +127,6 @@ pub(crate) fn convert_memory(data: &[u8]) -> Vec<String> {
         memory.push(hex::encode_prefixed(last_chunk));
     }
     memory
-}
-
-/// Get the gas used, accounting for refunds
-#[inline]
-pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
-    let refund_quotient = if spec.enables(SpecId::LONDON) { 5 } else { 2 };
-    spent - (refunded).min(spent / refund_quotient)
 }
 
 /// Loads the code for the given account from the account itself or the database
@@ -286,7 +279,7 @@ mod tests {
             "0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000214661696c656420746f2076657269667920424950333232207369676e617475726500000000000000000000000000000000000000000000000000000000000000"
         );
         let reason = maybe_revert_reason(&err[..]).unwrap();
-        assert_eq!(reason, "Failed to verify BIP322 signature".to_string());
+        assert_eq!(reason, "Failed to verify BIP322 signature");
     }
 
     #[test]

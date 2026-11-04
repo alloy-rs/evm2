@@ -4,7 +4,7 @@
 
 use super::ReproContext;
 use crate::utils::{Context, SpecId, TransactTo, TxEnv};
-use alloy_primitives::{Bytes, address, hex};
+use alloy_primitives::{address, bytes};
 use alloy_rpc_types_trace::geth::{DiffMode, PreStateConfig, PreStateFrame};
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
@@ -23,9 +23,9 @@ fn tx_selfdestruct_env() -> TxEnv {
     TxEnv {
         caller: address!("a7fb5ca286fc3fd67525629048a4de3ba24cba2e"),
         kind: TransactTo::Call(address!("c77ad0a71008d7094a62cfbd250a2eb2afdf2776")),
-        data: Bytes::from_static(&hex!(
+        data: bytes!(
             "f3fef3a3000000000000000000000000dac17f958d2ee523a2206206994597c13d831ec700000000000000000000000000000000000000000000000000000000000f6b64"
-        )),
+        ),
         nonce: 236280,
         gas_limit: 150000,
         ..Default::default()

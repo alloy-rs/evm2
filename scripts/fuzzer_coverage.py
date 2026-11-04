@@ -19,12 +19,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from utils import cargo_env, repo_root
+from common import cargo_env, repo_root
 
 ROOT = Path(repo_root())
 DEFAULT_OUTPUT_DIR = ROOT / "target" / "llvm-cov" / "fuzzer-html"
 DEFAULT_IGNORE_REGEX = r"(^|/)crates/cli/src/fuzzer/"
-BACKENDS = ("tco", "packed", "single_return", "unpacked")
+BACKENDS = ("tco", "packed", "unpacked")
 
 
 def parse_args() -> argparse.Namespace:

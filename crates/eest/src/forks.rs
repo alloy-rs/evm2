@@ -17,7 +17,7 @@ fn skipped_forks() -> &'static [SpecId] {
         let mut forks = Vec::new();
         if let Ok(names) = env::var(SKIP_FORKS_ENV) {
             for name in names.split(',').map(str::trim).filter(|name| !name.is_empty()) {
-                let Some(spec) = parse_fork(name) else {
+                let Ok(spec) = name.parse() else {
                     panic!("{SKIP_FORKS_ENV}: unknown hardfork name `{name}`");
                 };
                 forks.push(spec);
@@ -25,30 +25,4 @@ fn skipped_forks() -> &'static [SpecId] {
         }
         forks
     })
-}
-
-/// Parses a case-insensitive hardfork name into a spec ID.
-fn parse_fork(name: &str) -> Option<SpecId> {
-    macro_rules! parse {
-        ([$name:ident] $($spec:ident $lower:ident,)*) => {
-            match $name.to_ascii_lowercase().as_str() {
-                $(stringify!($lower) => Some(SpecId::$spec),)*
-                _ => None,
-            }
-        };
-    }
-    evm2::for_each_spec!([name] parse)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_fork_names() {
-        assert_eq!(parse_fork("amsterdam"), Some(SpecId::AMSTERDAM));
-        assert_eq!(parse_fork("Osaka"), Some(SpecId::OSAKA));
-        assert_eq!(parse_fork("SPURIOUS_DRAGON"), Some(SpecId::SPURIOUS_DRAGON));
-        assert_eq!(parse_fork("atlantis"), None);
-    }
 }

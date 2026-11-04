@@ -11,7 +11,6 @@ use crate::tracing::{
         },
         builtins::{PrecompileList, register_builtins, to_serde_value},
     },
-    tx_state::TxState,
     types::CallKind,
     utils,
 };
@@ -332,12 +331,11 @@ impl JsInspector {
         }
         self.ensure_not_interrupted()?;
         let TxResultWithState { result, pending_state, .. } = res;
-        let state = TxState::from_pending(pending_state);
 
         let mut output_bytes = None;
         let mut error = None;
 
-        if result.status {
+        if result.is_success() {
             output_bytes = Some(result.output.clone());
         } else if result.stop.is_frame_revert() {
             error = Some("execution reverted".to_string());
@@ -354,7 +352,7 @@ impl JsInspector {
             }
         });
 
-        let base_fee = block.basefee.try_into().unwrap_or(u64::MAX);
+        let base_fee = block.basefee.saturating_to::<u64>();
         let gas_tip = tx.effective_tip_per_gas(base_fee).unwrap_or_default();
 
         let ctx = JsEvmContext {
@@ -370,14 +368,14 @@ impl JsInspector {
             gas_used: result.tx_gas_used(),
             gas_price: U256::from(gas_tip),
             value: tx.value(),
-            block: block.number.try_into().unwrap_or(u64::MAX),
+            block: block.number.saturating_to::<u64>(),
             coinbase: block.beneficiary,
             output: output_bytes.unwrap_or_default(),
             transaction_ctx: self.transaction_context,
             error,
         };
         let ctx = ctx.into_js_object(&mut self.ctx)?;
-        let result = self.reusable_db.with_changes_scope(&state, db, || {
+        let result = self.reusable_db.with_changes_scope(pending_state, db, || {
             self.result_fn.call(&self.this, &[ctx.into(), self.reusable_db.value()], &mut self.ctx)
         });
         self.ensure_not_interrupted()?;
@@ -587,6 +585,13 @@ impl JsInspector {
             input: &call.contract.input,
             call_id: call.id,
         };
+        // Geth fills the log in its step hook, which a tracer without `step` never runs, so
+        // `fault` sees an empty log with only the error set.
+        let info = if self.step_fn.is_none() {
+            StepInfo { error: info.error, ..Default::default() }
+        } else {
+            info
+        };
         let (stack, memory, host) = interp.stack_memory_host();
         let res = self.reusable_db.with_state_scope(host.state_mut(), || {
             self.reusable_step_log.with_scope(
@@ -685,19 +690,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         let result = interp.result().err();
         let is_fault = result.is_some_and(|stop| should_fault(stop, pending.instruction.op));
         let error = result.and_then(|stop| utils::fmt_error_msg(stop, TraceStyle::Geth));
-        if self.step_fn.is_none() {
-            if !is_fault {
-                return;
-            }
-            // Fault-only tracers expose post-execution stack and memory.
-            pending.snapshot.record(PreStep {
-                pc: pending.instruction.pc,
-                op: pending.instruction.op,
-                gas_remaining: pending.instruction.gas,
-                stack: interp.stack().as_slice(),
-                memory: interp.memory().as_slice(),
-            });
-        } else {
+        if self.step_fn.is_some() {
             self.invoke_step_hook(interp, false, if is_fault { None } else { error.clone() });
             if self.check_and_halt(interp) || self.hook_errored() {
                 return;
@@ -1135,7 +1128,7 @@ fn with_message_suffix(err: JsError, suffix: &str, ctx: &mut Context) -> JsError
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{interrupt_tests::transaction, *};
     use alloc::{string::ToString, vec, vec::Vec};
     use alloy_consensus::{TxEip1559, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
@@ -1144,7 +1137,7 @@ mod tests {
         BaseEvmTypes, Evm, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         ethereum::{TxEnvelope, ethereum_tx_registry, intrinsic_and_floor_gas},
-        evm::{AccountInfo, CacheDB, EmptyDB},
+        evm::{AccountInfo, InMemoryDB},
         interpreter::{Host, op},
     };
     use serde_json::json;
@@ -1308,7 +1301,7 @@ mod tests {
         tx: TxEnvelope,
     ) -> Result<serde_json::Value, JsInspectorError> {
         let addr = Address::repeat_byte(0x01);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
 
         // Insert the caller
         db.insert_account_info(
@@ -1321,7 +1314,7 @@ mod tests {
             AccountInfo {
                 code: Some(Bytecode::new_legacy(
                     /* PUSH1 1, PUSH1 1, STOP */
-                    contract.unwrap_or_else(|| hex!("6001600100").into()),
+                    contract.unwrap_or(bytes!("6001600100")),
                 )),
                 ..Default::default()
             },
@@ -1339,7 +1332,7 @@ mod tests {
         let tx = Recovered::new_unchecked(tx, Address::ZERO);
         let res = evm.transact(&tx).expect("pass without error").detach();
 
-        assert_eq!(res.result.status, success);
+        assert_eq!(res.result.is_success(), success);
         let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
         let block = *evm.block_env();
         inspector.json_result(&res, &tx, &block, evm.database_mut())
@@ -1829,7 +1822,7 @@ mod tests {
             result: function() { return this.count; }
         }"#;
         let addr = Address::repeat_byte(0x01);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &Address::ZERO,
             AccountInfo { balance: U256::from(1e18), ..Default::default() },
@@ -1837,7 +1830,7 @@ mod tests {
         db.insert_account_info(
             &addr,
             AccountInfo {
-                code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
+                code: Some(Bytecode::new_legacy(bytes!("6001600100"))),
                 ..Default::default()
             },
         );
@@ -1850,18 +1843,11 @@ mod tests {
             db,
             Precompiles::base(SpecId::CANCUN),
         );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_limit: 1_000_000,
-                to: TxKind::Call(addr),
-                ..Default::default()
-            }),
-            Address::ZERO,
-        );
+        let tx = transaction(TxKind::Call(addr));
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
-            assert!(res.result.status);
+            assert!(res.result.is_success());
             inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
             let block = *evm.block_env();
             assert_eq!(
@@ -1907,7 +1893,7 @@ mod tests {
             bytecode.extend_from_slice(&hex!("61fffff150")); // PUSH2 gas, CALL, POP
         }
         bytecode.push(0x00);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &addr,
             AccountInfo { code: Some(Bytecode::new_legacy(bytecode.into())), ..Default::default() },
@@ -1915,7 +1901,7 @@ mod tests {
         db.insert_account_info(
             &child,
             AccountInfo {
-                code: Some(Bytecode::new_legacy(hex!("600100").into())),
+                code: Some(Bytecode::new_legacy(bytes!("600100"))),
                 ..Default::default()
             },
         );
@@ -1927,18 +1913,11 @@ mod tests {
             db,
             Precompiles::base(SpecId::CANCUN),
         );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_limit: 1_000_000,
-                to: TxKind::Call(addr),
-                ..Default::default()
-            }),
-            Address::ZERO,
-        );
+        let tx = transaction(TxKind::Call(addr));
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
-            assert!(res.result.status);
+            assert!(res.result.is_success());
             inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
             let block = *evm.block_env();
             assert_eq!(
@@ -2028,7 +2007,7 @@ mod tests {
         ] {
             let caller = Address::repeat_byte(0xaa);
             let nonce = 7;
-            let mut db = CacheDB::new(EmptyDB::default());
+            let mut db = InMemoryDB::default();
             db.insert_account_info(&caller, AccountInfo { nonce, ..AccountInfo::default() });
             let script = r#"{
                 fault: function() {},
@@ -2087,7 +2066,7 @@ mod tests {
             this.r=[a[0],a[32],capped.length,log.memory.slice(2**40,2**40).length,error];
         },fault:function(){},result:function(){return this.r}}"#;
         assert_eq!(
-            run_trace(tracer, Some(hex!("60ff60005300").into()), true),
+            run_trace(tracer, Some(bytes!("60ff60005300")), true),
             json!([255, 0, 1024 * 1024, 0, "TypeError"])
         );
     }

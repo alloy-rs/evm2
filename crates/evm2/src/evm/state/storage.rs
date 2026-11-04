@@ -1,6 +1,6 @@
 //! Transaction-scoped persistent storage overlay.
 
-use super::{DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
+use super::{DbResult, JournalEntry, StateInner, Tracked};
 use crate::{LoadError, interpreter::Word};
 use alloy_primitives::{
     Address,
@@ -23,24 +23,6 @@ pub struct StorageOverlay {
 }
 
 impl StorageOverlay {
-    /// Applies an isolated execution's slots, retaining parent originals and combining warmth.
-    #[cfg(test)]
-    pub(crate) fn merge_isolated(&mut self, child: Self) {
-        self.wiped |= child.wiped;
-        for (key, slot) in child.slots {
-            match self.slots.entry(key) {
-                hash_map::Entry::Vacant(entry) => {
-                    entry.insert(slot);
-                }
-                hash_map::Entry::Occupied(mut entry) => {
-                    let parent = entry.get_mut();
-                    parent.value.current = slot.value.current;
-                    parent.is_warm |= slot.is_warm;
-                }
-            }
-        }
-    }
-
     /// Returns the changed storage slots.
     ///
     /// A slot is changed when its current value differs from its transaction-boundary original,
@@ -58,20 +40,6 @@ impl StorageOverlay {
     pub fn is_changed(&self) -> bool {
         self.wiped || self.changed_slots().next().is_some()
     }
-
-    /// Rereads the slots first loaded under the account's creation after that creation was rolled
-    /// back.
-    ///
-    /// Such a slot cached zero instead of its backing value, and the rollback restores its zero
-    /// current value. A slot that fails to reload keeps its zero and its marker, so its read stays
-    /// in the overlay for the BAL and its next load rereads it and reports the error.
-    pub(super) fn reload_zeroed(&mut self, address: &Address, database: &mut dyn DynDatabase) {
-        for (key, slot) in &mut self.slots {
-            if slot.created_zero {
-                let _ = slot.reload_created_zero(address, key, database);
-            }
-        }
-    }
 }
 
 /// Persistent storage slot cached by [`super::State`].
@@ -85,9 +53,6 @@ pub struct StorageSlot {
     pub value: Tracked<Word>,
     /// Whether the slot was warmed during execution this transaction, for EIP-2929 gas accounting.
     pub is_warm: bool,
-    /// Whether the slot was first loaded while its account was created in the transaction, so it
-    /// cached zero instead of its backing value. Rolling that creation back reloads the slot.
-    pub(crate) created_zero: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -99,24 +64,11 @@ impl StorageSlot {
         if wiped { !self.value.current.is_zero() } else { self.value.is_changed() }
     }
 
-    /// Rereads a zero cached under a creation that was rolled back.
-    #[cold]
-    pub(super) fn reload_created_zero(
-        &mut self,
-        address: &Address,
-        key: &Word,
-        database: &mut dyn DynDatabase,
-    ) -> DbResult<()> {
-        self.value = Tracked::new(database.get_storage(address, key)?);
-        self.created_zero = false;
-        Ok(())
-    }
-
     /// Creates a freshly loaded slot whose original and current values are `value`, with the given
-    /// EIP-2929 warmth. `created_zero` marks a zero cached without a database read.
+    /// EIP-2929 warmth.
     #[inline]
-    fn loaded(value: Word, is_warm: bool, created_zero: bool) -> Self {
-        Self { value: Tracked::new(value), is_warm, created_zero, _non_exhaustive: () }
+    fn loaded(value: Word, is_warm: bool) -> Self {
+        Self { value: Tracked::new(value), is_warm, _non_exhaustive: () }
     }
 }
 
@@ -137,8 +89,9 @@ pub struct StorageHandle<'a, 'db> {
     address: &'a Address,
     /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
     storage: &'a mut StorageOverlay,
-    /// Whether the account was created in this transaction, so its unloaded slots read as zero.
-    created: bool,
+    /// Whether the account's creation discarded its old storage, so its unloaded slots read as
+    /// zero.
+    discards_storage: bool,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner<'db>,
@@ -151,10 +104,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub(crate) const fn new(
         address: &'a Address,
         storage: &'a mut StorageOverlay,
-        created: bool,
+        discards_storage: bool,
         inner: &'a mut StateInner<'db>,
     ) -> Self {
-        Self { address, storage, created, inner }
+        Self { address, storage, discards_storage, inner }
     }
 
     /// Returns the account address.
@@ -216,8 +169,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     /// slot's [`StorageSlot::is_warm`] is seeded from the base warm set (EIP-2930 access list),
     /// mirroring how [`account_raw`](super::State) seeds an account's warmth. The load itself
     /// records no revert entry: the cached value's original equals its current, so it is left in
-    /// place by [`State::rollback`](super::State::rollback) as a harmless cache, except that a
-    /// creation's rollback reloads the slots it read as zero. Used by
+    /// place by [`State::rollback`](super::State::rollback) as a harmless cache. Used by
     /// [`State::storage_slot`](super::State::storage_slot) to reach a single slot directly.
     #[inline]
     pub fn into_slot_with_skip(
@@ -247,7 +199,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         key: Word,
         skip_cold_load: bool,
     ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
-        let Self { address, storage, created, inner } = self;
+        let Self { address, storage, discards_storage, inner } = self;
         let (slot, is_cold) = match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded slot has no cold database read to skip, so the skip only
@@ -263,10 +215,6 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && is_cold {
                     return Err(LoadError::ColdLoadSkipped);
                 }
-                // A rollback that failed to reload the slot leaves it for this load to retry.
-                if slot.created_zero && !created {
-                    slot.reload_created_zero(address, &key, &mut inner.database)?;
-                }
                 (slot, is_cold)
             }
             hash_map::Entry::Vacant(entry) => {
@@ -274,16 +222,9 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && !is_warm {
                     return Err(LoadError::ColdLoadSkipped);
                 }
-                // Like revm, an unloaded slot of a created account reads zero without a database
-                // read, since the creation discards the address's old storage.
-                let value = if storage.wiped || created {
-                    // The zero needs no database read, but a strict BAL must still cover the slot.
-                    inner.database.check_bal_storage(address, &key)?;
-                    Word::ZERO
-                } else {
-                    inner.database.get_storage(address, &key)?
-                };
-                (entry.insert(StorageSlot::loaded(value, is_warm, created)), !is_warm)
+                let value =
+                    inner.read_unloaded_slot(address, &key, storage.wiped || discards_storage)?;
+                (entry.insert(StorageSlot::loaded(value, is_warm)), !is_warm)
             }
         };
         if WARM && is_cold {
@@ -316,7 +257,6 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub(crate) fn zero_loaded(&mut self) {
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value.set_current(Word::ZERO);
-            slot.created_zero = false;
         });
     }
 }
@@ -408,7 +348,7 @@ impl StorageSlotHandle<'_, '_> {
         if previous == value {
             return;
         }
-        self.slot.value.current = value;
+        self.slot.value.set_current(value);
         self.inner.push_journal(|| JournalEntry::StorageChange {
             address: *self.address,
             key: self.key,
@@ -446,59 +386,59 @@ mod tests {
 
     #[test]
     fn storage_change_rolls_back_to_checkpoint() {
-        let address = Address::from([0x11; 20]);
+        let address = Address::repeat_byte(0x11);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default());
-        database.insert_account_storage(&address, &Word::from(1), &Word::from(10));
+        database.insert_account_storage(&address, &Word::ONE, &Word::from(10));
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
-        state.storage_slot(&address, Word::from(1)).unwrap().write(Word::from(20));
-        state.storage_slot(&address, Word::from(1)).unwrap().write(Word::from(30));
+        state.storage_slot(&address, Word::ONE).unwrap().write(Word::from(20));
+        state.storage_slot(&address, Word::ONE).unwrap().write(Word::from(30));
 
-        assert_eq!(state.storage_slot(&address, Word::from(1)).unwrap().current(), Word::from(30));
+        assert_eq!(state.storage_slot(&address, Word::ONE).unwrap().current(), Word::from(30));
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert_eq!(state.storage_slot(&address, Word::from(1)).unwrap().current(), Word::from(10));
+        assert_eq!(state.storage_slot(&address, Word::ONE).unwrap().current(), Word::from(10));
     }
 
     #[test]
     fn transient_storage_change_rolls_back_to_checkpoint() {
-        let address = Address::from([0x22; 20]);
+        let address = Address::repeat_byte(0x22);
         let mut state = State::new(CacheDB::default());
 
-        state.tstore(&address, &Word::from(1), &Word::from(10));
+        state.tstore(&address, &Word::ONE, &Word::from(10));
         let checkpoint = state.checkpoint();
-        state.tstore(&address, &Word::from(1), &Word::from(20));
+        state.tstore(&address, &Word::ONE, &Word::from(20));
 
-        assert_eq!(state.tload(&address, &Word::from(1)), Word::from(20));
+        assert_eq!(state.tload(&address, &Word::ONE), Word::from(20));
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert_eq!(state.tload(&address, &Word::from(1)), Word::from(10));
+        assert_eq!(state.tload(&address, &Word::ONE), Word::from(10));
     }
 
     #[test]
     fn take_transient_storage_only_drains_requested_account() {
-        let address = Address::from([0x22; 20]);
-        let other = Address::from([0x23; 20]);
+        let address = Address::repeat_byte(0x22);
+        let other = Address::repeat_byte(0x23);
         let mut state = State::new(CacheDB::default());
 
-        state.tstore(&address, &Word::from(1), &Word::from(10));
+        state.tstore(&address, &Word::ONE, &Word::from(10));
         state.tstore(&address, &Word::from(2), &Word::from(20));
-        state.tstore(&other, &Word::from(1), &Word::from(30));
+        state.tstore(&other, &Word::ONE, &Word::from(30));
 
         let mut slots = state.take_transient_storage(&address);
         slots.sort_unstable_by_key(|(key, _)| *key);
-        assert_eq!(slots, vec![(Word::from(1), Word::from(10)), (Word::from(2), Word::from(20))]);
-        assert_eq!(state.tload(&address, &Word::from(1)), Word::ZERO);
-        assert_eq!(state.tload(&other, &Word::from(1)), Word::from(30));
+        assert_eq!(slots, vec![(Word::ONE, Word::from(10)), (Word::from(2), Word::from(20))]);
+        assert_eq!(state.tload(&address, &Word::ONE), Word::ZERO);
+        assert_eq!(state.tload(&other, &Word::ONE), Word::from(30));
     }
 
     #[test]
     fn storage_wipe_preserves_warm_slots_in_merged_storage_map() {
         let account = Address::with_last_byte(0x19);
-        let warm_key = Word::from(1);
+        let warm_key = Word::ONE;
         let cold_key = Word::from(2);
         let mut database = CacheDB::default();
-        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::ONE));
         database.insert_account_storage(&account, &warm_key, &Word::from(3));
         database.insert_account_storage(&account, &cold_key, &Word::from(4));
         let mut state = State::new(database);
@@ -524,8 +464,8 @@ mod tests {
 
     #[test]
     fn journaled_storage_mutations_journal_and_roll_back() {
-        let address = Address::from([0x33; 20]);
-        let key = Word::from(1);
+        let address = Address::repeat_byte(0x33);
+        let key = Word::ONE;
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default());
         database.insert_account_storage(&address, &key, &Word::from(10));
@@ -553,7 +493,7 @@ mod tests {
 
     #[test]
     fn journaled_storage_read_only_handle_journals_nothing() {
-        let address = Address::from([0x34; 20]);
+        let address = Address::repeat_byte(0x34);
         let key = Word::from(7);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default());
@@ -572,7 +512,7 @@ mod tests {
 
     #[test]
     fn fused_slot_load_warms_once_and_reverts() {
-        let address = Address::from([0x35; 20]);
+        let address = Address::repeat_byte(0x35);
         let key = Word::from(8);
         let mut state = State::new(CacheDB::default());
         let checkpoint = state.checkpoint();
@@ -611,7 +551,7 @@ mod tests {
 
     #[test]
     fn storage_handle_reports_warmth_before_loading() {
-        let address = Address::from([0x35; 20]);
+        let address = Address::repeat_byte(0x35);
         let key = Word::from(9);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default());
@@ -636,7 +576,7 @@ mod tests {
 
     #[test]
     fn storage_slot_warm_honors_prewarm_after_load() {
-        let address = Address::from([0x36; 20]);
+        let address = Address::repeat_byte(0x36);
         let key = Word::from(11);
         let mut database = CacheDB::default();
         database.insert_account_info(&address, AccountInfo::default());

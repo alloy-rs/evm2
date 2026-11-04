@@ -1,12 +1,12 @@
 use alloy_consensus::{TxEip7702, transaction::Recovered};
-use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
+use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, U64, U256, hex, map::HashSet};
 use alloy_rpc_types_trace::parity::{Delta, TraceType};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     ethereum::{LazyTxEip7702, TxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo, CacheDB, EmptyDB},
+    evm::{AccountInfo, InMemoryDB},
 };
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
@@ -24,7 +24,7 @@ fn authorization_code_changes() {
         for revert in [false, true] {
             let authority = Address::with_last_byte(0x43);
             let target = Address::with_last_byte(0x44);
-            let mut db = CacheDB::<EmptyDB>::default();
+            let mut db = InMemoryDB::default();
             db.insert_account_info(
                 &authority,
                 AccountInfo { nonce: 1, ..Default::default() }.with_code(before.clone()),
@@ -46,17 +46,25 @@ fn authorization_code_changes() {
             evm.set_inspector(&mut inspector);
             let tx = Recovered::new_unchecked(
                 TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
-                    TxEip7702 { chain_id: 1, to: target, gas_limit: 100_000, ..Default::default() },
-                    vec![RecoveredAuthorization::new_unchecked(
-                        Authorization { chain_id: U256::from(1), address: delegate, nonce: 1 },
-                        RecoveredAuthority::Valid(authority),
-                    )],
+                    TxEip7702 {
+                        chain_id: 1,
+                        to: target,
+                        gas_limit: 100_000,
+                        authorization_list: vec![SignedAuthorization::new_unchecked(
+                            Authorization { chain_id: U256::ONE, address: delegate, nonce: 1 },
+                            0,
+                            U256::ZERO,
+                            U256::ZERO,
+                        )],
+                        ..Default::default()
+                    },
+                    vec![Some(authority)],
                 )),
                 Address::ZERO,
             );
             let result = evm.transact(&tx).unwrap().detach();
             drop(evm);
-            assert_eq!(result.result.status, !revert);
+            assert_eq!(result.result.is_success(), !revert);
             let after = if delegate.is_zero() {
                 Bytecode::default()
             } else {

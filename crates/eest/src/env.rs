@@ -1,12 +1,12 @@
 use crate::{
     blockchaintest::env::explicit_blockchain_test_root_from_env,
     fixtures::{
-        EEST_ONLY_ENV, EEST_STABLE_ENV, apply_subdir, apply_subdir_to_roots, env_flag,
-        fixtures_root, workspace_relative,
+        EEST_ONLY_ENV, EEST_STABLE_ENV, apply_subdir_to_roots, env_flag, explicit_root_from_env,
+        fixtures_root,
     },
     harness::TestRoot,
 };
-use std::{env, path::PathBuf};
+use std::path::PathBuf;
 
 /// Environment variable for the state test root.
 pub(crate) const STATE_TEST_ROOT_ENV: &str = "EVM2_STATETEST_ROOT";
@@ -19,10 +19,7 @@ pub(crate) type StateTestRoot = TestRoot;
 
 /// Returns the explicit state-test root configured through environment variables.
 pub(crate) fn explicit_state_test_root_from_env() -> Option<PathBuf> {
-    env::var_os(STATE_TEST_ROOT_ENV).map(PathBuf::from).map(workspace_relative).map(|mut x| {
-        apply_subdir(&mut x, STATE_TEST_SUBDIR_ENV);
-        x
-    })
+    explicit_root_from_env(STATE_TEST_ROOT_ENV, STATE_TEST_SUBDIR_ENV)
 }
 
 /// Returns the state-test roots to run by default.

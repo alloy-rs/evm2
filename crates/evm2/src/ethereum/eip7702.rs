@@ -1,9 +1,9 @@
 use super::{
-    InitialFrame, LazyAuthorization, PreparedTx, access_list_counts, effective_gas_price,
-    initial_gas_and_reservoir, intrinsic_and_floor_gas, prepare_initial_frame, runtime_oog_result,
-    settle_initial_frame_gas, validate_block_gas_limit, validate_chain_id,
-    validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
+    LazyAuthorization, PreparedTx, access_list_counts, effective_gas_price, execute_initial_frame,
+    halted_initial_frame, initial_gas_and_reservoir, intrinsic_and_floor_gas,
+    prepare_initial_frame, validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+    validate_execution_gas_limit_cap, validate_floor_gas, validate_gas_price,
+    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
     validate_sender_and_bump_nonce, validate_tx_gas_limit_cap, warm_access_list,
     warm_base_accounts,
 };
@@ -11,7 +11,7 @@ use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult, Version,
     env::TxEnvExt,
     evm::handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
-    interpreter::{GasTracker, Host, InstrStop, MessageResult, gas::EIP8038_ACCOUNT_WRITE},
+    interpreter::{GasTracker, InstrStop, MessageResult, gas::EIP8038_ACCOUNT_WRITE},
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
 };
@@ -40,7 +40,8 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let envelope = req.envelope;
-    if tx.authorization_list.is_empty() {
+    let auth_count = tx.authorizations().len();
+    if auth_count == 0 {
         return Err(HandlerError::EmptyAuthorizationList);
     }
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);
@@ -65,7 +66,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         access_list_storage_keys,
         tx.value,
     );
-    intrinsic += eip7702_authorization_gas(req.host.version(), tx.authorization_list.len());
+    intrinsic += eip7702_authorization_gas(req.host.version(), auth_count);
     // EIP-2780 (ethereum/EIPs#11844): the per-auth state-dependent charges are applied at the
     // runtime gas phase, so no state gas is charged at the intrinsic phase (pre-Amsterdam there is
     // none either). A transaction that passes the intrinsic check but cannot afford the runtime
@@ -83,7 +84,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     validate_execution_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
-    validate_sender_and_bump_nonce(
+    let sender_nonce = validate_sender_and_bump_nonce(
         req.host,
         caller,
         tx.nonce,
@@ -96,7 +97,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     H::before_execution(req.host, envelope, caller, effective_gas_cost)?;
 
-    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas })
+    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas, sender_nonce })
 }
 
 /// Executes and settles a prepared EIP-7702 transaction.
@@ -104,7 +105,8 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
     prepared: PreparedTx,
 ) -> HandlerResult<TxResult<T>> {
-    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
+    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas, sender_nonce } =
+        prepared;
     let tx = req.tx.inner();
     let envelope = req.envelope;
     let chain_id = req.host.version().chain_id;
@@ -136,11 +138,11 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     let (auth_oog, state_refund, execution_refund) = if req.host.feature(EvmFeatures::EIP2780) {
         let mut auth_charges =
             RuntimeAuthCharges::new(req.host.version(), &mut tx_gas, caller, tx.to, tx.value);
-        let oog = apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_charges)?;
+        let oog = apply_auth_list(req.host, chain_id, tx.authorizations(), &mut auth_charges)?;
         (oog, 0, 0)
     } else {
         let mut auth_refunds = AuthRefunds::new(req.host.version());
-        apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_refunds)?;
+        apply_auth_list(req.host, chain_id, tx.authorizations(), &mut auth_refunds)?;
         let AuthRefunds { state_refund, execution_refund, .. } = auth_refunds;
         tx_gas.set_reservoir(tx_gas.reservoir() + state_refund);
         (false, state_refund, execution_refund)
@@ -170,40 +172,43 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
             },
         )
     };
-    // Settles the transaction as an out-of-gas halt when the runtime gas phase (the authorization
-    // charges or the first-frame recipient charge) runs out of gas: reverts the authorization
-    // checkpoint to drop the applied delegations, then consumes all execution gas and returns the
-    // reservoir. Unreachable pre-Amsterdam, where no runtime charge is attempted.
-    let settle_oog = |host: &mut Evm<'_, T>| {
-        let features = host.version().features;
-        host.state.rollback(runtime_checkpoint, features);
-        settle(host, runtime_oog_result(execution_gas_limit, reservoir))
+    let frame = if auth_oog {
+        halted_initial_frame(
+            req.host,
+            caller,
+            tx.nonce,
+            tx.to.into(),
+            &tx.input,
+            tx.value,
+            &GasTracker::new_with_execution_gas_and_reservoir(execution_gas_limit, reservoir),
+        )
+    } else {
+        prepare_initial_frame(
+            req.host,
+            caller,
+            sender_nonce,
+            tx.to.into(),
+            &tx.input,
+            tx.value,
+            &mut tx_gas,
+        )?
     };
-
-    if auth_oog {
-        return settle_oog(req.host);
+    // A runtime gas phase that ran out of gas (the authorization charges or the first-frame
+    // recipient charge) settles the transaction as an out-of-gas halt: the authorization
+    // checkpoint reverts to drop the applied delegations, then the frame halts without executing,
+    // consuming all execution gas and returning the reservoir. Unreachable pre-Amsterdam, where no
+    // runtime charge is attempted.
+    if frame.runtime_oog {
+        let features = req.host.version().features;
+        req.host.state.rollback(runtime_checkpoint, features);
     }
-    let Some(InitialFrame { mut message, charged_state_gas }) = prepare_initial_frame(
-        req.host,
-        caller,
-        tx.nonce,
-        tx.to.into(),
-        &tx.input,
-        tx.value,
-        &mut tx_gas,
-    )?
-    else {
-        // A depth-0 recipient charge that ran out of gas is part of the runtime gas phase, so it
-        // drops the delegations too.
-        return settle_oog(req.host);
-    };
 
     // Failed execution has already been rolled back to the message's own checkpoint (past the
     // applied delegations, which stay) inside `execute_message`. The settle merges the frame gas
     // into `tx_gas`, which carries the authorization state gas into the block state-gas
     // accounting.
-    let mut result = req.host.execute_message(&mut message)?;
-    settle_initial_frame_gas(&mut tx_gas, &mut result, charged_state_gas);
+    let result =
+        execute_initial_frame(req.host, frame, &mut tx_gas, execution_gas_limit, reservoir)?;
     settle(req.host, result)
 }
 
@@ -459,14 +464,14 @@ impl AuthAccounting for AuthRefunds {
 /// their delegation is applied. An accounting out-of-gas aborts the list without loading the
 /// remaining authorities — keeping them out of the EIP-7928 block access list — and returns
 /// `true`; the caller is responsible for rolling back the partially applied delegations.
-pub fn apply_auth_list<'a, 'b, T: EvmTypes, A: Eip7702Authorization + 'b>(
+pub fn apply_auth_list<'a, T: EvmTypes, A: Eip7702Authorization>(
     host: &mut Evm<'a, T>,
     chain_id: u64,
-    authorizations: impl IntoIterator<Item = &'b A>,
+    authorizations: impl IntoIterator<Item = A>,
     accounting: &mut impl AuthAccounting,
 ) -> HandlerResult<bool> {
     for authorization in authorizations {
-        let Some((authority, auth)) = validate_one_auth(host, chain_id, authorization)? else {
+        let Some((authority, auth)) = validate_one_auth(host, chain_id, &authorization)? else {
             accounting.rejected();
             continue;
         };
@@ -496,7 +501,7 @@ pub trait Eip7702Authorization {
     fn authority(&self) -> Option<Address>;
 }
 
-impl Eip7702Authorization for LazyAuthorization {
+impl Eip7702Authorization for LazyAuthorization<'_> {
     fn chain_id(&self) -> U256 {
         *Self::chain_id(self)
     }

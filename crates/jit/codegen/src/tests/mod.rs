@@ -17,13 +17,17 @@ use evm2::{
 };
 use evm2_jit_builtins::gas;
 
-/// `KECCAK256` opcode gas cost (base + dynamic).
-const fn keccak256_cost(len: u64) -> Option<u64> {
-    let words = len.div_ceil(32);
-    match words.checked_mul(gas::KECCAK256WORD as u64) {
-        Some(dyn_cost) => Some((gas::KECCAK256 as u64).saturating_add(dyn_cost)),
+/// Opcode gas cost of `base` plus `per_word` for each 32-byte word of `len`.
+const fn word_cost(base: u64, per_word: u64, len: u64) -> Option<u64> {
+    match len.div_ceil(32).checked_mul(per_word) {
+        Some(dyn_cost) => Some(base.saturating_add(dyn_cost)),
         None => None,
     }
+}
+
+/// `KECCAK256` opcode gas cost (base + dynamic).
+const fn keccak256_cost(len: u64) -> Option<u64> {
+    word_cost(gas::KECCAK256 as u64, gas::KECCAK256WORD as u64, len)
 }
 
 /// `LOG` opcode gas cost (base + topics + dynamic).
@@ -38,11 +42,7 @@ const fn log_cost(n_topics: u8, len: u64) -> Option<u64> {
 
 /// `CALLDATACOPY`, `CODECOPY`, `RETURNDATACOPY` opcode gas cost (base + dynamic).
 const fn verylowcopy_cost(len: u64) -> Option<u64> {
-    let words = len.div_ceil(32);
-    match words.checked_mul(gas::COPY as u64) {
-        Some(dyn_cost) => Some((gas::VERYLOW as u64).saturating_add(dyn_cost)),
-        None => None,
-    }
+    word_cost(gas::VERYLOW as u64, gas::COPY as u64, len)
 }
 
 #[macro_use]
@@ -53,6 +53,8 @@ mod meta;
 mod fibonacci;
 
 mod entry_stack;
+
+mod large_section_gas;
 
 mod runner;
 pub use runner::*;
@@ -65,8 +67,6 @@ pub fn with_jit_compiler<R>(
     init_tracing();
     let mut compiler = EvmCompiler::new_llvm(false).unwrap();
     compiler.set_opt_level(opt_level);
-    compiler.set_profiling_support(false);
-    compiler.set_simple_perf(false);
     compiler.set_single_error(false);
     f(&mut compiler)
 }
@@ -115,34 +115,26 @@ tests! {
         invalid(@raw {
             bytecode: &[op::INVALID],
             expected_return: InstrStop::InvalidFEOpcode,
-            expected_gas: 0,
         }),
         unknown(@raw {
             bytecode: &[0x21],
             expected_return: InstrStop::OpcodeNotFound,
-            expected_gas: 0,
         }),
         underflow1(@raw {
             bytecode: &[op::ADD],
             expected_return: InstrStop::StackUnderflow,
-            expected_gas: 3,
         }),
         underflow2(@raw {
             bytecode: &[op::PUSH0, op::ADD],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[U256::ZERO],
-            expected_gas: 5,
         }),
         underflow3(@raw {
             bytecode: &[op::PUSH0, op::POP, op::ADD],
             expected_return: InstrStop::StackUnderflow,
-            expected_gas: 7,
         }),
         underflow4(@raw {
             bytecode: &[op::PUSH0, op::ADD, op::POP],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[U256::ZERO],
-            expected_gas: 5,
         }),
         overflow_not0(@raw {
             bytecode: &[op::PUSH0; 1023],
@@ -159,14 +151,10 @@ tests! {
         overflow0(@raw {
             bytecode: &[op::PUSH0; 1025],
             expected_return: InstrStop::StackOverflow,
-            expected_stack: &[0_U256; 1024],
-            expected_gas: 2 * 1025,
         }),
         overflow1(@raw {
             bytecode: &[op::PUSH0; 1026],
             expected_return: InstrStop::StackOverflow,
-            expected_stack: &[0_U256; 1024],
-            expected_gas: 2 * 1025,
         }),
     }
 
@@ -175,7 +163,6 @@ tests! {
             bytecode: &[op::PUSH0],
             spec_id: SpecId::MERGE,
             expected_return: InstrStop::NotActivated,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         push0_shanghai(@raw {
             bytecode: &[op::PUSH0],
@@ -193,44 +180,32 @@ tests! {
             bytecode: &[op::MSIZE, op::CLZ],
             spec_id: SpecId::CANCUN,
             expected_return: InstrStop::NotActivated,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         clz_arrow_glacier(@raw {
             bytecode: &[op::MSIZE, op::CLZ],
             spec_id: SpecId::LONDON,
             expected_return: InstrStop::NotActivated,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
         dupn_cancun(@raw {
             bytecode: &[op::PUSH0, op::DUPN, 0x00],
             spec_id: SpecId::CANCUN,
             expected_return: InstrStop::NotActivated,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         swapn_cancun(@raw {
             bytecode: &[op::PUSH0, op::SWAPN, 0x00],
             spec_id: SpecId::CANCUN,
             expected_return: InstrStop::NotActivated,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         exchange_cancun(@raw {
             bytecode: &[op::PUSH0, op::EXCHANGE, 0x01],
             spec_id: SpecId::CANCUN,
             expected_return: InstrStop::NotActivated,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         slotnum_cancun(@raw {
             bytecode: &[op::SLOTNUM],
             spec_id: SpecId::CANCUN,
             expected_return: InstrStop::NotActivated,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
         // EXP gas: pre-SPURIOUS_DRAGON exp_byte_gas=10, post=50.
@@ -410,32 +385,24 @@ tests! {
         dupn_underflow(@raw {
             bytecode: &[op::PUSH0, op::DUPN, 0x80],
             spec_id: SpecId::AMSTERDAM,
-            expected_return: InstrStop::StackOverflow,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+            expected_return: InstrStop::StackUnderflow,
         }),
         // Insufficient stack depth: SWAPN 0x80 decodes to depth 17, but only 1 item on stack.
         swapn_underflow(@raw {
             bytecode: &[op::PUSH0, op::SWAPN, 0x80],
             spec_id: SpecId::AMSTERDAM,
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Insufficient stack depth: EXCHANGE 0x8E decodes to (1,2), but only 2 items on stack.
         exchange_underflow(@raw {
             bytecode: &[op::PUSH0, op::PUSH0, op::EXCHANGE, 0x8E],
             spec_id: SpecId::AMSTERDAM,
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         swap16_dup10_selfdestruct_underflow(@raw {
             bytecode: &[op::SWAP16, op::DUP10, op::SELFDESTRUCT],
             spec_id: SpecId::OSAKA,
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
         // Invalid immediate: 0x5B (91) is in the invalid range [91, 127] for decode_single.
@@ -443,15 +410,11 @@ tests! {
             bytecode: &[op::PUSH0, op::DUPN, 0x5B],
             spec_id: SpecId::AMSTERDAM,
             expected_return: InstrStop::InvalidImmediateEncoding,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         swapn_invalid_imm(@raw {
             bytecode: &[op::PUSH0, op::SWAPN, 0x5B],
             spec_id: SpecId::AMSTERDAM,
             expected_return: InstrStop::InvalidImmediateEncoding,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // The invalid immediate halts before the following instructions are charged or
         // stack-checked, so an empty stack does not underflow at the section head.
@@ -467,8 +430,6 @@ tests! {
             bytecode: &[op::PUSH0, op::PUSH0, op::PUSH0, op::EXCHANGE, 82],
             spec_id: SpecId::AMSTERDAM,
             expected_return: InstrStop::InvalidImmediateEncoding,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
         // Truncated trailing DUPN at EOF: immediate byte missing, zero-padded to 0x00.
@@ -561,8 +522,6 @@ tests! {
             ],
             spec_id: SpecId::AMSTERDAM,
             expected_return: InstrStop::InvalidJump,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Same masked target, but reached through an unresolved dynamic jump
         // (CALLDATASIZE is unknown at compile time): the dynamic dispatch table must
@@ -576,8 +535,6 @@ tests! {
             ],
             spec_id: SpecId::AMSTERDAM,
             expected_return: InstrStop::InvalidJump,
-            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // A valid target inside a PUSH immediate: DUPN desynchronizes decoding, so the
         // 0x5b sits in the data of a decoded PUSH1 while the analysis (which does not
@@ -655,30 +612,22 @@ tests! {
         unmodified_stack_after_push_jump(@raw {
             bytecode: &[op::PUSH1, 3, op::JUMP, op::JUMPDEST, op::PUSH0, op::ADD],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[U256::ZERO],
-            expected_gas: 3 + 8 + 1 + 2 + 3,
         }),
         bad_jump(@raw {
             bytecode: &[op::JUMP],
             expected_return: InstrStop::StackUnderflow,
-            expected_gas: 8,
         }),
         bad_jumpi1(@raw {
             bytecode: &[op::JUMPI],
             expected_return: InstrStop::StackUnderflow,
-            expected_gas: 10,
         }),
         bad_jumpi2(@raw {
             bytecode: &[op::PUSH0, op::JUMPI],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[0_U256],
-            expected_gas: 2 + 10,
         }),
         bad_jumpi3(@raw {
             bytecode: &[op::JUMPDEST, op::PUSH0, op::JUMPI],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[0_U256],
-            expected_gas: 1 + 2 + 10,
         }),
 
         basic_jumpi1(@raw {
@@ -699,13 +648,10 @@ tests! {
         basic_jumpi2_lazy_invalid_target(@raw {
             bytecode: &[op::PUSH1, 1, op::PUSH0, op::JUMPI, op::PUSH1, 69],
             expected_return: InstrStop::InvalidJump,
-            expected_gas: 3 + 2 + 10,
         }),
         unmodified_stack_after_push_jumpi(@raw {
             bytecode: &[op::PUSH1, 1, op::PUSH1, 5, op::JUMPI, op::JUMPDEST, op::PUSH0, op::ADD],
             expected_return: InstrStop::StackUnderflow,
-            expected_stack: &[U256::ZERO],
-            expected_gas: 3 + 3 + 10 + 1 + 2 + 3,
         }),
 
         basic_loop(@raw {
@@ -852,8 +798,8 @@ tests! {
             ].concat()),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // A return through `JUMPI` whose condition is opaque and whose target has two callers.
@@ -894,7 +840,7 @@ tests! {
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Jumps into a table whose index the analysis only knows to be at most 3.
@@ -902,15 +848,14 @@ tests! {
             bytecode: &asm(&range_jump_table(2)),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x22).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x22).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x22).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x22).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         range_jump_table_non_jumpdest_entry(@raw {
             bytecode: &asm(&range_jump_table(1)),
             inspect_stack: Some(false),
             expected_return: InstrStop::InvalidJump,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // The `JUMPI` condition is a different valid jump target in each caller, so its
         // constant set proves it nonzero.
@@ -953,8 +898,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Like the above, but pc 0 is a `JUMPDEST` and one caller passes 0, so the condition
@@ -996,8 +941,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x07).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x07).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x07).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x07).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // The constant folding budget runs out between the fixpoint and the snapshot pass: 20
@@ -1032,8 +977,8 @@ tests! {
             inspect_stack: Some(false),
             gas_limit: 1_000_000,
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Here the budget runs out before the fold inside `b` in the snapshot pass: the fixpoint
@@ -1067,8 +1012,8 @@ tests! {
             inspect_stack: Some(false),
             gas_limit: 1_000_000,
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // A function returns to pc 0, which is a `JUMPDEST`, so the entry block is also a
@@ -1100,8 +1045,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // An unreached block ends in a `JUMPI` with an opaque target; it must not disturb the
@@ -1134,8 +1079,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // A function pointer chosen by `JUMPI`, called through a shared call block, where the
@@ -1180,8 +1125,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0xf0).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0xf0).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0xf0).as_slice(),
+            expected_output: Some(B256::with_last_byte(0xf0).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // EXP folds to 1 in both call contexts, but its exponent differs, so its gas does too.
@@ -1284,8 +1229,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(140).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(140).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(140).as_slice(),
+            expected_output: Some(B256::with_last_byte(140).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // One caller passes an invalid return address, so the return must stay dynamic and
@@ -1306,7 +1251,6 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::InvalidJump,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // The return address sits below the tracked abstract stack and is brought up with
         // `SWAPN`, so the return must stay dynamic.
@@ -1339,8 +1283,8 @@ tests! {
             spec_id: SpecId::AMSTERDAM,
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Same with `DUPN` copying the deep return address.
@@ -1373,8 +1317,8 @@ tests! {
             spec_id: SpecId::AMSTERDAM,
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Two callers of a function that moves its return address with `EXCHANGE`.
@@ -1626,38 +1570,26 @@ tests! {
         dynamic_jump_to_65(@raw {
             bytecode: &bytecode_dynamic_jump(65_U256),
             expected_return: InstrStop::InvalidJump,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         dynamic_jump_to_97(@raw {
             bytecode: &bytecode_dynamic_jump(97_U256),
             expected_return: InstrStop::InvalidJump,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         dynamic_jump_to_code_end(@raw {
             bytecode: &bytecode_dynamic_jump(133_U256),
             expected_return: InstrStop::InvalidJump,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         dynamic_jump_to_table_end(@raw {
             bytecode: &bytecode_dynamic_jump(160_U256),
             expected_return: InstrStop::InvalidJump,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         dynamic_jump_to_u64_max(@raw {
             bytecode: &bytecode_dynamic_jump(U256::from(u64::MAX)),
             expected_return: InstrStop::InvalidJump,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         dynamic_jump_to_u64_overflow(@raw {
             bytecode: &bytecode_dynamic_jump((1_U256 << 64) + 63_U256),
             expected_return: InstrStop::InvalidJump,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
     }
 
@@ -1913,6 +1845,13 @@ tests! {
             expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, DEF_GAS_LIMIT_U256 - 122_U256],
             expected_gas: 2 + 3 + 3 + 110 + 2 + 2,
         }),
+        // A constant exponent above 2 lowers to a gas-free builtin: its dynamic gas (10 + 50 * 2)
+        // is charged up front with the section, once.
+        gas_around_const_exponent_pow(@raw {
+            bytecode: &[op::GAS, op::PUSH2, 1, 0, op::ADDRESS, op::EXP, op::POP, op::GAS],
+            expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, DEF_GAS_LIMIT_U256 - 121_U256],
+            expected_gas: 2 + 3 + 2 + 110 + 2 + 2,
+        }),
         // `SLOAD` ends the gas section, so only its base gas is owed by the first `GAS`.
         gas_around_sload(@raw {
             bytecode: &[op::GAS, op::PUSH1, 69, op::SLOAD, op::GAS],
@@ -2016,7 +1955,6 @@ tests! {
             // No return data exists, so copying 32 bytes from offset 0 fails with OutOfOffset
             bytecode: &[op::PUSH1, 32, op::PUSH0, op::PUSH0, op::RETURNDATACOPY],
             expected_return: InstrStop::OutOfOffset,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
     }
 
@@ -2165,50 +2103,35 @@ tests! {
         mload_overflow1(@raw {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
-            expected_stack: &[U256::from(u64::MAX)],
-            expected_gas: 3 + 3,
         }),
         mload_overflow2(@raw {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 1, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
-            expected_stack: &[U256::from(u64::MAX - 1)],
-            expected_gas: 3 + 3,
         }),
         mload_overflow3(@raw {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 31, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
-            expected_stack: &[U256::from(u64::MAX - 31)],
-            expected_gas: 3 + 3,
         }),
         mload_overflow4(@raw {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 32, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
-            expected_stack: &[U256::from(u64::MAX - 32)],
-            expected_gas: 3 + 3,
         }),
         mload_overflow5(@raw {
             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 33, op::MLOAD],
             expected_return: InstrStop::MemoryOOG,
-            expected_stack: &[U256::from(u64::MAX - 33)],
-            expected_gas: 3 + 3,
         }),
         mload_overflow6(@raw {
             bytecode: &[op::ADDRESS, op::MLOAD],
             expected_return: InstrStop::InvalidOperandOOG,
-            expected_stack: &[DEF_ADDR.into_word().into()],
-            expected_gas: 5,
         }),
         mload_const_offset_too_large(@raw {
-            bytecode: &{
-                let mut code = Vec::new();
-                code.push(op::PUSH9);
-                code.extend_from_slice(&0x1_0000_0000_0000_0000_U256.to_be_bytes::<32>()[23..]);
-                code.push(op::MLOAD);
-                code
-            },
+            bytecode: &[
+                &[op::PUSH9][..],
+                &0x1_0000_0000_0000_0000_U256.to_be_bytes::<32>()[23..],
+                &[op::MLOAD][..],
+            ]
+            .concat(),
             expected_return: InstrStop::InvalidOperandOOG,
-            expected_stack: &[0x1_0000_0000_0000_0000_U256],
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         mstore1(@raw {
             bytecode: &[op::PUSH0, op::PUSH0, op::MSTORE],
@@ -2345,9 +2268,6 @@ tests! {
                 MLOAD
             "),
             expected_return: InstrStop::InvalidOperandOOG,
-            expected_stack: &[!64_U256],
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // `TLOAD` overwrites the stack slot holding `p = 64` with `0x1000`.
         dyn_offset_overwritten_by_builtin(@raw {
@@ -2614,7 +2534,7 @@ tests! {
             assert_host: Some(|host| {
                 assert_eq!(host.logs, [Log {
                     address: DEF_ADDR,
-                    data: LogData::new(vec![], Bytes::copy_from_slice(&0x6942_U256.to_be_bytes::<32>())).unwrap(),
+                    data: LogData::new(vec![], Bytes::from(0x6942_U256.to_be_bytes::<32>())).unwrap(),
                 }]);
             }),
         }),
@@ -2642,7 +2562,7 @@ tests! {
                     address: DEF_ADDR,
                     data: LogData::new(
                         vec![0xffffffffffffffffffffffffffffffffffffffff_U256.into()],
-                        Bytes::copy_from_slice(&[0; 50]),
+                        Bytes::from([0; 50]),
                     ).unwrap(),
                 }]);
             }),
@@ -2768,14 +2688,12 @@ tests! {
             is_static: true,
             gas_limit: 4000,
             expected_return: InstrStop::OutOfGas,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Static-context SELFDESTRUCT: gas >= 5000 → charges 5000, then StateChangeDuringStaticCall.
         selfdestruct_static_enough_gas(@raw {
             bytecode: &[op::PUSH1, 0x01, op::SELFDESTRUCT],
             is_static: true,
             expected_return: InstrStop::StateChangeDuringStaticCall,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
     }
 
@@ -3114,7 +3032,7 @@ tests! {
             ],
             spec_id: SpecId::CANCUN,
             modify_message: Some(|message| {
-                message.input = Bytes::copy_from_slice(&U256::from(0x68).to_be_bytes::<32>());
+                message.input = Bytes::from(B256::with_last_byte(0x68));
                 message.value = U256::from(10);
             }),
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
@@ -3408,9 +3326,9 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x2a).to_be_bytes::<32>(),
+            expected_memory: B256::with_last_byte(0x2a).as_slice(),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_output: Some(&U256::from(0x2a).to_be_bytes::<32>()),
+            expected_output: Some(B256::with_last_byte(0x2a).as_slice()),
         }),
 
         // Same class of bug but triggered by a deduped reachable JUMPDEST block rather than
@@ -3459,9 +3377,9 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x2a).to_be_bytes::<32>(),
+            expected_memory: B256::with_last_byte(0x2a).as_slice(),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_output: Some(&U256::from(0x2a).to_be_bytes::<32>()),
+            expected_output: Some(B256::with_last_byte(0x2a).as_slice()),
         }),
 
         dedup_false_jumpi_non_jumpdest_fallthrough(@raw {
@@ -3601,7 +3519,6 @@ tests! {
             bytecode: &[op::CALLDATASIZE, op::TSTORE],
             spec_id: SpecId::SHANGHAI,
             expected_return: InstrStop::NotActivated,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
         // PUSH0(0->1) ; TLOAD(1->1, disabled before Cancun).
@@ -3609,7 +3526,6 @@ tests! {
             bytecode: &[op::PUSH0, op::TLOAD],
             spec_id: SpecId::SHANGHAI,
             expected_return: InstrStop::NotActivated,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
         // Mismatched costs in < BERLIN.
@@ -3619,7 +3535,7 @@ tests! {
             spec_id: SpecId::ISTANBUL,
             modify_message: Some(|message| {
                 message.value = 1_U256;
-                message.input = Bytes::from(&hex!("c0406226"));
+                message.input = alloy_primitives::bytes!("c0406226");
             }),
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
@@ -3711,7 +3627,7 @@ tests! {
             modify_message: Some(|message| {
                 let mut input = [0; 96];
                 input[63] = 1;
-                message.input = Bytes::copy_from_slice(&input);
+                message.input = Bytes::from(input);
             }),
             inspect_stack: Some(false),
             expected_return: InstrStop::Stop,

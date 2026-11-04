@@ -12,7 +12,7 @@ use evm2::{
 
 #[derive(Clone, Copy, Debug)]
 struct PendingOpcodeGas {
-    opcode: OpCode,
+    opcode: Option<OpCode>,
     gas_remaining: u64,
     child_gas_used: u64,
 }
@@ -72,7 +72,7 @@ impl OpcodeGasInspector {
             return;
         };
         if let Some(pending) = self.pending_steps.last_mut()
-            && pending.opcode == opcode
+            && pending.opcode == Some(opcode)
         {
             pending.child_gas_used = pending.child_gas_used.saturating_add(child_gas_used);
         }
@@ -82,29 +82,31 @@ impl OpcodeGasInspector {
 impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let opcode_value = interp.opcode();
-        if let Some(opcode) = OpCode::new(opcode_value) {
+        let opcode = OpCode::new(opcode_value);
+        if let Some(opcode) = opcode {
             // keep track of opcode counts
             *self.opcode_counts.entry(opcode).or_default() += 1;
-
-            // keep track of the last opcode executed
-            self.pending_steps.push(PendingOpcodeGas {
-                opcode,
-                gas_remaining: interp.gas().remaining(),
-                child_gas_used: 0,
-            });
         }
+
+        // Undefined opcodes also receive step_end and must not pop a parent's step.
+        self.pending_steps.push(PendingOpcodeGas {
+            opcode,
+            gas_remaining: interp.gas().remaining(),
+            child_gas_used: 0,
+        });
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // update gas usage for the last opcode
-        if let Some(pending) = self.pending_steps.pop() {
+        if let Some(pending) = self.pending_steps.pop()
+            && let Some(opcode) = pending.opcode
+        {
             let gas_cost = step_cost(
                 interp.result(),
                 pending.gas_remaining,
                 pending.gas_remaining.saturating_sub(interp.gas().remaining()),
             )
             .saturating_sub(pending.child_gas_used);
-            let opcode = pending.opcode;
             *self.opcode_gas.entry(opcode).or_default() += gas_cost;
         }
     }

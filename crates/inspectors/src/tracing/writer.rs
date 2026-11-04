@@ -10,7 +10,7 @@ use alloy_primitives::{Address, B256, U256, address, hex, map::HashMap};
 use anstyle::{AnsiColor, Color, Style};
 use colorchoice::ColorChoice;
 use evm2::interpreter::InstrStop;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 
 const CHEATCODE_ADDRESS: Address = address!("7109709ECfa91a80626fF3989D68f67F5b1DD12D");
 
@@ -376,7 +376,8 @@ impl<W: Write> TraceWriter<W> {
 
         match &**decoded {
             DecodedTraceStep::InternalCall(call, end_idx) => {
-                let gas_used = node.trace.steps[*end_idx].gas_used.saturating_sub(step.gas_used);
+                let gas_used =
+                    step.gas_remaining.saturating_sub(node.trace.steps[*end_idx].gas_remaining);
 
                 self.write_branch()?;
                 self.indentation_level += 1;
@@ -505,15 +506,16 @@ impl<W: Write> TraceWriter<W> {
         // of their last write.
         let mut change_id = 0;
         for step in &node.trace.steps {
-            if let Some(change) = &step.storage_change {
-                // Only handle storage changes, signalled by `had_value` being `Some`.
-                if change.had_value.is_some() {
-                    let (_first, last, last_change_id) =
-                        changes_map.entry(&change.key).or_insert((change, change, change_id));
-                    *last = change;
-                    *last_change_id = change_id;
-                    change_id += 1;
-                }
+            // Only handle storage changes, signalled by `had_value` differing from `value`.
+            if !step.is_error()
+                && let Some(change) = &step.storage_change
+                && change.had_value.is_some_and(|had| had != change.value)
+            {
+                let (_first, last, last_change_id) =
+                    changes_map.entry(&change.key).or_insert((change, change, change_id));
+                *last = change;
+                *last_change_id = change_id;
+                change_id += 1;
             }
         }
 
@@ -552,7 +554,6 @@ impl<W: Write> TraceWriter<W> {
 }
 
 fn use_colors(choice: ColorChoice) -> bool {
-    use io::IsTerminal;
     match choice {
         ColorChoice::Auto => io::stdout().is_terminal(),
         ColorChoice::AlwaysAnsi | ColorChoice::Always => true,

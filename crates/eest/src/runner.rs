@@ -1,7 +1,7 @@
 use crate::{
     env::state_test_roots,
     execute::{ExecuteConfig, ExecutionMode, execute_test_suite},
-    harness::{TestSuite, descend_all, run_json_harnesses},
+    harness::{TestSuite, contains_any, descend_all, run_json_harnesses},
 };
 #[cfg(feature = "jit")]
 use crate::{execute::execute_test_suites, execution::CompiledMode, harness::compiled_roots};
@@ -136,14 +136,8 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "create2collisionStorageParis.json",
     "dynamicAccountOverwriteEmpty.json",
     "dynamicAccountOverwriteEmpty_Paris.json",
-
-    // The state-test runner takes the sender from the fixture and does not recover or
-    // validate legacy-tx signatures, so v/r/s and chain-id rejection tests cannot pass.
-    "frontier/validation/transaction/bad_v_r_s.json",
-    "frontier/validation/transaction/unrecoverable_signature.json",
-    "london/eip1559_fee_market_change/tx_type/invalid_chain_id.json",
 ];
 
 fn should_ignore(name: &str) -> bool {
-    IGNORED_TESTS.iter().any(|pattern| name.contains(pattern))
+    contains_any(name, IGNORED_TESTS)
 }

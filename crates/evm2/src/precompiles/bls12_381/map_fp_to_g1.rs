@@ -32,13 +32,13 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 #[cfg(test)]
 mod test {
     use super::*;
-    use alloy_primitives::{Bytes, hex};
+    use alloy_primitives::bytes;
 
     #[test]
     fn sanity_test() {
-        let input = Bytes::from(hex!(
+        let input = bytes!(
             "000000000000000000000000000000006900000000000000636f6e7472616374595a603f343061cd305a03f40239f5ffff31818185c136bc2595f2aa18e08f17"
-        ));
+        );
         let fail = run(&input, &mut GasTracker::new(MAP_FP_TO_G1_BASE_GAS_FEE));
         assert_eq!(
             fail.err().and_then(|e| e.as_halt().cloned()),

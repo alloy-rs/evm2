@@ -31,20 +31,20 @@ fn recovery_ignores_crypto_provider() {
     let key = SigningKey::from_slice(&[0x11; 32]).unwrap();
     let signer =
         Address::from_raw_public_key(&key.verifying_key().to_sec1_point(false).as_bytes()[1..]);
-    let inner = Authorization { chain_id: U256::from(1), address: Address::ZERO, nonce: 7 };
+    let inner = Authorization { chain_id: U256::ONE, address: Address::ZERO, nonce: 7 };
     let (sig, recid) = key.sign_prehash_recoverable(inner.signature_hash().as_slice());
     let r = U256::from_be_slice(&sig.r().to_bytes());
     let s = U256::from_be_slice(&sig.s().to_bytes());
     let authorization = SignedAuthorization::new_unchecked(inner, recid.to_byte(), r, s);
     let tx = TxEip7702 { authorization_list: vec![authorization.clone()], ..Default::default() };
 
-    assert_eq!(LazyAuthorization::from(authorization.clone()).authority(), Some(signer));
+    assert_eq!(LazyAuthorization::Signed(&authorization).authority(), Some(signer));
     let recovered = LazyTxEip7702::from_recovered_authorizations(tx.clone());
-    assert_eq!(recovered.authorization_list[0].authority(), Some(signer));
+    assert_eq!(recovered.authorizations().next().unwrap().authority(), Some(signer));
 
     assert!(install_crypto(BogusCrypto), "recovery initialized the crypto provider");
 
-    assert_eq!(LazyAuthorization::from(authorization).authority(), Some(signer));
+    assert_eq!(LazyAuthorization::Signed(&authorization).authority(), Some(signer));
     let recovered = LazyTxEip7702::from_recovered_authorizations(tx);
-    assert_eq!(recovered.authorization_list[0].authority(), Some(signer));
+    assert_eq!(recovered.authorizations().next().unwrap().authority(), Some(signer));
 }

@@ -1,3 +1,8 @@
+use crate::{
+    EvmTypesHost,
+    interpreter::{InstrStop, InterpreterState, Result},
+};
+
 mod arithmetic;
 pub use arithmetic::*;
 
@@ -29,6 +34,14 @@ mod system;
 pub use system::*;
 
 pub mod i256;
+
+#[inline]
+const fn require_non_staticcall<T: EvmTypesHost>(state: &InterpreterState<'_, '_, T>) -> Result {
+    if state.is_static() {
+        return Err(InstrStop::StateChangeDuringStaticCall);
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod macro_tests;

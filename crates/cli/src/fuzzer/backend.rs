@@ -5,20 +5,20 @@ use crate::fuzzer::{
         apply_account_changes, canonical_accounts, canonical_log, state_from_revm,
     },
 };
-use alloy_primitives::{Address, map::HashMap};
+use alloy_primitives::map::AddressMap;
 use evm2::{
-    BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
+    BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles,
     bytecode::Bytecode,
     ethereum::ethereum_tx_registry,
     evm::{AccountInfo as Evm2AccountInfo, InMemoryDB},
     interpreter::InstrStop,
 };
+use evm2_cli::reference;
 use revm::{
     ExecuteCommitEvm, ExecuteEvm, MainBuilder, MainContext,
     context::{CfgEnv, Context},
     context_interface::either::Either,
     database::{EmptyDB as RevmEmptyDB, InMemoryDB as RevmInMemoryDB, State as RevmState},
-    primitives::hardfork::SpecId as RevmSpecId,
 };
 
 pub(crate) trait EvmBackend {
@@ -66,13 +66,13 @@ impl EvmBackend for Evm2Backend {
                 Ok(result) => {
                     let mut state = CanonicalState::default();
                     let Ok(tx_result) = result.commit_with(&mut state);
-                    let output = if tx_result.status || tx_result.stop == InstrStop::Revert {
+                    let output = if tx_result.is_success() || tx_result.stop == InstrStop::Revert {
                         Some(tx_result.output.to_vec())
                     } else {
                         None
                     };
                     receipts.push(TxReceipt {
-                        kind: if tx_result.status {
+                        kind: if tx_result.is_success() {
                             FuzzOutcomeKind::Success
                         } else {
                             FuzzOutcomeKind::RevertOrHalt
@@ -99,7 +99,7 @@ type RevmExecutor = revm::MainnetEvm<revm::handler::MainnetContext<RevmState<Rev
 #[derive(Default)]
 pub(crate) struct RevmBackend {
     evm: Option<RevmExecutor>,
-    accounts: HashMap<Address, CanonicalAccount>,
+    accounts: AddressMap<CanonicalAccount>,
 }
 
 impl EvmBackend for RevmBackend {
@@ -109,7 +109,7 @@ impl EvmBackend for RevmBackend {
 
     fn run(&mut self, case: &EvmCase) -> Outcome {
         let mut cfg = CfgEnv::new();
-        cfg.set_spec_and_mainnet_gas_params(revm_spec(case.spec));
+        cfg.set_spec_and_mainnet_gas_params(reference::spec_id(case.spec));
         cfg = cfg.disable_tx_chain_id_check();
         let context = Context::mainnet()
             .with_cfg(cfg)
@@ -118,7 +118,7 @@ impl EvmBackend for RevmBackend {
         let evm = if let Some(evm) = &mut self.evm {
             evm.ctx = context;
             evm.instruction = revm::handler::instructions::EthInstructions::new_mainnet_with_spec(
-                revm_spec(case.spec),
+                reference::spec_id(case.spec),
             );
             evm
         } else {
@@ -200,27 +200,6 @@ fn revm_db(case: &EvmCase) -> RevmInMemoryDB {
         }
     }
     db
-}
-
-const fn revm_spec(spec: SpecId) -> RevmSpecId {
-    match spec {
-        SpecId::FRONTIER => RevmSpecId::FRONTIER,
-        SpecId::HOMESTEAD => RevmSpecId::HOMESTEAD,
-        SpecId::TANGERINE => RevmSpecId::TANGERINE,
-        SpecId::SPURIOUS_DRAGON => RevmSpecId::SPURIOUS_DRAGON,
-        SpecId::BYZANTIUM => RevmSpecId::BYZANTIUM,
-        SpecId::PETERSBURG => RevmSpecId::PETERSBURG,
-        SpecId::ISTANBUL => RevmSpecId::ISTANBUL,
-        SpecId::BERLIN => RevmSpecId::BERLIN,
-        SpecId::LONDON => RevmSpecId::LONDON,
-        SpecId::MERGE => RevmSpecId::MERGE,
-        SpecId::SHANGHAI => RevmSpecId::SHANGHAI,
-        SpecId::CANCUN => RevmSpecId::CANCUN,
-        SpecId::PRAGUE => RevmSpecId::PRAGUE,
-        SpecId::OSAKA => RevmSpecId::OSAKA,
-        SpecId::AMSTERDAM => RevmSpecId::AMSTERDAM,
-        _ => RevmSpecId::CANCUN,
-    }
 }
 
 #[cfg(test)]

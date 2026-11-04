@@ -186,7 +186,7 @@ impl MemorySectionAnalysis {
     }
 
     fn compute_block_entry_states(&mut self, bytecode: &Bytecode<'_>) {
-        let entry = Block::from_usize(0);
+        let entry = Block::new(0);
         self.block_entry_states[entry] =
             BlockMemoryState { known_size: Some(0), exact_known_size: Some(0) };
 

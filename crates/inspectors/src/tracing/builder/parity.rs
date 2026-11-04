@@ -1,7 +1,5 @@
 use crate::tracing::{
-    TracingInspectorConfig,
-    tx_state::TxState,
-    types::{CallTraceNode, CallTraceStep, StepDelta, TraceMemberOrder},
+    types::{CallKind, CallTraceNode, CallTraceStep, StepDelta, TraceMemberOrder},
     utils::load_account_code,
 };
 use alloc::{string::ToString, vec, vec::Vec};
@@ -13,28 +11,53 @@ use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
 use evm2::{
-    EvmTypesHost, SpecId, TxResultExt, TxResultWithState,
+    AccountInfo, EvmTypesHost, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase, PendingState},
     interpreter::InstrStop,
 };
 
 /// A type for creating parity style traces
 ///
-/// Note: Parity style traces always ignore calls to precompiles.
+/// Note: Parity style traces ignore calls to precompiles without value, see
+/// [`PrecompileExclusion::ZeroValue`].
 #[derive(Clone, Debug)]
 pub struct ParityTraceBuilder {
     /// Recorded trace nodes
     nodes: Vec<CallTraceNode>,
+    /// Marks the calls to precompiles left out of the traces, and everything they called; their
+    /// parents no longer list them as children.
+    excluded: Vec<bool>,
 }
 
 impl ParityTraceBuilder {
-    /// Returns a new instance of the builder
-    pub const fn new(
-        nodes: Vec<CallTraceNode>,
-        _spec_id: Option<SpecId>,
-        _config: TracingInspectorConfig,
-    ) -> Self {
-        Self { nodes }
+    /// Returns a new instance of the builder that leaves out the calls to precompiles selected by
+    /// `exclusion`.
+    pub fn new(mut nodes: Vec<CallTraceNode>, exclusion: PrecompileExclusion) -> Self {
+        // Parents always precede their children in the arena.
+        let mut excluded = Vec::<bool>::with_capacity(nodes.len());
+        for node in &nodes {
+            excluded.push(exclusion.excludes(node) || node.parent.is_some_and(|p| excluded[p]));
+        }
+        if !excluded.contains(&true) {
+            return Self { nodes, excluded };
+        }
+
+        for node in &mut nodes {
+            // Calls appear in `ordering` in the order of `children`.
+            let mut kept = 0;
+            node.ordering.retain_mut(|member| {
+                let TraceMemberOrder::Call(position) = member else { return true };
+                let keep = !excluded[node.children[*position]];
+                if keep {
+                    *position = kept;
+                    kept += 1;
+                }
+                keep
+            });
+            node.children.retain(|&child| !excluded[child]);
+        }
+
+        Self { nodes, excluded }
     }
 
     /// Returns a list of all addresses that appeared as callers.
@@ -70,8 +93,8 @@ impl ParityTraceBuilder {
     /// Each entry in the returned vector represents the trace address of the corresponding node in
     /// the nodes set.
     ///
-    /// CAUTION: This also includes precompiles, which have an empty trace address, as they are not
-    /// tracked as children of their parent.
+    /// CAUTION: This also includes excluded precompile calls, which have an empty trace address, as
+    /// they are not tracked as children of their parent.
     fn trace_addresses(&self) -> Vec<Vec<usize>> {
         let mut all_addresses = vec![Vec::new(); self.nodes.len()];
         // Parents always precede their children in the arena, so a single forward pass can derive
@@ -90,9 +113,12 @@ impl ParityTraceBuilder {
 
     /// Returns an iterator over all nodes to trace
     ///
-    /// This excludes nodes that represent calls to precompiles.
+    /// This excludes the calls to precompiles selected by the builder's [`PrecompileExclusion`].
     fn iter_traceable_nodes(&self) -> impl Iterator<Item = &CallTraceNode> {
-        self.nodes.iter().filter(|node| !node.is_precompile())
+        self.nodes
+            .iter()
+            .zip(&self.excluded)
+            .filter_map(|(node, &excluded)| (!excluded).then_some(node))
     }
 
     /// Returns an iterator over all recorded traces  for `trace_transaction`
@@ -126,7 +152,7 @@ impl ParityTraceBuilder {
     /// Warning: If `trace_types` contains [TraceType::StateDiff] the returned [StateDiff] will not
     /// be filled. Use [ParityTraceBuilder::into_trace_results_with_state] or
     /// [populate_state_diff] to populate the balance and nonce changes for the [StateDiff]
-    /// using the database.
+    /// using the pending state and the database for bytecode.
     pub fn into_trace_results<E>(
         self,
         res: &TxResultExt<E>,
@@ -142,7 +168,8 @@ impl ParityTraceBuilder {
     /// Consumes the inspector and returns the trace results according to the configured trace
     /// types.
     ///
-    /// This also takes the database to populate the balance and nonce changes for the [StateDiff].
+    /// This also takes the pending state and a database (used for bytecode) to populate the
+    /// [StateDiff].
     ///
     /// Note: this is considered a convenience method that takes the state changes after inspecting
     /// a transaction with the [TracingInspector](crate::tracing::TracingInspector).
@@ -162,8 +189,7 @@ impl ParityTraceBuilder {
     /// state, without cloning the state into a result container.
     ///
     /// Populates state diffs when requested by `trace_types`. VM bytecode comes from the recorded
-    /// frames. The database must represent the state before the transaction's changes are
-    /// committed.
+    /// frames. The database is only used to load bytecode by hash.
     pub fn into_trace_results_with_state_parts<E>(
         self,
         result: &TxResultExt<E>,
@@ -262,8 +288,11 @@ impl ParityTraceBuilder {
                 .nodes
                 .into_iter()
                 .zip(trace_addresses)
-                .filter(|(node, _)| !node.is_precompile())
-                .map(|(node, trace_address)| (node.parity_transaction_trace(trace_address), node))
+                .zip(self.excluded)
+                .filter(|(_, excluded)| !excluded)
+                .map(|((node, trace_address), _)| {
+                    (node.parity_transaction_trace(trace_address), node)
+                })
                 .peekable(),
         }
     }
@@ -287,11 +316,12 @@ impl ParityTraceBuilder {
         let mut child_idx_stack = Vec::with_capacity(self.nodes.len());
         let mut sub_stack = Vec::with_capacity(self.nodes.len());
 
-        // Excluded precompile calls are recorded without being attached to their parent, in call
-        // order.
+        // Excluded precompile calls are not attached to their parent; collect them in call order.
         let mut precompiles = HashMap::<usize, Vec<&CallTraceNode>>::default();
-        for node in self.nodes.iter().filter(|node| node.is_precompile()) {
-            if let Some(parent) = node.parent {
+        for (node, _) in self.nodes.iter().zip(&self.excluded).filter(|(_, excluded)| **excluded) {
+            if let Some(parent) = node.parent
+                && !self.excluded[parent]
+            {
                 precompiles.entry(parent).or_default().push(node);
             }
         }
@@ -398,6 +428,35 @@ impl ParityTraceBuilder {
     }
 }
 
+/// Which calls to precompiles a [`ParityTraceBuilder`] leaves out of its traces.
+///
+/// A call is only left out if the inspector recorded it as a call to a precompile, see
+/// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls), and it is not the root call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrecompileExclusion {
+    /// Keeps every call to a precompile.
+    None,
+    /// Leaves out calls of any kind that transfer no value, as Parity does.
+    ZeroValue,
+    /// Leaves out `CALL` and `STATICCALL` regardless of value and keeps `DELEGATECALL` and
+    /// `CALLCODE`, as geth's flatCallTracer does.
+    CallAndStaticCall,
+}
+
+impl PrecompileExclusion {
+    fn excludes(self, node: &CallTraceNode) -> bool {
+        node.parent.is_some()
+            && node.is_precompile()
+            && match self {
+                Self::None => false,
+                Self::ZeroValue => node.trace.value.is_zero(),
+                Self::CallAndStaticCall => {
+                    matches!(node.kind(), CallKind::Call | CallKind::StaticCall)
+                }
+            }
+    }
+}
+
 /// Returns whether a step began executing, excluding operations rejected before execution and
 /// the synthetic `STOP` past the end of the recorded bytecode.
 fn began_executing(step: &CallTraceStep, bytecode: Option<&Bytes>) -> bool {
@@ -477,38 +536,38 @@ where
 /// Populates [StateDiff] given the [PendingState] of a transaction and a database.
 ///
 /// Loops over all state accounts in the accounts diff that contains all accounts that are included
-/// in the [PendingState] and compares the balance and nonce against what's in the `db`, which
-/// should point to the beginning of the transaction.
+/// in the [PendingState] and compares the balance and nonce against the account as it was at the
+/// start of the transaction, which the pending state records. The `db` is only used to load
+/// bytecode by hash.
 pub fn populate_state_diff(
     state_diff: &mut StateDiff,
     db: &mut dyn DynDatabase,
     pending: &PendingState,
 ) -> DbResult<()> {
-    let state = TxState::from_pending(pending);
-    for (addr, changed_acc) in state.accounts.iter() {
-        let db_acc = db.get_account(addr)?;
-
+    let absent = AccountInfo::default();
+    for changed_acc in pending.account_changes() {
+        let addr = &changed_acc.address;
         // An account created and destroyed in this transaction has no net change unless it
         // already existed, for example with a prefunded balance.
-        if changed_acc.current.is_none() && db_acc.is_none() {
+        if changed_acc.current.is_none() && changed_acc.original.is_none() {
             continue;
         }
 
-        let existed = db_acc.is_some();
-        let db_acc = db_acc.unwrap_or_default();
+        let existed = changed_acc.original.is_some();
+        let original = changed_acc.original.unwrap_or(&absent);
         let entry = state_diff.entry(*addr).or_default();
 
         // Use the finalized account state: selfdestruct can preserve a balance-only account.
         if changed_acc.current.is_none() {
-            entry.balance = Delta::Removed(db_acc.balance);
-            entry.nonce = Delta::Removed(U64::from(db_acc.nonce));
-            entry.code = Delta::Removed(load_account_code(db, &db_acc)?.unwrap_or_default());
+            entry.balance = Delta::Removed(original.balance);
+            entry.nonce = Delta::Removed(U64::from(original.nonce));
+            entry.code = Delta::Removed(load_account_code(db, original)?.unwrap_or_default());
             // Deletion wipes all storage, which the removed account implies. PendingState
             // holds only accessed slots, so listing them would produce a partial diff.
             continue;
         }
 
-        let info = changed_acc.current.as_ref().expect("deleted accounts handled above");
+        let info = changed_acc.current.expect("deleted accounts handled above");
 
         // An absent prestate account is added if it has nonempty final state or
         // the EVM marked it created (which can preserve an empty account).
@@ -521,19 +580,19 @@ pub fn populate_state_diff(
             entry.code = Delta::Added(account_code);
 
             // Only changed slots are added; unchanged zero-valued slots are omitted.
-            for (key, slot) in changed_acc.changed_storage() {
+            for (key, slot) in changed_acc.storage.changed_slots() {
                 entry.storage.insert((*key).into(), Delta::Added(slot.current.into()));
             }
         } else {
             // EIP-7702 can change code without creating the account, even if execution reverts.
-            if db_acc.code_hash != info.code_hash {
-                let original_account_code = load_account_code(db, &db_acc)?.unwrap_or_default();
+            if original.code_hash != info.code_hash {
+                let original_account_code = load_account_code(db, original)?.unwrap_or_default();
                 let present_account_code = load_account_code(db, info)?.unwrap_or_default();
                 entry.code = Delta::changed(original_account_code, present_account_code);
             }
 
             // update _changed_ storage values
-            for (key, slot) in changed_acc.changed_storage() {
+            for (key, slot) in changed_acc.storage.changed_slots() {
                 entry.storage.insert(
                     (*key).into(),
                     Delta::changed(slot.original.into(), slot.current.into()),
@@ -541,26 +600,23 @@ pub fn populate_state_diff(
             }
 
             // check if the account was changed at all
-            if entry.storage.is_empty() && &db_acc == info && !changed_acc.selfdestructed {
+            if entry.storage.is_empty() && original == info && !changed_acc.selfdestructed {
                 // clear the entry if the account was not changed
                 state_diff.remove(addr);
                 continue;
             }
 
-            entry.balance = if db_acc.balance == info.balance {
+            entry.balance = if original.balance == info.balance {
                 Delta::Unchanged
             } else {
-                Delta::Changed(ChangedType { from: db_acc.balance, to: info.balance })
+                Delta::changed(original.balance, info.balance)
             };
 
             // this is relevant for the caller and contracts
-            entry.nonce = if db_acc.nonce == info.nonce {
+            entry.nonce = if original.nonce == info.nonce {
                 Delta::Unchanged
             } else {
-                Delta::Changed(ChangedType {
-                    from: U64::from(db_acc.nonce),
-                    to: U64::from(info.nonce),
-                })
+                Delta::changed(U64::from(original.nonce), U64::from(info.nonce))
             };
         }
     }
@@ -571,7 +627,8 @@ pub fn populate_state_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracing::types::{CallKind, CallTrace};
+    use crate::tracing::types::CallTrace;
+    use alloy_primitives::U256;
 
     #[test]
     fn test_parity_suicide_simple_call() {
@@ -584,7 +641,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let traces = ParityTraceBuilder::new(nodes, None, TracingInspectorConfig::default_parity())
+        let traces = ParityTraceBuilder::new(nodes, PrecompileExclusion::ZeroValue)
             .into_transaction_traces();
 
         assert_eq!(traces.len(), 2);
@@ -648,7 +705,7 @@ mod tests {
             },
         ];
 
-        let traces = ParityTraceBuilder::new(nodes, None, TracingInspectorConfig::default_parity())
+        let traces = ParityTraceBuilder::new(nodes, PrecompileExclusion::ZeroValue)
             .into_transaction_traces();
 
         assert_eq!(traces.len(), 4);
@@ -670,5 +727,52 @@ mod tests {
         // [0, 1] suicide
         assert_eq!(traces[3].trace_address, vec![0, 1]);
         assert!(traces[3].action.is_selfdestruct());
+    }
+
+    #[test]
+    fn excluded_precompile_calls_take_their_nested_calls_along() {
+        let precompile = CallTrace {
+            depth: 1,
+            kind: CallKind::Call,
+            value: U256::from(1),
+            maybe_precompile: Some(true),
+            ..Default::default()
+        };
+        let nodes = vec![
+            CallTraceNode {
+                children: vec![1, 3],
+                idx: 0,
+                trace: CallTrace { depth: 0, ..Default::default() },
+                ordering: vec![TraceMemberOrder::Call(0), TraceMemberOrder::Call(1)],
+                ..Default::default()
+            },
+            CallTraceNode {
+                parent: Some(0),
+                children: vec![2],
+                idx: 1,
+                trace: precompile,
+                ordering: vec![TraceMemberOrder::Call(0)],
+                ..Default::default()
+            },
+            CallTraceNode {
+                parent: Some(1),
+                idx: 2,
+                trace: CallTrace { depth: 2, ..Default::default() },
+                ..Default::default()
+            },
+            CallTraceNode {
+                parent: Some(0),
+                idx: 3,
+                trace: CallTrace { depth: 1, ..Default::default() },
+                ..Default::default()
+            },
+        ];
+
+        let traces = ParityTraceBuilder::new(nodes, PrecompileExclusion::CallAndStaticCall)
+            .into_transaction_traces();
+
+        let addresses: Vec<_> = traces.iter().map(|trace| trace.trace_address.clone()).collect();
+        assert_eq!(addresses, [vec![], vec![0]]);
+        assert_eq!(traces[0].subtraces, 1);
     }
 }
