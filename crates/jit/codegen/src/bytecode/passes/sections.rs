@@ -97,7 +97,7 @@ impl GasSectionAnalysis {
     /// Accumulates a base gas cost.
     #[inline]
     pub(crate) const fn process(&mut self, base_gas: u16) {
-        self.gas_cost += base_gas as u64;
+        self.process_extra(base_gas as u64);
     }
 
     /// Accumulates extra gas (e.g. pre-computed dynamic gas for folded instructions).

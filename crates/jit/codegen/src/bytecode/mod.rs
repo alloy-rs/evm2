@@ -503,7 +503,7 @@ impl<'a> Bytecode<'a> {
     #[inline(never)]
     pub(crate) fn recompute_reachable_jumpdests(&mut self) {
         for data in &mut self.insts.raw {
-            if data.opcode == op::JUMPDEST {
+            if data.is_jumpdest() {
                 data.clear_jumpdest_reachable();
             }
         }
@@ -529,7 +529,7 @@ impl<'a> Bytecode<'a> {
             while let Some(&next) = self.redirects.get(&target) {
                 target = next;
             }
-            if self.insts[target].opcode == op::JUMPDEST {
+            if self.insts[target].is_jumpdest() {
                 self.insts[target].set_jumpdest_reachable();
             }
         }
@@ -577,7 +577,7 @@ impl<'a> Bytecode<'a> {
                     if data.is_reachable_jumpdest(self.has_dynamic_jumps) {
                         break;
                     }
-                    if !data.flags.contains(InstFlags::DEAD_CODE) {
+                    if !data.is_dead_code() {
                         any_new = true;
                         marked_jump_dead |= data.is_jump();
                     }
@@ -714,6 +714,16 @@ impl<'a> Bytecode<'a> {
     /// Returns the multi-target jump table entry for the given instruction, if any.
     pub(crate) fn multi_jump_targets(&self, inst: Inst) -> Option<&[Inst]> {
         self.multi_jump_targets.get(&inst).map(|v| v.as_slice())
+    }
+
+    /// Resolves an instruction through dead-block redirects created by dedup.
+    pub(crate) fn effective_inst(&self, inst: Inst) -> Inst {
+        self.redirects.get(&inst).copied().unwrap_or(inst)
+    }
+
+    /// Resolves a jump target instruction to its CFG block index.
+    pub(crate) fn target_block(&self, target: Inst) -> Option<Block> {
+        self.cfg.inst_to_block.get(target).copied().flatten()
     }
 
     /// Returns the known constant value of a stack operand at the given instruction.

@@ -178,13 +178,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // The reservoir is funded on top of `gas_limit`, so the transaction gas limit includes it.
         let (total_gas_spent, state_gas_spent) =
             gas_spent_breakdown(gas_limit + reservoir, &result.gas, 0);
-        let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
+        let gas_refunded = if result.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
         } else {
             0
         };
         Ok(TxResultExt {
-            status: result.stop.is_success(),
+            status: result.is_success(),
             total_gas_spent,
             state_gas_spent,
             refunded: gas_refunded,
@@ -256,6 +256,7 @@ mod tests {
         interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileResult},
         registry::{HandlerError, TxRegistry},
+        utils::address_to_word,
     };
 
     type TestEvm = Evm<'static, BaseEvmTypes>;
@@ -297,7 +298,7 @@ mod tests {
         assert!(unchanged(&beneficiary));
         let storage =
             &result.pending_state.accounts.get(&contract).expect("storage changed").storage.slots;
-        let system_address = U256::from_be_slice(SYSTEM_ADDRESS.as_slice());
+        let system_address = address_to_word(&SYSTEM_ADDRESS);
         assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.value.current), Some(system_address));
         assert_eq!(storage.get(&U256::ONE).map(|slot| slot.value.current), Some(system_address));
     }
@@ -335,7 +336,7 @@ mod tests {
         assert!(result.result.is_success());
         let storage =
             &result.pending_state.accounts.get(&contract).expect("storage changed").storage.slots;
-        let caller = U256::from_be_slice(caller.as_slice());
+        let caller = address_to_word(&caller);
         assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.value.current), Some(caller));
         assert_eq!(storage.get(&U256::ONE).map(|slot| slot.value.current), Some(caller));
     }

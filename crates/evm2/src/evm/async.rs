@@ -536,7 +536,7 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmTypes, Evm, ExecutionConfig, Inspector, PrecompileError, Precompiles, SpecId,
-        TxResult, TxResultExt, Version,
+        Version,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
@@ -544,7 +544,8 @@ mod tests {
         interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult, Word, op},
         precompile::PrecompileOutput,
         precompiles::PrecompileId,
-        registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
+        registry::{HandlerError, TxRegistry, handler},
+        test_utils::{handle_test_tx, test_tx},
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, bytes};
@@ -1120,22 +1121,6 @@ mod tests {
     }
 
     const TEST_TX_TYPE: u8 = 0x00;
-
-    fn test_tx(value: u64) -> crate::ethereum::RecoveredTxEnvelope {
-        Recovered::new_unchecked(
-            crate::ethereum::TxEnvelope::Legacy(TxLegacy { nonce: value, ..TxLegacy::default() }),
-            Address::ZERO,
-        )
-    }
-
-    fn handle_test_tx(req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>) -> HandlerResult<TxResult> {
-        let _ = req.host.spec_id();
-        Ok(TxResultExt {
-            status: true,
-            total_gas_spent: req.tx.nonce + 1,
-            ..TxResultExt::default()
-        })
-    }
 
     fn poll_ready<F: Future>(future: F) -> F::Output {
         let mut future = core::pin::pin!(future);

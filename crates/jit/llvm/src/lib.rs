@@ -296,12 +296,11 @@ impl GlobalOrcJit {
 
     /// Removes a JITDylib from the ExecutionSession, freeing all its resources.
     fn remove_jit_dylib(&self, jd: orc::JITDylibRef) {
-        let es = self.jit.get_execution_session();
-        if let Err(e) = es.remove_jit_dylib(jd) {
+        if let Err(e) = self.jit.get_execution_session().remove_jit_dylib(jd) {
             error!("failed to remove JITDylib: {e}");
         }
         // Reclaim unreferenced interned strings after removing symbols.
-        es.get_symbol_string_pool().clear_dead_entries();
+        self.gc();
     }
 
     /// Defines absolute symbols in the shared builtins JITDylib, skipping any
@@ -434,7 +433,7 @@ impl OrcJitState {
     fn maybe_clear_dead_pool_entries(&mut self) {
         self.clear_pool_counter += 1;
         if self.clear_pool_counter.is_multiple_of(256) {
-            self.global.jit.get_execution_session().get_symbol_string_pool().clear_dead_entries();
+            self.global.gc();
         }
     }
 
@@ -684,8 +683,10 @@ impl EvmLlvmBackend {
 
         let tracker = orc.jd().create_resource_tracker();
 
-        let tsm = orc::ThreadSafeModule::create_in_context(old_module, tscx);
-        orc.global.jit.add_module_with_rt(tsm, &tracker).map_err(error_msg)?;
+        orc.global
+            .jit
+            .add_module_with_rt(tscx.create_module(old_module), &tracker)
+            .map_err(error_msg)?;
 
         let tracker_idx = orc.loaded_trackers.len();
         for &id in orc.staged_functions.keys() {

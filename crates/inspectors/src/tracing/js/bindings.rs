@@ -111,7 +111,7 @@ fn state_fn<T: 'static>(
     .build()
 }
 
-fn type_error(message: String) -> JsError {
+pub(crate) fn type_error(message: String) -> JsError {
     JsError::from_native(JsNativeError::typ().with_message(message))
 }
 

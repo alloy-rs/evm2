@@ -700,12 +700,16 @@ struct HelperPauseState {
 
 impl HelperPauseState {
     fn pause(&self) {
-        *self.paused.lock().unwrap() = true;
+        self.set_paused(true);
     }
 
     fn resume(&self) {
-        *self.paused.lock().unwrap() = false;
+        self.set_paused(false);
         self.resumed.notify_all();
+    }
+
+    fn set_paused(&self, paused: bool) {
+        *self.paused.lock().unwrap() = paused;
     }
 
     fn wait_resumed(&self) {

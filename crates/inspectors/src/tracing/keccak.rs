@@ -53,8 +53,8 @@ impl Default for Keccak256PreimageInspector {
 }
 
 impl Keccak256PreimageInspector {
-    /// Returns an inspector that records preimages up to the given limits, which default to
-    /// [`DEFAULT_MAX_RECORDED_BYTES`].
+    /// Returns an inspector that records preimages up to the given limits.
+    /// [`Default`] caps recorded bytes at [`DEFAULT_MAX_RECORDED_BYTES`].
     pub fn new(limits: TraceLimits) -> Self {
         Self { inner: HashMap::default(), budget: TraceBudget { limits, ..Default::default() } }
     }

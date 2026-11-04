@@ -15,7 +15,7 @@ use super::{
     StackSectionAnalysis,
     block_analysis::{AbsValue, Snapshots},
 };
-use crate::bytecode::{AnalysisConfig, Bytecode, Inst, InstFlags};
+use crate::bytecode::{Bytecode, Inst, InstFlags};
 use bitvec::vec::BitVec;
 use evm2::interpreter::op;
 
@@ -37,7 +37,7 @@ impl Bytecode<'_> {
     #[instrument(name = "dse", level = "debug", skip_all)]
     pub(crate) fn dead_store_elim(&mut self) {
         let mut eliminated = 0u32;
-        let inspect_stack = self.config.contains(AnalysisConfig::INSPECT_STACK);
+        let inspect_stack = self.stack_observed();
 
         // Reusable buffers hoisted out of the per-block loop.
         let mut heights = Vec::new();
@@ -69,7 +69,7 @@ impl Bytecode<'_> {
 
             // If the block's terminator diverges, no successor will read the stack,
             // so all exit positions are dead unless `inspect_stack` is set.
-            let term_diverges = !inspect_stack && self.insts[block.terminator()].is_diverging();
+            let term_diverges = !inspect_stack && self.is_instr_diverging(block.terminator());
 
             live.clear();
             live.resize(exit_height.max(0) as usize, !term_diverges);
@@ -242,11 +242,11 @@ fn transfer_liveness(
     match opcode {
         op::SWAP1..=op::SWAP16 => {
             let depth = (opcode - op::SWAP1 + 1) as usize;
-            transfer_swap(live, h_before, depth);
+            transfer_exchange(live, h_before, 0, depth);
         }
         op::SWAPN => {
             if let Some(DecodedImm::Single(depth)) = imm {
-                transfer_swap(live, h_before, depth as usize);
+                transfer_exchange(live, h_before, 0, depth as usize);
             }
         }
         op::DUP1..=op::DUP16 => {
@@ -260,12 +260,7 @@ fn transfer_liveness(
         }
         op::EXCHANGE => {
             if let Some(DecodedImm::Pair(n, m)) = imm {
-                let tos = h_before - 1;
-                let pos_a = tos - n as usize;
-                let pos_b = tos - m as usize;
-                let (a, b) = (live[pos_a], live[pos_b]);
-                live.set(pos_a, b);
-                live.set(pos_b, a);
+                transfer_exchange(live, h_before, n as usize, m as usize);
             }
         }
         op::POP => {
@@ -315,13 +310,13 @@ fn generic_transfer(
     }
 }
 
-/// SWAP liveness: permute liveness of TOS and the swapped position.
-fn transfer_swap(live: &mut BitVec, h_before: usize, depth: usize) {
+/// SWAP/EXCHANGE liveness: permute liveness of the positions `n` and `m` below TOS.
+fn transfer_exchange(live: &mut BitVec, h_before: usize, n: usize, m: usize) {
     let tos = h_before - 1;
-    let other = tos - depth;
-    let (a, b) = (live[tos], live[other]);
-    live.set(tos, b);
-    live.set(other, a);
+    let (pos_a, pos_b) = (tos - n, tos - m);
+    let (a, b) = (live[pos_a], live[pos_b]);
+    live.set(pos_a, b);
+    live.set(pos_b, a);
 }
 
 /// Returns `true` if all positions actually written by the instruction are dead.
@@ -340,16 +335,17 @@ fn all_outputs_dead(
     match (opcode, imm) {
         // SWAP: only TOS and the deep slot are written.
         (op::SWAP1..=op::SWAP16, _) => {
-            swap_all_dead(live, h_before, (opcode - op::SWAP1 + 1) as usize)
+            exchange_all_dead(live, h_before, 0, (opcode - op::SWAP1 + 1) as usize)
         }
-        (op::SWAPN, Some(DecodedImm::Single(d))) => swap_all_dead(live, h_before, d as usize),
+        (op::SWAPN, Some(DecodedImm::Single(d))) => {
+            exchange_all_dead(live, h_before, 0, d as usize)
+        }
         // DUP: only the new TOS is a real output.
         (op::DUP1..=op::DUP16, _) => !live[h_before],
         (op::DUPN, Some(DecodedImm::Single(_))) => !live[h_before],
         // EXCHANGE: only the two exchanged non-TOS positions are written.
         (op::EXCHANGE, Some(DecodedImm::Pair(n, m))) => {
-            let tos = h_before - 1;
-            !live[tos - n as usize] && !live[tos - m as usize]
+            exchange_all_dead(live, h_before, n as usize, m as usize)
         }
         // Generic: all output positions must be dead.
         _ if out > 0 => {
@@ -363,10 +359,10 @@ fn all_outputs_dead(
     }
 }
 
-/// SWAP dead check: both TOS and the swapped position must be dead.
-fn swap_all_dead(live: &BitVec, h_before: usize, depth: usize) -> bool {
+/// SWAP/EXCHANGE dead check: both written positions, `n` and `m` below TOS, must be dead.
+fn exchange_all_dead(live: &BitVec, h_before: usize, n: usize, m: usize) -> bool {
     let tos = h_before - 1;
-    !live[tos] && !live[tos - depth]
+    !live[tos - n] && !live[tos - m]
 }
 
 /// DUP liveness: the new TOS is killed; if it was live, the source becomes live.

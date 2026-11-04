@@ -26,7 +26,7 @@ use crate::{
         MessageResultExt, gas::WARM_STORAGE_READ_COST,
     },
     registry::{HandlerError, HandlerResult, TxRegistry, handler},
-    utils::num_words,
+    utils::{b256_to_word, num_words},
     version::GasId,
 };
 use alloy_consensus::{
@@ -63,6 +63,7 @@ pub struct PreparedTx {
     pub(super) intrinsic: u64,
     pub(super) initial_state_gas: u64,
     pub(super) floor_gas: u64,
+    pub(super) sender_nonce: u64,
 }
 
 impl From<EthereumTxEnvelope<TxEip4844>> for TxEnvelope {
@@ -425,6 +426,7 @@ pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult
 }
 
 /// Loads and validates the sender account, then marks it warm and bumps its nonce.
+/// Returns the sender's pre-bump state nonce.
 ///
 /// One account handle does all three, so the sender is looked up and journaled once.
 pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
@@ -432,7 +434,7 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     caller: Address,
     nonce: u64,
     max_upfront: U256,
-) -> HandlerResult<()> {
+) -> HandlerResult<u64> {
     let has_nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
@@ -459,8 +461,9 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     }
     // The sender is warm from the start of the transaction (EIP-2929).
     sender.warm();
+    let sender_nonce = sender.nonce();
     sender.bump_nonce();
-    Ok(())
+    Ok(sender_nonce)
 }
 
 /// Warms the accounts required by every transaction other than the sender, which
@@ -478,10 +481,8 @@ pub fn warm_base_accounts<'a, T: EvmTypes>(host: &mut Evm<'a, T>, to: TxKind) {
 /// Warms every account and storage key in an access list.
 pub fn warm_access_list<'a, T: EvmTypes>(host: &mut Evm<'a, T>, access_list: &AccessList) {
     for item in access_list.iter() {
-        host.state.prewarm_storage(
-            &item.address,
-            item.storage_keys.iter().map(|key| U256::from_be_bytes(key.0)),
-        );
+        host.state
+            .prewarm_storage(&item.address, item.storage_keys.iter().map(|key| b256_to_word(*key)));
     }
 }
 
@@ -537,13 +538,17 @@ pub fn initial_gas_and_reservoir(
 /// The first frame of a transaction, prepared by [`prepare_initial_frame`].
 #[derive(Clone, Debug)]
 pub struct InitialFrame<T: EvmTypes> {
-    /// Top-level call or create message, carrying the resolved bytecode to run.
+    /// Top-level call or create message, carrying the resolved bytecode to run unless
+    /// [`runtime_oog`](Self::runtime_oog).
     pub message: Message<T>,
     /// EIP-8037 state gas charged on the transaction-level tracker for the account leaf this
     /// frame creates (the call recipient's new-account charge or the create target's
     /// account-creation charge), zero when nothing was charged. Refunded by
     /// [`settle_initial_frame_gas`] when the frame fails and the leaf is not created.
     pub charged_state_gas: u64,
+    /// Whether the runtime gas phase ran out of gas, so the frame halts without executing
+    /// ([`execute_initial_frame`]). Its message then carries no resolved bytecode.
+    pub runtime_oog: bool,
 }
 
 /// Completes the EIP-2780 runtime gas phase on the transaction-level `tx_gas` and builds the
@@ -561,9 +566,9 @@ pub struct InitialFrame<T: EvmTypes> {
 /// the CREATE opcode instead. A delegated recipient is still resolved (for free) so the frame
 /// runs the delegate's code.
 ///
-/// The frame's `gas_limit`/`reservoir` snapshot `tx_gas` after the charges. Returns `None` when
-/// a charge runs out of gas: the transaction stays valid but is included as an out-of-gas halt
-/// without entering execution ([`runtime_oog_result`]).
+/// The frame's `gas_limit`/`reservoir` snapshot `tx_gas` after the charges. When a charge runs out
+/// of gas the transaction stays valid but is included as an out-of-gas halt: the returned frame
+/// is [`halted_initial_frame`], which [`execute_initial_frame`] halts without entering execution.
 pub fn prepare_initial_frame<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
@@ -572,7 +577,12 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     input: &Bytes,
     value: U256,
     tx_gas: &mut GasTracker,
-) -> HandlerResult<Option<InitialFrame<T>>> {
+) -> HandlerResult<InitialFrame<T>> {
+    // A failed charge leaves `tx_gas` out of range, so the halted frame reports the budget the
+    // phase started with.
+    let budget = *tx_gas;
+    let halted =
+        |host: &Evm<'a, T>| halted_initial_frame(host, caller, nonce, to, input, value, &budget);
     let mut charged_state_gas = 0;
     let message = match to {
         TxKind::Call(to) => {
@@ -586,7 +596,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
             if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
                 let new_account_state_gas = host.version().gas_params.new_account_state_gas();
                 if tx_gas.spend_state(new_account_state_gas).is_err() {
-                    return Ok(None);
+                    return Ok(halted(host));
                 }
                 charged_state_gas = new_account_state_gas;
             }
@@ -603,17 +613,17 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     // list.
                     let cold_additional = host.version().gas_params.cold_account_additional_cost();
                     if tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
-                        return Ok(None);
+                        return Ok(halted(host));
                     }
                     let skip_cold_load = tx_gas.remaining() < cold_additional;
                     let load =
                         match Host::load_account(host, &delegated_address, true, skip_cold_load) {
                             Ok(load) => load,
-                            Err(HostError::Halt(_)) => return Ok(None),
+                            Err(HostError::Halt(_)) => return Ok(halted(host)),
                             Err(HostError::Execution(error)) => return Err(error.into()),
                         };
                     if load.is_cold && tx_gas.spend(cold_additional).is_err() {
-                        return Ok(None);
+                        return Ok(halted(host));
                     }
                     code = load.code;
                 } else {
@@ -649,7 +659,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 if !target_alive {
                     let create_state_gas = host.version().gas_params.create_state_gas();
                     if tx_gas.spend_state(create_state_gas).is_err() {
-                        return Ok(None);
+                        return Ok(halted(host));
                     }
                     charged_state_gas = create_state_gas;
                 }
@@ -674,7 +684,44 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
         }
     };
     debug_assert_eq!(message.depth, host.version().initial_call_depth);
-    Ok(Some(InitialFrame { message, charged_state_gas }))
+    Ok(InitialFrame { message, charged_state_gas, runtime_oog: false })
+}
+
+/// Builds the first frame of a transaction whose runtime gas phase ran out of gas.
+///
+/// The message names the call or create the transaction would have run, with the `budget` the
+/// runtime gas phase started with and no resolved bytecode, and it reads no account state: the
+/// recipient of an unaffordable authorization charge stays out of the EIP-7928 block access list.
+/// [`execute_initial_frame`] halts it with out-of-gas, reporting the frame to the inspector.
+pub fn halted_initial_frame<T: EvmTypes>(
+    host: &Evm<'_, T>,
+    caller: Address,
+    nonce: u64,
+    to: TxKind,
+    input: &Bytes,
+    value: U256,
+    budget: &GasTracker,
+) -> InitialFrame<T> {
+    let (kind, destination) = match to {
+        TxKind::Call(to) => (MessageKind::Call, to),
+        TxKind::Create => (MessageKind::Create, caller.create(nonce)),
+    };
+    let message = MessageExt {
+        kind,
+        depth: host.version().initial_call_depth,
+        gas_limit: budget.remaining(),
+        reservoir: budget.reservoir(),
+        destination,
+        call_target: destination,
+        caller,
+        input: input.clone(),
+        value,
+        code_address: destination,
+        caller_is_static: false,
+        salt: B256::ZERO,
+        ..MessageExt::default()
+    };
+    InitialFrame { message, charged_state_gas: 0, runtime_oog: true }
 }
 
 /// Settles the first frame's result into the transaction-level `tx_gas` and writes the settled
@@ -695,7 +742,7 @@ pub const fn settle_initial_frame_gas<E>(
 ) {
     tx_gas.spend_all();
     tx_gas.merge_child_gas(result.gas, result.stop);
-    if charged_state_gas != 0 && !result.stop.is_success() {
+    if charged_state_gas != 0 && !result.is_success() {
         tx_gas.refill_reservoir(charged_state_gas);
         if result.stop.is_halt() {
             tx_gas.spend_all();
@@ -705,16 +752,25 @@ pub const fn settle_initial_frame_gas<E>(
 }
 
 /// Executes the prepared first frame and settles its gas into the transaction-level tracker.
+///
+/// A frame whose runtime gas phase ran out of gas ([`InitialFrame::runtime_oog`]) is halted
+/// without executing ([`Evm::execute_halted_message`]) and settled as [`runtime_oog_result`].
 pub fn execute_initial_frame<T: EvmTypes>(
     host: &mut Evm<'_, T>,
-    frame: Option<InitialFrame<T>>,
+    frame: InitialFrame<T>,
     tx_gas: &mut GasTracker,
     execution_gas_limit: u64,
     reservoir: u64,
 ) -> Result<MessageResult<T>, crate::ExecutionError> {
-    let Some(InitialFrame { mut message, charged_state_gas }) = frame else {
-        return Ok(runtime_oog_result(execution_gas_limit, reservoir));
-    };
+    let InitialFrame { mut message, charged_state_gas, runtime_oog } = frame;
+    if runtime_oog {
+        // The hooks see the frame burn the budget it was given; the transaction itself burns all
+        // its execution gas and returns the reservoir, dropping the phase's partial charges.
+        let halted = runtime_oog_result(message.gas_limit, message.reservoir);
+        let mut result = host.execute_halted_message(&mut message, halted)?;
+        result.gas = runtime_oog_result::<()>(execution_gas_limit, reservoir).gas;
+        return Ok(result);
+    }
 
     // Failed execution has already been rolled back to the message's own checkpoint inside
     // `execute_message`; the settle merges the frame gas into the transaction-level gas.
@@ -724,7 +780,8 @@ pub fn execute_initial_frame<T: EvmTypes>(
 }
 
 /// Builds the result for a transaction whose EIP-2780 runtime gas phase ran out of gas
-/// ([`prepare_initial_frame`] returned `None`, or the EIP-7702 authorization charges bailed).
+/// ([`prepare_initial_frame`] returned a [halted frame](halted_initial_frame), or the EIP-7702
+/// authorization charges bailed).
 ///
 /// The transaction is valid but cannot afford the state-dependent runtime charges: it is
 /// included as an out-of-gas halt that consumes all execution gas and returns the reservoir,
@@ -796,7 +853,7 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         gas_spent_breakdown(tx_gas_limit, &result.gas, initial_state_gas);
     let state_gas_spent = state_gas_spent.saturating_sub(state_refund);
     Ok(TxResultExt {
-        status: result.stop.is_success(),
+        status: result.is_success(),
         total_gas_spent,
         state_gas_spent,
         refunded,
@@ -988,7 +1045,7 @@ mod tests {
         );
 
         let validation = evm.validate_tx(&tx);
-        let result = evm.transact(&tx).map(crate::evm::ExecutedTx::discard);
+        let result = evm.call_tx(&tx);
         assert_eq!(validation, result.as_ref().map(|_| ()).map_err(Clone::clone));
         if gas_limit < 31_050 {
             assert_eq!(
@@ -1238,7 +1295,7 @@ mod tests {
         );
 
         assert!(evm.transact(&tx).unwrap().commit().is_success());
-        let reward = evm.state.account_info_untracked(&beneficiary).unwrap().unwrap().balance;
+        let reward = evm.read_account_info(&beneficiary).unwrap().unwrap().balance;
         assert_eq!(reward, U256::from(21_000 * beneficiary_gas_price));
     }
 
@@ -1279,7 +1336,7 @@ mod tests {
         );
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
-        let sender = evm.state.account_info_untracked(&caller).unwrap().unwrap();
+        let sender = evm.read_account_info(&caller).unwrap().unwrap();
         assert_eq!((sender.balance, sender.nonce), (U256::ZERO, 1));
     }
 
@@ -1308,10 +1365,7 @@ mod tests {
         );
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
-        assert_eq!(
-            evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
-            U256::from(100)
-        );
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(100));
     }
 
     #[test]
@@ -1334,7 +1388,7 @@ mod tests {
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
         charge_upfront(&mut evm, caller, U256::from(100)).unwrap();
-        assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().balance, U256::ZERO);
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::ZERO);
     }
 
     #[test]
@@ -1367,7 +1421,7 @@ mod tests {
         );
 
         let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(100_000, 0);
-        let InitialFrame { mut message, charged_state_gas } = prepare_initial_frame(
+        let InitialFrame { mut message, charged_state_gas, .. } = prepare_initial_frame(
             &mut evm,
             caller,
             0,
@@ -1376,7 +1430,6 @@ mod tests {
             U256::ZERO,
             &mut tx_gas,
         )
-        .unwrap()
         .unwrap();
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);
@@ -1588,12 +1641,11 @@ mod tests {
                             );
                             let tx = Recovered::new_unchecked(tx, caller);
                             let case = format!("{spec:?} {to:?} value={value} type={tx_type}");
-                            let caller_before = evm.state.account_info_untracked(&caller).unwrap();
-                            let recipient_before =
-                                evm.state.account_info_untracked(&recipient).unwrap();
+                            let caller_before = evm.read_account_info(&caller).unwrap();
+                            let recipient_before = evm.read_account_info(&recipient).unwrap();
                             if balance_check && value == 2 {
                                 assert_eq!(
-                                    evm.transact(&tx).map(crate::evm::ExecutedTx::discard),
+                                    evm.call_tx(&tx),
                                     Err(HandlerError::InsufficientFunds {
                                         fee: U256::from(2),
                                         balance: U256::ONE
@@ -1601,12 +1653,12 @@ mod tests {
                                     "{case}"
                                 );
                                 assert_eq!(
-                                    evm.state.account_info_untracked(&caller).unwrap(),
+                                    evm.read_account_info(&caller).unwrap(),
                                     caller_before,
                                     "{case}"
                                 );
                                 assert_eq!(
-                                    evm.state.account_info_untracked(&recipient).unwrap(),
+                                    evm.read_account_info(&recipient).unwrap(),
                                     recipient_before,
                                     "{case}"
                                 );
@@ -1618,8 +1670,7 @@ mod tests {
                             } else {
                                 assert_eq!(result.is_success(), input[0] == op::STOP, "{case}");
                             }
-                            let nonce =
-                                evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce;
+                            let nonce = evm.read_account_info(&caller).unwrap().unwrap().nonce;
                             assert_eq!(nonce, 11, "{case}");
                         }
                     }

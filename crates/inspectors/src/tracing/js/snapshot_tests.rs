@@ -1,13 +1,12 @@
 //! Compare reconstructed JS step data with snapshots captured before interpreter execution.
 
-use super::*;
-use alloy_consensus::TxLegacy;
+use super::{interrupt_tests::transaction, *};
 use alloy_primitives::hex;
 use evm2::{
     BaseEvmTypes, ExecutionConfig, Precompiles, SpecId, Version,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
-    ethereum::{TxEnvelope, ethereum_tx_registry},
+    ethereum::ethereum_tx_registry,
     evm::{AccountInfo, InMemoryDB},
     interpreter::Host,
 };
@@ -112,14 +111,7 @@ fn compare(code: Bytes, child: Option<Bytes>, initial_call_depth: u16) -> Vec<Va
         Precompiles::base(SpecId::CANCUN),
     );
     evm.set_inspector(inspector);
-    let tx = Recovered::new_unchecked(
-        TxEnvelope::Legacy(TxLegacy {
-            gas_limit: 1_000_000,
-            to: TxKind::Call(address),
-            ..Default::default()
-        }),
-        Address::ZERO,
-    );
+    let tx = transaction(TxKind::Call(address));
     let res = evm.transact(&tx).unwrap().detach();
     let mut inspector = evm.clear_inspector_as::<SnapshotInspector>().unwrap();
     let block = *evm.block_env();

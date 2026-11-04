@@ -579,7 +579,7 @@ impl<'a> State<'a> {
                 let account = entry.into_mut();
                 if skip_cold
                     && !account.flags.contains(AccountFlags::WARM)
-                    && !inner.prewarm_set.is_warm(address)
+                    && inner.prewarm_set.is_cold(address)
                 {
                     return Err(LoadError::ColdLoadSkipped);
                 }
@@ -897,13 +897,7 @@ impl<'a> State<'a> {
                     }
                 },
                 JournalEntry::StorageWarmed { address, key } => {
-                    if let Some(slot) = self
-                        .accounts
-                        .get_mut(&address)
-                        .and_then(|account| account.storage.slots.get_mut(&key))
-                    {
-                        slot.is_warm = false;
-                    }
+                    self.set_storage_warm(&address, key, false);
                 }
             }
         }
@@ -1056,7 +1050,7 @@ mod tests {
         state.tstore(&written, &Word::ZERO, &Word::from(9));
         state.log(Log::default());
 
-        let mut expected = state.clone_with(EmptyDB::default());
+        let mut expected = state.clone();
         expected.commit_transaction();
         expected.clear_transaction_state();
         let mut copy = state.committed_copy(EmptyDB::default());

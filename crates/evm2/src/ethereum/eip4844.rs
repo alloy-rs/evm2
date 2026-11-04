@@ -83,7 +83,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let blob_gas_cost = U256::from(DATA_GAS_PER_BLOB) * U256::from(tx.blob_versioned_hashes.len());
     let max_blob_gas_cost = blob_gas_cost * max_fee_per_blob_gas;
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
-    validate_sender_and_bump_nonce(
+    let sender_nonce = validate_sender_and_bump_nonce(
         req.host,
         caller,
         tx.nonce,
@@ -97,7 +97,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let blob_basefee_cost = blob_gas_cost * req.host.block.blob_basefee;
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost + blob_basefee_cost)?;
 
-    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas })
+    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas, sender_nonce })
 }
 
 /// Executes and settles a prepared EIP-4844 transaction.
@@ -105,7 +105,8 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     req: TxRequest<'_, '_, T, TxEip4844Variant>,
     prepared: PreparedTx,
 ) -> HandlerResult<TxResult<T>> {
-    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
+    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas, sender_nonce } =
+        prepared;
     let tx = req.tx.inner().tx();
 
     let (execution_gas_limit, reservoir) =
@@ -123,7 +124,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     let frame = prepare_initial_frame(
         req.host,
         caller,
-        tx.nonce,
+        sender_nonce,
         tx.to.into(),
         &tx.input,
         tx.value,

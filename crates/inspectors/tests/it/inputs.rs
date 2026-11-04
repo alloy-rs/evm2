@@ -194,7 +194,7 @@ fn byte_budget_counts_memory_snapshots() {
 fn byte_budget_covers_immediates_and_memory_deltas() {
     let code = hex!("60015f5200");
     for (config, limit) in [
-        (TracingInspectorConfig::none().steps().set_immediate_bytes(true), 0),
+        (TracingInspectorConfig::none().steps().record_immediate_bytes(), 0),
         (TracingInspectorConfig::none().steps().set_step_deltas(true), 31),
     ] {
         let (inspector, completed) = inspect_with_limits(
@@ -214,7 +214,7 @@ fn byte_budget_can_halt_from_a_step() {
     let (inspector, completed) = inspect_with_limits(
         &hex!("600100"),
         Bytes::new(),
-        TracingInspectorConfig::none().steps().set_immediate_bytes(true),
+        TracingInspectorConfig::none().steps().record_immediate_bytes(),
         TraceLimits::default()
             .set_max_recorded_bytes(Some(0))
             .set_behavior(TraceLimitBehavior::Halt),

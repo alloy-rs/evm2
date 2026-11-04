@@ -262,7 +262,7 @@ mod tests {
         assert!(prewarm_set.is_warm(&short_addr1));
         assert!(prewarm_set.is_warm(&short_addr2));
         assert!(prewarm_set.is_warm(&last_short_addr));
-        assert!(!prewarm_set.is_warm(&Address::with_last_byte(20)));
+        assert!(prewarm_set.is_cold(&Address::with_last_byte(20)));
         assert!(prewarm_set.access_list.is_empty());
     }
 
@@ -284,7 +284,7 @@ mod tests {
 
         assert!(prewarm_set.is_warm(&regular_addr));
         assert!(prewarm_set.is_warm(&boundary_addr));
-        assert!(!prewarm_set.is_warm(&address!("0987654321098765432109876543210987654321")));
+        assert!(prewarm_set.is_cold(&address!("0987654321098765432109876543210987654321")));
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
 
         prewarm_set.clear();
         assert_eq!(prewarm_set, PrewarmSet::new());
-        assert!(addresses.iter().all(|address| !prewarm_set.is_warm(address)));
+        assert!(addresses.iter().all(|address| prewarm_set.is_cold(address)));
     }
 
     #[test]
@@ -318,8 +318,8 @@ mod tests {
         assert!(prewarm_set.is_warm(&regular_addr));
 
         prewarm_set.clear();
-        assert!(!prewarm_set.is_warm(&short_addr));
-        assert!(!prewarm_set.is_warm(&regular_addr));
+        assert!(prewarm_set.is_cold(&short_addr));
+        assert!(prewarm_set.is_cold(&regular_addr));
     }
 
     #[test]
@@ -336,9 +336,9 @@ mod tests {
         prewarm_set.remove(&short);
         prewarm_set.remove(&inline[0]);
         prewarm_set.remove(&mapped);
-        assert!(!prewarm_set.is_warm(&short));
-        assert!(!prewarm_set.is_warm(&inline[0]));
-        assert!(!prewarm_set.is_warm(&mapped));
+        assert!(prewarm_set.is_cold(&short));
+        assert!(prewarm_set.is_cold(&inline[0]));
+        assert!(prewarm_set.is_cold(&mapped));
         assert!(!prewarm_set.is_storage_warm(&mapped, &key));
         assert!(prewarm_set.is_warm(&inline[1]) && prewarm_set.is_warm(&inline[2]));
 
@@ -355,7 +355,7 @@ mod tests {
         prewarm_set.remove(&inline[0]);
         prewarm_set.remove(&short);
         for address in [inline[0], short] {
-            assert!(!prewarm_set.is_warm(&address));
+            assert!(prewarm_set.is_cold(&address));
             assert!(!prewarm_set.is_storage_warm(&address, &key));
         }
     }

@@ -13,7 +13,7 @@ use super::{
 use crate::compiled::{self, FileSummary};
 use crate::{
     dump,
-    execute::state_root_from_database,
+    execute::{print_db_stats, state_root_from_database},
     execution::ExecutionResources,
     filter::NameFilter,
     fixture_io,
@@ -37,7 +37,6 @@ use alloy_eips::{
 };
 use alloy_primitives::{Address, B256, Bloom, Bytes, Signature, U256, aliases::U512};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
-use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     block::{
@@ -879,27 +878,6 @@ impl ReceiptBuilder for HarnessReceiptBuilder {
         };
         ReceiptEnvelope::from_typed(tx_type, receipt)
     }
-}
-
-fn print_db_stats(counts: DbStatsCounts) {
-    let style = db_stats_style();
-    eprintln!("{style}db stats{style:#}: get_account={}", counts.get_account);
-    eprintln!("{style}db stats{style:#}: get_code_by_hash={}", counts.get_code_by_hash);
-    eprintln!("{style}db stats{style:#}: get_storage={}", counts.get_storage);
-    eprintln!(
-        "{style}db stats{style:#}: get_storage_same_address_repeats={}",
-        counts.get_storage_same_address_repeats
-    );
-    eprintln!(
-        "{style}db stats{style:#}: get_storage_same_address_longest_streak={}",
-        counts.get_storage_same_address_longest_streak
-    );
-    eprintln!("{style}db stats{style:#}: get_block_hash={}", counts.get_block_hash);
-}
-
-#[inline]
-const fn db_stats_style() -> Style {
-    Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightCyan))).bold()
 }
 
 fn block_number(block: &Block) -> Option<U256> {

@@ -9,7 +9,7 @@ use evm2_inspectors::tracing::{StackSnapshotType, TracingInspector, TracingInspe
 /// snapshot of each step.
 fn stack_snapshots(snapshot_type: StackSnapshotType) -> Vec<Option<Box<[U256]>>> {
     let mut insp = TracingInspector::new(
-        TracingInspectorConfig::none().set_steps(true).set_stack_snapshots(snapshot_type),
+        TracingInspectorConfig::none().steps().set_stack_snapshots(snapshot_type),
     );
 
     let mut evm =

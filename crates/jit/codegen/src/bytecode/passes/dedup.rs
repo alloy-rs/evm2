@@ -223,7 +223,8 @@ fn block_fingerprint(insts: &IndexVec<Inst, InstData>, block: &BlockData) -> Sma
 #[cfg(test)]
 mod tests {
     use crate::bytecode::{
-        AnalysisConfig, InstFlags, passes::block_analysis::tests::analyze_asm_with,
+        AnalysisConfig, InstFlags,
+        passes::block_analysis::tests::{analyze_asm_with, fixture_entry_code},
     };
     use evm2::interpreter::op;
 
@@ -523,23 +524,6 @@ mod tests {
         bytecode.analyze().unwrap();
 
         assert_eq!(bytecode.redirects.len(), 20);
-    }
-
-    fn fixture_entry_code(json: &str) -> Vec<u8> {
-        let v: serde_json::Value = serde_json::from_str(json).unwrap();
-        let case = v.as_object().unwrap().values().next().unwrap();
-        let transaction = &case["transaction"];
-        let to = transaction
-            .get("to")
-            .or_else(|| {
-                transaction
-                    .as_array()
-                    .and_then(|transactions| transactions.first())
-                    .and_then(|transaction| transaction.get("to"))
-            })
-            .and_then(|to| to.as_str())
-            .unwrap();
-        alloy_primitives::hex::decode(case["pre"][to]["code"].as_str().unwrap()).unwrap()
     }
 
     #[test]

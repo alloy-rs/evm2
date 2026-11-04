@@ -13,7 +13,7 @@ use alloy_rpc_types_trace::{
         TransactionTrace, VmTrace,
     },
 };
-use evm2::evm::InMemoryDB;
+use evm2::{evm::InMemoryDB, utils::address_to_word};
 use evm2_inspectors::tracing::{
     TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
 };
@@ -863,7 +863,7 @@ fn vmtrace_stop_only_child_preserves_parent_and_creation_result() {
     let create = &trace.ops[3];
     assert_eq!(
         create.ex.as_ref().unwrap().push,
-        &[U256::from_be_slice(Address::with_last_byte(0x42).create(0).as_slice())]
+        &[address_to_word(&Address::with_last_byte(0x42).create(0))]
     );
     assert!(create.sub.is_some());
 }
@@ -1446,6 +1446,46 @@ fn nested_calls_keep_each_forwarded_cost() {
         trace.ops[6].ex.as_ref().unwrap().used - 2_600 - 16 - 100 - 15
     );
     assert_eq!(inner.ex.as_ref().unwrap().used, child.ops[6].ex.as_ref().unwrap().used - 100 - 15);
+}
+
+#[test]
+fn parity_traces_leave_out_zero_value_precompile_calls() {
+    let contract = Address::with_last_byte(0x42);
+    let mut db = InMemoryDB::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo::default().with_balance(U256::from(1)).with_code(Bytecode::new_raw(
+            // CALL 0x04 with no value, CALL 0x04 with value 1, CALL 0x99 with no value.
+            hex!("5f5f5f5f5f60045af1505f5f5f5f600160045af1505f5f5f5f5f60995af15000").into(),
+        )),
+    );
+    let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
+        TracingInspector::new(TracingInspectorConfig::default_parity()),
+    );
+    evm.inspect_tx(TxEnv {
+        gas_limit: 1_000_000,
+        kind: TransactTo::Call(contract),
+        ..Default::default()
+    })
+    .unwrap();
+
+    let traces = evm.inspector.clone().into_parity_builder().into_transaction_traces();
+    let calls: Vec<_> = traces
+        .iter()
+        .map(|trace| {
+            let Action::Call(call) = &trace.action else { panic!("expected a call") };
+            (call.to, call.value, trace.trace_address.clone())
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            (contract, U256::ZERO, vec![]),
+            (Address::with_last_byte(4), U256::from(1), vec![0]),
+            (Address::with_last_byte(0x99), U256::ZERO, vec![1]),
+        ]
+    );
+    assert_eq!(traces[0].subtraces, 2);
 }
 
 #[path = "parity/vm_bytecode.rs"]

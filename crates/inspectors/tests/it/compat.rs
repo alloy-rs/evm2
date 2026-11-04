@@ -172,7 +172,7 @@ impl Context {
     }
 
     pub fn modify_tx_chained(mut self, f: impl FnOnce(&mut TxEnv)) -> Self {
-        f(&mut self.tx);
+        self.modify_tx(f);
         self
     }
 
@@ -347,21 +347,18 @@ impl TxEnv {
         if !self.authorization_list.is_empty() {
             let TxKind::Call(to) = self.kind else { panic!("EIP-7702 transactions must be calls") };
             return Recovered::new_unchecked(
-                TxEnvelope::Eip7702(
-                    TxEip7702 {
-                        chain_id: self.chain_id.unwrap_or(1),
-                        nonce: self.nonce,
-                        gas_limit: self.gas_limit,
-                        max_fee_per_gas: self.gas_price,
-                        max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or(self.gas_price),
-                        to,
-                        value: self.value,
-                        access_list: Default::default(),
-                        authorization_list: self.authorization_list.clone(),
-                        input: self.data.clone(),
-                    }
-                    .into(),
-                ),
+                TxEnvelope::from(TxEip7702 {
+                    chain_id: self.chain_id.unwrap_or(1),
+                    nonce: self.nonce,
+                    gas_limit: self.gas_limit,
+                    max_fee_per_gas: self.gas_price,
+                    max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or(self.gas_price),
+                    to,
+                    value: self.value,
+                    access_list: Default::default(),
+                    authorization_list: self.authorization_list.clone(),
+                    input: self.data.clone(),
+                }),
                 self.caller,
             );
         }

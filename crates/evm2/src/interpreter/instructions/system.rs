@@ -1,11 +1,12 @@
 //! System opcode implementations.
 
+use super::require_non_staticcall;
 use crate::{
     EvmFeatures, EvmTypesHost,
     bytecode::Bytecode,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, MessageResult,
-        Result, StackMut, Word, derive_create_destination,
+        Result, StackMut, Word, create_preaccess_failure, derive_create_destination,
     },
     utils::WordExt,
     version::GasId,
@@ -13,14 +14,6 @@ use crate::{
 use alloy_primitives::{Address, B256, Bytes};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
-
-#[inline]
-const fn require_non_staticcall<T: EvmTypesHost>(state: &InterpreterState<'_, '_, T>) -> Result {
-    if state.is_static() {
-        return Err(InstrStop::StateChangeDuringStaticCall);
-    }
-    Ok(())
-}
 
 #[inline]
 const fn should_charge_new_account_gas(
@@ -113,16 +106,18 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let features = state.version().features;
     let mut new_account_state_gas = 0;
     if create_empty_account
-        && (!features.contains(EvmFeatures::EIP161) || transfers_value)
-        && account.is_empty_for_new_account_gas
+        && should_charge_new_account_gas(
+            state.feature(EvmFeatures::EIP161),
+            transfers_value,
+            account.is_empty_for_new_account_gas,
+        )
     {
         cost += state.gas_params().get(GasId::NewAccountCost);
         // EIP-8037: value transfer to a new account also charges state gas from
         // the reservoir. Charged before the 63/64 child gas split below.
-        if features.contains(EvmFeatures::EIP8037) && transfers_value {
+        if state.feature(EvmFeatures::EIP8037) && transfers_value {
             new_account_state_gas = state.gas_params().new_account_state_gas();
         }
     }
@@ -135,7 +130,6 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         stack_gas_limit
     };
     gas.spend(gas_limit)?;
-    state.finish_step_charge(gas);
 
     if transfers_value {
         gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend));
@@ -274,8 +268,7 @@ fn call_inner<T: EvmTypesHost>(
 /// It may charge or credit `gas` or fail the instruction. A fatal child result returns before
 /// `after` runs.
 ///
-/// An `Err` from either hook stops the instruction with that error. Gas the hooks charge is not
-/// part of the step cost reported to inspectors.
+/// An `Err` from either hook stops the instruction with that error.
 ///
 /// The result can be the stop for a config reload. Return it as the last step of the instruction.
 #[inline]
@@ -309,7 +302,7 @@ pub fn call_with<T: EvmTypesHost>(
     // gas upfront on this frame. If the call does not succeed (depth/balance failure,
     // child revert or halt) the target is not created, so refund the upfront charge to
     // the reservoir (execution-specs `credit_state_gas_refund`), mirroring CREATE.
-    if new_account_state_gas != 0 && !result.stop.is_success() {
+    if new_account_state_gas != 0 && !result.is_success() {
         gas.refill_reservoir(new_account_state_gas);
     }
     after(gas, state, &message, &result)?;
@@ -319,7 +312,7 @@ pub fn call_with<T: EvmTypesHost>(
         state.memory().set_unchecked(return_memory_range.start, output);
     }
     state.swap_return_data(&mut result.output);
-    stack.push_u64(result.stop.is_success() as u64)?;
+    stack.push_u64(result.is_success() as u64)?;
     // A hook's stop or a config reload.
     state.result()
 }
@@ -418,9 +411,14 @@ pub fn create_with<T: EvmTypesHost>(
     if state.feature(EvmFeatures::EIP8037) {
         // `caller_info` is always `Some` when EIP-8037 is enabled.
         if let Some(caller_info) = caller_info.as_ref()
-            && (caller_info.balance < value
-                || caller_info.nonce == u64::MAX
-                || depth > state.version().max_call_depth())
+            && create_preaccess_failure(
+                caller_info.balance,
+                caller_info.nonce,
+                value,
+                depth,
+                state.version(),
+            )
+            .is_some()
         {
             state.clear_return_data();
             stack.push_u64(0)?;
@@ -439,8 +437,6 @@ pub fn create_with<T: EvmTypesHost>(
             charged_create_state_gas = true;
         }
     }
-    // The state gas charged above spills into regular gas but stays out of the step cost.
-    state.finish_step_charge(gas);
     let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
@@ -480,13 +476,13 @@ pub fn create_with<T: EvmTypesHost>(
     // `created_address == None` — depth, out-of-funds, nonce overflow), no new account leaf is
     // created, so refund the charge to the reservoir via `refill_reservoir` (matching 0→x→0 storage
     // restoration). A successful deployment keeps the charge; an alive target was never charged.
-    let create_failed = result.created_address.is_none() || !result.stop.is_success();
+    let create_failed = result.created_address.is_none() || !result.is_success();
     if charged_create_state_gas && create_failed {
         gas.refill_reservoir(state.gas_params().create_state_gas());
     }
     after(gas, state, &message, &result)?;
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
-    if result.stop == InstrStop::Revert {
+    if result.stop.is_revert() {
         state.swap_return_data(&mut result.output);
     } else {
         state.clear_return_data();
@@ -534,7 +530,8 @@ mod tests {
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
         interpreter::{Interpreter, MessageResultExt, op},
         test_utils::{
-            RunConfig, TestHost, TestInterpreter, TestTypes, legacy_bytecode, push, push_all, run,
+            RunConfig, TestHost, TestInterpreter, TestTypes, create_code, legacy_bytecode, push,
+            push_all, run,
         },
         utils::address_to_word,
         version::OpcodeConfig,
@@ -580,19 +577,7 @@ mod tests {
         let target = Address::repeat_byte(0x22);
         let error = ExecutionError::Fatal("child call failed".into());
         let mut host = TestHost { execute_error: Some(error.clone()), ..Default::default() };
-        let mut code = Vec::new();
-        push_all(
-            &mut code,
-            [
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                target.into_word().into(),
-                Word::from(1000),
-            ],
-        );
+        let mut code = crate::test_utils::call_code(target);
         code.extend([op::CALL, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host));
@@ -931,8 +916,7 @@ mod tests {
     fn create_propagates_fatal_child_result() {
         let error = ExecutionError::Fatal("child create failed".into());
         let mut host = TestHost { execute_error: Some(error.clone()), ..Default::default() };
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         code.extend([op::CREATE, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
@@ -985,8 +969,7 @@ mod tests {
     #[test]
     fn create_too_deep_charges_create_gas() {
         let mut host = TestHost::default();
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         code.extend([op::CREATE, op::STOP]);
 
         let interp = run(RunConfig::new(code)
@@ -1006,8 +989,7 @@ mod tests {
         // the read would leak the address into the EIP-7928 block access list.
         let caller = Address::repeat_byte(0x11);
         let mut host = TestHost { exists: false, ..Default::default() };
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interp = run(RunConfig::new(code)
@@ -1111,7 +1093,7 @@ mod tests {
                 Ok(())
             },
             |gas, _, _, result| {
-                if result.stop.is_success() { gas.spend(AFTER_FEE) } else { Err(InstrStop::Revert) }
+                if result.is_success() { gas.spend(AFTER_FEE) } else { Err(InstrStop::Revert) }
             },
         )
     }
@@ -1243,8 +1225,7 @@ mod tests {
             created_address: Some(created),
             ..MessageResultExt::default()
         };
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         let mut base_code = code.clone();
         base_code.extend([op::CREATE, op::STOP]);
         code.extend([HOOKED_CREATE, op::STOP]);
@@ -1267,8 +1248,7 @@ mod tests {
 
     #[test]
     fn create_with_skips_hooks_when_creation_is_refused_before_forward() {
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         let mut base_code = code.clone();
         base_code.extend([op::CREATE, op::STOP]);
         code.extend([HOOKED_CREATE, op::STOP]);

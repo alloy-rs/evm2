@@ -1954,10 +1954,7 @@ impl Bytecode<'_> {
             return None;
         }
 
-        let resolve = |inst: Inst| {
-            let inst = self.redirects.get(&inst).copied().unwrap_or(inst);
-            self.cfg.inst_to_block.get(inst).copied().flatten()
-        };
+        let resolve = |inst: Inst| self.target_block(self.effective_inst(inst));
         let fallthrough = resolve(term + 1);
         let fallthrough_is_target = if data.flags.contains(InstFlags::MULTI_JUMP) {
             self.multi_jump_targets
@@ -2757,7 +2754,7 @@ pub(crate) mod tests {
         // Build a stack with 70 items, where the deepest is the final JUMP target.
         // A dispatcher JUMP is resolvable; a later JUMP in a block that uses DUPN 70
         // must also be correctly resolved (not marked INVALID_JUMP).
-        let code = crate::parse_asm(
+        let bytecode = analyze_asm_spec(
             "
             PUSH %target
             ; 69 × PUSH0
@@ -2786,9 +2783,8 @@ pub(crate) mod tests {
             JUMPDEST
             STOP
         ",
-        )
-        .unwrap();
-        let bytecode = analyze_code_spec(code, SpecId::AMSTERDAM);
+            SpecId::AMSTERDAM,
+        );
 
         // The "problem" JUMP must NOT be marked INVALID_JUMP.
         let jumps: Vec<_> = bytecode.iter_insts().filter(|(_, d)| d.opcode == op::JUMP).collect();
@@ -2857,7 +2853,7 @@ pub(crate) mod tests {
         assert!(!bytecode.has_dynamic_jumps, "expected all jumps to be resolved");
     }
 
-    fn fixture_entry_code(json: &str) -> Vec<u8> {
+    pub(crate) fn fixture_entry_code(json: &str) -> Vec<u8> {
         let v: serde_json::Value = serde_json::from_str(json).unwrap();
         let case = v.as_object().unwrap().values().next().unwrap();
         let transaction = &case["transaction"];
@@ -3137,12 +3133,8 @@ mod tests_edge_cases {
             bytecode.iter_insts().find(|(_, data)| data.opcode == op::JUMPI).unwrap();
         let jump_block = bytecode.cfg.inst_to_block[jump_inst].unwrap();
         let fallthrough_block = bytecode.cfg.inst_to_block[jump_inst + 1].unwrap();
-        let target_inst = bytecode
-            .iter_all_insts()
-            .rev()
-            .find(|(_, data)| data.opcode == op::JUMPDEST)
-            .unwrap()
-            .0;
+        let target_inst =
+            bytecode.iter_all_insts().rev().find(|(_, data)| data.is_jumpdest()).unwrap().0;
 
         assert!(jump.has_const_jumpi_condition());
         assert_eq!(jump.static_jump_target(), jump_inst + 1);
@@ -3176,12 +3168,8 @@ mod tests_edge_cases {
             bytecode.iter_insts().find(|(_, data)| data.opcode == op::JUMPI).unwrap();
         let jump_block = bytecode.cfg.inst_to_block[jump_inst].unwrap();
         let fallthrough_block = bytecode.cfg.inst_to_block[jump_inst + 1].unwrap();
-        let target_inst = bytecode
-            .iter_all_insts()
-            .rev()
-            .find(|(_, data)| data.opcode == op::JUMPDEST)
-            .unwrap()
-            .0;
+        let target_inst =
+            bytecode.iter_all_insts().rev().find(|(_, data)| data.is_jumpdest()).unwrap().0;
 
         assert!(jump.has_const_jumpi_condition());
         assert_eq!(jump.static_jump_target(), jump_inst + 1);
@@ -4132,7 +4120,7 @@ mod tests_edge_cases {
             .iter_insts()
             .filter(|(_, d)| d.is_jump() && !d.is_dead_code())
             // `tramp` is the first `JUMPDEST JUMP` block.
-            .find(|&(i, _)| bytecode.inst(i - 1).opcode == op::JUMPDEST)
+            .find(|&(i, _)| bytecode.inst(i - 1).is_jumpdest())
             .unwrap();
         assert!(!tramp_jump.1.flags.contains(InstFlags::STATIC_JUMP));
     }
