@@ -1,0 +1,9 @@
+/home/ubuntu/github/danipopes/evm2-remove-inkwell/target/work/debug/build/alloy-tx-macros/0aa9c871a91cd261/out/alloy_tx_macros-0aa9c871a91cd261.d: /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/lib.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/expand.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/parse.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/serde.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/../README.md
+
+/home/ubuntu/github/danipopes/evm2-remove-inkwell/target/work/debug/build/alloy-tx-macros/0aa9c871a91cd261/out/liballoy_tx_macros-0aa9c871a91cd261.so: /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/lib.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/expand.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/parse.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/serde.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/../README.md
+
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/lib.rs:
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/expand.rs:
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/parse.rs:
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/serde.rs:
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloy-tx-macros-2.5.0/src/../README.md:

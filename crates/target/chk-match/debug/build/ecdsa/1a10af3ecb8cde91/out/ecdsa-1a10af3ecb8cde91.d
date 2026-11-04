@@ -1,0 +1,11 @@
+/home/ubuntu/github/paradigmxyz/solar-ast-json-core/target/debug/build/ecdsa/1a10af3ecb8cde91/out/ecdsa-1a10af3ecb8cde91.d: /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/lib.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/recovery.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/der.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/hazmat.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/signing.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/verifying.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/../README.md
+
+/home/ubuntu/github/paradigmxyz/solar-ast-json-core/target/debug/build/ecdsa/1a10af3ecb8cde91/out/libecdsa-1a10af3ecb8cde91.rmeta: /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/lib.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/recovery.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/der.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/hazmat.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/signing.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/verifying.rs /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/../README.md
+
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/lib.rs:
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/recovery.rs:
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/der.rs:
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/hazmat.rs:
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/signing.rs:
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/verifying.rs:
+/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ecdsa-0.17.0/src/../README.md:

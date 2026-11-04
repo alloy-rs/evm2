@@ -1,0 +1,1 @@
+{"rustc":4715762987238789970,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[11050506297539643678,"build_script_build",false,4734547085281259925]],"local":[{"RerunIfChanged":{"output":"debug/build/crossbeam-utils/294c58d2517e9c1d/run/stdout","paths":["no_atomic.rs"]}}],"rustflags":["-Cforce-frame-pointers"],"config":0,"compile_kind":0}

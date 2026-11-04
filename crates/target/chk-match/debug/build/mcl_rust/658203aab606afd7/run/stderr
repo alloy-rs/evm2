@@ -1,0 +1,10 @@
+running: cd "/home/ubuntu/github/danipopes/evm2-match-dispatch/crates/target/chk-match/debug/build/mcl_rust/658203aab606afd7/out/build" && CMAKE_PREFIX_PATH="" LC_ALL="C" "cmake" "/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mcl_rust-1.2.0/mcl" "-B" "/home/ubuntu/github/danipopes/evm2-match-dispatch/crates/target/chk-match/debug/build/mcl_rust/658203aab606afd7/out/build" "-DMCL_STATIC_LIB=ON" "-DMCL_STANDALONE=ON" "-DCMAKE_INSTALL_PREFIX=/home/ubuntu/github/danipopes/evm2-match-dispatch/crates/target/chk-match/debug/build/mcl_rust/658203aab606afd7/out" "-DCMAKE_C_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer" "-DCMAKE_C_COMPILER=/usr/bin/cc" "-DCMAKE_CXX_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer" "-DCMAKE_CXX_COMPILER=/usr/bin/c++" "-DCMAKE_ASM_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer" "-DCMAKE_ASM_COMPILER=/usr/bin/cc" "-DCMAKE_BUILD_TYPE=Release"
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    MCL_STANDALONE
+    MCL_STATIC_LIB
+
+
+running: cd "/home/ubuntu/github/danipopes/evm2-match-dispatch/crates/target/chk-match/debug/build/mcl_rust/658203aab606afd7/out/build" && LC_ALL="C" MAKEFLAGS="-j --jobserver-fds=3,5 --jobserver-auth=3,5" "cmake" "--build" "/home/ubuntu/github/danipopes/evm2-match-dispatch/crates/target/chk-match/debug/build/mcl_rust/658203aab606afd7/out/build" "--target" "install" "--config" "Release"
+gmake[2]: Circular msm_avx.o <- msm_avx.o dependency dropped.

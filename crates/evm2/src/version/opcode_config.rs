@@ -131,6 +131,18 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         self.revisions[opcode as usize]
     }
 
+    /// Returns whether `self` and `other` have the same dispatch-table revision for every opcode.
+    pub(crate) const fn same_revisions(&self, other: &Self) -> bool {
+        let mut op = 0;
+        while op < 256 {
+            if self.revisions[op] != other.revisions[op] {
+                return false;
+            }
+            op += 1;
+        }
+        true
+    }
+
     /// Sets the static gas cost for `opcode`.
     #[inline(always)]
     pub const fn set_static_gas(&mut self, opcode: u8, cost: u16) {

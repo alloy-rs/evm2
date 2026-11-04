@@ -1,0 +1,15 @@
+cargo:rustc-check-cfg=cfg(cranelift)
+cargo:rustc-check-cfg=cfg(dispatch_match)
+cargo:rustc-check-cfg=cfg(dispatch_packed)
+cargo:rustc-check-cfg=cfg(dispatch_unpacked)
+cargo:rustc-check-cfg=cfg(tco)
+cargo:rerun-if-changed=build.rs
+cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS
+cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH
+cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FAMILY
+cargo:rerun-if-env-changed=CARGO_CFG_TARGET_POINTER_WIDTH
+cargo:rerun-if-env-changed=CARGO_FEATURE_NO_TCO
+cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH
+cargo:rerun-if-env-changed=CARGO_CFG_TARGET_VENDOR
+cargo:rerun-if-env-changed=EVM2_DISPATCH_BACKEND
+cargo:rustc-cfg=dispatch_match

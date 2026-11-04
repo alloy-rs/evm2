@@ -1,0 +1,12 @@
+#pragma once
+/**
+	@file
+	@brief C API of 256-bit optimal ate pairing over BN curves
+	@author MITSUNARI Shigeo(@herumi)
+	@license modified new BSD license
+	http://opensource.org/licenses/BSD-3-Clause
+*/
+#define MCL_FP_BIT 256
+#define MCL_FR_BIT 256
+#include <mcl/bn.h>
+

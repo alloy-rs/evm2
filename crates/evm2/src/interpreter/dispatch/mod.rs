@@ -164,6 +164,8 @@ where
 }
 
 /// Returns the match loop of each spec of selector `F`.
+///
+/// A spec whose opcode config equals its predecessor's shares the predecessor's loop.
 #[cfg(dispatch_match)]
 const fn make_selector_match_loops<T, F, const CUSTOM_SPEC_ID: u32>()
 -> [MatchLoop<T>; crate::SpecId::COUNT]
@@ -171,13 +173,25 @@ where
     T: EvmTypesHost,
     F: EvmConfigSelector<T>,
 {
+    let configs = SelectorOpcodeConfig::<T, F, CUSTOM_SPEC_ID>::OPCODE_CONFIG;
+
     macro_rules! make_selector_match_loops {
-        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {
-            [$(
-                imp::run_match::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>>
-                    as MatchLoop<T>,
-            )*]
-        };
+        ([$($extra:tt)*] $first:ident $first_name:ident, $($spec:ident $name:ident,)*) => {{
+            let mut loops = [imp::run_match::<
+                T,
+                F::Config<{ crate::SpecId::$first as u32 }, CUSTOM_SPEC_ID>,
+            > as MatchLoop<T>; crate::SpecId::COUNT];
+            $(
+                let i = crate::SpecId::$spec as usize;
+                loops[i] = if configs[i].same_revisions(configs[i - 1]) {
+                    loops[i - 1]
+                } else {
+                    imp::run_match::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>>
+                        as MatchLoop<T>
+                };
+            )*
+            loops
+        }};
     }
 
     crate::for_each_spec!([] make_selector_match_loops)
@@ -191,27 +205,44 @@ where
     C: EvmConfig<T>,
 {
     pub(crate) const INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, NoInspector>(
-        Some(
-            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSTRUCTIONS
-                [C::BASE_SPEC_ID as usize],
+        Self::base_table(
+            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSTRUCTIONS,
         ),
-        Some(
-            SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
-                [C::BASE_SPEC_ID as usize],
-        ),
+        Self::base_opcode_config(),
     );
     #[cfg(dispatch_match)]
     pub(crate) const MATCH_LOOP: MatchLoop<T> = imp::run_match::<T, C>;
     pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, DynInspector>(
-        Some(
-            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSPECT_INSTRUCTIONS
-                [C::BASE_SPEC_ID as usize],
+        Self::base_table(
+            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSPECT_INSTRUCTIONS,
         ),
-        Some(
-            SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
-                [C::BASE_SPEC_ID as usize],
-        ),
+        Self::base_opcode_config(),
     );
+
+    /// Returns the table of `C`'s base spec, if `C`'s opcode config started from that spec.
+    ///
+    /// Otherwise the entries of the base table say nothing about the config's opcodes.
+    const fn base_table(
+        tables: &'static [InstrTable<T>; crate::SpecId::COUNT],
+    ) -> Option<&'static InstrTable<T>> {
+        if Self::starts_from_base_spec() { Some(&tables[C::BASE_SPEC_ID as usize]) } else { None }
+    }
+
+    /// Returns the opcode config of `C`'s base spec, if `C`'s opcode config started from it.
+    const fn base_opcode_config() -> Option<&'static OpcodeConfig<T>> {
+        if Self::starts_from_base_spec() {
+            Some(
+                SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
+                    [C::BASE_SPEC_ID as usize],
+            )
+        } else {
+            None
+        }
+    }
+
+    const fn starts_from_base_spec() -> bool {
+        C::OPCODE_CONFIG.origin_spec() as u32 == C::BASE_SPEC_ID as u32
+    }
 }
 
 pub(crate) struct SelectorInstrTables<T, F, const CUSTOM_SPEC_ID: u32>(

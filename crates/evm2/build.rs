@@ -17,8 +17,10 @@ fn main() {
     let is_wasm = target_is_wasm();
     let target_pointer_width = target_pointer_width();
     let no_tco = env("CARGO_FEATURE_NO_TCO").is_some() || clif;
-    // Cranelift compiles the 256 inlined handlers per spec slowly.
-    let use_match = !clif && target_prefers_match();
+    // Cranelift compiles the 256 inlined handlers per spec slowly, and without optimization the
+    // loop reserves a native stack slot for each of them, about 158 KB per frame.
+    let optimized = env("OPT_LEVEL").is_some_and(|level| level != "0");
+    let use_match = !clif && optimized && target_prefers_match();
     match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco, use_match) {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
         DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),

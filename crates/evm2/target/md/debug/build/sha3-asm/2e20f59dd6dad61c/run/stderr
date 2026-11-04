@@ -1,0 +1,4 @@
+selected cryptogams script: cryptogams/x86_64/keccak1600-x86_64.pl
+selected cryptogams script flavor: Some("elf")
+running script: "perl" "cryptogams/x86_64/keccak1600-x86_64.pl" "elf" "/home/ubuntu/github/danipopes/evm2-match-dispatch/crates/evm2/target/md/debug/build/sha3-asm/2e20f59dd6dad61c/out/keccak1600-x86_64.S"
+stdout for cryptogams/x86_64/keccak1600-x86_64.pl is empty: file "/home/ubuntu/github/danipopes/evm2-match-dispatch/crates/evm2/target/md/debug/build/sha3-asm/2e20f59dd6dad61c/out/keccak1600-x86_64.S" was written by perl script
