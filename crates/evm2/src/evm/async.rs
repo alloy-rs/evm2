@@ -546,7 +546,7 @@ mod tests {
         precompiles::PrecompileId,
         registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
     };
-    use alloy_consensus::{TxLegacy, constants::ETH_TO_WEI, transaction::Recovered};
+    use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, bytes};
     use core::{
         assert_matches, convert::Infallible, fmt, future::Future, pin::Pin, ptr::NonNull,
@@ -1073,7 +1073,7 @@ mod tests {
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &caller,
-            AccountInfo::default().with_balance(Word::from(ETH_TO_WEI)),
+            AccountInfo::default().with_balance(Word::from(10).pow(Word::from(18))),
         );
         database.insert_account_info(
             &target,
