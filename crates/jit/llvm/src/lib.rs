@@ -936,17 +936,15 @@ impl Backend for EvmLlvmBackend {
 
         // Attach debug info subprogram if debug is active.
         self.ensure_di_state();
-        let debug_scope = if let Some(di) = &self.di_state {
+        let debug_scope = self.di_state.as_ref().map(|di| {
             let subprogram = di.dibuilder.create_subprogram(
                 di.compile_unit,
                 name,
                 self.backend_config.opt_level != OptimizationLevel::None,
             );
             function.set_subprogram(subprogram);
-            Some(subprogram)
-        } else {
-            None
-        };
+            subprogram
+        });
 
         let builder = EvmLlvmBuilder { backend: self, function, debug_scope };
         Ok((builder, id))
@@ -1198,13 +1196,10 @@ impl EvmLlvmBuilder<'_> {
         name: &str,
         mk_ty: impl FnOnce(&mut Self) -> Type,
     ) -> Function {
-        match self.module().get_function(name) {
-            Some(function) => function,
-            None => {
-                let ty = mk_ty(self);
-                self.module().add_function(name, ty, None)
-            }
-        }
+        self.module().get_function(name).unwrap_or_else(|| {
+            let ty = mk_ty(self);
+            self.module().add_function(name, ty, None)
+        })
     }
 
     fn set_branch_weights(&self, inst: Inst, weights: impl IntoIterator<Item = u32>) {
