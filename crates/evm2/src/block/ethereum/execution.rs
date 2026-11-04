@@ -38,6 +38,10 @@ use core::any::Any;
 
 /// Size of one encoded EIP-6110 deposit request.
 pub const DEPOSIT_BYTES_SIZE: usize = 48 + 32 + 8 + 96 + 8;
+/// EIP-8282 builder deposit request type.
+pub const BUILDER_DEPOSIT_REQUEST_TYPE: u8 = 0x03;
+/// EIP-8282 builder exit request type.
+pub const BUILDER_EXIT_REQUEST_TYPE: u8 = 0x04;
 
 /// First topic of the deposit contract's `DepositEvent`.
 const DEPOSIT_EVENT_SIGNATURE_HASH: B256 =
