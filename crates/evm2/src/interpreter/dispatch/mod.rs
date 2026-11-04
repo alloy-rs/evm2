@@ -206,7 +206,7 @@ where
 {
     pub(crate) const INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, NoInspector>(
         Self::base_table(
-            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSTRUCTIONS,
+            SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSTRUCTIONS,
         ),
         Self::base_opcode_config(),
     );
@@ -214,7 +214,7 @@ where
     pub(crate) const MATCH_LOOP: MatchLoop<T> = imp::run_match::<T, C>;
     pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, DynInspector>(
         Self::base_table(
-            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSPECT_INSTRUCTIONS,
+            SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSPECT_INSTRUCTIONS,
         ),
         Self::base_opcode_config(),
     );
