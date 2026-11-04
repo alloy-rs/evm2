@@ -614,7 +614,7 @@ impl Program {
     }
 
     fn push_address(&mut self, address: Address) {
-        self.push_word(U256::from_be_slice(address.as_slice()));
+        self.push_word(address.into_word().into());
     }
 
     fn push_bytes_word(&mut self, bytes: &[u8]) {

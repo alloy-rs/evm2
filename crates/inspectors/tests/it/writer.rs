@@ -1,10 +1,11 @@
 use crate::utils::{
-    AccountInfo, CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv, inspect_deploy_contract,
-    write_traces, write_traces_with,
+    AccountInfo, Context, SpecId, TransactTo, TxEnv, inspect_deploy_contract, write_traces,
+    write_traces_with,
 };
 use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex};
 use alloy_sol_types::{SolCall, sol};
 use colorchoice::ColorChoice;
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::tracing::{
     TraceWriterConfig, TracingInspector, TracingInspectorConfig,
     types::{DecodedCallData, DecodedInternalCall, DecodedTraceStep},
@@ -23,7 +24,7 @@ fn test_trace_printing() {
     let base_path = &Path::new(OUT_DIR).join("test_trace_printing");
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .build_mainnet_with_inspector(TracingInspector::new(TracingInspectorConfig::all()));
 
     //let address = evm.deploy(CREATION_CODE.parse().unwrap(), &mut tracer).unwrap();
@@ -92,7 +93,7 @@ fn deploy_fail() {
     let base_path = &Path::new(OUT_DIR).join("deploy_fail");
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .build_mainnet_with_inspector(TracingInspector::new(TracingInspectorConfig::all()));
 
     inspect_deploy_contract(
@@ -312,8 +313,8 @@ fn test_receive_vs_fallback_empty_calldata() {
         "00"   // Runtime code: STOP
     );
 
-    let caller = address!("0x0000000000000000000000000000000000000001");
-    let mut db = CacheDB::new(EmptyDB::default());
+    let caller = Address::with_last_byte(1);
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &caller,
         AccountInfo { balance: U256::from(1_000_000), ..Default::default() },
@@ -334,7 +335,7 @@ fn test_receive_vs_fallback_empty_calldata() {
             TxEnv::builder()
                 .caller(caller)
                 .data(bytes!()) // Empty calldata.
-                .value(U256::from(1)) // Nonzero value.
+                .value(U256::ONE) // Nonzero value.
                 .kind(TransactTo::Call(address))
                 .gas_priority_fee(None)
                 .nonce(1)
@@ -366,7 +367,7 @@ fn test_fallback_short_calldata() {
     );
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .build_mainnet_with_inspector(TracingInspector::new(TracingInspectorConfig::all()));
 
     let address = inspect_deploy_contract(&mut evm, initcode, Address::default(), SpecId::CANCUN)

@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn sar_opcode() {
-        assert_stack!(SAR(1, neg(1) - Word::from(1)), neg(1));
+        assert_stack!(SAR(1, neg(1) - Word::ONE), neg(1));
         assert_stack!(SAR(1, 4), 2);
         assert_stack!(SAR(256, neg(1)), neg(1));
     }

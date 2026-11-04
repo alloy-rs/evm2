@@ -252,8 +252,8 @@ impl<'a> StackMut<'a> {
     /// The caller must keep the length at or below [`STACK_LIMIT`] and ensure the first `len`
     /// words are initialized before creating another stack view.
     #[inline]
-    pub const unsafe fn into_raw_parts(self) -> (*mut Word, &'a mut usize) {
-        (self.stack.0.as_mut_ptr().cast(), self.len)
+    pub const unsafe fn into_raw_parts(mut self) -> (*mut Word, &'a mut usize) {
+        (self.as_word_mut_ptr(), self.len)
     }
 
     #[inline]
@@ -645,11 +645,11 @@ mod tests {
     #[test]
     fn push_and_pop() {
         run(|stack| {
-            stack.push(Word::from(1)).unwrap();
+            stack.push(Word::ONE).unwrap();
             stack.push(Word::from(2)).unwrap();
-            assert_eq!(stack.as_slice(), [Word::from(1), Word::from(2)]);
+            assert_eq!(stack.as_slice(), [Word::ONE, Word::from(2)]);
             assert_eq!(stack.pop().unwrap(), Word::from(2));
-            assert_eq!(stack.popn::<1>().unwrap(), [Word::from(1)]);
+            assert_eq!(stack.popn::<1>().unwrap(), [Word::ONE]);
             assert_matches!(stack.pop(), Err(InstrStop::StackUnderflow));
         });
 
@@ -662,8 +662,8 @@ mod tests {
     fn popn_top() {
         run_with_len(3, |stack| {
             let (popped, top) = stack.popn_top::<2>().unwrap();
-            assert_eq!(popped, [Word::from(2), Word::from(1)]);
-            assert_eq!(*top, Word::from(0));
+            assert_eq!(popped, [Word::from(2), Word::ONE]);
+            assert_eq!(*top, Word::ZERO);
             *top = Word::from(9);
             assert_eq!(stack.as_slice(), [Word::from(9)]);
         });
@@ -677,13 +677,13 @@ mod tests {
     fn popn_dyn() {
         run_with_len(4, |stack| {
             let popped = stack.popn_dyn(3).unwrap().collect::<alloc::vec::Vec<_>>();
-            assert_eq!(popped, [Word::from(3), Word::from(2), Word::from(1)]);
-            assert_eq!(stack.as_slice(), [Word::from(0)]);
+            assert_eq!(popped, [Word::from(3), Word::from(2), Word::ONE]);
+            assert_eq!(stack.as_slice(), [Word::ZERO]);
         });
 
         run_with_len(2, |stack| {
             assert_matches!(stack.popn_dyn(3).map(|_| ()), Err(InstrStop::StackUnderflow));
-            assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1)]);
+            assert_eq!(stack.as_slice(), [Word::ZERO, Word::ONE]);
         });
     }
 
@@ -691,10 +691,10 @@ mod tests {
     fn peekn() {
         run_with_len(3, |stack| {
             assert_eq!(stack.peek(0), Some(Word::from(2)));
-            assert_eq!(stack.peek(1), Some(Word::from(1)));
-            assert_eq!(stack.peekn::<2>(), Some([Word::from(2), Word::from(1)]));
+            assert_eq!(stack.peek(1), Some(Word::ONE));
+            assert_eq!(stack.peekn::<2>(), Some([Word::from(2), Word::ONE]));
             assert_eq!(stack.peekn::<4>(), None);
-            assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1), Word::from(2)]);
+            assert_eq!(stack.as_slice(), [Word::ZERO, Word::ONE, Word::from(2)]);
         });
 
         let mut backing = StackBacking([MaybeUninit::new(Word::ZERO); StackRef::CAPACITY]);
@@ -702,7 +702,7 @@ mod tests {
             word.write(Word::from(i));
         }
         let stack = StackRef::new(&backing, 3);
-        assert_eq!(stack.peekn::<3>(), Some([Word::from(2), Word::from(1), Word::from(0)]));
+        assert_eq!(stack.peekn::<3>(), Some([Word::from(2), Word::ONE, Word::ZERO]));
         assert_eq!(stack.peekn::<4>(), None);
     }
 
@@ -728,19 +728,19 @@ mod tests {
             stack.dup(2).unwrap();
             assert_eq!(
                 stack.as_slice(),
-                [Word::from(0), Word::from(1), Word::from(2), Word::from(3), Word::from(2)]
+                [Word::ZERO, Word::ONE, Word::from(2), Word::from(3), Word::from(2)]
             );
 
             stack.swap(3).unwrap();
             assert_eq!(
                 stack.as_slice(),
-                [Word::from(0), Word::from(2), Word::from(2), Word::from(3), Word::from(1)]
+                [Word::ZERO, Word::from(2), Word::from(2), Word::from(3), Word::ONE]
             );
 
             stack.exchange(1, 4).unwrap();
             assert_eq!(
                 stack.as_slice(),
-                [Word::from(3), Word::from(2), Word::from(2), Word::from(0), Word::from(1)]
+                [Word::from(3), Word::from(2), Word::from(2), Word::ZERO, Word::ONE]
             );
         });
 

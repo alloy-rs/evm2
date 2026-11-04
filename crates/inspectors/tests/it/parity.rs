@@ -1,10 +1,10 @@
 //! Parity tests
 
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output,
-    SpecId, TransactTo, TxEnv, deploy_contract, inspect_deploy_contract, op, print_traces,
+    AccountInfo, Bytecode, Context, DatabaseCommit, ExecutionResult, Output, SpecId, TransactTo,
+    TxEnv, deploy_contract, inspect_deploy_contract, op, print_traces,
 };
-use alloy_primitives::{Address, U256, address, hex, map::HashSet};
+use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
     filter::TraceFilter,
@@ -13,6 +13,7 @@ use alloy_rpc_types_trace::{
         TransactionTrace, VmTrace,
     },
 };
+use evm2::{evm::InMemoryDB, utils::address_to_word};
 use evm2_inspectors::tracing::{
     TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
 };
@@ -45,10 +46,9 @@ fn test_parity_selfdestruct(spec_id: SpecId) {
     let deployer = address!("341348115259a8bf69f1f50101c227fced83bac6");
     let value = U256::from(69);
 
-    let mut context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(&deployer, AccountInfo { balance: value, ..Default::default() });
-        });
+    let mut context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(&deployer, AccountInfo { balance: value, ..Default::default() });
+    });
 
     context.modify_tx(|tx| tx.value = value);
     let mut evm = context.build_mainnet();
@@ -62,7 +62,7 @@ fn test_parity_selfdestruct(spec_id: SpecId) {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
-            data: hex!("43d726d6").into(),
+            data: bytes!("43d726d6"),
             nonce: 1,
             ..Default::default()
         })
@@ -118,7 +118,7 @@ fn test_parity_constructor_selfdestruct() {
     let deployer = Address::ZERO;
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_tx_chained(|tx| tx.caller = deployer)
         .build_mainnet_with_inspector(TracingInspector::new(
             TracingInspectorConfig::default_parity(),
@@ -137,7 +137,7 @@ fn test_parity_constructor_selfdestruct() {
                     caller: deployer,
                     gas_limit: 1000000,
                     kind: TransactTo::Call(addr),
-                    data: hex!("43d726d6").into(),
+                    data: bytes!("43d726d6"),
                     nonce: 1,
                     ..Default::default()
                 }
@@ -179,7 +179,7 @@ fn test_parity_call_selfdestruct() {
     let value = U256::from(69);
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_db_chained(|db| {
             db.insert_account_info(&deployer, AccountInfo { balance: value, ..Default::default() });
         })
@@ -202,7 +202,7 @@ fn test_parity_call_selfdestruct() {
             caller,
             gas_limit: 10000000,
             kind: TransactTo::Call(to),
-            data: input.to_vec().into(),
+            data: input.into(),
             nonce: 0,
             ..Default::default()
         })
@@ -249,10 +249,10 @@ fn test_parity_call_selfdestruct_create() {
         "0x60806040526040516102283803806102288339818101604052810190610025919061011c565b335f5f6101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff1602179055503481604051610072906100b2565b61007c9190610156565b6040518091039082f0905080158015610097573d5f5f3e3d5ffd5b50508073ffffffffffffffffffffffffffffffffffffffff16ff5b60b88061017083390190565b5f5ffd5b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f6100eb826100c2565b9050919050565b6100fb816100e1565b8114610105575f5ffd5b50565b5f81519050610116816100f2565b92915050565b5f60208284031215610131576101306100be565b5b5f61013e84828501610108565b91505092915050565b610150816100e1565b82525050565b5f6020820190506101695f830184610147565b9291505056fe608060405260405160b838038060b88339818101604052810190602191906091565b8073ffffffffffffffffffffffffffffffffffffffff16ff5b5f5ffd5b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f606582603e565b9050919050565b607381605d565b8114607c575f5ffd5b50565b5f81519050608b81606c565b92915050565b5f6020828403121560a35760a2603a565b5b5f60ae84828501607f565b9150509291505056fe000000000000000000000000f2719d5f7ec66c38abd64bc5efda6876590b3b30"
     );
 
-    let value = U256::from(1);
+    let value = U256::ONE;
 
     let evm = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_db_chained(|db| {
             db.insert_account_info(
                 &caller,
@@ -273,9 +273,9 @@ fn test_parity_call_selfdestruct_create() {
             caller,
             gas_limit: 10000000,
             kind: TransactTo::Create,
-            data: code.to_vec().into(),
+            data: code.into(),
             nonce: 24,
-            value: U256::from(1),
+            value: U256::ONE,
             ..Default::default()
         })
         .unwrap();
@@ -300,7 +300,7 @@ fn test_parity_call_selfdestruct_create() {
     let last = traces.len() - 1;
     let second_sd = Action::Selfdestruct(SelfdestructAction {
         address: address!("0x076af20059617d9bf2e49f4f19bd3f48d582dcef"),
-        balance: U256::from(0),
+        balance: U256::ZERO,
         refund_address: address!("0xf2719d5f7ec66c38abd64bc5efda6876590b3b30"),
     });
 
@@ -309,7 +309,7 @@ fn test_parity_call_selfdestruct_create() {
 
     let first_sd = Action::Selfdestruct(SelfdestructAction {
         address: address!("0x9f2e7bebe157dfd9f1322bd252f1a5af37629687"),
-        balance: U256::from(1),
+        balance: U256::ONE,
         refund_address: address!("0xf2719d5f7ec66c38abd64bc5efda6876590b3b30"),
     });
 
@@ -324,7 +324,7 @@ fn test_parity_statediff_blob_commit() {
     let caller = address!("283b5b7d75e3e6b84b8e2161e8a468d733bbbe8d");
     let to = address!("15dd773dad3f630773a0e771e9b221f4c8b9b939");
 
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &caller,
         AccountInfo { balance: U256::from(u64::MAX), ..Default::default() },
@@ -350,11 +350,9 @@ fn test_parity_statediff_blob_commit() {
             gas_limit: 1000000,
             kind: TransactTo::Call(to),
             gas_price: 150,
-            blob_hashes: vec![
+            blob_hashes: vec![b256!(
                 "0x01af2fd94f17364bc8ef371c4c90c3a33855ff972d10b9c03d0445b3fca063ea"
-                    .parse()
-                    .unwrap(),
-            ],
+            )],
             max_fee_per_blob_gas: 1000000000,
             ..Default::default()
         })
@@ -398,7 +396,7 @@ fn test_parity_delegatecall_selfdestruct() {
 
     let deployer = address!("341348115259a8bf69f1f50101c227fced83bac6");
 
-    let mut evm = Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).build_mainnet();
+    let mut evm = Context::mainnet().with_db(InMemoryDB::default()).build_mainnet();
 
     // Deploy DelegateCall contract
     let delegate_addr =
@@ -412,9 +410,8 @@ fn test_parity_delegatecall_selfdestruct() {
         .unwrap();
 
     // Prepare the input data for the close(address) function call
-    let mut input_data = hex!("c74073a1").to_vec(); // keccak256("close(address)")[:4]
-    input_data.extend_from_slice(&[0u8; 12]); // Pad with zeros
-    input_data.extend_from_slice(target_addr.as_slice());
+    // keccak256("close(address)")[:4], zero padding, then the address.
+    let input_data = [&hex!("c74073a1")[..], &[0u8; 12][..], target_addr.as_slice()].concat();
 
     // Call DelegateCall contract with SelfDestructTarget address
     let mut evm =
@@ -466,7 +463,7 @@ fn test_parity_delegatecall_selfdestruct() {
     assert_eq!(action2.refund_address, deployer);
 }
 
-fn trace_vm_code(code: &[u8], child: &[u8]) -> alloy_rpc_types_trace::parity::VmTrace {
+fn trace_vm_code(code: &[u8], child: &[u8]) -> VmTrace {
     let config =
         TracingInspectorConfig::from_parity_config(&HashSet::from_iter([TraceType::VmTrace]));
     inspect_code(code, child, SpecId::default(), config).into_parity_builder().vm_trace()
@@ -493,7 +490,7 @@ fn inspect_funded_code(
     use crate::utils::Bytecode;
     let target = Address::with_last_byte(0x42);
     let child_address = Address::with_last_byte(0x43);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     for (address, code, balance) in [(target, code, balance), (child_address, child, 0)] {
         db.insert_account_info(
             &address,
@@ -516,7 +513,7 @@ fn vmtrace_memory_is_attached_to_the_writing_instruction() {
     let trace = trace_vm_code(&hex!("60016000525f00"), &[]);
     let mem = trace.ops[2].ex.as_ref().unwrap().mem.as_ref().unwrap();
     assert_eq!(mem.off, 0);
-    assert_eq!(mem.data.as_ref(), U256::from(1).to_be_bytes::<32>());
+    assert_eq!(mem.data.as_ref(), B256::with_last_byte(1).0);
     assert!(trace.ops[3].ex.as_ref().unwrap().mem.is_none());
 }
 
@@ -787,10 +784,10 @@ fn vmtrace_revert_keeps_its_execution_record() {
 fn vmtrace_call_pushes_result_and_copies_return_memory() {
     let trace = trace_vm_code(&hex!("602060205f5f5f604361fffff15f00"), &hex!("602a5f5260205ff3"));
     let call = &trace.ops[7];
-    assert_eq!(call.ex.as_ref().unwrap().push.as_slice(), &[U256::from(1)]);
+    assert_eq!(call.ex.as_ref().unwrap().push, &[U256::ONE]);
     let mem = call.ex.as_ref().unwrap().mem.as_ref().unwrap();
     assert_eq!(mem.off, 32);
-    assert_eq!(mem.data.as_ref(), U256::from(42).to_be_bytes::<32>());
+    assert_eq!(mem.data.as_ref(), B256::with_last_byte(42).0);
 }
 
 #[test]
@@ -814,7 +811,7 @@ fn vmtrace_terminal_call_finalizes_delta_at_capture_limit() {
         let call = trace.ops.last().unwrap();
         assert_eq!(call.op.as_deref(), Some("CALL"));
         let ex = call.ex.as_ref().unwrap();
-        assert_eq!(ex.push, vec![U256::from(1)]);
+        assert_eq!(ex.push, vec![U256::ONE]);
         let mem = ex.mem.as_ref().unwrap();
         assert_eq!(mem.off, 32);
         assert_eq!(mem.data.as_ref(), &[42]);
@@ -865,8 +862,8 @@ fn vmtrace_stop_only_child_preserves_parent_and_creation_result() {
     assert_eq!(trace.ops.len(), 6);
     let create = &trace.ops[3];
     assert_eq!(
-        create.ex.as_ref().unwrap().push.as_slice(),
-        &[U256::from_be_slice(Address::with_last_byte(0x42).create(0).as_slice())]
+        create.ex.as_ref().unwrap().push,
+        &[address_to_word(&Address::with_last_byte(0x42).create(0))]
     );
     assert!(create.sub.is_some());
 }
@@ -879,7 +876,7 @@ fn vmtrace_nested_sibling_calls_keep_their_own_subtraces() {
     root.extend(hex!("505f5f5f5f5f604461fffff100"));
     let mut branch = hex!("5f5f5f5f5f604561fffff1").to_vec();
     branch.push(0x00);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     for (last, code) in [
         (0x42, root),
         (0x43, hex!("60015000").to_vec()),
@@ -912,7 +909,7 @@ fn vmtrace_precompile_does_not_steal_the_next_calls_subtrace() {
         trace_vm_code(&hex!("5f5f5f5f5f600461fffff1505f5f5f5f5f604361fffff100"), &hex!("60015000"));
     assert!(trace.ops[7].sub.as_ref().unwrap().ops.is_empty());
     assert_eq!(trace.ops[16].sub.as_ref().unwrap().ops.len(), 3);
-    assert_eq!(trace.ops[7].ex.as_ref().unwrap().push, vec![U256::from(1)]);
+    assert_eq!(trace.ops[7].ex.as_ref().unwrap().push, vec![U256::ONE]);
 }
 
 #[test]
@@ -929,7 +926,7 @@ fn vmtrace_memory_copy_and_terminal_writes() {
             .find_map(|op| op.ex.as_ref().and_then(|ex| ex.mem.as_ref()))
             .unwrap();
         assert_eq!(mem.off, offset);
-        assert_eq!(mem.data.as_ref(), expected);
+        assert_eq!(mem.data, expected);
     }
 }
 
@@ -967,12 +964,11 @@ fn frame_errors(inspector: &TracingInspector) -> (Vec<String>, Vec<String>) {
 fn reverted_create_reports_gas_and_revert_data() {
     let initcode = hex!("63deadbeef5f526004601cfd");
     let factory = Address::with_last_byte(0x42);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &factory,
-        AccountInfo::default().with_code(Bytecode::new_raw(
-            hex!("6b63deadbeef5f526004601cfd5f52600c60145ff000").into(),
-        )),
+        AccountInfo::default()
+            .with_code(Bytecode::new_raw(bytes!("6b63deadbeef5f526004601cfd5f52600c60145ff000"))),
     );
     let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
         TracingInspector::new(TracingInspectorConfig::default_parity()),
@@ -1086,12 +1082,12 @@ fn failed_frames_use_parity_labels() {
 fn create_nonce_overflow_is_a_failed_frame() {
     for nonce in [u64::MAX, u64::MAX - 1] {
         let factory = Address::with_last_byte(0x42);
-        let mut db = CacheDB::<EmptyDB>::default();
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &factory,
             AccountInfo {
                 nonce,
-                ..AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f5ff000").into()))
+                ..AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f5ff000")))
             },
         );
         let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
@@ -1122,12 +1118,12 @@ fn create_nonce_overflow_is_a_failed_frame() {
 #[test]
 fn create_nonce_overflow_runs_no_frame_since_amsterdam() {
     let factory = Address::with_last_byte(0x42);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &factory,
         AccountInfo {
             nonce: u64::MAX,
-            ..AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f5ff000").into()))
+            ..AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f5ff000")))
         },
     );
     let mut evm = Context::mainnet()
@@ -1150,10 +1146,10 @@ fn create_nonce_overflow_runs_no_frame_since_amsterdam() {
 fn create_with_empty_initcode_runs_no_steps() {
     let factory = Address::with_last_byte(0x42);
     for (kind, depth_nodes) in [(TransactTo::Create, 1), (TransactTo::Call(factory), 2)] {
-        let mut db = CacheDB::<EmptyDB>::default();
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &factory,
-            AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f5ff000").into())),
+            AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f5ff000"))),
         );
         let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
             TracingInspector::new(TracingInspectorConfig::default_parity()),
@@ -1170,7 +1166,7 @@ fn create_with_empty_initcode_runs_no_steps() {
 
 #[test]
 fn precompile_exclusion_uses_original_callee_with_delegation() {
-    let parent = Address::from([0x11; 20]);
+    let parent = Address::repeat_byte(0x11);
     for callee in [2, 0x55] {
         for opcode in [op::CALL, op::CALLCODE, op::DELEGATECALL, op::STATICCALL] {
             let mut code = vec![op::PUSH0, op::PUSH0, op::PUSH1, 4, op::PUSH0];
@@ -1178,7 +1174,7 @@ fn precompile_exclusion_uses_original_callee_with_delegation() {
                 code.push(op::PUSH0);
             }
             code.extend([op::PUSH1, callee, op::GAS, opcode, op::POP, op::STOP]);
-            let mut db = CacheDB::<EmptyDB>::default();
+            let mut db = InMemoryDB::default();
             db.insert_account_info(
                 &parent,
                 AccountInfo::default().with_code(Bytecode::new_raw(code.into())),
@@ -1450,6 +1446,46 @@ fn nested_calls_keep_each_forwarded_cost() {
         trace.ops[6].ex.as_ref().unwrap().used - 2_600 - 16 - 100 - 15
     );
     assert_eq!(inner.ex.as_ref().unwrap().used, child.ops[6].ex.as_ref().unwrap().used - 100 - 15);
+}
+
+#[test]
+fn parity_traces_leave_out_zero_value_precompile_calls() {
+    let contract = Address::with_last_byte(0x42);
+    let mut db = InMemoryDB::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo::default().with_balance(U256::from(1)).with_code(Bytecode::new_raw(
+            // CALL 0x04 with no value, CALL 0x04 with value 1, CALL 0x99 with no value.
+            hex!("5f5f5f5f5f60045af1505f5f5f5f600160045af1505f5f5f5f5f60995af15000").into(),
+        )),
+    );
+    let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
+        TracingInspector::new(TracingInspectorConfig::default_parity()),
+    );
+    evm.inspect_tx(TxEnv {
+        gas_limit: 1_000_000,
+        kind: TransactTo::Call(contract),
+        ..Default::default()
+    })
+    .unwrap();
+
+    let traces = evm.inspector.clone().into_parity_builder().into_transaction_traces();
+    let calls: Vec<_> = traces
+        .iter()
+        .map(|trace| {
+            let Action::Call(call) = &trace.action else { panic!("expected a call") };
+            (call.to, call.value, trace.trace_address.clone())
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            (contract, U256::ZERO, vec![]),
+            (Address::with_last_byte(4), U256::from(1), vec![0]),
+            (Address::with_last_byte(0x99), U256::ZERO, vec![1]),
+        ]
+    );
+    assert_eq!(traces[0].subtraces, 2);
 }
 
 #[path = "parity/vm_bytecode.rs"]

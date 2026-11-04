@@ -107,7 +107,7 @@ impl U256Imm {
         if self.0 & Self::INLINE_TAG != 0 {
             U256::from(self.0 & !Self::INLINE_TAG)
         } else {
-            *interner.get(U256Idx::from_usize(self.0 as usize))
+            *interner.get(U256Idx::new(self.0 as usize))
         }
     }
 
@@ -503,7 +503,7 @@ impl<'a> Bytecode<'a> {
     #[inline(never)]
     pub(crate) fn recompute_reachable_jumpdests(&mut self) {
         for data in &mut self.insts.raw {
-            if data.opcode == op::JUMPDEST {
+            if data.is_jumpdest() {
                 data.clear_jumpdest_reachable();
             }
         }
@@ -529,7 +529,7 @@ impl<'a> Bytecode<'a> {
             while let Some(&next) = self.redirects.get(&target) {
                 target = next;
             }
-            if self.insts[target].opcode == op::JUMPDEST {
+            if self.insts[target].is_jumpdest() {
                 self.insts[target].set_jumpdest_reachable();
             }
         }
@@ -577,7 +577,7 @@ impl<'a> Bytecode<'a> {
                     if data.is_reachable_jumpdest(self.has_dynamic_jumps) {
                         break;
                     }
-                    if !data.flags.contains(InstFlags::DEAD_CODE) {
+                    if !data.is_dead_code() {
                         any_new = true;
                         marked_jump_dead |= data.is_jump();
                     }
@@ -714,6 +714,16 @@ impl<'a> Bytecode<'a> {
     /// Returns the multi-target jump table entry for the given instruction, if any.
     pub(crate) fn multi_jump_targets(&self, inst: Inst) -> Option<&[Inst]> {
         self.multi_jump_targets.get(&inst).map(|v| v.as_slice())
+    }
+
+    /// Resolves an instruction through dead-block redirects created by dedup.
+    pub(crate) fn effective_inst(&self, inst: Inst) -> Inst {
+        self.redirects.get(&inst).copied().unwrap_or(inst)
+    }
+
+    /// Resolves a jump target instruction to its CFG block index.
+    pub(crate) fn target_block(&self, target: Inst) -> Option<Block> {
+        self.cfg.inst_to_block.get(target).copied().flatten()
     }
 
     /// Returns the known constant value of a stack operand at the given instruction.
@@ -1175,7 +1185,7 @@ impl InstData {
     #[inline]
     pub(crate) fn static_jump_target(&self) -> Inst {
         debug_assert!(self.is_static_jump());
-        Inst::from_usize(self.data as usize)
+        Inst::new(self.data as usize)
     }
 
     /// Sets the static jump target. Caller must also set [`InstFlags::STATIC_JUMP`].
@@ -1351,7 +1361,7 @@ mod tests {
         // EVM spec: missing bytes are zero, so the value is 0x4200.
         let code = [op::PUSH2, 0x42];
         let bc = Bytecode::test(&code);
-        let inst = Inst::from_usize(0);
+        let inst = Inst::new(0);
         let data = bc.inst(inst);
         assert_eq!(bc.get_imm(inst), Some([0x42].as_slice()));
         assert_eq!(bc.get_push_value(data), U256::from(0x4200));
@@ -1359,7 +1369,7 @@ mod tests {
         // PUSH3 followed by two bytes — truncated at EOF.
         let code = [op::PUSH3, 0xAB, 0xCD];
         let bc = Bytecode::test(&code);
-        let inst = Inst::from_usize(0);
+        let inst = Inst::new(0);
         let data = bc.inst(inst);
         assert_eq!(bc.get_imm(inst), Some([0xAB, 0xCD].as_slice()));
         assert_eq!(bc.get_push_value(data), U256::from(0xABCD00));
@@ -1367,7 +1377,7 @@ mod tests {
         // PUSH1 with no immediate bytes at all.
         let code = [op::PUSH1];
         let bc = Bytecode::test(&code);
-        let inst = Inst::from_usize(0);
+        let inst = Inst::new(0);
         let data = bc.inst(inst);
         assert_eq!(bc.get_imm(inst), None);
         assert_eq!(bc.get_push_value(data), U256::ZERO);
@@ -1375,7 +1385,7 @@ mod tests {
         // Non-truncated PUSH2 — full immediate.
         let code = [op::PUSH2, 0x42, 0xFF];
         let bc = Bytecode::test(&code);
-        let data = bc.inst(Inst::from_usize(0));
+        let data = bc.inst(Inst::new(0));
         assert_eq!(bc.get_push_value(data), U256::from(0x42FF));
     }
 
@@ -1389,9 +1399,9 @@ mod tests {
             op::CALLDATALOAD,
             op::JUMP,
         ]);
-        let jumpi = Inst::from_usize(2);
+        let jumpi = Inst::new(2);
         let fallthrough = jumpi + 1;
-        let dynamic_jump = Inst::from_usize(5);
+        let dynamic_jump = Inst::new(5);
 
         bc.inst_mut(jumpi).flags |= InstFlags::STATIC_JUMP | InstFlags::CONST_JUMP_CONDITION;
         bc.inst_mut(jumpi).set_static_jump_target(fallthrough);
@@ -1399,7 +1409,7 @@ mod tests {
         bc.mark_dead_code();
 
         assert!(!bc.inst(fallthrough).is_dead_code());
-        assert!(bc.inst(Inst::from_usize(4)).is_dead_code());
+        assert!(bc.inst(Inst::new(4)).is_dead_code());
         assert!(bc.inst(dynamic_jump).is_dead_code());
         assert!(!bc.has_dynamic_jumps);
     }
@@ -1420,10 +1430,10 @@ mod tests {
             op::JUMPDEST,
             op::STOP,
         ]);
-        let jumpi = Inst::from_usize(2);
-        let dead_jump = Inst::from_usize(4);
-        let live_target = Inst::from_usize(5);
-        let stale_target = Inst::from_usize(7);
+        let jumpi = Inst::new(2);
+        let dead_jump = Inst::new(4);
+        let live_target = Inst::new(5);
+        let stale_target = Inst::new(7);
 
         bc.inst_mut(jumpi).flags |= InstFlags::STATIC_JUMP | InstFlags::CONST_JUMP_CONDITION;
         bc.inst_mut(jumpi).set_static_jump_target(live_target);

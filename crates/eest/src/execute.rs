@@ -1,15 +1,14 @@
 #[cfg(feature = "jit")]
 use crate::compiled::{self, FileSummary};
 use crate::{
+    blockchaintest::{BlobFork, BlobScheduleEntry, ChainConfig, ForkSpec, state_stage},
     dump,
     error::{TestError, TestErrorKind},
     execution::ExecutionResources,
     filter::NameFilter,
     fixture_io,
     forks::is_fork_skipped,
-    state::{
-        insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
-    },
+    state::{insert_account_with_storage, parse_bytecode, storage_for_root},
     trace::{self, Eip3155Tracer},
     tx::{
         TxFields, TxSigner, build_recovered_tx, decode_recovered_tx, recover_address,
@@ -17,7 +16,7 @@ use crate::{
     },
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
-use alloy_eips::{eip4844, eip7691};
+use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use alloy_trie::{
@@ -198,14 +197,22 @@ fn execute_unit(
     db_stats_counts: &mut DbStatsCounts,
 ) -> Result<(), TestError> {
     let state = parse_state(&unit.pre).map_err(|err| TestError::case(path, name, err))?;
-    for (spec_name, posts) in &unit.post {
-        let Some(spec) = spec_name.to_spec_id() else {
-            continue;
+    for (&fork, posts) in &unit.post {
+        let Some(stage) = state_stage(fork) else {
+            // Legacy fixtures run each test under Constantinople and Petersburg, and evm2 only
+            // supports Petersburg.
+            if fork == ForkSpec::Constantinople {
+                continue;
+            }
+            return Err(TestError::case(path, name, TestErrorKind::UnsupportedFork(fork)));
         };
+        let spec = stage.spec;
         if is_fork_skipped(spec) {
             continue;
         }
-        let block = parse_block(&unit.env, spec);
+        let blob_params = blob_params(stage.blob_fork, spec, unit.config.as_ref())
+            .map_err(|err| TestError::case(path, name, err))?;
+        let block = parse_block(&unit.env, blob_params.as_ref());
         for post in posts {
             let tx = match &post.txbytes {
                 Some(bytes) => decode_recovered_tx(bytes, spec).map_err(Into::into),
@@ -419,7 +426,7 @@ fn execute_spec(
     Ok(outcome)
 }
 
-fn print_db_stats(counts: DbStatsCounts) {
+pub(crate) fn print_db_stats(counts: DbStatsCounts) {
     let style = db_stats_style();
     eprintln!("{style}db stats{style:#}: get_account={}", counts.get_account);
     eprintln!("{style}db stats{style:#}: get_code_by_hash={}", counts.get_code_by_hash);
@@ -475,25 +482,13 @@ fn pre_block_system_calls<T: EvmTypes>(
 
     if spec.enables(SpecId::CANCUN)
         && let Some(beacon_root) = env.current_beacon_root
-        && system_contract_has_code(post, BEACON_ROOTS_ADDRESS)
     {
-        commit_system_call(
-            evm,
-            post,
-            BEACON_ROOTS_ADDRESS,
-            Bytes::copy_from_slice(beacon_root.as_slice()),
-        );
+        commit_system_call(evm, post, BEACON_ROOTS_ADDRESS, Bytes::from(beacon_root));
     }
     if spec.enables(SpecId::PRAGUE)
         && let Some(previous_hash) = env.previous_hash
-        && system_contract_has_code(post, HISTORY_STORAGE_ADDRESS)
     {
-        commit_system_call(
-            evm,
-            post,
-            HISTORY_STORAGE_ADDRESS,
-            Bytes::copy_from_slice(previous_hash.as_slice()),
-        );
+        commit_system_call(evm, post, HISTORY_STORAGE_ADDRESS, Bytes::from(previous_hash));
     }
 }
 
@@ -504,7 +499,7 @@ fn commit_system_call<T: EvmTypes>(
     data: Bytes,
 ) {
     let executed = evm.system_call(SystemTx::new(address, data)).expect("system call errored");
-    assert!(executed.result().status, "pre-block system call failed: {address}");
+    assert!(executed.result().is_success(), "pre-block system call failed: {address}");
     let Ok(_) = executed.commit_with(post);
 }
 
@@ -548,7 +543,7 @@ fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestE
     Ok(database)
 }
 
-fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
+fn parse_block(env: &Env, blob_params: Option<&BlobParams>) -> BlockEnv {
     BlockEnvExt {
         number: env.current_number,
         beneficiary: env.current_coinbase,
@@ -556,37 +551,39 @@ fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
         gas_limit: env.current_gas_limit,
         basefee: env.current_base_fee.unwrap_or_default(),
         difficulty: env.current_difficulty,
-        prevrandao: env
-            .current_random
-            .map_or(U256::ZERO, |random| U256::from_be_slice(random.as_slice())),
+        prevrandao: env.current_random.map_or(U256::ZERO, |random| random.into()),
         blob_basefee: env
             .current_excess_blob_gas
-            .map_or(U256::ONE, |excess| U256::from(blob_basefee(excess, spec))),
+            .zip(blob_params)
+            .map_or(U256::ONE, |(excess, params)| {
+                U256::from(params.calc_blob_fee(excess.saturating_to()))
+            }),
         slot_num: env.slot_number.unwrap_or_default(),
         ext: (),
         _non_exhaustive: (),
     }
 }
 
-fn blob_basefee(excess_blob_gas: U256, spec: SpecId) -> u128 {
-    let excess_blob_gas = excess_blob_gas.saturating_to::<u64>();
-    // EIP-4844 defines blob base fee with fake exponential; EIP-7691 changes the
-    // update fraction from Prague, and the Amsterdam (BPO2) blob schedule changes it again.
-    if spec.enables(SpecId::AMSTERDAM) {
-        eip4844::fake_exponential(
-            eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
-            excess_blob_gas as u128,
-            evm2::constants::BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM as u128,
+/// Returns the blob parameters of the fork that sets them, or `None` before Cancun.
+///
+/// They come from the test's `config.blobSchedule`. Fixtures without a configuration use the
+/// mainnet parameters.
+fn blob_params(
+    blob_fork: Option<BlobFork>,
+    spec: SpecId,
+    config: Option<&ChainConfig>,
+) -> Result<Option<BlobParams>, TestErrorKind> {
+    let Some(blob_fork) = blob_fork else { return Ok(None) };
+    let entry = config
+        .map_or_else(
+            || blob_fork.mainnet_params().map(BlobScheduleEntry::from),
+            |config| config.blob_schedule.get(&blob_fork).copied(),
         )
-    } else if spec.enables(SpecId::PRAGUE) {
-        eip7691::calc_blob_gasprice(excess_blob_gas)
-    } else {
-        eip4844::fake_exponential(
-            eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
-            excess_blob_gas as u128,
-            eip4844::BLOB_GASPRICE_UPDATE_FRACTION,
-        )
+        .ok_or(TestErrorKind::MissingBlobSchedule(blob_fork))?;
+    if entry.base_fee_update_fraction.is_zero() {
+        return Err(TestErrorKind::ZeroBlobUpdateFraction(blob_fork));
     }
+    Ok(Some(entry.params(spec)))
 }
 
 fn build_tx(
@@ -646,7 +643,6 @@ fn access_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::LogData;
     use evm2::interpreter::op;
 
     #[cfg(feature = "jit")]
@@ -684,29 +680,48 @@ mod tests {
     }
 
     #[test]
+    fn bpo_state_tests_use_the_blob_parameters_of_their_fork() {
+        let config = ChainConfig {
+            chainid: U256::ONE,
+            blob_schedule: BTreeMap::from([
+                (BlobFork::Osaka, BlobParams::osaka().into()),
+                (BlobFork::Bpo1, BlobParams::bpo1().into()),
+            ]),
+        };
+        let stage = state_stage(ForkSpec::BPO1).unwrap();
+        let params = blob_params(stage.blob_fork, stage.spec, Some(&config)).unwrap().unwrap();
+        assert_eq!(params.update_fraction, BlobParams::bpo1().update_fraction);
+        assert!(matches!(
+            blob_params(Some(BlobFork::Bpo2), stage.spec, Some(&config)),
+            Err(TestErrorKind::MissingBlobSchedule(BlobFork::Bpo2))
+        ));
+    }
+
+    #[test]
     fn logs_hash_matches_empty_logs() {
         assert_eq!(logs_hash(&[]), keccak256([alloy_rlp::EMPTY_LIST_CODE]));
     }
 
     #[test]
     fn logs_hash_hashes_logs() {
-        let log = Log {
-            address: Address::from([0x22; 20]),
-            data: LogData::new_unchecked(vec![B256::with_last_byte(1)], Bytes::from_static(&[2])),
-        };
+        let log = Log::new_unchecked(
+            Address::repeat_byte(0x22),
+            vec![B256::with_last_byte(1)],
+            Bytes::from_static(&[2]),
+        );
 
         assert_ne!(logs_hash(&[log]), B256::ZERO);
     }
 
     #[test]
     fn build_tx_builds_legacy_transaction() {
-        let caller = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0x11);
         let raw = TransactionParts {
             data: vec![Bytes::from_static(&[0xaa])],
             gas_limit: vec![U256::from(21_000)],
             gas_price: Some(U256::from(7)),
             sender: Some(caller),
-            to: Some(Address::from([0x22; 20])),
+            to: Some(Address::repeat_byte(0x22)),
             value: vec![U256::from(3)],
             ..TransactionParts::default()
         };
@@ -722,15 +737,15 @@ mod tests {
 
     #[test]
     fn build_tx_builds_eip2930_transaction() {
-        let caller = Address::from([0x11; 20]);
-        let access_address = Address::from([0x33; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let access_address = Address::repeat_byte(0x33);
         let raw = TransactionParts {
             tx_type: Some(1),
             data: vec![Bytes::new()],
             gas_limit: vec![U256::from(25_300)],
             gas_price: Some(U256::from(7)),
             sender: Some(caller),
-            to: Some(Address::from([0x22; 20])),
+            to: Some(Address::repeat_byte(0x22)),
             value: vec![U256::ZERO],
             access_lists: vec![Some(vec![crate::tx::AccessListItem {
                 address: access_address,
@@ -750,16 +765,16 @@ mod tests {
 
     #[test]
     fn build_tx_uses_indexed_access_list() {
-        let caller = Address::from([0x11; 20]);
-        let first_address = Address::from([0x33; 20]);
-        let second_address = Address::from([0x44; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let first_address = Address::repeat_byte(0x33);
+        let second_address = Address::repeat_byte(0x44);
         let raw = TransactionParts {
             tx_type: Some(1),
             data: vec![Bytes::new(), Bytes::from_static(&[0xaa])],
             gas_limit: vec![U256::from(25_300)],
             gas_price: Some(U256::from(7)),
             sender: Some(caller),
-            to: Some(Address::from([0x22; 20])),
+            to: Some(Address::repeat_byte(0x22)),
             value: vec![U256::ZERO],
             access_lists: vec![
                 Some(vec![crate::tx::AccessListItem {
@@ -784,8 +799,8 @@ mod tests {
 
     #[cfg(feature = "jit")]
     fn execute_simple_call(mode: ExecutionMode) -> SpecOutcome {
-        let caller = Address::from([0x11; 20]);
-        let target = Address::from([0x22; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x22);
         let env = Env {
             current_chain_id: Some(U256::ONE),
             current_coinbase: Address::ZERO,
@@ -815,7 +830,7 @@ mod tests {
             target,
             AccountInfo {
                 balance: U256::ZERO,
-                code: Bytes::copy_from_slice(BYTECODE_RET42),
+                code: Bytes::from_static(BYTECODE_RET42),
                 nonce: 0,
                 storage: BTreeMap::new(),
             },
@@ -837,7 +852,7 @@ mod tests {
         let resources = ExecutionResources::new(mode).unwrap();
         execute_spec(
             SpecId::CANCUN,
-            parse_block(&env, SpecId::CANCUN),
+            parse_block(&env, Some(&BlobParams::cancun())),
             parse_state(&pre).unwrap(),
             &tx,
             &env,
@@ -851,9 +866,9 @@ mod tests {
 
     #[cfg(feature = "jit")]
     fn execute_amsterdam_target(mode: ExecutionMode, target_code: Bytes) -> SpecOutcome {
-        let caller = Address::from([0x11; 20]);
-        let target = Address::from([0x22; 20]);
-        let coinbase = Address::from([0xcb; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x22);
+        let coinbase = Address::repeat_byte(0xcb);
         let env = Env {
             current_chain_id: Some(U256::ONE),
             current_coinbase: coinbase,
@@ -905,7 +920,7 @@ mod tests {
         let resources = ExecutionResources::new(mode).unwrap();
         execute_spec(
             SpecId::AMSTERDAM,
-            parse_block(&env, SpecId::AMSTERDAM),
+            parse_block(&env, Some(&BlobParams::bpo2())),
             parse_state(&pre).unwrap(),
             &tx,
             &env,
@@ -919,7 +934,7 @@ mod tests {
 
     #[cfg(feature = "jit")]
     fn execute_amsterdam_value_call_to_empty_coinbase(mode: ExecutionMode) -> SpecOutcome {
-        execute_amsterdam_target(mode, call_value_to(Address::from([0xcb; 20])))
+        execute_amsterdam_target(mode, call_value_to(Address::repeat_byte(0xcb)))
     }
 
     #[cfg(feature = "jit")]

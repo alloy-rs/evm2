@@ -129,10 +129,10 @@ pub(crate) fn try_const_fold(
                 op::EXP => a.pow(b),
                 op::SIGNEXTEND => {
                     if a < U256::from(31) {
-                        let ext = a.as_limbs()[0];
+                        let ext = a.wrapping_to::<u64>();
                         let bit_index = (8 * ext + 7) as usize;
                         let bit = b.bit(bit_index);
-                        let mask = (U256::from(1) << bit_index) - U256::from(1);
+                        let mask = (U256::ONE << bit_index) - U256::ONE;
                         if bit { b | !mask } else { b & mask }
                     } else {
                         b
@@ -495,7 +495,7 @@ mod tests {
 
         let bytecode = analyze_asm(&src);
         // The folded result is operand 1 (second from top) at MSTORE.
-        bytecode.const_operand(Inst::from_usize(mstore_inst), 1)
+        bytecode.const_operand(Inst::new(mstore_inst), 1)
     }
 
     #[test]
@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn const_fold_1_to_1() {
         // ISZERO.
-        assert_eq!(const_fold(op::ISZERO, &[U256::ZERO]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::ISZERO, &[U256::ZERO]), Some(U256::ONE));
         assert_eq!(const_fold(op::ISZERO, &[U256::from(42)]), Some(U256::ZERO));
 
         // NOT.
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn const_fold_add() {
         assert_eq!(const_fold(op::ADD, &[U256::from(3), U256::from(4)]), Some(U256::from(7)));
-        assert_eq!(const_fold(op::ADD, &[U256::MAX, U256::from(1)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::ADD, &[U256::MAX, U256::ONE]), Some(U256::ZERO));
     }
 
     #[test]
@@ -534,7 +534,7 @@ mod tests {
     fn const_fold_sub() {
         // SUB(10, 3) = 7.
         assert_eq!(const_fold(op::SUB, &[U256::from(10), U256::from(3)]), Some(U256::from(7)));
-        assert_eq!(const_fold(op::SUB, &[U256::ZERO, U256::from(1)]), Some(U256::MAX));
+        assert_eq!(const_fold(op::SUB, &[U256::ZERO, U256::ONE]), Some(U256::MAX));
     }
 
     #[test]
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn const_fold_mod() {
         // MOD(10, 3) = 1.
-        assert_eq!(const_fold(op::MOD, &[U256::from(10), U256::from(3)]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::MOD, &[U256::from(10), U256::from(3)]), Some(U256::ONE));
         assert_eq!(const_fold(op::MOD, &[U256::from(7), U256::ZERO]), Some(U256::ZERO));
     }
 
@@ -580,7 +580,7 @@ mod tests {
             Some(U256::from(4)),
         );
         assert_eq!(
-            const_fold(op::ADDMOD, &[U256::from(1), U256::from(2), U256::ZERO]),
+            const_fold(op::ADDMOD, &[U256::ONE, U256::from(2), U256::ZERO]),
             Some(U256::ZERO),
         );
     }
@@ -599,7 +599,7 @@ mod tests {
         // EXP(2, 10) = 1024.
         assert_eq!(const_fold(op::EXP, &[U256::from(2), U256::from(10)]), Some(U256::from(1024)));
         // EXP(5, 0) = 1.
-        assert_eq!(const_fold(op::EXP, &[U256::from(5), U256::ZERO]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::EXP, &[U256::from(5), U256::ZERO]), Some(U256::ONE));
     }
 
     #[test]
@@ -621,12 +621,12 @@ mod tests {
     #[test]
     fn const_fold_lt_gt_eq() {
         // LT(1, 2) = 1.
-        assert_eq!(const_fold(op::LT, &[U256::from(1), U256::from(2)]), Some(U256::from(1)));
-        assert_eq!(const_fold(op::LT, &[U256::from(2), U256::from(1)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::LT, &[U256::ONE, U256::from(2)]), Some(U256::ONE));
+        assert_eq!(const_fold(op::LT, &[U256::from(2), U256::ONE]), Some(U256::ZERO));
         // GT(2, 1) = 1.
-        assert_eq!(const_fold(op::GT, &[U256::from(2), U256::from(1)]), Some(U256::from(1)));
-        assert_eq!(const_fold(op::GT, &[U256::from(1), U256::from(2)]), Some(U256::ZERO));
-        assert_eq!(const_fold(op::EQ, &[U256::from(5), U256::from(5)]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::GT, &[U256::from(2), U256::ONE]), Some(U256::ONE));
+        assert_eq!(const_fold(op::GT, &[U256::ONE, U256::from(2)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::EQ, &[U256::from(5), U256::from(5)]), Some(U256::ONE));
         assert_eq!(const_fold(op::EQ, &[U256::from(5), U256::from(6)]), Some(U256::ZERO));
     }
 
@@ -634,11 +634,11 @@ mod tests {
     fn const_fold_slt_sgt() {
         let neg1 = U256::MAX;
         // SLT(-1, 1) = 1.
-        assert_eq!(const_fold(op::SLT, &[neg1, U256::from(1)]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::SLT, &[neg1, U256::ONE]), Some(U256::ONE));
         // SLT(1, -1) = 0.
-        assert_eq!(const_fold(op::SLT, &[U256::from(1), neg1]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::SLT, &[U256::ONE, neg1]), Some(U256::ZERO));
         // SGT(1, -1) = 1.
-        assert_eq!(const_fold(op::SGT, &[U256::from(1), neg1]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::SGT, &[U256::ONE, neg1]), Some(U256::ONE));
     }
 
     #[test]
@@ -670,26 +670,23 @@ mod tests {
     #[test]
     fn const_fold_shl_shr() {
         // SHL(1, 0x80) = 0x100.
-        assert_eq!(
-            const_fold(op::SHL, &[U256::from(1), U256::from(0x80)]),
-            Some(U256::from(0x100)),
-        );
-        assert_eq!(const_fold(op::SHL, &[U256::from(256), U256::from(1)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::SHL, &[U256::ONE, U256::from(0x80)]), Some(U256::from(0x100)),);
+        assert_eq!(const_fold(op::SHL, &[U256::from(256), U256::ONE]), Some(U256::ZERO));
         // SHR(1, 0x80) = 0x40.
-        assert_eq!(const_fold(op::SHR, &[U256::from(1), U256::from(0x80)]), Some(U256::from(0x40)),);
-        assert_eq!(const_fold(op::SHR, &[U256::from(256), U256::from(1)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::SHR, &[U256::ONE, U256::from(0x80)]), Some(U256::from(0x40)),);
+        assert_eq!(const_fold(op::SHR, &[U256::from(256), U256::ONE]), Some(U256::ZERO));
     }
 
     #[test]
     fn const_fold_sar() {
         // SAR(1, 2) = 1.
-        assert_eq!(const_fold(op::SAR, &[U256::from(1), U256::from(2)]), Some(U256::from(1)));
+        assert_eq!(const_fold(op::SAR, &[U256::ONE, U256::from(2)]), Some(U256::ONE));
         // SAR(4, -1) = -1.
         assert_eq!(const_fold(op::SAR, &[U256::from(4), U256::MAX]), Some(U256::MAX));
         // SAR(256, -1) = -1.
         assert_eq!(const_fold(op::SAR, &[U256::from(256), U256::MAX]), Some(U256::MAX));
         // SAR(256, 1) = 0.
-        assert_eq!(const_fold(op::SAR, &[U256::from(256), U256::from(1)]), Some(U256::ZERO));
+        assert_eq!(const_fold(op::SAR, &[U256::from(256), U256::ONE]), Some(U256::ZERO));
     }
 
     /// Builds bytecode for N repetitions of `PUSH U256::MAX, PUSH U256::MAX, EXP, POP`.
@@ -811,7 +808,7 @@ mod tests {
         assert_eq!(bytecode.compiler_gas_used, 0);
         // inst layout: PUSH(0), PUSH(1), ADD(2), PUSH0(3), MSTORE(4), STOP(5).
         // The ADD result should NOT be folded — operand 1 at MSTORE should be None.
-        assert!(bytecode.const_operand(Inst::from_usize(4), 1).is_none());
+        assert!(bytecode.const_operand(Inst::new(4), 1).is_none());
     }
 
     /// Verify that a very large gas limit allows all folding to proceed.
@@ -827,7 +824,7 @@ mod tests {
 
         assert!(bytecode.compiler_gas_used > 0);
         // inst layout: PUSH(0), PUSH(1), ADD(2), PUSH0(3), MSTORE(4), STOP(5).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(4), 1), Some(U256::from(5)));
+        assert_eq!(bytecode.const_operand(Inst::new(4), 1), Some(U256::from(5)));
     }
 
     /// Exhaustively verify that `const_fold_gas` and `try_const_fold` agree on which opcodes
@@ -836,7 +833,7 @@ mod tests {
     #[test]
     fn const_fold_gas_sync() {
         let mut interner: crate::bytecode::U256Interner = crate::bytecode::Interner::new();
-        let one = U256Imm::new(U256::from(1), &mut interner);
+        let one = U256Imm::new(U256::ONE, &mut interner);
         let two = U256Imm::new(U256::from(2), &mut interner);
         let three = U256Imm::new(U256::from(3), &mut interner);
         let c1 = AbsValue::Const(one);
@@ -879,7 +876,7 @@ mod tests {
             (250, 258),
             ((1 << 31) - 4, (1 << 31) - 1),
         ];
-        let consts = [U256::ZERO, U256::from(7), U256::from(225), U256::from(1) << 224, U256::MAX];
+        let consts = [U256::ZERO, U256::from(7), U256::from(225), U256::ONE << 224, U256::MAX];
         let mut inputs: Vec<_> =
             ranges.into_iter().map(|(lo, hi)| AbsValue::Range((lo..=hi).into())).collect();
         inputs.extend(consts.into_iter().map(|c| AbsValue::Const(U256Imm::new(c, interner))));
@@ -895,7 +892,7 @@ mod tests {
             AbsValue::Top => [0u64, 1, 2, 7, 31, 32, 255, 256, (1 << 31) - 1, 1 << 31]
                 .into_iter()
                 .map(U256::from)
-                .chain([U256::from(1) << 224, U256::from(1) << 255, U256::MAX - U256::from(1)])
+                .chain([U256::ONE << 224, U256::ONE << 255, U256::MAX - U256::ONE])
                 .chain([U256::MAX])
                 .collect(),
             AbsValue::ConstSet(_) => unreachable!(),
@@ -968,88 +965,97 @@ mod tests {
         let (c16, c40, c224, c255, c256) = (c(16), c(40), c(224), c(255), c(256));
         let (c0xffff, word) = (c(0xffff), c(0x1100_2233));
         let mut c = |v: U256| AbsValue::Const(U256Imm::new(v, &mut interner));
-        let (c_big, c_max) = (c(U256::from(1) << 226), c(U256::MAX));
+        let (c_big, c_max) = (c(U256::ONE << 226), c(U256::MAX));
         let top = AbsValue::Top;
 
-        // (opcode, operands in natural order, expected bounds).
-        type Case<'a> = (u8, &'a [AbsValue], Option<(u32, u32)>);
-        let cases: &[Case<'_>] = &[
-            (op::ADD, &[r0_3, r5_9], Some((5, 12))),
-            (op::ADD, &[r0_3, top], None),
-            (op::SUB, &[r5_9, r0_3], Some((2, 9))),
+        struct Case {
+            opcode: u8,
+            operands: Vec<AbsValue>,
+            expected: Option<(u32, u32)>,
+        }
+
+        let case = |opcode, operands: &[AbsValue], expected| Case {
+            opcode,
+            operands: operands.to_vec(),
+            expected,
+        };
+        let cases = [
+            case(op::ADD, &[r0_3, r5_9], Some((5, 12))),
+            case(op::ADD, &[r0_3, top], None),
+            case(op::SUB, &[r5_9, r0_3], Some((2, 9))),
             // `1 - 4` wraps.
-            (op::SUB, &[r1_4, r1_4], None),
-            (op::SUB, &[r0_3, c1], None),
-            (op::MUL, &[r0_3, c40], Some((0, 120))),
-            (op::DIV, &[r5_9, r1_4], Some((1, 9))),
-            (op::DIV, &[r5_9, r0_3], Some((0, 9))),
-            (op::DIV, &[r5_9, top], Some((0, 9))),
-            (op::DIV, &[top, c_big], Some((0, (1 << 30) - 1))),
-            (op::DIV, &[top, c224], None),
-            (op::DIV, &[top, c0], Some((0, 0))),
-            (op::SDIV, &[r5_9, r1_4], Some((1, 9))),
-            (op::SDIV, &[r5_9, top], None),
+            case(op::SUB, &[r1_4, r1_4], None),
+            case(op::SUB, &[r0_3, c1], None),
+            case(op::MUL, &[r0_3, c40], Some((0, 120))),
+            case(op::DIV, &[r5_9, r1_4], Some((1, 9))),
+            case(op::DIV, &[r5_9, r0_3], Some((0, 9))),
+            case(op::DIV, &[r5_9, top], Some((0, 9))),
+            case(op::DIV, &[top, c_big], Some((0, (1 << 30) - 1))),
+            case(op::DIV, &[top, c224], None),
+            case(op::DIV, &[top, c0], Some((0, 0))),
+            case(op::SDIV, &[r5_9, r1_4], Some((1, 9))),
+            case(op::SDIV, &[r5_9, top], None),
             // Solar's selector dispatch indexes with `selector % 16`.
-            (op::MOD, &[top, c16], Some((0, 15))),
-            (op::MOD, &[r0_3, c5], Some((0, 3))),
-            (op::MOD, &[r5_9, r0_3], Some((0, 2))),
-            (op::MOD, &[r5_9, c_max], Some((5, 9))),
-            (op::MOD, &[top, c0], Some((0, 0))),
-            (op::MOD, &[top, top], None),
-            (op::SMOD, &[r5_9, c3], Some((0, 2))),
-            (op::SMOD, &[r5_9, c_max], Some((0, 9))),
-            (op::SMOD, &[top, c16], None),
-            (op::ADDMOD, &[r0_3, r0_3, c40], Some((0, 6))),
-            (op::ADDMOD, &[top, top, c40], Some((0, 39))),
-            (op::ADDMOD, &[top, top, c0], Some((0, 0))),
-            (op::MULMOD, &[r1_4, r1_4, top], Some((0, 16))),
-            (op::EXP, &[c2, r0_3], Some((1, 8))),
-            (op::EXP, &[r0_3, c2], Some((0, 9))),
-            (op::EXP, &[r0_3, r0_3], Some((0, 27))),
-            (op::EXP, &[c2, r0_39], None),
-            (op::SIGNEXTEND, &[c0, r0_3], Some((0, 3))),
-            (op::SIGNEXTEND, &[c0, r0_255], None),
-            (op::SIGNEXTEND, &[c1, r0_255], Some((0, 255))),
-            (op::SIGNEXTEND, &[top, r0_39], Some((0, 39))),
-            (op::LT, &[r0_3, r5_9], Some((1, 1))),
-            (op::LT, &[r5_9, r0_3], Some((0, 0))),
-            (op::LT, &[r0_3, r1_4], Some((0, 1))),
-            (op::GT, &[r5_9, r0_3], Some((1, 1))),
-            (op::SLT, &[top, c0], Some((0, 1))),
-            (op::SGT, &[r0_3, r5_9], Some((0, 0))),
-            (op::EQ, &[r0_3, r5_9], Some((0, 0))),
-            (op::EQ, &[top, top], Some((0, 1))),
-            (op::ISZERO, &[r1_4], Some((0, 0))),
-            (op::ISZERO, &[r0_3], Some((0, 1))),
-            (op::ISZERO, &[top], Some((0, 1))),
-            (op::AND, &[top, c0xffff], Some((0, 0xffff))),
-            (op::AND, &[r5_9, r0_3], Some((0, 3))),
-            (op::AND, &[top, c_max], None),
-            (op::OR, &[r5_9, r1_4], Some((5, 15))),
-            (op::OR, &[r0_3, top], None),
-            (op::XOR, &[r5_9, r0_3], Some((0, 15))),
-            (op::NOT, &[r0_3], None),
-            (op::BYTE, &[r(28, 31), word], Some((0x00, 0x33))),
-            (op::BYTE, &[r(30, 40), word], Some((0, 0x33))),
-            (op::BYTE, &[top, top], Some((0, 255))),
-            (op::BYTE, &[r(0, 32), r0_39], Some((0, 39))),
-            (op::SHL, &[r0_3, c1], Some((1, 8))),
-            (op::SHL, &[c256, top], Some((0, 0))),
-            (op::SHL, &[r(0, 40), c1], None),
-            (op::SHR, &[c224, top], None),
-            (op::SHR, &[r(225, 230), top], Some((0, (1 << 31) - 1))),
-            (op::SHR, &[c255, top], Some((0, 1))),
-            (op::SHR, &[r0_3, r(16, 31)], Some((2, 31))),
-            (op::SHR, &[r(0, 16), c_big], None),
-            (op::SHR, &[r(222, 230), c_big], Some((0, 16))),
-            (op::SAR, &[r0_3, r(16, 31)], Some((2, 31))),
-            (op::SAR, &[r(220, 230), c_max], None),
-            (op::CLZ, &[r1_4], Some((253, 255))),
-            (op::CLZ, &[r0_3], Some((254, 256))),
-            (op::CLZ, &[top], Some((0, 256))),
-            (op::CALLDATALOAD, &[r0_3], None),
+            case(op::MOD, &[top, c16], Some((0, 15))),
+            case(op::MOD, &[r0_3, c5], Some((0, 3))),
+            case(op::MOD, &[r5_9, r0_3], Some((0, 2))),
+            case(op::MOD, &[r5_9, c_max], Some((5, 9))),
+            case(op::MOD, &[top, c0], Some((0, 0))),
+            case(op::MOD, &[top, top], None),
+            case(op::SMOD, &[r5_9, c3], Some((0, 2))),
+            case(op::SMOD, &[r5_9, c_max], Some((0, 9))),
+            case(op::SMOD, &[top, c16], None),
+            case(op::ADDMOD, &[r0_3, r0_3, c40], Some((0, 6))),
+            case(op::ADDMOD, &[top, top, c40], Some((0, 39))),
+            case(op::ADDMOD, &[top, top, c0], Some((0, 0))),
+            case(op::MULMOD, &[r1_4, r1_4, top], Some((0, 16))),
+            case(op::EXP, &[c2, r0_3], Some((1, 8))),
+            case(op::EXP, &[r0_3, c2], Some((0, 9))),
+            case(op::EXP, &[r0_3, r0_3], Some((0, 27))),
+            case(op::EXP, &[c2, r0_39], None),
+            case(op::SIGNEXTEND, &[c0, r0_3], Some((0, 3))),
+            case(op::SIGNEXTEND, &[c0, r0_255], None),
+            case(op::SIGNEXTEND, &[c1, r0_255], Some((0, 255))),
+            case(op::SIGNEXTEND, &[top, r0_39], Some((0, 39))),
+            case(op::LT, &[r0_3, r5_9], Some((1, 1))),
+            case(op::LT, &[r5_9, r0_3], Some((0, 0))),
+            case(op::LT, &[r0_3, r1_4], Some((0, 1))),
+            case(op::GT, &[r5_9, r0_3], Some((1, 1))),
+            case(op::SLT, &[top, c0], Some((0, 1))),
+            case(op::SGT, &[r0_3, r5_9], Some((0, 0))),
+            case(op::EQ, &[r0_3, r5_9], Some((0, 0))),
+            case(op::EQ, &[top, top], Some((0, 1))),
+            case(op::ISZERO, &[r1_4], Some((0, 0))),
+            case(op::ISZERO, &[r0_3], Some((0, 1))),
+            case(op::ISZERO, &[top], Some((0, 1))),
+            case(op::AND, &[top, c0xffff], Some((0, 0xffff))),
+            case(op::AND, &[r5_9, r0_3], Some((0, 3))),
+            case(op::AND, &[top, c_max], None),
+            case(op::OR, &[r5_9, r1_4], Some((5, 15))),
+            case(op::OR, &[r0_3, top], None),
+            case(op::XOR, &[r5_9, r0_3], Some((0, 15))),
+            case(op::NOT, &[r0_3], None),
+            case(op::BYTE, &[r(28, 31), word], Some((0x00, 0x33))),
+            case(op::BYTE, &[r(30, 40), word], Some((0, 0x33))),
+            case(op::BYTE, &[top, top], Some((0, 255))),
+            case(op::BYTE, &[r(0, 32), r0_39], Some((0, 39))),
+            case(op::SHL, &[r0_3, c1], Some((1, 8))),
+            case(op::SHL, &[c256, top], Some((0, 0))),
+            case(op::SHL, &[r(0, 40), c1], None),
+            case(op::SHR, &[c224, top], None),
+            case(op::SHR, &[r(225, 230), top], Some((0, (1 << 31) - 1))),
+            case(op::SHR, &[c255, top], Some((0, 1))),
+            case(op::SHR, &[r0_3, r(16, 31)], Some((2, 31))),
+            case(op::SHR, &[r(0, 16), c_big], None),
+            case(op::SHR, &[r(222, 230), c_big], Some((0, 16))),
+            case(op::SAR, &[r0_3, r(16, 31)], Some((2, 31))),
+            case(op::SAR, &[r(220, 230), c_max], None),
+            case(op::CLZ, &[r1_4], Some((253, 255))),
+            case(op::CLZ, &[r0_3], Some((254, 256))),
+            case(op::CLZ, &[top], Some((0, 256))),
+            case(op::CALLDATALOAD, &[r0_3], None),
         ];
-        for &(opcode, operands, expected) in cases {
+        for Case { opcode, operands, expected } in cases {
             let inputs: Vec<_> = operands.iter().rev().copied().collect();
             let folded = try_range_fold(opcode, &inputs, &mut interner).map(|v| {
                 let r = v.bounds().unwrap();
