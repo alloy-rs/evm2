@@ -18,6 +18,8 @@ core::cfg_select! {
     }
 }
 
+#[cfg(dispatch_match)]
+pub(crate) use imp::MatchLoop;
 pub(in crate::interpreter) use imp::run;
 
 #[inline(always)]
@@ -161,6 +163,26 @@ where
     crate::for_each_spec!([] make_selector_tables)
 }
 
+/// Returns the match loop of each spec of selector `F`.
+#[cfg(dispatch_match)]
+const fn make_selector_match_loops<T, F, const CUSTOM_SPEC_ID: u32>()
+-> [MatchLoop<T>; crate::SpecId::COUNT]
+where
+    T: EvmTypesHost,
+    F: EvmConfigSelector<T>,
+{
+    macro_rules! make_selector_match_loops {
+        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {
+            [$(
+                imp::run_match::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>>
+                    as MatchLoop<T>,
+            )*]
+        };
+    }
+
+    crate::for_each_spec!([] make_selector_match_loops)
+}
+
 pub(crate) struct ConfigInstrTables<T, C>(core::marker::PhantomData<fn() -> (T, C)>);
 
 impl<T, C> ConfigInstrTables<T, C>
@@ -178,6 +200,8 @@ where
                 [C::BASE_SPEC_ID as usize],
         ),
     );
+    #[cfg(dispatch_match)]
+    pub(crate) const MATCH_LOOP: MatchLoop<T> = imp::run_match::<T, C>;
     pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, DynInspector>(
         Some(
             &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSPECT_INSTRUCTIONS
@@ -203,6 +227,9 @@ where
         &make_selector_tables::<T, F, NoInspector, CUSTOM_SPEC_ID>();
     pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
         &make_selector_tables::<T, F, DynInspector, CUSTOM_SPEC_ID>();
+    #[cfg(dispatch_match)]
+    pub(crate) const MATCH_LOOPS: [MatchLoop<T>; crate::SpecId::COUNT] =
+        make_selector_match_loops::<T, F, CUSTOM_SPEC_ID>();
 }
 
 const fn instruction_changed<T: EvmTypesHost>(

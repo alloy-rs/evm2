@@ -3,7 +3,7 @@
 use std::{ffi::OsString, process::Command};
 
 fn main() {
-    for cfg in ["cranelift", "dispatch_packed", "dispatch_unpacked", "tco"] {
+    for cfg in ["cranelift", "dispatch_match", "dispatch_packed", "dispatch_unpacked", "tco"] {
         println!("cargo:rustc-check-cfg=cfg({cfg})");
     }
     println!("cargo:rerun-if-changed=build.rs");
@@ -20,6 +20,7 @@ fn main() {
     match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco) {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
         DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
+        DispatchBackend::Match => println!("cargo:rustc-cfg=dispatch_match"),
         DispatchBackend::Packed => println!("cargo:rustc-cfg=dispatch_packed"),
         DispatchBackend::Unpacked => println!("cargo:rustc-cfg=dispatch_unpacked"),
     }
@@ -28,6 +29,7 @@ fn main() {
 enum DispatchBackend {
     Auto,
     Tco,
+    Match,
     Packed,
     Unpacked,
 }
@@ -41,10 +43,11 @@ impl DispatchBackend {
         match value {
             "" | "auto" => Self::Auto,
             "tco" => Self::Tco,
+            "match" => Self::Match,
             "packed" => Self::Packed,
             "unpacked" => Self::Unpacked,
             _ => panic!(
-                "invalid EVM2_DISPATCH_BACKEND={value:?}; expected auto, tco, packed, or unpacked"
+                "invalid EVM2_DISPATCH_BACKEND={value:?}; expected auto, tco, match, packed, or unpacked"
             ),
         }
     }

@@ -12,6 +12,9 @@ use crate::{
 use core::fmt::Debug;
 use derive_where::derive_where;
 
+#[cfg(dispatch_match)]
+use crate::interpreter::dispatch::MatchLoop;
+
 /// Runtime EVM type family.
 ///
 /// Defines the concrete host, transaction, runtime spec-id, and config selector types used by an
@@ -137,6 +140,9 @@ pub struct ExecutionConfig<T: EvmTypesHost> {
     pub(crate) instructions: &'static InstrTable<T>,
     #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
+    #[cfg(dispatch_match)]
+    #[derive_where(skip)]
+    pub(crate) match_loop: MatchLoop<T>,
 }
 
 impl<T: EvmTypesHost> ExecutionConfig<T> {
@@ -162,6 +168,8 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
             inspect_instructions:
                 &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
+            #[cfg(dispatch_match)]
+            match_loop: SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::MATCH_LOOPS[i],
         }
     }
 
@@ -175,6 +183,8 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             opcode_config: C::OPCODE_CONFIG,
             instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
             inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
+            #[cfg(dispatch_match)]
+            match_loop: ConfigInstrTables::<T, C>::MATCH_LOOP,
         }
     }
 
