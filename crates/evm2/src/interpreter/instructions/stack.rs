@@ -34,7 +34,7 @@ pub fn dupn(cx: _) -> Result {
 pub fn swapn(cx: _) -> Result {
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
-    stack.exchange(0, n as usize)
+    stack.swap(n as usize)
 }
 
 #[instruction(no_stack_preamble)]
@@ -117,7 +117,7 @@ mod tests {
 
         let interp = run(RunConfig::new([op::PUSH1, 0x01, op::PUSH1, 0x02, op::POP, op::STOP]));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
     }
 
     #[test]
@@ -174,10 +174,7 @@ mod tests {
 
     fn assert_push_opcode(opcode: u8, n: usize) {
         for bytes in [vec![0; n], vec![n as u8; n], (1..=n as u8).collect::<Vec<_>>()] {
-            let mut code = Vec::new();
-            code.push(opcode);
-            code.extend_from_slice(&bytes);
-            code.push(op::STOP);
+            let code = [&[opcode][..], &bytes[..], &[op::STOP][..]].concat();
 
             let interp = run(RunConfig::new(code));
             assert_matches!(interp.err, InstrStop::Stop);
@@ -332,8 +329,8 @@ mod tests {
         let interp = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack().len(), 18);
-        assert_eq!(interp.stack()[17], Word::from(1));
-        assert_eq!(interp.stack()[0], Word::from(1));
+        assert_eq!(interp.stack()[17], Word::ONE);
+        assert_eq!(interp.stack()[0], Word::ONE);
         for i in 1..17 {
             assert_eq!(interp.stack()[i], 0);
         }
@@ -346,7 +343,7 @@ mod tests {
         let interp = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack().len(), 146);
-        assert_eq!(interp.stack()[145], Word::from(1));
+        assert_eq!(interp.stack()[145], Word::ONE);
     }
 
     #[test]
@@ -357,7 +354,7 @@ mod tests {
         let interp = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack().len(), 18);
-        assert_eq!(interp.stack()[17], Word::from(1));
+        assert_eq!(interp.stack()[17], Word::ONE);
         assert_eq!(interp.stack()[0], Word::from(2));
         for i in 1..17 {
             assert_eq!(interp.stack()[i], 0);
@@ -389,7 +386,7 @@ mod tests {
         ])
         .spec(SpecId::AMSTERDAM));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1), Word::from(0), Word::from(2)]);
+        assert_eq!(interp.stack(), [Word::ONE, Word::ZERO, Word::from(2)]);
 
         let mut code = Vec::new();
         for value in 0..23 {

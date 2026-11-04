@@ -72,13 +72,18 @@ fn struct_log_omits_zero_refund_and_empty_memory() {
 fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
     // Cover all call-like opcodes, a precompile with no steps, an empty creation,
     // a reverting grandchild, and a final call opcode that failed before recording a child.
-    type Fixture = (Option<usize>, usize, &'static [usize], &'static [u8]);
-    let fixtures: &[Fixture] = &[
-        (
-            None,
-            0,
-            &[1, 2, 4, 5, 6],
-            &[
+    struct Fixture {
+        parent: Option<usize>,
+        depth: usize,
+        children: &'static [usize],
+        ops: &'static [u8],
+    }
+    let fixtures = [
+        Fixture {
+            parent: None,
+            depth: 0,
+            children: &[1, 2, 4, 5, 6],
+            ops: &[
                 op::SSTORE,
                 op::CALL,
                 op::CALLCODE,
@@ -87,18 +92,23 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
                 op::CREATE2,
                 op::CALL,
             ],
-        ),
-        (Some(0), 1, &[], &[]),
-        (Some(0), 1, &[3], &[op::SSTORE, op::DELEGATECALL, op::SLOAD, op::STOP]),
-        (Some(2), 2, &[], &[op::SSTORE, op::REVERT]),
-        (Some(0), 1, &[], &[op::RETURN]),
-        (Some(0), 1, &[], &[]),
-        (Some(0), 1, &[], &[op::STOP]),
+        },
+        Fixture { parent: Some(0), depth: 1, children: &[], ops: &[] },
+        Fixture {
+            parent: Some(0),
+            depth: 1,
+            children: &[3],
+            ops: &[op::SSTORE, op::DELEGATECALL, op::SLOAD, op::STOP],
+        },
+        Fixture { parent: Some(2), depth: 2, children: &[], ops: &[op::SSTORE, op::REVERT] },
+        Fixture { parent: Some(0), depth: 1, children: &[], ops: &[op::RETURN] },
+        Fixture { parent: Some(0), depth: 1, children: &[], ops: &[] },
+        Fixture { parent: Some(0), depth: 1, children: &[], ops: &[op::STOP] },
     ];
     let mut nodes: Vec<_> = fixtures
         .iter()
         .enumerate()
-        .map(|(idx, &(parent, depth, children, ops))| {
+        .map(|(idx, &Fixture { parent, depth, children, ops })| {
             CallTraceNode {
                 idx,
                 parent,
@@ -240,7 +250,7 @@ fn storage_snapshots_accumulate_and_skip_failed_steps() {
     let mut sload = test_step(1, op::SLOAD);
     sload.storage_change = Some(Box::new(StorageChange {
         key: U256::ZERO,
-        value: U256::from(1),
+        value: U256::ONE,
         had_value: None,
         reason: StorageChangeReason::SLOAD,
     }));
@@ -267,7 +277,7 @@ fn storage_snapshots_accumulate_and_skip_failed_steps() {
         assert!(frame.struct_logs[0].storage.is_none());
         assert_eq!(
             frame.struct_logs[1].storage,
-            (!disable_storage).then(|| BTreeMap::from([(B256::ZERO, U256::from(1).into())]))
+            (!disable_storage).then(|| BTreeMap::from([(B256::ZERO, B256::with_last_byte(1))]))
         );
         assert!(frame.struct_logs[2].storage.is_none());
         assert!(frame.struct_logs[3].storage.is_none());

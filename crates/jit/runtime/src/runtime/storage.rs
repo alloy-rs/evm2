@@ -244,13 +244,11 @@ mod tests {
     use std::io::Read;
 
     fn artifact_key(code_hash: B256) -> ArtifactKey {
-        ArtifactKey {
-            runtime: RuntimeCacheKey { code_hash, spec_id: SpecId::OSAKA },
-            backend: BackendSelection::Llvm,
-            opt_level: OptimizationLevel::Default,
-            abi_version: crate::ABI_VERSION,
-            config_hash: B256::ZERO,
-        }
+        ArtifactKey::llvm(
+            RuntimeCacheKey { code_hash, spec_id: SpecId::OSAKA },
+            OptimizationLevel::Default,
+            B256::ZERO,
+        )
     }
 
     fn manifest(key: ArtifactKey, artifact_len: usize) -> ArtifactManifest {

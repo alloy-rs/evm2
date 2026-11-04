@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn padding_releases_shared_input() {
-        let raw = Bytes::copy_from_slice(&[op::PUSH32]);
+        let raw = Bytes::from([op::PUSH32]);
         let padded = pad_legacy(raw.clone());
         assert!(raw.is_unique());
         assert_ne!(padded.as_ptr(), raw.as_ptr());
