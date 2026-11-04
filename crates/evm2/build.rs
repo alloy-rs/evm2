@@ -17,7 +17,9 @@ fn main() {
     let is_wasm = target_is_wasm();
     let target_pointer_width = target_pointer_width();
     let no_tco = env("CARGO_FEATURE_NO_TCO").is_some() || clif;
-    match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco) {
+    // Cranelift compiles the 256 inlined handlers per spec slowly.
+    let use_match = !clif && target_prefers_match();
+    match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco, use_match) {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
         DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
         DispatchBackend::Match => println!("cargo:rustc-cfg=dispatch_match"),
@@ -52,11 +54,23 @@ impl DispatchBackend {
         }
     }
 
-    fn resolve(self, is_wasm: bool, target_pointer_width: Option<u32>, no_tco: bool) -> Self {
+    fn resolve(
+        self,
+        is_wasm: bool,
+        target_pointer_width: Option<u32>,
+        no_tco: bool,
+        use_match: bool,
+    ) -> Self {
         match self {
             // `rust-preserve-none` passes arguments on the stack on 32-bit targets.
             Self::Auto if !is_wasm && target_pointer_width == Some(64) => {
-                if !no_tco && rustc_is_nightly() { Self::Tco } else { Self::Packed }
+                if !no_tco && rustc_is_nightly() {
+                    Self::Tco
+                } else if use_match {
+                    Self::Match
+                } else {
+                    Self::Packed
+                }
             }
             Self::Auto => Self::Unpacked,
             concrete => concrete,
@@ -71,6 +85,17 @@ fn target_is_wasm() -> bool {
         .and_then(|value| value.into_string().ok())
         .unwrap_or_default();
     target_arch.starts_with("wasm") || target_family.split(',').any(|family| family == "wasm")
+}
+
+/// Whether the stable `auto` backend is `match`: the targets where it measured faster than
+/// `packed` overall.
+fn target_prefers_match() -> bool {
+    let target_arch =
+        env("CARGO_CFG_TARGET_ARCH").and_then(|value| value.into_string().ok()).unwrap_or_default();
+    let target_vendor = env("CARGO_CFG_TARGET_VENDOR")
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_default();
+    target_arch == "x86_64" || (target_arch == "aarch64" && target_vendor == "apple")
 }
 
 fn target_pointer_width() -> Option<u32> {
