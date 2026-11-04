@@ -7,7 +7,7 @@ use crate::tracing::{
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, format, vec, vec::Vec};
 use alloy_primitives::{
     Address, B256, Bytes, U256,
-    map::{AddressSet, Entry, HashMap},
+    map::{AddressMap, AddressSet, Entry, HashMap},
 };
 use alloy_rpc_types_trace::geth::{
     AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode, GethDefaultTracingOptions,
@@ -144,7 +144,7 @@ impl<'a> GethTraceBuilder<'a> {
         &self,
         main_trace_node: &CallTraceNode,
         opts: &GethDefaultTracingOptions,
-        storage: &mut HashMap<Address, BTreeMap<B256, B256>>,
+        storage: &mut AddressMap<BTreeMap<B256, B256>>,
         struct_logs: &mut Vec<StructLog>,
         mut stacks: Option<&mut [StackSnapshots]>,
     ) {
@@ -177,7 +177,7 @@ impl<'a> GethTraceBuilder<'a> {
         &self,
         main_trace_node: &CallTraceNode,
         opts: &GethDefaultTracingOptions,
-        storage: &mut HashMap<Address, BTreeMap<B256, B256>>,
+        storage: &mut AddressMap<BTreeMap<B256, B256>>,
         struct_logs: &mut Vec<StructLog>,
         json_len: &mut u64,
         mut stacks: Option<&mut [StackSnapshots]>,
@@ -303,7 +303,7 @@ impl<'a> GethTraceBuilder<'a> {
             },
         );
         let mut struct_logs = Vec::with_capacity(capacity);
-        let mut storage = HashMap::default();
+        let mut storage = AddressMap::default();
         self.fill_geth_trace(main_trace_node, &opts, &mut storage, &mut struct_logs, stacks);
 
         let gas = gas.filter(|_| self.is_eip8037_enabled());
@@ -811,7 +811,7 @@ mod tests {
     use evm2::{
         AccountInfo, DatabaseError,
         bytecode::Bytecode,
-        evm::{CacheDB, DbResult, DynDatabase, EmptyDB},
+        evm::{DbResult, DynDatabase, InMemoryDB},
         interpreter::{InstrStop, Word, op},
     };
 
@@ -929,11 +929,11 @@ mod tests {
         state.insert_account(
             prefunded_addr,
             Some(AccountInfo::default().with_balance(U256::from(10))),
-            Some(AccountInfo::default().with_balance(U256::from(1)).with_nonce(1)),
+            Some(AccountInfo::default().with_balance(U256::ONE).with_nonce(1)),
         );
         state.insert_account(empty_addr, None, Some(AccountInfo::default().with_nonce(1)));
 
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &prefunded_addr,
             AccountInfo::default().with_balance(U256::from(10)),
@@ -967,7 +967,7 @@ mod tests {
 
         state.insert_account(address, None, Some(account));
 
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         let builder = GethTraceBuilder::new(Vec::new());
         let frame = builder.geth_prestate_diff_traces(&state, &mut db, true, false).unwrap();
 
@@ -1007,7 +1007,7 @@ mod tests {
         let nonce_account = Address::with_last_byte(4);
         let contract = Address::with_last_byte(5);
         let code = Bytecode::new_legacy(Bytes::from_static(&[0x00]));
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(&empty_beneficiary, AccountInfo::default());
         db.insert_account_info(
             &funded_beneficiary,
@@ -1021,7 +1021,7 @@ mod tests {
             state.insert_account(
                 address,
                 None,
-                Some(AccountInfo::default().with_balance(U256::from(1))),
+                Some(AccountInfo::default().with_balance(U256::ONE)),
             );
         }
         // An account emptied by execution must retain its original prestate.
@@ -1065,7 +1065,7 @@ mod tests {
                 Bytecode::default(),
             ] {
                 let current = original.clone().with_code(next_code.clone());
-                let mut db = CacheDB::new(EmptyDB::default());
+                let mut db = InMemoryDB::default();
                 db.insert_account_info(&address, original.clone());
                 let mut state = PendingState::default();
                 state.insert_account(address, Some(original.clone()), Some(current.clone()));

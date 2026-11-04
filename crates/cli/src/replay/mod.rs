@@ -466,14 +466,15 @@ fn ggas(gas_used: u128) -> f64 {
 
 #[cfg(test)]
 mod collect_tests {
-    use super::collect_json_files;
+    use super::{NameFilter, PathBuf, collect_json_files, file_selected};
     use std::{
         fs,
+        path::Path,
         sync::atomic::{AtomicUsize, Ordering},
     };
 
     /// Creates a unique scratch directory under the system temp dir.
-    fn scratch_dir() -> std::path::PathBuf {
+    fn scratch_dir() -> PathBuf {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir()
@@ -509,9 +510,6 @@ mod collect_tests {
 
     #[test]
     fn file_filter_matches_path_or_file_name() {
-        use super::{NameFilter, file_selected};
-        use std::path::Path;
-
         let path = Path::new("test-fixtures/frontier/create/create_one_byte.json");
 
         // An empty filter selects everything.

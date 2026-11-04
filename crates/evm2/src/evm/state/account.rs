@@ -71,15 +71,7 @@ impl core::hash::Hash for AccountInfo {
 impl Default for AccountInfo {
     #[inline]
     fn default() -> Self {
-        Self {
-            balance: U256::ZERO,
-            nonce: 0,
-            code_hash: KECCAK256_EMPTY,
-            code: Some(Bytecode::default()),
-            #[cfg(feature = "account-ext")]
-            extension: super::AccountExtension::new(),
-            _non_exhaustive: (),
-        }
+        Self::new(U256::ZERO, 0, KECCAK256_EMPTY, Some(Bytecode::default()))
     }
 }
 
@@ -458,7 +450,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Returns whether the account was created in the current transaction.
     #[inline]
     pub const fn is_created(&self) -> bool {
-        self.tracked.present.is_some() && self.tracked.is_created()
+        self.exists() && self.tracked.is_created()
     }
 
     /// Returns whether the account is dead by the EIP-161 definition while existing in the overlay.
@@ -479,7 +471,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if features.contains(EvmFeatures::EIP161) {
             return self.tracked.present.as_ref().is_none_or(AccountInfo::is_empty);
         }
-        self.tracked.present.is_none() && !self.tracked.flags.contains(AccountFlags::TOUCHED)
+        self.tracked.present.is_none() && !self.is_touched()
     }
 
     /// Loads the account's bytecode, reading it from the backing database by code hash when it is
@@ -532,7 +524,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// finalization even when no field changes.
     #[inline]
     pub fn touch(&mut self) {
-        if !self.tracked.flags.contains(AccountFlags::TOUCHED) {
+        if !self.is_touched() {
             self.record_change();
             self.tracked.flags.insert(AccountFlags::TOUCHED);
         }
@@ -559,9 +551,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// base warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        if self.tracked.flags.contains(AccountFlags::WARM)
-            || self.inner.prewarm_set.is_warm(&self.address)
-        {
+        if self.is_warm() {
             return false;
         }
         self.record_change();
@@ -724,7 +714,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub(crate) fn reset_selfdestructed_for_finalization(&mut self) {
         let balance = self.balance();
-        self.tracked.present = Some(AccountInfo::default().with_balance(balance));
+        self.tracked.present = Some(empty_account().with_balance(balance));
     }
 
     /// Overrides the live balance and the balance restored by this handle's revert snapshot,
@@ -763,9 +753,9 @@ mod tests {
 
     #[test]
     fn transfer_to_self_requires_balance() {
-        let address = Address::from([0x77; 20]);
+        let address = Address::repeat_byte(0x77);
         let mut database = CacheDB::default();
-        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(3)));
+        database.insert_account_info(&address, empty_account().with_balance(Word::from(3)));
         let mut state = State::new(database);
 
         assert!(!state.transfer(&address, &address, &Word::from(4)).unwrap());
@@ -774,7 +764,7 @@ mod tests {
 
     #[test]
     fn journaled_account_mutations_journal_and_roll_back() {
-        let address = Address::from([0x88; 20]);
+        let address = Address::repeat_byte(0x88);
         let mut state = State::new(CacheDB::default());
 
         let checkpoint = state.checkpoint();
@@ -808,7 +798,7 @@ mod tests {
 
     #[test]
     fn account_info_set_code_is_published_on_commit() {
-        let address = Address::from([0x8c; 20]);
+        let address = Address::repeat_byte(0x8c);
         let code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
         let mut state = State::new(CacheDB::default());
 
@@ -821,11 +811,9 @@ mod tests {
 
     #[test]
     fn changed_code_requires_new_non_empty_code_hash() {
-        use alloy_primitives::Bytes;
-
         let code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
-        let with_code = AccountInfo::default().with_code(code.clone());
-        let other = AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0])));
+        let with_code = empty_account().with_code(code.clone());
+        let other = empty_account().with_code(Bytecode::new_raw(Bytes::from_static(&[0])));
 
         let created = Account::new(None, Some(with_code.clone()));
         assert_eq!(created.changed_code(), Some((with_code.code_hash, &code)));
@@ -837,21 +825,16 @@ mod tests {
             Account::new(Some(with_code.clone()), Some(with_code.clone())).changed_code(),
             None
         );
-        assert_eq!(
-            Account::new(Some(with_code), Some(AccountInfo::default())).changed_code(),
-            None
-        );
-        assert_eq!(Account::new(None, Some(AccountInfo::default())).changed_code(), None);
+        assert_eq!(Account::new(Some(with_code), Some(empty_account())).changed_code(), None);
+        assert_eq!(Account::new(None, Some(empty_account())).changed_code(), None);
     }
 
     #[test]
     fn loaded_code_is_seeded_with_account_code_hash() {
-        use alloy_primitives::Bytes;
-
         // A hash that is not the keccak of the code proves `hash_slow` returns the seeded value
         // instead of hashing.
         let seed = B256::repeat_byte(0x5e);
-        let address = Address::from([0x8d; 20]);
+        let address = Address::repeat_byte(0x8d);
         let fresh = || Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
         assert_ne!(fresh().hash_slow(), seed);
 
@@ -863,23 +846,20 @@ mod tests {
         assert_eq!(state.account(&address).unwrap().load_code().unwrap().hash_slow(), seed);
         assert_eq!(state.account(&address).unwrap().original_code().unwrap().hash_slow(), seed);
 
-        let overlay_address = Address::from([0x8e; 20]);
+        let overlay_address = Address::repeat_byte(0x8e);
         state.account(&overlay_address).unwrap().set_code(seed, fresh());
         assert_eq!(state.account(&overlay_address).unwrap().load_code().unwrap().hash_slow(), seed);
     }
 
     #[test]
     fn journaled_existing_account_field_changes_roll_back_granularly() {
-        let address = Address::from([0x8b; 20]);
+        let address = Address::repeat_byte(0x8b);
         let original_code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
         let original_code_hash = original_code.hash_slow();
         let mut database = CacheDB::default();
         database.insert_account_info(
             &address,
-            AccountInfo::default()
-                .with_balance(Word::from(10))
-                .with_nonce(2)
-                .with_code(original_code),
+            empty_account().with_balance(Word::from(10)).with_nonce(2).with_code(original_code),
         );
         let mut state = State::new(database);
 
@@ -909,9 +889,9 @@ mod tests {
 
     #[test]
     fn journaled_account_read_only_handle_journals_nothing() {
-        let address = Address::from([0x89; 20]);
+        let address = Address::repeat_byte(0x89);
         let mut database = CacheDB::default();
-        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(5)));
+        database.insert_account_info(&address, empty_account().with_balance(Word::from(5)));
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
@@ -927,9 +907,9 @@ mod tests {
 
     #[test]
     fn journaled_account_skip_cold_load_signals_skip() {
-        let address = Address::from([0x8a; 20]);
+        let address = Address::repeat_byte(0x8a);
         let mut database = CacheDB::default();
-        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(5)));
+        database.insert_account_info(&address, empty_account().with_balance(Word::from(5)));
         let mut state = State::new(database);
 
         // A cold, not-yet-loaded account signals the skip instead of reading the database.
@@ -947,7 +927,7 @@ mod tests {
     #[test]
     fn account_overrides_update_only_selected_snapshot_fields() {
         let address = Address::with_last_byte(0x90);
-        let original = AccountInfo::default().with_balance(Word::from(100)).with_nonce(7);
+        let original = empty_account().with_balance(Word::from(100)).with_nonce(7);
         for (override_balance, override_nonce) in [(true, false), (false, true), (true, true)] {
             let mut db = CacheDB::default();
             db.insert_account_info(&address, original.clone());
@@ -1012,7 +992,7 @@ mod tests {
                     assert_eq!((account.balance(), account.nonce()), (balance, nonce));
                     assert!(!account.is_touched());
                     assert!(!account.is_warm());
-                    account.set_balance(Word::from(1));
+                    account.set_balance(Word::ONE);
                     account.set_nonce(1);
                 }
                 assert_eq!(state.checkpoint().journal_len(), checkpoint.journal_len() + 1);
@@ -1030,7 +1010,7 @@ mod tests {
     #[test]
     fn account_overrides_preserve_earlier_handles_snapshots() {
         let address = Address::with_last_byte(0x92);
-        let original = AccountInfo::default().with_balance(Word::from(100)).with_nonce(7);
+        let original = empty_account().with_balance(Word::from(100)).with_nonce(7);
         let mut db = CacheDB::default();
         db.insert_account_info(&address, original.clone());
         let mut state = State::new(db);

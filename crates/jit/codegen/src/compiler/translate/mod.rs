@@ -398,7 +398,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
 
         // The bytecode is guaranteed to have at least one instruction.
-        let first_inst_block = fx.inst_entries[Inst::from_usize(0)];
+        let first_inst_block = fx.inst_entries[Inst::new(0)];
         let post_entry_block = fx.bcx.create_block_after(entry_block, "entry.post");
         fx.bcx.br(post_entry_block);
 
@@ -1336,7 +1336,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             // Walk backward to find the section head for diagnostic context.
             let mut head = inst;
             for i in (0..inst.index()).rev() {
-                let idx = crate::Inst::from_usize(i);
+                let idx = Inst::new(i);
                 let d = self.bytecode.inst(idx);
                 if d.is_dead_code() {
                     continue;
@@ -1349,7 +1349,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             // Dump the section from head to current inst.
             let mut section_dump = String::new();
             for i in head.index()..=inst.index() {
-                let idx = crate::Inst::from_usize(i);
+                let idx = Inst::new(i);
                 let d = self.bytecode.inst(idx);
                 if d.is_dead_code() {
                     continue;

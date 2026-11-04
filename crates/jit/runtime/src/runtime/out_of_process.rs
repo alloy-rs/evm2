@@ -19,6 +19,7 @@ use evm2::{
     version::{GasId, GasParams},
 };
 use evm2_jit_codegen::HostLayout;
+use eyre::OptionExt;
 use rayon::ThreadPoolBuilder;
 use std::{
     cell::RefCell,
@@ -797,8 +798,7 @@ fn read_helper_request<R: Read + ?Sized>(stdin: &mut BufReader<R>) -> eyre::Resu
             eyre::bail!("JIT helper received duplicate init");
         }
     };
-    let spec_id = SpecId::try_from_u32(u32::from(req.spec_id))
-        .ok_or_else(|| eyre::eyre!("invalid spec id"))?;
+    let spec_id = SpecId::try_from_u32(u32::from(req.spec_id)).ok_or_eyre("invalid spec id")?;
     let opt_level = opt_level_from_u8(req.opt_level)?;
 
     let job = CompileJob {
@@ -841,7 +841,7 @@ fn write_pause_ack<W: Write + ?Sized>(stdout: &mut BufWriter<W>, id: u64) -> eyr
 
 fn write_message<T, W: Write + ?Sized>(w: &mut BufWriter<W>, message: &T) -> std::io::Result<()>
 where
-    T: wincode::SchemaWrite<wincode::config::DefaultConfig, Src = T>,
+    T: SchemaWrite<wincode::config::DefaultConfig, Src = T>,
 {
     wincode::serialize_into(w, message)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
@@ -900,9 +900,7 @@ fn gas_params_to_pairs(gas_params: &GasParams) -> GasParamPairs {
 }
 
 fn gas_params_from_pairs(pairs: GasParamPairs) -> eyre::Result<GasParams> {
-    if pairs.len() != GAS_PARAM_COUNT {
-        eyre::bail!("invalid gas params length: {}", pairs.len());
-    }
+    eyre::ensure!(pairs.len() == GAS_PARAM_COUNT, "invalid gas params length: {}", pairs.len());
 
     let mut seen = [false; GAS_PARAM_COUNT];
     let mut gas_params = Version::base(SpecId::default()).gas_params;
@@ -911,9 +909,7 @@ fn gas_params_from_pairs(pairs: GasParamPairs) -> eyre::Result<GasParams> {
         let Some(gas_id) = GasId::from_usize(index) else {
             eyre::bail!("invalid gas param id: {id}");
         };
-        if seen[index] {
-            eyre::bail!("duplicate gas param id: {id}");
-        }
+        eyre::ensure!(!seen[index], "duplicate gas param id: {id}");
         seen[index] = true;
         gas_params.set(gas_id, value);
     }

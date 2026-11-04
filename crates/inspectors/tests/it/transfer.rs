@@ -1,10 +1,11 @@
 //! Transfer tests
 
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output,
-    SpecId, TestDbExt, TransactTo, TxEnv, a,
+    AccountInfo, Bytecode, Context, DatabaseCommit, ExecutionResult, Output, SpecId, TestDbExt,
+    TransactTo, TxEnv, a,
 };
-use alloy_primitives::{Address, B256, Log, U256, address, b256, hex};
+use alloy_primitives::{Address, B256, Log, U256, address, bytes, hex};
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::{
     tracing::{TracingInspector, TracingInspectorConfig},
     transfer::{
@@ -29,7 +30,7 @@ fn test_internal_transfers() {
     );
     let deployer = Address::ZERO;
 
-    let db = CacheDB::new(EmptyDB::default());
+    let db = InMemoryDB::default();
 
     let context = Context::mainnet().with_db(db).modify_cfg_chained(|c| c.spec = SpecId::LONDON);
 
@@ -62,8 +63,7 @@ fn test_internal_transfers() {
         caller: deployer,
         gas_limit: 100000000,
         kind: TransactTo::Call(addr),
-        data: hex!("830c29ae0000000000000000000000000000000000000000000000000000000000000000")
-            .into(),
+        data: bytes!("830c29ae0000000000000000000000000000000000000000000000000000000000000000"),
         value: U256::from(10),
         nonce: 0,
         ..Default::default()
@@ -113,7 +113,7 @@ fn test_internal_transfers() {
 #[test]
 fn discards_failed_create_transfer() {
     let deployer = Address::ZERO;
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.load_account(deployer).info.balance = U256::from(u64::MAX);
 
     let context = Context::mainnet().with_db(db).modify_cfg_chained(|c| c.spec = SpecId::LONDON);
@@ -123,7 +123,7 @@ fn discards_failed_create_transfer() {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Create,
-            data: hex!("fe").into(),
+            data: bytes!("fe"),
             value: U256::from(10),
             nonce: 0,
             ..Default::default()
@@ -139,7 +139,7 @@ fn discards_failed_call_transfers_and_logs() {
     let deployer = Address::ZERO;
     let caller = address!("0x1000000000000000000000000000000000000000");
     let reverter = address!("0x2000000000000000000000000000000000000000");
-    let recipient = address!("0x00000000000000000000000000000000000000ff");
+    let recipient = Address::with_last_byte(0xff);
 
     // Calls `reverter` with 1 wei, `recipient` with 100 wei (more than the balance), and
     // `recipient` with 2 wei. `reverter` forwards 1 wei to `recipient` and then reverts.
@@ -149,7 +149,7 @@ fn discards_failed_call_transfers_and_logs() {
         "6000600060006000600260ff5af150"
         "00"
     );
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.load_account(deployer).info.balance = U256::from(u64::MAX);
     db.insert_account_info(
         &caller,
@@ -158,9 +158,7 @@ fn discards_failed_call_transfers_and_logs() {
     db.insert_account_info(
         &reverter,
         AccountInfo {
-            code: Some(Bytecode::new_legacy(
-                hex!("6000600060006000600160ff5af15060006000fd").into(),
-            )),
+            code: Some(Bytecode::new_legacy(bytes!("6000600060006000600160ff5af15060006000fd"))),
             ..Default::default()
         },
     );
@@ -210,7 +208,7 @@ fn discards_failed_internal_create_transfer_and_log() {
 
     // Creates a contract with 1 wei and init code `INVALID`.
     let factory_code = hex!("60fe600053600160006001f05000");
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.load_account(deployer).info.balance = U256::from(u64::MAX);
     db.insert_account_info(
         &factory,
@@ -251,7 +249,7 @@ fn discards_internal_create_transfer_on_nonce_overflow() {
 
     // Creates a contract with 1 wei from a factory whose nonce cannot be bumped.
     let factory_code = hex!("60fe600053600160006001f05000");
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.load_account(deployer).info.balance = U256::from(u64::MAX);
     db.insert_account_info(
         &factory,
@@ -331,7 +329,7 @@ struct TransferCase {
 fn simulate_transfer_logs_match_geth() {
     let sender = a(0x1001);
     for case in CASES {
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.load_account(sender).info.balance = U256::from(10u128.pow(18));
         for &(address, code, balance, nonce) in case.accounts {
             db.insert_account_info(
@@ -390,15 +388,15 @@ fn simulate_transfer_logs_match_geth() {
 fn simulate_transfer_logs_use_eip7708_logs() {
     let sender = a(0x1001);
     let contract = a(0xc6);
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.load_account(sender).info.balance = U256::from(10u128.pow(18));
     db.insert_account_info(
         &contract,
         AccountInfo {
             balance: U256::from(7),
-            code: Some(Bytecode::new_legacy(
-                hex!("73000000000000000000000000000000000000a002ff").into(),
-            )),
+            code: Some(Bytecode::new_legacy(bytes!(
+                "73000000000000000000000000000000000000a002ff"
+            ))),
             ..Default::default()
         },
     );
@@ -467,11 +465,7 @@ const CASES: &[TransferCase] = &[
         to: Some(a(0xc4)),
         value: 0,
         input: &hex!(""),
-        expected: &[ExpectedLog::Emitted(
-            a(0xc4),
-            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000011")],
-            &hex!(""),
-        )],
+        expected: &[ExpectedLog::Emitted(a(0xc4), &[B256::with_last_byte(0x11)], &hex!(""))],
     },
     TransferCase {
         name: "selfdestruct_balance",
@@ -558,19 +552,11 @@ const CASES: &[TransferCase] = &[
         value: 0,
         input: &hex!(""),
         expected: &[
-            ExpectedLog::Emitted(
-                a(0xcb),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000021")],
-                &hex!(""),
-            ),
+            ExpectedLog::Emitted(a(0xcb), &[B256::with_last_byte(0x21)], &hex!("")),
             ExpectedLog::Transfer(a(0xcb), a(0xa001), 1),
             ExpectedLog::Emitted(a(0xcb), &[], &hex!("")),
             ExpectedLog::Transfer(a(0xcb), a(0xa001), 2),
-            ExpectedLog::Emitted(
-                a(0xcb),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000022")],
-                &hex!(""),
-            ),
+            ExpectedLog::Emitted(a(0xcb), &[B256::with_last_byte(0x22)], &hex!("")),
         ],
     },
     TransferCase {

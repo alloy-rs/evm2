@@ -2,22 +2,19 @@
 
 use crate::{
     opcode::immediate_size,
-    tracing::{
-        arena::PushTraceKind,
-        types::{
-            CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
-            TraceMemberOrder,
-        },
+    tracing::types::{
+        CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
+        TraceMemberOrder,
     },
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use alloy_consensus::{Transaction, TxEip8141, transaction::Recovered};
+use alloy_consensus::TxEip8141;
 use alloy_eips::eip8141::{ENTRY_POINT, Frame, FrameMode, FrameReceipt, FrameStatus};
-use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256};
-use alloy_rpc_types_trace::parity::StorageDelta;
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use alloy_rpc_types_trace::{geth::FlatCallConfig, parity::StorageDelta};
 use core::{mem, ops::Range};
 use evm2::{
-    Evm, EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId, TxResultExt,
+    EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId,
     ethereum::eip8141::FrameGas,
     interpreter::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
@@ -31,7 +28,7 @@ pub use arena::CallTraceArena;
 mod builder;
 pub use builder::{
     geth::{self, GethTraceBuilder},
-    parity::{self, ParityTraceBuilder},
+    parity::{self, ParityTraceBuilder, PrecompileExclusion},
 };
 
 mod config;
@@ -147,7 +144,7 @@ impl TracingInspector {
 
     /// Returns whether recording omitted a byte buffer after reaching the budget.
     pub const fn limit_exceeded(&self) -> bool {
-        self.budget.exceeded
+        self.budget.exceeded()
     }
 
     /// Resets the inspector to its initial state of [Self::new].
@@ -173,7 +170,7 @@ impl TracingInspector {
 
         // if we record steps we can reuse the individual calltracestep vecs
         if config.record_steps {
-            for node in &mut traces.arena {
+            for node in traces.nodes_mut() {
                 // move out and store the reusable steps vec
                 let mut steps = mem::take(&mut node.trace.steps);
                 // ensure steps are cleared
@@ -304,10 +301,25 @@ impl TracingInspector {
         }
     }
 
-    /// Consumes the Inspector and returns a [ParityTraceBuilder].
+    /// Consumes the Inspector and returns a [ParityTraceBuilder] that leaves out calls to
+    /// precompiles without value, see [PrecompileExclusion::ZeroValue].
     #[inline]
     pub fn into_parity_builder(self) -> ParityTraceBuilder {
-        ParityTraceBuilder::new(self.traces.arena, self.spec_id, self.config)
+        ParityTraceBuilder::new(self.traces.arena, PrecompileExclusion::ZeroValue)
+    }
+
+    /// Consumes the Inspector and returns a [ParityTraceBuilder] for geth's flatCallTracer.
+    ///
+    /// Unlike [Self::into_parity_builder], this keeps or leaves out calls to precompiles as the
+    /// tracer's `includePrecompiles` option says.
+    #[inline]
+    pub fn into_flat_call_builder(self, config: &FlatCallConfig) -> ParityTraceBuilder {
+        let exclusion = if config.include_precompiles.unwrap_or_default() {
+            PrecompileExclusion::None
+        } else {
+            PrecompileExclusion::CallAndStaticCall
+        };
+        ParityTraceBuilder::new(self.traces.arena, exclusion)
     }
 
     /// Consumes the Inspector and returns a [GethTraceBuilder].
@@ -323,30 +335,7 @@ impl TracingInspector {
     /// starting a new transaction: [`Self::fuse`]
     #[inline]
     pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
-        GethTraceBuilder::new_borrowed(&self.traces.arena).with_features(self.features)
-    }
-
-    /// Returns true if we're no longer in the context of the root call.
-    const fn is_deep(&self) -> bool {
-        // the root call will always be the first entry in the trace stack
-        !self.trace_stack.is_empty()
-    }
-
-    /// Returns true if this a call to a precompile contract.
-    ///
-    /// Returns true if the `to` address is a precompile contract and the value is zero.
-    #[inline]
-    fn is_precompile_call<T: EvmTypes>(
-        &self,
-        host: &Evm<'_, T>,
-        to: &Address,
-        value: &U256,
-    ) -> bool {
-        if host.precompiles().contains(to) {
-            // only if this is _not_ the root call
-            return self.is_deep() && value.is_zero();
-        }
-        false
+        GethTraceBuilder::new_borrowed(self.traces.nodes()).with_features(self.features)
     }
 
     /// Returns the last trace [CallTrace] index from the stack.
@@ -399,14 +388,6 @@ impl TracingInspector {
             (depth == self.traces.arena[0].trace.depth).then_some(frames.active)
         });
         let depth = depth + usize::from(self.frame_transaction.is_some());
-        // This will only be true if the inspector is configured to exclude precompiles and the call
-        // is to a precompile
-        let push_kind = if maybe_precompile.unwrap_or(false) && frame_index.is_none() {
-            // We don't want to track precompiles
-            PushTraceKind::PushOnly
-        } else {
-            PushTraceKind::PushAndAttachToParent
-        };
 
         // find an empty steps vec or create a new one
         let steps = self.reusable_step_vecs.pop().unwrap_or_default();
@@ -420,7 +401,6 @@ impl TracingInspector {
 
         let trace_idx = self.traces.push_trace(
             parent,
-            push_kind,
             CallTrace {
                 frame_index,
                 depth,
@@ -921,11 +901,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             _ => (message.caller, message.destination),
         };
 
-        // if calls to precompiles should be excluded, check whether this is a call to a precompile
-        let maybe_precompile = self
-            .config
-            .exclude_precompile_calls
-            .then(|| self.is_precompile_call(interp.host(), &to, &message.value));
+        // Builders decide whether to leave out calls to precompiles, so record which calls are.
+        let maybe_precompile =
+            self.config.record_precompile_calls.then(|| interp.host().precompiles().contains(&to));
 
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
@@ -1127,10 +1105,11 @@ mod tests {
         sync::{Arc, Weak},
         vec,
     };
+    use alloy_consensus::transaction::Recovered;
     use alloy_eips::eip8141::FrameLimits;
     use core::ops::Deref;
     use evm2::{
-        BaseEvmTypes, Precompiles,
+        BaseEvmTypes, Evm, Precompiles,
         bytecode::Bytecode,
         env::BlockEnvExt,
         ethereum::{TxEnvelope, ethereum_tx_registry},

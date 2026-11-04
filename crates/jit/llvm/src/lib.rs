@@ -8,7 +8,7 @@ extern crate tracing;
 use alloy_primitives::map::{FxBuildHasher, HashSet};
 use evm2_jit_backend::{
     Backend, BackendConfig, BackendTypes, Builder, CallConv, IntCC, OptimizationLevel, Result,
-    TailCallKind, TypeMethods, U256, eyre, format_bytes,
+    TailCallKind, TypeMethods, U256, eyre, eyre::OptionExt, format_bytes,
 };
 use llvm_sys::{
     LLVMCallConv, LLVMIntPredicate, LLVMLinkage, LLVMModuleFlagBehavior, LLVMTailCallKind,
@@ -510,7 +510,7 @@ impl EvmLlvmBackend {
                 if aot { LLVMRelocMode::LLVMRelocPIC } else { LLVMRelocMode::LLVMRelocStatic },
                 LLVMCodeModel::LLVMCodeModelDefault,
             )
-            .ok_or_else(|| eyre::eyre!("failed to create target machine"))?;
+            .ok_or_eyre("failed to create target machine")?;
 
         // In JIT mode, ORC owns the context via a ThreadSafeContext so that modules can be
         // safely transferred to the JIT without double-ownership issues with the TLS context.
@@ -973,9 +973,9 @@ impl Backend for EvmLlvmBackend {
         // Can be overridden with `EVM2_JIT_PASSES` env var for experimentation.
         // From `opt --help`, `-passes`.
 
-        static PASSES_OVERRIDE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-        static PASSES: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        static PASSES_WITH_LICM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        static PASSES_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
+        static PASSES: OnceLock<String> = OnceLock::new();
+        static PASSES_WITH_LICM: OnceLock<String> = OnceLock::new();
 
         let passes = PASSES_OVERRIDE.get_or_init(|| std::env::var("EVM2_JIT_PASSES").ok());
         let passes = passes.as_deref().unwrap_or_else(|| match self.backend_config.opt_level {
@@ -1184,7 +1184,7 @@ impl EvmLlvmBuilder<'_> {
     fn get_overflow_function(&mut self, name: &str, ty: Type) -> Function {
         let name = format!("llvm.{name}.with.overflow.{}", fmt_ty(ty));
         self.get_or_add_function(&name, |this| {
-            this.fn_type(Some(this.cx.struct_type(&[ty, this.ty_i1], false)), &[ty, ty])
+            this.fn_type(Some(this.cx().struct_type(&[ty, this.ty_i1], false)), &[ty, ty])
         })
     }
 
@@ -1210,12 +1210,12 @@ impl EvmLlvmBuilder<'_> {
     fn set_branch_weights(&self, inst: Inst, weights: impl IntoIterator<Item = u32>) {
         let weights = weights.into_iter();
         let mut values = Vec::<Metadata>::with_capacity(1 + weights.size_hint().1.unwrap());
-        values.push(self.cx.metadata_string("branch_weights"));
+        values.push(self.cx().metadata_string("branch_weights"));
         for weight in weights {
             values.push(self.ty_i32.const_int(weight as u64, false).as_metadata());
         }
-        let metadata = self.cx.metadata_node(&values);
-        let kind_id = self.cx.get_kind_id("prof");
+        let metadata = self.cx().metadata_node(&values);
+        let kind_id = self.cx().get_kind_id("prof");
         inst.set_metadata(metadata, kind_id);
     }
 }
@@ -1253,11 +1253,11 @@ impl TypeMethods for EvmLlvmBuilder<'_> {
 
 impl Builder for EvmLlvmBuilder<'_> {
     fn create_block(&mut self, name: &str) -> Self::BasicBlock {
-        self.cx.append_basic_block(self.function, self.name(name))
+        self.cx().append_basic_block(self.function, self.name(name))
     }
 
     fn create_block_after(&mut self, after: Self::BasicBlock, name: &str) -> Self::BasicBlock {
-        self.cx.insert_basic_block_after(after, self.name(name))
+        self.cx().insert_basic_block_after(after, self.name(name))
     }
 
     fn switch_to_block(&mut self, block: Self::BasicBlock) {
@@ -1287,15 +1287,15 @@ impl Builder for EvmLlvmBuilder<'_> {
         }
         let Some(block) = self.current_block() else { return };
         let Some(ins) = block.get_last_instruction() else { return };
-        let metadata = self.cx.metadata_string(comment);
-        let metadata = self.cx.metadata_node(&[metadata]);
-        ins.set_metadata(metadata, self.cx.get_kind_id("annotation"));
+        let metadata = self.cx().metadata_string(comment);
+        let metadata = self.cx().metadata_node(&[metadata]);
+        ins.set_metadata(metadata, self.cx().get_kind_id("annotation"));
     }
 
     fn set_debug_location(&mut self, line: u32, col: u32) {
         let Some(scope) = self.debug_scope else { return };
         let Some(di) = &self.di_state else { return };
-        let loc = di.dibuilder.create_debug_location(self.cx, line, col, scope);
+        let loc = di.dibuilder.create_debug_location(self.cx(), line, col, scope);
         self.bcx.set_current_debug_location(loc);
     }
 
@@ -1731,7 +1731,7 @@ impl Builder for EvmLlvmBuilder<'_> {
         cpp::set_dso_local(function);
         let prev_function = std::mem::replace(&mut self.function, function);
 
-        let entry = self.cx.append_basic_block(function, self.name("entry"));
+        let entry = self.cx().append_basic_block(function, self.name("entry"));
         self.bcx.position_at_end(entry);
         build(self);
         if let Some(before) = before {
@@ -1753,7 +1753,7 @@ impl Builder for EvmLlvmBuilder<'_> {
             return function;
         }
 
-        let ty = self.cx.void_type().fn_type(&[self.ty_ptr], true);
+        let ty = self.cx().void_type().fn_type(&[self.ty_ptr], true);
         let function = self.module().add_function(name, ty, Some(LLVMLinkage::LLVMExternalLinkage));
         cpp::set_dso_local(function);
         function
@@ -1806,7 +1806,7 @@ impl Builder for EvmLlvmBuilder<'_> {
         let debug_location = self.debug_scope.and_then(|_| self.bcx.get_current_debug_location());
         self.bcx.unset_current_debug_location();
 
-        let entry = self.cx.append_basic_block(stub, self.name("stub"));
+        let entry = self.cx().append_basic_block(stub, self.name("stub"));
         self.bcx.position_at_end(entry);
         let args =
             (0..stub.count_params()).map(|i| stub.get_nth_param(i).unwrap()).collect::<Vec<_>>();
@@ -1880,7 +1880,7 @@ fn init() -> Result<()> {
 
 fn init_() -> Result<()> {
     extern "C" fn report_fatal_error(msg: *const std::ffi::c_char) {
-        let msg_cstr = unsafe { std::ffi::CStr::from_ptr(msg) };
+        let msg_cstr = unsafe { CStr::from_ptr(msg) };
         let msg = msg_cstr.to_string_lossy();
         error!(target: "llvm", "LLVM fatal error: {msg}");
     }
@@ -2019,7 +2019,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::NoSync => ("nosync", AttrValue::Enum(0)),
         OurAttr::NoUnwind => ("nounwind", AttrValue::Enum(0)),
         OurAttr::NonLazyBind => ("nonlazybind", AttrValue::Enum(0)),
-        OurAttr::UWTable => return cpp::create_async_uwtable_attr(bcx.cx),
+        OurAttr::UWTable => return cpp::create_async_uwtable_attr(bcx.cx()),
         OurAttr::AllFramePointers => ("frame-pointer", AttrValue::String("all")),
         OurAttr::NativeTargetCpu => (
             "target-cpu",
@@ -2036,7 +2036,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::Speculatable => ("speculatable", AttrValue::Enum(0)),
 
         OurAttr::NoAlias => ("noalias", AttrValue::Enum(0)),
-        OurAttr::NoCapture => return cpp::create_no_captures_attr(bcx.cx),
+        OurAttr::NoCapture => return cpp::create_no_captures_attr(bcx.cx()),
         OurAttr::NoUndef => ("noundef", AttrValue::Enum(0)),
         OurAttr::Align(n) => ("align", AttrValue::Enum(n)),
         OurAttr::NonNull => ("nonnull", AttrValue::Enum(0)),
@@ -2046,26 +2046,26 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::ReadOnly => ("readonly", AttrValue::Enum(0)),
         OurAttr::WriteOnly => ("writeonly", AttrValue::Enum(0)),
         OurAttr::Writable => ("writable", AttrValue::Enum(0)),
-        OurAttr::ArgMemOnly => return cpp::create_arg_mem_only_attr(bcx.cx),
+        OurAttr::ArgMemOnly => return cpp::create_arg_mem_only_attr(bcx.cx()),
         // `u64::MAX` marks all reachable memory as dead; `0` would mark zero bytes.
         OurAttr::DeadOnReturn => ("dead_on_return", AttrValue::Enum(u64::MAX)),
         OurAttr::DeadOnUnwind => ("dead_on_unwind", AttrValue::Enum(0)),
 
         OurAttr::Initializes(size) => {
-            return cpp::create_initializes_attr(bcx.cx, 0, size as i64);
+            return cpp::create_initializes_attr(bcx.cx(), 0, size as i64);
         }
 
         attr => unimplemented!("llvm attribute conversion: {attr:?}"),
     };
     match value {
-        AttrValue::String(value) => bcx.cx.create_string_attribute(key, value),
+        AttrValue::String(value) => bcx.cx().create_string_attribute(key, value),
         AttrValue::Enum(value) => {
             let id = Attribute::get_named_enum_kind_id(key);
-            bcx.cx.create_enum_attribute(id, value)
+            bcx.cx().create_enum_attribute(id, value)
         }
         AttrValue::Type(ty) => {
             let id = Attribute::get_named_enum_kind_id(key);
-            bcx.cx.create_type_attribute(id, ty)
+            bcx.cx().create_type_attribute(id, ty)
         }
     }
 }
@@ -2134,7 +2134,7 @@ mod tests {
 
         let mut backend = EvmLlvmBackend::new(true).unwrap();
         unsafe {
-            let cx = backend.cx.raw();
+            let cx = backend.cx().raw();
             let void = LLVMVoidTypeInContext(cx);
             let i32 = LLVMInt32TypeInContext(cx);
             let function_ty = LLVMFunctionType(void, std::ptr::null_mut(), 0, 0);

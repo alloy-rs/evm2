@@ -1,6 +1,8 @@
 //! Multiplexed tracer configuration and flat-call root gas.
 
 use super::*;
+use alloy_primitives::bytes;
+use evm2::evm::InMemoryDB;
 use serde_json::{Value, json};
 
 #[test]
@@ -28,11 +30,11 @@ fn mux_config_matches_standalone() {
 fn flat_call_root_gas_matches_mux() {
     let trace = |options| {
         let target = Address::repeat_byte(0xaa);
-        let mut db = CacheDB::<EmptyDB>::default();
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &target,
             AccountInfo {
-                code: Some(Bytecode::new_raw(hex!("600160005200").into())),
+                code: Some(Bytecode::new_raw(bytes!("600160005200"))),
                 ..Default::default()
             },
         );
@@ -64,7 +66,7 @@ fn flat_call_runtime_oog_root_matches_mux() {
     let recipient = address!("1000000000000000000000000000000000000002");
     let trace = |options| {
         let inspector = DebugInspector::new(serde_json::from_value(options).unwrap()).unwrap();
-        let mut db = CacheDB::<EmptyDB>::default();
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &caller,
             AccountInfo { balance: U256::from(1_000_000), ..Default::default() },

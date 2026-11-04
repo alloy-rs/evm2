@@ -831,8 +831,8 @@ tests! {
             ].concat()),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // A return through `JUMPI` whose condition is opaque and whose target has two callers.
@@ -873,7 +873,7 @@ tests! {
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Jumps into a table whose index the analysis only knows to be at most 3.
@@ -881,8 +881,8 @@ tests! {
             bytecode: &asm(&range_jump_table(2)),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x22).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x22).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x22).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x22).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         range_jump_table_non_jumpdest_entry(@raw {
@@ -931,8 +931,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Like the above, but pc 0 is a `JUMPDEST` and one caller passes 0, so the condition
@@ -974,8 +974,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x07).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x07).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x07).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x07).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // The constant folding budget runs out between the fixpoint and the snapshot pass: 20
@@ -1010,8 +1010,8 @@ tests! {
             inspect_stack: Some(false),
             gas_limit: 1_000_000,
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Here the budget runs out before the fold inside `b` in the snapshot pass: the fixpoint
@@ -1045,8 +1045,8 @@ tests! {
             inspect_stack: Some(false),
             gas_limit: 1_000_000,
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // A function returns to pc 0, which is a `JUMPDEST`, so the entry block is also a
@@ -1078,8 +1078,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // An unreached block ends in a `JUMPI` with an opaque target; it must not disturb the
@@ -1112,8 +1112,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // A function pointer chosen by `JUMPI`, called through a shared call block, where the
@@ -1158,8 +1158,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0xf0).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0xf0).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0xf0).as_slice(),
+            expected_output: Some(B256::with_last_byte(0xf0).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // EXP folds to 1 in both call contexts, but its exponent differs, so its gas does too.
@@ -1262,8 +1262,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(140).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(140).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(140).as_slice(),
+            expected_output: Some(B256::with_last_byte(140).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // One caller passes an invalid return address, so the return must stay dynamic and
@@ -1316,8 +1316,8 @@ tests! {
             spec_id: SpecId::AMSTERDAM,
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Same with `DUPN` copying the deep return address.
@@ -1350,8 +1350,8 @@ tests! {
             spec_id: SpecId::AMSTERDAM,
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Two callers of a function that moves its return address with `EXCHANGE`.
@@ -2158,13 +2158,12 @@ tests! {
             expected_return: InstrStop::InvalidOperandOOG,
         }),
         mload_const_offset_too_large(@raw {
-            bytecode: &{
-                let mut code = Vec::new();
-                code.push(op::PUSH9);
-                code.extend_from_slice(&0x1_0000_0000_0000_0000_U256.to_be_bytes::<32>()[23..]);
-                code.push(op::MLOAD);
-                code
-            },
+            bytecode: &[
+                &[op::PUSH9][..],
+                &0x1_0000_0000_0000_0000_U256.to_be_bytes::<32>()[23..],
+                &[op::MLOAD][..],
+            ]
+            .concat(),
             expected_return: InstrStop::InvalidOperandOOG,
         }),
         mstore1(@raw {
@@ -2568,7 +2567,7 @@ tests! {
             assert_host: Some(|host| {
                 assert_eq!(host.logs, [Log {
                     address: DEF_ADDR,
-                    data: LogData::new(vec![], Bytes::copy_from_slice(&0x6942_U256.to_be_bytes::<32>())).unwrap(),
+                    data: LogData::new(vec![], Bytes::from(0x6942_U256.to_be_bytes::<32>())).unwrap(),
                 }]);
             }),
         }),
@@ -2596,7 +2595,7 @@ tests! {
                     address: DEF_ADDR,
                     data: LogData::new(
                         vec![0xffffffffffffffffffffffffffffffffffffffff_U256.into()],
-                        Bytes::copy_from_slice(&[0; 50]),
+                        Bytes::from([0; 50]),
                     ).unwrap(),
                 }]);
             }),
@@ -3066,7 +3065,7 @@ tests! {
             ],
             spec_id: SpecId::CANCUN,
             modify_message: Some(|message| {
-                message.input = Bytes::copy_from_slice(&U256::from(0x68).to_be_bytes::<32>());
+                message.input = Bytes::from(B256::with_last_byte(0x68));
                 message.value = U256::from(10);
             }),
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
@@ -3360,9 +3359,9 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x2a).to_be_bytes::<32>(),
+            expected_memory: B256::with_last_byte(0x2a).as_slice(),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_output: Some(&U256::from(0x2a).to_be_bytes::<32>()),
+            expected_output: Some(B256::with_last_byte(0x2a).as_slice()),
         }),
 
         // Same class of bug but triggered by a deduped reachable JUMPDEST block rather than
@@ -3411,9 +3410,9 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x2a).to_be_bytes::<32>(),
+            expected_memory: B256::with_last_byte(0x2a).as_slice(),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_output: Some(&U256::from(0x2a).to_be_bytes::<32>()),
+            expected_output: Some(B256::with_last_byte(0x2a).as_slice()),
         }),
 
         dedup_false_jumpi_non_jumpdest_fallthrough(@raw {
@@ -3569,7 +3568,7 @@ tests! {
             spec_id: SpecId::ISTANBUL,
             modify_message: Some(|message| {
                 message.value = 1_U256;
-                message.input = Bytes::from(&hex!("c0406226"));
+                message.input = alloy_primitives::bytes!("c0406226");
             }),
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
@@ -3661,7 +3660,7 @@ tests! {
             modify_message: Some(|message| {
                 let mut input = [0; 96];
                 input[63] = 1;
-                message.input = Bytes::copy_from_slice(&input);
+                message.input = Bytes::from(input);
             }),
             inspect_stack: Some(false),
             expected_return: InstrStop::Stop,

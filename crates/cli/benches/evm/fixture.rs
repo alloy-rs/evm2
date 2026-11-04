@@ -179,7 +179,7 @@ impl Case<'_> {
 }
 
 fn b256_to_u256(value: B256) -> U256 {
-    U256::from_be_bytes(value.0)
+    value.into()
 }
 
 #[cfg(feature = "jit")]

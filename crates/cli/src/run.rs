@@ -14,7 +14,7 @@ use evm2_eest::{StateTestPost, StateTestSuite, StateTestUnit};
 use evm2_jit_context::{EvmCompilerFn, can_run_compiled};
 use evm2_jit_llvm::EvmLlvmBackend;
 use evm2_jit_runtime::{
-    EvmCompiler, Linker, OptimizationLevel, eyre, parse_asm, shared_library_path,
+    EvmCompiler, Linker, OptimizationLevel, eyre, eyre::OptionExt, parse_asm, shared_library_path,
 };
 use std::{
     borrow::Cow,
@@ -24,8 +24,8 @@ use std::{
     sync::Arc,
 };
 
-const BENCH_CALLER: Address = Address::new([0x11; 20]);
-const BENCH_TARGET: Address = Address::new([0xcc; 20]);
+const BENCH_CALLER: Address = Address::repeat_byte(0x11);
+const BENCH_TARGET: Address = Address::repeat_byte(0xcc);
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct RunArgs {
@@ -535,7 +535,7 @@ impl PreparedBench {
             if account.bytecode.is_empty() || functions.contains_key(&account.code_hash) {
                 continue;
             }
-            let name = format!("contract_{}", hex::encode(account.code_hash));
+            let name = format!("contract_{:x}", account.code_hash);
             let func = unsafe {
                 compiler.jit(&name, account.bytecode.original_byte_slice(), bench.spec_id)?
             };
@@ -599,7 +599,7 @@ impl PreparedBench {
         let jit = self.run_jit()?;
         if self.assert_success {
             eyre::ensure!(
-                interpreter.status,
+                interpreter.is_success(),
                 "{} benchmark transaction failed:\n  interpreter: {:?}\n  JIT: {:?}",
                 self.name,
                 interpreter,
@@ -607,7 +607,7 @@ impl PreparedBench {
             );
         }
         eyre::ensure!(
-            interpreter.status == jit.status
+            interpreter.is_success() == jit.is_success()
                 && (!compare_gas
                     || (interpreter.output == jit.output
                         && interpreter.total_gas_spent == jit.total_gas_spent)),
@@ -676,7 +676,7 @@ fn parse_fixture_bench(bench: &Bench, fixture_path: &str) -> eyre::Result<Prepar
     let (case_name, unit, post) = select_case(&suite, &bench.name, bench.spec_id)?;
     let block = parse_block(&unit.env);
     let mut db = InMemoryDB::default();
-    let mut accounts = Vec::new();
+    let mut accounts = Vec::with_capacity(unit.pre.len());
     for (address, account) in &unit.pre {
         let bytecode = Bytecode::from_stored(account.code.clone());
         let code_hash = bytecode.hash_slow();
@@ -761,7 +761,7 @@ fn parse_block(env: &evm2_eest::StateTestEnv) -> BlockEnv {
         gas_limit: env.current_gas_limit,
         basefee: env.current_base_fee.unwrap_or_default(),
         difficulty: env.current_difficulty,
-        prevrandao: env.current_random.map_or(U256::ZERO, |value| U256::from_be_bytes(value.0)),
+        prevrandao: env.current_random.map_or(U256::ZERO, |value| value.into()),
         slot_num: env.slot_number.unwrap_or_default(),
         ..BlockEnvExt::default()
     }
@@ -794,8 +794,7 @@ fn build_fixture_tx(
         .value
         .get(indexes.value)
         .ok_or_else(|| eyre::eyre!("fixture value index {} does not exist", indexes.value))?;
-    let caller =
-        raw.sender.ok_or_else(|| eyre::eyre!("benchmark transaction sender is required"))?;
+    let caller = raw.sender.ok_or_eyre("benchmark transaction sender is required")?;
     let tx = TxLegacy {
         chain_id: None,
         nonce: u64_value(raw.nonce)?,

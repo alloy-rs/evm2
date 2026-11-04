@@ -586,7 +586,7 @@ struct CompilerProfile {
     layout: evm2_jit_codegen::HostLayout,
     resolver: Option<usize>,
     symbol_suffix: Option<usize>,
-    opcode_view: Option<std::sync::Arc<evm2::OpcodeView>>,
+    opcode_view: Option<Arc<evm2::OpcodeView>>,
     opt_level: crate::OptimizationLevel,
     gas_params: Option<evm2::version::GasParams>,
     debug_assertions: bool,

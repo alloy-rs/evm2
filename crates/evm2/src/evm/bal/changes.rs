@@ -143,7 +143,7 @@ impl TryFrom<&AlloyCodeChange> for BalCodeChange {
         }
         let bytecode = Bytecode::new_raw_checked(change.new_code().clone())?;
         let hash = bytecode.hash_slow();
-        Ok(Self::new(change.block_access_index, (hash, bytecode)))
+        Ok(Self::new(change.block_access_index(), (hash, bytecode)))
     }
 }
 
@@ -393,14 +393,14 @@ mod tests {
     #[test]
     fn update_drops_change_reverted_at_same_index() {
         let mut changes = BalChanges::<StorageChange>::default();
-        changes.update(idx(1), &U256::ZERO, U256::from(1));
-        changes.update(idx(1), &U256::from(1), U256::ZERO);
+        changes.update(idx(1), &U256::ZERO, U256::ONE);
+        changes.update(idx(1), &U256::ONE, U256::ZERO);
         assert!(changes.is_empty());
 
-        changes.update(idx(1), &U256::ZERO, U256::from(1));
-        changes.update(idx(2), &U256::from(1), U256::from(2));
-        changes.update(idx(2), &U256::from(2), U256::from(1));
-        assert_eq!(changes.changes, vec![StorageChange::new(idx(1), U256::from(1))]);
+        changes.update(idx(1), &U256::ZERO, U256::ONE);
+        changes.update(idx(2), &U256::ONE, U256::from(2));
+        changes.update(idx(2), &U256::from(2), U256::ONE);
+        assert_eq!(changes.changes, vec![StorageChange::new(idx(1), U256::ONE)]);
 
         let code = Bytecode::new_raw(bytes!("6001"));
         let mut changes = BalChanges::<BalCodeChange>::default();

@@ -133,7 +133,7 @@ use crate::{
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+use alloy_primitives::{Address, B256, Bytes, Log};
 use core::ptr::NonNull;
 #[cfg(feature = "async")]
 use core::{any::TypeId, future::Future};
@@ -597,7 +597,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             "execution config spec mismatch"
         );
         let precompiles = boxed_precompile_provider(precompiles);
-        self.block = block;
+        self.set_block(block);
         self.replace_execution_config(execution_config, spec_id, registry, precompiles);
     }
 
@@ -626,7 +626,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             execution_config.base_spec_id(),
             "execution config spec mismatch"
         );
-        self.block = block;
+        self.set_block(block);
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
         self.refresh_runner_support();
@@ -702,8 +702,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[cfg(feature = "async")]
     #[inline]
-    fn async_stack(&mut self) -> core::ptr::NonNull<r#async::FiberStack> {
-        core::ptr::NonNull::from(&mut self.async_stack)
+    fn async_stack(&mut self) -> NonNull<r#async::FiberStack> {
+        NonNull::from(&mut self.async_stack)
     }
 
     #[cfg(feature = "async")]
@@ -881,8 +881,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Replaces the precompile provider.
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
-        self.assert_precompiles_mutable();
-        self.precompiles = boxed_precompile_provider(precompiles);
+        self.set_boxed_precompiles(boxed_precompile_provider(precompiles));
     }
 
     /// Replaces the precompile provider with an already boxed one.
@@ -998,8 +997,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Sets the active execution inspector.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
-        self.assert_inspector_mutable();
-        self.inspector = Some(InspectorSlot::Owned(boxed_inspector(inspector)));
+        self.set_boxed_inspector(boxed_inspector(inspector));
     }
 
     /// Sets the active boxed execution inspector.
@@ -1051,9 +1049,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Sets the optional external interpreter runner.
     #[inline]
     pub fn set_interpreter_runner<R: InterpreterRunner<T>>(&mut self, runner: R) {
-        self.assert_interpreter_runner_mutable();
-        self.interpreter_runner = Some(Arc::new(runner));
-        self.refresh_runner_support();
+        self.set_shared_interpreter_runner(Arc::new(runner));
     }
 
     /// Sets the optional shared external interpreter runner.
@@ -1469,7 +1465,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
         // `destination` already holds the create's contract address (set when the message was
         // constructed), so the create hook observes it directly.
-        let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
+        let is_create = message.kind.is_create();
 
         // Keeps the top-level frame's bytecode alive when a hook replaces `message.code`.
         let top_code;
@@ -2335,15 +2331,11 @@ fn eip7708_transfer_log(from: &Address, to: &Address, value: &Word) -> Option<Lo
     if value.is_zero() || from == to {
         return None;
     }
-    let topics = vec![
-        EIP7708_TRANSFER_TOPIC,
-        B256::left_padding_from(from.as_slice()),
-        B256::left_padding_from(to.as_slice()),
-    ];
-    Some(Log {
-        address: SYSTEM_ADDRESS,
-        data: LogData::new_unchecked(topics, Bytes::copy_from_slice(&value.to_be_bytes::<32>())),
-    })
+    Some(Log::new_unchecked(
+        SYSTEM_ADDRESS,
+        vec![EIP7708_TRANSFER_TOPIC, from.into_word(), to.into_word()],
+        Bytes::from(value.to_be_bytes::<32>()),
+    ))
 }
 
 #[cfg(test)]
@@ -2354,11 +2346,12 @@ mod tests {
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
-        ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+        ethereum::{TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
         registry::{HandlerError, TxRequest, handler},
-        test_utils::{legacy_bytecode, push_address},
+        test_utils::{handle_test_tx, legacy_bytecode, push_address, test_tx},
+        utils::address_to_word,
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxEip8141, TxLegacy, transaction::Recovered};
@@ -2756,22 +2749,6 @@ mod tests {
         assert_eq!(*evm.ext(), 42);
     }
 
-    fn test_tx(value: u64) -> RecoveredTxEnvelope {
-        Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy { nonce: value, ..TxLegacy::default() }),
-            Address::ZERO,
-        )
-    }
-
-    fn handle_test_tx(req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>) -> HandlerResult<TxResult> {
-        let _ = req.host.spec_id();
-        Ok(TxResultExt {
-            status: true,
-            total_gas_spent: req.tx.nonce + 1,
-            ..TxResultExt::default()
-        })
-    }
-
     #[derive(Debug)]
     struct TestInterpreterRunner {
         stop: Option<InstrStop>,
@@ -2819,10 +2796,7 @@ mod tests {
     ) -> HandlerResult<TxResult> {
         let value = Word::from(req.tx.nonce);
         req.host.state.storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)?.write(value);
-        req.host.state.log(Log {
-            address: LIFECYCLE_ACCOUNT,
-            data: LogData::new_unchecked(vec![], Bytes::new()),
-        });
+        req.host.state.log(Log::new_unchecked(LIFECYCLE_ACCOUNT, vec![], Bytes::new()));
         Ok(TxResultExt { status: true, total_gas_spent: req.tx.nonce, ..TxResultExt::default() })
     }
 
@@ -2830,11 +2804,11 @@ mod tests {
         req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
     ) -> HandlerResult<TxResult> {
         let account = req.host.state.account(&LIFECYCLE_ACCOUNT)?;
-        assert_eq!(account.balance(), Word::from(1));
+        assert_eq!(account.balance(), Word::ONE);
         drop(account);
 
         let slot = req.host.state.storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)?;
-        assert_eq!(slot.current(), Word::from(1));
+        assert_eq!(slot.current(), Word::ONE);
 
         Ok(TxResultExt { status: true, ..TxResultExt::default() })
     }
@@ -2892,10 +2866,11 @@ mod tests {
         }
 
         let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
-            evm.log(Log {
-                address: TEST_PRECOMPILE,
-                data: LogData::new_unchecked(Vec::new(), Bytes::from_static(b"precompile")),
-            });
+            evm.log(Log::new_unchecked(
+                TEST_PRECOMPILE,
+                Vec::new(),
+                Bytes::from_static(b"precompile"),
+            ));
             Ok(PrecompileOutput::new(Bytes::new()))
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -2913,7 +2888,7 @@ mod tests {
         assert_eq!(result.stop, InstrStop::Return);
         let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
         assert_eq!(inspector.0.len(), 1);
-        assert_eq!(inspector.0.as_slice(), evm.logs());
+        assert_eq!(inspector.0, evm.logs());
     }
 
     #[test]
@@ -3023,9 +2998,9 @@ mod tests {
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &LIFECYCLE_ACCOUNT,
-            AccountInfo::default().with_balance(Word::from(1)),
+            AccountInfo::default().with_balance(Word::ONE),
         );
-        database.insert_account_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &Word::from(1));
+        database.insert_account_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &Word::ONE);
         Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -3044,9 +3019,9 @@ mod tests {
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &LIFECYCLE_ACCOUNT,
-            AccountInfo::default().with_balance(Word::from(1)),
+            AccountInfo::default().with_balance(Word::ONE),
         );
-        database.insert_account_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &Word::from(1));
+        database.insert_account_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &Word::ONE);
         Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -3105,7 +3080,7 @@ mod tests {
             Host::load_account(&mut evm, &address, true, true),
             Err(HostError::Halt(InstrStop::OutOfGas))
         ));
-        let stats = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
+        let stats = evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts();
         assert_eq!(stats.get_account, 0);
         assert_eq!(stats.get_code_by_hash, 0);
 
@@ -3115,7 +3090,7 @@ mod tests {
             Host::sload(&mut evm, &address, &Word::ZERO, true),
             Err(HostError::Halt(InstrStop::OutOfGas))
         ));
-        let stats = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
+        let stats = evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts();
         assert_eq!(stats.get_account, 1);
         assert_eq!(stats.get_storage, 0);
         assert_eq!(stats.get_code_by_hash, 0);
@@ -3136,7 +3111,7 @@ mod tests {
 
         impl Error for TestPrecompileError {}
 
-        let contract = Address::from([0xbb; 20]);
+        let contract = Address::repeat_byte(0xbb);
         let mut code = vec![op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0];
         push_address(&mut code, &FATAL_PRECOMPILE_ADDRESS);
         code.extend([
@@ -3186,7 +3161,7 @@ mod tests {
             !pending
                 .accounts
                 .get(&contract)
-                .is_some_and(|account| account.storage.slots.contains_key(&Word::from(1)))
+                .is_some_and(|account| account.storage.slots.contains_key(&Word::ONE))
         );
     }
 
@@ -3194,7 +3169,7 @@ mod tests {
     fn precompile_oog_halt_remains_recoverable_by_parent_call() {
         const OOG_PRECOMPILE_ADDRESS: Address = Address::with_last_byte(0x44);
 
-        let contract = Address::from([0xbc; 20]);
+        let contract = Address::repeat_byte(0xbc);
         let mut code = vec![op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0];
         push_address(&mut code, &OOG_PRECOMPILE_ADDRESS);
         code.extend([
@@ -3241,7 +3216,7 @@ mod tests {
             pending
                 .accounts
                 .get(&contract)
-                .is_some_and(|account| account.storage.slots.contains_key(&Word::from(1)))
+                .is_some_and(|account| account.storage.slots.contains_key(&Word::ONE))
         );
     }
 
@@ -3260,7 +3235,7 @@ mod tests {
 
         impl Error for TestPrecompileError {}
 
-        let caller = Address::from([0xaa; 20]);
+        let caller = Address::repeat_byte(0xaa);
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
                 gas_limit: 50_000,
@@ -3283,13 +3258,13 @@ mod tests {
             precompiles,
         );
 
-        let error = evm.transact(&tx).map(ExecutedTx::discard).unwrap_err();
+        let error = evm.call_tx(&tx).unwrap_err();
         let HandlerError::Fatal(error) = error else { panic!("expected fatal precompile error") };
         assert!(error.downcast_ref::<TestPrecompileError>().is_some());
         assert_eq!(error.to_string(), "test precompile error");
         evm.set_precompiles(Precompiles::base(SpecId::OSAKA));
         let next = evm.transact(&tx).unwrap().discard();
-        assert!(next.status);
+        assert!(next.is_success());
         assert!(error.downcast_ref::<TestPrecompileError>().is_some());
     }
 
@@ -3677,12 +3652,12 @@ mod tests {
             caller,
         );
         let executed = evm.transact_with_inspector(&tx, &mut OriginInspector(origin)).unwrap();
-        assert!(executed.commit().status);
+        assert!(executed.commit().is_success());
 
-        let origin_word = Word::from_be_slice(origin.as_slice());
+        let origin_word = address_to_word(&origin);
         assert_eq!(evm.state.storage_slot_untracked(&target, &Word::ZERO).unwrap(), origin_word);
-        assert_eq!(evm.state.storage_slot_untracked(&inner, &Word::from(1)).unwrap(), origin_word);
-        assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce, 1);
+        assert_eq!(evm.state.storage_slot_untracked(&inner, &Word::ONE).unwrap(), origin_word);
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().nonce, 1);
     }
 
     #[test]
@@ -3805,7 +3780,7 @@ mod tests {
             assert_eq!(message.input, Bytes::from_static(b"message input"));
             assert_eq!(message.value, U256::from(99));
             assert_eq!(message.code_address, TEST_PRECOMPILE);
-            Ok(PrecompileOutput::new(Bytes::copy_from_slice(&evm.block.number.to_be_bytes::<32>())))
+            Ok(PrecompileOutput::new(Bytes::from(evm.block.number.to_be_bytes::<32>())))
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
@@ -3984,7 +3959,7 @@ mod tests {
         set_spec(&mut evm, SpecId::PRAGUE);
         assert_eq!(run(&mut evm), (InstrStop::Return, 2));
 
-        let mut version = *Version::base(SpecId::PRAGUE);
+        let mut version = Version::new(SpecId::PRAGUE);
         version.initial_call_depth = 1;
         evm.set_block_and_execution_config_within_spec(
             BlockEnvExt::default(),
@@ -4073,20 +4048,20 @@ mod tests {
             TxEnvelope::as_legacy,
             handler(|_| Ok(()), |req, ()| fail(req)),
         );
-        let error = evm.transact(&test_tx(7)).map(ExecutedTx::discard).unwrap_err();
+        let error = evm.call_tx(&test_tx(7)).unwrap_err();
         let HandlerError::Fatal(error) = error else { panic!("expected fatal handler error") };
         assert_eq!(error.to_string(), "handler failed");
         assert!(evm.logs().is_empty());
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
-            Word::from(1)
+            Word::ONE
         );
         evm.registry.register(
             TEST_TX_TYPE,
             TxEnvelope::as_legacy,
             handler(|_| Ok(()), |req, ()| handle_lifecycle_tx(req)),
         );
-        assert!(evm.transact(&test_tx(9)).unwrap().commit().status);
+        assert!(evm.transact(&test_tx(9)).unwrap().commit().is_success());
     }
 
     #[test]
@@ -4099,7 +4074,7 @@ mod tests {
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
-            Word::from(1)
+            Word::ONE
         );
     }
 
@@ -4118,11 +4093,11 @@ mod tests {
         assert_eq!(outcome.logs.len(), 1);
         let storage = sink.storage_sorted();
         assert_eq!(storage.len(), 1);
-        assert_eq!(storage[0].1.original, Word::from(1));
+        assert_eq!(storage[0].1.original, Word::ONE);
         assert_eq!(storage[0].1.current, Word::from(7));
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
-            Word::from(1)
+            Word::ONE
         );
     }
 
@@ -4167,11 +4142,11 @@ mod tests {
             .storage;
         let slot =
             overlay.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
-        assert_eq!(slot.value.original, Word::from(1));
+        assert_eq!(slot.value.original, Word::ONE);
         assert_eq!(slot.value.current, Word::from(7));
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
-            Word::from(1)
+            Word::ONE
         );
     }
 
@@ -4196,7 +4171,7 @@ mod tests {
         // Detaching accepted nothing into this EVM's overlay.
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
-            Word::from(1)
+            Word::ONE
         );
     }
 
@@ -4235,7 +4210,7 @@ mod tests {
 
         let storage = block_state.storage_sorted();
         assert_eq!(storage.len(), 1);
-        assert_eq!(storage[0].1.original, Word::from(1));
+        assert_eq!(storage[0].1.original, Word::ONE);
         assert_eq!(storage[0].1.current, Word::from(9));
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
@@ -4280,10 +4255,10 @@ mod tests {
         // Taking the BAL yields a canonical EIP-7928 list and resets the index.
         let alloy = BlockAccessList::from(evm.state.take_bal_builder().expect("bal is present"));
         assert_eq!(alloy.len(), 1);
-        assert_eq!(alloy[0].address, LIFECYCLE_ACCOUNT);
+        assert_eq!(alloy[0].address(), LIFECYCLE_ACCOUNT);
         assert_eq!(alloy[0].storage_changes.len(), 1);
         assert_eq!(alloy[0].storage_changes[0].slot, LIFECYCLE_STORAGE_KEY);
-        assert_eq!(alloy[0].storage_changes[0].changes.len(), 2);
+        assert_eq!(alloy[0].storage_changes[0].len(), 2);
         assert_eq!(evm.state.bal_index(), BlockAccessIndex::PRE_EXECUTION);
         assert!(evm.state.bal_builder().is_none());
     }
@@ -4333,7 +4308,7 @@ mod tests {
         let slots = changes.storage.changed_slots().collect::<Vec<_>>();
         assert_eq!(slots.len(), 1);
         assert_eq!(*slots[0].0, LIFECYCLE_STORAGE_KEY);
-        assert_eq!(slots[0].1.original, Word::from(1));
+        assert_eq!(slots[0].1.original, Word::ONE);
         assert_eq!(slots[0].1.current, Word::from(7));
 
         let _ = executed.commit();
@@ -4350,7 +4325,7 @@ mod tests {
 
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
-            Word::from(1)
+            Word::ONE
         );
     }
 
@@ -4363,7 +4338,7 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        let contract = Address::from([0x11; 20]);
+        let contract = Address::repeat_byte(0x11);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));
         let mut message = MessageExt {
             kind: MessageKind::Call,
@@ -4375,7 +4350,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
     }
 
     #[test]
@@ -4428,7 +4403,7 @@ mod tests {
             Db::new(FailingStorageDb),
             Precompiles::base(SpecId::OSAKA),
         );
-        let contract = Address::from([0x11; 20]);
+        let contract = Address::repeat_byte(0x11);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH0, op::SLOAD]));
         let mut message = MessageExt {
             kind: MessageKind::Call,
@@ -4460,7 +4435,7 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        let contract = Address::from([0x11; 20]);
+        let contract = Address::repeat_byte(0x11);
         let key = Word::ZERO;
         let bytecode =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
@@ -4509,7 +4484,7 @@ mod tests {
                     self.target_reads.fetch_add(1, Ordering::SeqCst);
                     return Err(SelfdestructTargetLoadError);
                 }
-                Ok(Some(AccountInfo::default().with_balance(Word::from(1))))
+                Ok(Some(AccountInfo::default().with_balance(Word::ONE)))
             }
 
             fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
@@ -4536,8 +4511,8 @@ mod tests {
             legacy_bytecode(code)
         }
 
-        let contract = Address::from([0xbb; 20]);
-        let target = Address::from([0xcc; 20]);
+        let contract = Address::repeat_byte(0xbb);
+        let target = Address::repeat_byte(0xcc);
         let target_reads = Arc::new(AtomicUsize::new(0));
         let database = SelfdestructTargetLoadDb { target, target_reads: Arc::clone(&target_reads) };
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -4563,10 +4538,10 @@ mod tests {
 
     #[test]
     fn frontier_code_deposit_oog_creates_empty_contract() {
-        let caller = Address::from([0x11; 20]);
-        let created = Address::from([0x22; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let created = Address::repeat_byte(0x22);
         let mut database = InMemoryDB::default();
-        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::ONE));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::FRONTIER,
             BlockEnvExt::default(),
@@ -4586,18 +4561,17 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let pending = evm.state.take_pending_state();
-        let account =
-            pending.accounts.get(&created).and_then(|entry| entry.present.as_ref()).unwrap();
+        let account = pending.account_info(&created).unwrap();
         assert!(account.is_empty_code_hash());
     }
 
     #[test]
     fn frontier_materialized_empty_account_is_created() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::FRONTIER,
             BlockEnvExt::default(),
@@ -4615,10 +4589,10 @@ mod tests {
 
     #[test]
     fn homestead_code_deposit_oog_fails_create() {
-        let caller = Address::from([0x11; 20]);
-        let created = Address::from([0x22; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let created = Address::repeat_byte(0x22);
         let mut database = InMemoryDB::default();
-        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::ONE));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::HOMESTEAD,
             BlockEnvExt::default(),
@@ -4648,10 +4622,10 @@ mod tests {
 
     #[test]
     fn create_validation_failure_clears_output() {
-        let caller = Address::from([0x11; 20]);
-        let created = Address::from([0x22; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let created = Address::repeat_byte(0x22);
         let mut database = InMemoryDB::default();
-        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::ONE));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::LONDON,
             BlockEnvExt::default(),
@@ -4687,10 +4661,10 @@ mod tests {
 
     #[test]
     fn create_size_limit_failure_clears_output() {
-        let caller = Address::from([0x11; 20]);
-        let created = Address::from([0x22; 20]);
+        let caller = Address::repeat_byte(0x11);
+        let created = Address::repeat_byte(0x22);
         let mut database = InMemoryDB::default();
-        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::ONE));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
             BlockEnvExt::default(),
@@ -4722,10 +4696,10 @@ mod tests {
 
     #[test]
     fn staticcall_touches_empty_existing_destination() {
-        let target = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x11);
         let mut database = InMemoryDB::default();
         database.insert_account_info(&target, AccountInfo::default());
-        database.insert_account_storage(&target, &Word::ZERO, &Word::from(1));
+        database.insert_account_storage(&target, &Word::ZERO, &Word::ONE);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
             BlockEnvExt::default(),
@@ -4742,7 +4716,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let pending = evm.state.take_pending_state();
@@ -4754,13 +4728,12 @@ mod tests {
 
     #[test]
     fn delegatecall_does_not_touch_empty_code_address() {
-        let destination = Address::from([0x11; 20]);
-        let code_address = Address::from([0x22; 20]);
+        let destination = Address::repeat_byte(0x11);
+        let code_address = Address::repeat_byte(0x22);
         let mut database = InMemoryDB::default();
-        database
-            .insert_account_info(&destination, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&destination, AccountInfo::default().with_balance(Word::ONE));
         database.insert_account_info(&code_address, AccountInfo::default());
-        database.insert_account_storage(&code_address, &Word::ZERO, &Word::from(1));
+        database.insert_account_storage(&code_address, &Word::ZERO, &Word::ONE);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
             BlockEnvExt::default(),
@@ -4777,7 +4750,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let pending = evm.state.take_pending_state();
@@ -4794,8 +4767,8 @@ mod tests {
 
     #[test]
     fn transfer_moves_value() {
-        let from = Address::from([0x01; 20]);
-        let to = Address::from([0x02; 20]);
+        let from = Address::repeat_byte(0x01);
+        let to = Address::repeat_byte(0x02);
         let mut state = State::new(InMemoryDB::default());
         state.account(&from).unwrap().add_balance(U256::from(10));
 
@@ -4820,8 +4793,8 @@ mod tests {
 
     #[test]
     fn amsterdam_call_value_emits_eip7708_log() {
-        let caller = Address::from([0x01; 20]);
-        let target = Address::from([0x02; 20]);
+        let caller = Address::repeat_byte(0x01);
+        let target = Address::repeat_byte(0x02);
         let mut database = InMemoryDB::default();
         database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(10)));
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -4843,7 +4816,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         let version = *evm.version();
         evm.state.finalize_transaction_(&version);
@@ -4851,20 +4824,13 @@ mod tests {
         assert_eq!(logs.len(), 1);
         let log = &logs[0];
         assert_eq!(log.address, SYSTEM_ADDRESS);
-        assert_eq!(
-            log.topics(),
-            &[
-                EIP7708_TRANSFER_TOPIC,
-                B256::left_padding_from(caller.as_slice()),
-                B256::left_padding_from(target.as_slice()),
-            ]
-        );
-        assert_eq!(log.data.data, Bytes::copy_from_slice(&U256::from(7).to_be_bytes::<32>()));
+        assert_eq!(log.topics(), &[EIP7708_TRANSFER_TOPIC, caller.into_word(), target.into_word()]);
+        assert_eq!(log.data.data, Bytes::from(B256::with_last_byte(7)));
     }
 
     #[test]
     fn eip8246_selfdestruct_preserves_balance_at_finalization() {
-        let contract = Address::from([0x11; 20]);
+        let contract = Address::repeat_byte(0x11);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(
@@ -4893,7 +4859,7 @@ mod tests {
 
     #[test]
     fn commit_transaction_clears_detached_destroyed_flag() {
-        let contract = Address::from([0x44; 20]);
+        let contract = Address::repeat_byte(0x44);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
@@ -4911,7 +4877,7 @@ mod tests {
 
     #[test]
     fn eip8246_selfdestruct_zero_balance_is_deleted() {
-        let contract = Address::from([0x22; 20]);
+        let contract = Address::repeat_byte(0x22);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
@@ -4926,7 +4892,7 @@ mod tests {
 
     #[test]
     fn pre_eip8246_selfdestruct_burns_balance_by_deleting_account() {
-        let contract = Address::from([0x33; 20]);
+        let contract = Address::repeat_byte(0x33);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(
@@ -5110,7 +5076,7 @@ mod tests {
         {
             assert_eq!(steps.load(Ordering::Relaxed), 0);
         }
-        assert!(evm.call_tx(&tx).unwrap().status);
+        assert!(evm.call_tx(&tx).unwrap().is_success());
     }
 
     #[test]
@@ -5133,10 +5099,7 @@ mod tests {
                         .storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)?
                         .write(Word::from(99));
                     req.host.state.account(&LIFECYCLE_ACCOUNT)?.bump_nonce();
-                    req.host.state.log(Log {
-                        address: LIFECYCLE_ACCOUNT,
-                        data: LogData::new_unchecked(vec![], Bytes::new()),
-                    });
+                    req.host.state.log(Log::new_unchecked(LIFECYCLE_ACCOUNT, vec![], Bytes::new()));
                     if let Some(error) = errors.get(req.tx.nonce as usize) {
                         return Err(error.clone());
                     }
@@ -5157,7 +5120,7 @@ mod tests {
                 evm.state
                     .storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY)
                     .unwrap(),
-                Word::from(1)
+                Word::ONE
             );
         }
     }
@@ -5504,7 +5467,7 @@ mod tests {
             caller,
         );
         let executed = evm.transact(&tx).unwrap();
-        assert!(executed.result().status);
+        assert!(executed.result().is_success());
         let pending = executed.detach().pending_state;
         assert_eq!(pending.account_info(&caller).unwrap().nonce, nonce + 1);
         assert_eq!(pending.account_info(&created).unwrap().nonce, 2);
@@ -5560,7 +5523,7 @@ mod tests {
             caller,
         );
         let executed = evm.transact(&tx).unwrap();
-        assert!(executed.result().status);
+        assert!(executed.result().is_success());
         for (address, touched) in [(target, true), (read, false), (child, false), (leaf, false)] {
             let changes = executed.account_changes().find(|c| c.address == address).unwrap();
             assert_eq!(changes.touched, touched, "{address}");
@@ -5585,7 +5548,7 @@ mod tests {
             caller,
         );
         let next = evm.transact(&tx).unwrap();
-        assert!(next.result().status);
+        assert!(next.result().is_success());
         assert!(!next.account_changes().find(|c| c.address == target).unwrap().touched);
     }
 
@@ -5617,23 +5580,22 @@ mod tests {
         );
 
         let executed = evm.transact(&tx).unwrap();
-        assert!(executed.result().status);
+        assert!(executed.result().is_success());
         let changes = executed.changes();
         assert!(!changes.is_empty());
         assert_eq!(changes.account_info(&caller).unwrap().nonce, 1);
         let slot = changes.account_changes_for(&target).unwrap().storage.slots[&Word::ZERO].value;
-        assert_eq!(slot.current, Word::from(1));
-        let mut in_place = changes.account_changes().map(|c| c.address).collect::<Vec<_>>();
+        assert_eq!(slot.current, Word::ONE);
+        let mut in_place = executed.account_changes().map(|c| c.address).collect::<Vec<_>>();
         in_place.sort();
         let _ = executed.discard();
 
         // Discarding after inspection leaves the accepted state unchanged, so the same transaction
         // executes again, and its detached state reports the same accounts.
         let executed = evm.transact(&tx).unwrap();
-        assert!(executed.result().status);
+        assert!(executed.result().is_success());
         let pending = executed.detach().pending_state;
-        let mut detached =
-            pending.changes().account_changes().map(|c| c.address).collect::<Vec<_>>();
+        let mut detached = pending.account_changes().map(|c| c.address).collect::<Vec<_>>();
         detached.sort();
         assert_eq!(in_place, detached);
         assert_eq!(pending.changes().account_info(&caller).unwrap().nonce, 1);

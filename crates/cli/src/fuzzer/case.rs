@@ -12,7 +12,10 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::IndexMap};
+use alloy_primitives::{
+    Address, B256, Bytes, TxKind, U256,
+    map::{IndexMap, U256IndexMap},
+};
 use evm2::{
     SpecId,
     env::{BlockEnv, BlockEnvExt},
@@ -27,12 +30,11 @@ use secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
 use serde::{Deserialize, Serialize};
 use std::{fmt, sync::OnceLock};
 
-pub(crate) const CALLER: Address = Address::new([0x10; 20]);
-pub(crate) const TARGET: Address = Address::new([0x20; 20]);
-pub(crate) const BENEFICIARY: Address = Address::new([0x30; 20]);
+pub(crate) const CALLER: Address = Address::repeat_byte(0x10);
+pub(crate) const TARGET: Address = Address::repeat_byte(0x20);
+pub(crate) const BENEFICIARY: Address = Address::repeat_byte(0x30);
 const CALLER_BALANCE: U256 = U256::from_limbs([0, 0, 1, 0]);
-const EIP7702_DELEGATED_TARGET: Address =
-    Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
+const EIP7702_DELEGATED_TARGET: Address = Address::with_last_byte(6);
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct EvmCase {
@@ -69,7 +71,7 @@ impl Default for CaseGenerator {
             fixed_eip7702_authority(),
             EIP7702_DELEGATED_TARGET,
             Address::ZERO,
-            Address::new([0xff; 20]),
+            Address::repeat_byte(0xff),
         ];
         address_pool.extend((1..=10).map(Address::with_last_byte));
         let mut call_pool =
@@ -359,10 +361,10 @@ fn generate_access_list(rng: &mut Gen, accounts: &[CaseAccount], list: &mut Acce
         item.address = account.address;
         item.storage_keys.clear();
         for key in account.storage.keys().take(rng.range_inclusive(0, 3)) {
-            item.storage_keys.push(B256::from(key.to_be_bytes::<32>()));
+            item.storage_keys.push(B256::from(*key));
         }
         if item.storage_keys.is_empty() && rng.one_in(2) {
-            item.storage_keys.push(B256::from(rng.biased_word().to_be_bytes::<32>()));
+            item.storage_keys.push(B256::from(rng.biased_word()));
         }
     }
 }
@@ -391,12 +393,12 @@ fn generate_eip7702_authorization(rng: &mut Gen) -> SignedAuthorization {
             nonce: 1,
         }),
         3 => signed_eip7702_auth(Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             address: rng.pick(&[EIP7702_DELEGATED_TARGET, TARGET, Address::with_last_byte(8)]),
             nonce: 1,
         }),
         4 => signed_eip7702_auth(Authorization {
-            chain_id: rng.pick(&[U256::from(1), U256::from(2)]),
+            chain_id: rng.pick(&[U256::ONE, U256::from(2)]),
             address: EIP7702_DELEGATED_TARGET,
             nonce: rng.pick(&[0, 2, u64::MAX]),
         }),
@@ -431,7 +433,7 @@ fn add_eip7702_accounts<'a>(
             if auth.y_parity() > 1 {
                 features.insert(FuzzFeatures::EIP7702_AUTH_BAD_SIGNATURE);
             }
-            if auth.chain_id() != &U256::ZERO && auth.chain_id() != &U256::from(1) {
+            if auth.chain_id() != &U256::ZERO && auth.chain_id() != &U256::ONE {
                 features.insert(FuzzFeatures::EIP7702_AUTH_BAD_CHAIN);
             }
             if auth.nonce() != 1 {
@@ -514,7 +516,7 @@ pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
     static AUTH: OnceLock<SignedAuthorization> = OnceLock::new();
     AUTH.get_or_init(|| {
         signed_eip7702_auth(Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             address: EIP7702_DELEGATED_TARGET,
             nonce: 1,
         })
@@ -736,7 +738,7 @@ pub(crate) struct CaseAccount {
     pub(crate) balance: U256,
     pub(crate) nonce: u64,
     pub(crate) code: Bytes,
-    pub(crate) storage: IndexMap<U256, U256>,
+    pub(crate) storage: U256IndexMap<U256>,
 }
 
 mod spec_serde {

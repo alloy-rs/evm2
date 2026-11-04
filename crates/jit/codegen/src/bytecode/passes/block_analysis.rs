@@ -61,7 +61,7 @@ use crate::{
 use alloy_primitives::{U256, map::FxHasher};
 use bitvec::vec::BitVec;
 use either::Either;
-use evm2::{constants::STACK_LIMIT, interpreter::op};
+use evm2::{bytecode::JumpTable, constants::STACK_LIMIT, interpreter::op};
 use oxc_index::IndexVec;
 use smallvec::SmallVec;
 use std::{
@@ -172,22 +172,22 @@ impl AbsValue {
 struct ConstSetInterner {
     interner: Interner<ConstSetIdx, Box<[U256Imm]>>,
     /// `JUMPDEST` map: sets only keep valid jump targets.
-    jumpdests: BitVec,
+    jumpdests: JumpTable,
     /// Number of constants merged by [`Self::join`], for the fixpoint budget.
     merged: u64,
 }
 
 impl ConstSetInterner {
-    fn new(jumpdests: BitVec) -> Self {
+    fn new(jumpdests: JumpTable) -> Self {
         Self { interner: Interner::new(), jumpdests, merged: 0 }
     }
 
     /// Returns `true` if `value` may be part of a set.
     fn is_set_member(&self, value: AbsValue) -> bool {
         match value {
-            AbsValue::Const(imm) => imm
-                .get_inline()
-                .is_some_and(|pc| self.jumpdests.get(pc as usize).is_some_and(|bit| *bit)),
+            AbsValue::Const(imm) => {
+                imm.get_inline().is_some_and(|pc| self.jumpdests.is_valid(pc as usize))
+            }
             AbsValue::ConstSet(_) => true,
             AbsValue::Range(..) | AbsValue::Top => false,
         }
@@ -766,7 +766,7 @@ impl BlockData {
     pub(crate) fn insts(
         &self,
     ) -> impl DoubleEndedIterator<Item = Inst> + ExactSizeIterator + use<> {
-        (self.insts.start.index()..self.insts.end.index()).map(Inst::from_usize)
+        (self.insts.start.index()..self.insts.end.index()).map(Inst::new)
     }
 }
 
@@ -882,7 +882,7 @@ impl Bytecode<'_> {
     pub(crate) fn block_analysis_local(&mut self) {
         self.init_snapshots();
 
-        let empty_sets = ConstSetInterner::new(BitVec::new());
+        let empty_sets = ConstSetInterner::new(JumpTable::default());
         let mut resolved = Vec::new();
         let mut stack = Vec::new();
         let trace_logs = enabled!(tracing::Level::TRACE);
@@ -1067,12 +1067,12 @@ impl Bytecode<'_> {
         let finish_block = |cfg: &mut Cfg, start: usize, end: usize| {
             debug_assert!(start < end, "empty block range: {start}..{end}");
             let bid = cfg.blocks.push(BlockData {
-                insts: Inst::from_usize(start)..Inst::from_usize(end),
+                insts: Inst::new(start)..Inst::new(end),
                 preds: SmallVec::new(),
                 succs: SmallVec::new(),
             });
             for i in start..end {
-                cfg.inst_to_block[Inst::from_usize(i)] = Some(bid);
+                cfg.inst_to_block[Inst::new(i)] = Some(bid);
             }
         };
 
@@ -1240,7 +1240,7 @@ impl Bytecode<'_> {
         } else {
             // Blocks the fixpoint never reached are unreachable, even when the static jumps of
             // other such blocks, such as a loop's back edge, target them.
-            for bid in reached.iter_zeros().map(Block::from_usize) {
+            for bid in reached.iter_zeros().map(Block::new) {
                 for i in self.cfg.blocks[bid].insts() {
                     self.insts[i].flags |= InstFlags::DEAD_CODE;
                 }
@@ -1382,7 +1382,9 @@ impl Bytecode<'_> {
         let end = (last + 1).min(self.jumpdests.len());
         let start = first.min(end);
         (last - first < MAX_RANGE_JUMP_WIDTH).then(|| {
-            self.jumpdests[start..end].iter_ones().map(move |i| self.pc_to_inst(start + i))
+            (start..end)
+                .filter(move |&pc| self.jumpdests.is_valid(pc))
+                .map(move |pc| self.pc_to_inst(pc))
         })
     }
 
@@ -1532,7 +1534,7 @@ impl Bytecode<'_> {
         // pass a stack.
         let no_mem = MemWords::default();
         let entry_mem = MemWords::entry(self.stack_observed());
-        let entry = Block::from_usize(0);
+        let entry = Block::new(0);
         parts.join(entry, 0, &[], self.stack_observed(), &[], &entry_mem, &mut const_sets, &budget);
 
         // Discovered dynamic-jump target edges per block.
@@ -2428,11 +2430,11 @@ pub(crate) mod tests {
         ",
         );
         // At inst 2 (ADD), operand 0 (TOS) = 0x01, operand 1 = 0x42.
-        assert_eq!(bytecode.const_operand(Inst::from_usize(2), 0), Some(U256::from(0x01)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(2), 1), Some(U256::from(0x42)));
+        assert_eq!(bytecode.const_operand(Inst::new(2), 0), Some(U256::ONE));
+        assert_eq!(bytecode.const_operand(Inst::new(2), 1), Some(U256::from(0x42)));
         // At inst 4 (MSTORE), operand 0 (TOS) = 0x00, operand 1 = 0x43 (folded ADD result).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(4), 0), Some(U256::from(0x00)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(4), 1), Some(U256::from(0x43)));
+        assert_eq!(bytecode.const_operand(Inst::new(4), 0), Some(U256::ZERO));
+        assert_eq!(bytecode.const_operand(Inst::new(4), 1), Some(U256::from(0x43)));
     }
 
     #[test]
@@ -2448,8 +2450,8 @@ pub(crate) mod tests {
         ",
         );
         // At inst 3 (MSTORE), operand 0 (TOS) = 0x00, operand 1 = unknown (CALLDATALOAD result).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(3), 0), Some(U256::ZERO));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(3), 1), None);
+        assert_eq!(bytecode.const_operand(Inst::new(3), 0), Some(U256::ZERO));
+        assert_eq!(bytecode.const_operand(Inst::new(3), 1), None);
     }
 
     #[test]
@@ -2470,12 +2472,12 @@ pub(crate) mod tests {
             STOP
         ",
         );
-        assert_eq!(bytecode.const_output(Inst::from_usize(0)), Some(U256::from(0x42)));
-        assert_eq!(bytecode.const_output(Inst::from_usize(1)), Some(U256::from(0x01)));
-        assert_eq!(bytecode.const_output(Inst::from_usize(2)), Some(U256::from(0x43)));
-        assert_eq!(bytecode.const_output(Inst::from_usize(3)), Some(U256::ZERO));
+        assert_eq!(bytecode.const_output(Inst::new(0)), Some(U256::from(0x42)));
+        assert_eq!(bytecode.const_output(Inst::new(1)), Some(U256::ONE));
+        assert_eq!(bytecode.const_output(Inst::new(2)), Some(U256::from(0x43)));
+        assert_eq!(bytecode.const_output(Inst::new(3)), Some(U256::ZERO));
         // MSTORE has no outputs.
-        assert_eq!(bytecode.const_output(Inst::from_usize(4)), None);
+        assert_eq!(bytecode.const_output(Inst::new(4)), None);
     }
 
     #[test]
@@ -2488,8 +2490,8 @@ pub(crate) mod tests {
             STOP
         ",
         );
-        assert_eq!(bytecode.const_output(Inst::from_usize(0)), Some(U256::ZERO));
-        assert_eq!(bytecode.const_output(Inst::from_usize(1)), None);
+        assert_eq!(bytecode.const_output(Inst::new(0)), Some(U256::ZERO));
+        assert_eq!(bytecode.const_output(Inst::new(1)), None);
     }
 
     /// DUPN, SWAPN, and EXCHANGE should propagate constants like their fixed counterparts.
@@ -2503,9 +2505,9 @@ pub(crate) mod tests {
         code.push(op::STOP); // inst 18
         let bytecode = analyze_code_spec(code, SpecId::AMSTERDAM);
         // DUPN duplicates the 17th item (bottom PUSH0 = 0x00).
-        assert_eq!(bytecode.const_output(Inst::from_usize(17)), Some(U256::ZERO));
+        assert_eq!(bytecode.const_output(Inst::new(17)), Some(U256::ZERO));
         // The PUSH1 0xAA is still there.
-        assert_eq!(bytecode.const_output(Inst::from_usize(16)), Some(U256::from(0xAA)));
+        assert_eq!(bytecode.const_output(Inst::new(16)), Some(U256::from(0xAA)));
     }
 
     #[test]
@@ -2536,26 +2538,26 @@ pub(crate) mod tests {
         );
         // The JUMP at inst 5 should remain dynamic.
         assert!(bytecode.has_dynamic_jumps, "expected unresolved dynamic jump");
-        let jump = bytecode.inst(Inst::from_usize(5));
+        let jump = bytecode.inst(Inst::new(5));
         assert!(jump.is_jump());
         assert!(!jump.flags.contains(InstFlags::STATIC_JUMP));
         // JUMP's TOS operand is Top (CALLDATALOAD result).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(5), 0), None);
+        assert_eq!(bytecode.const_operand(Inst::new(5), 0), None);
 
         // ADD 1
-        assert_eq!(bytecode.const_operand(Inst::from_usize(2), 0), Some(U256::from(0x01)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(2), 1), Some(U256::from(0x42)));
-        assert_eq!(bytecode.const_output(Inst::from_usize(2)), Some(U256::from(0x43)));
+        assert_eq!(bytecode.const_operand(Inst::new(2), 0), Some(U256::ONE));
+        assert_eq!(bytecode.const_operand(Inst::new(2), 1), Some(U256::from(0x42)));
+        assert_eq!(bytecode.const_output(Inst::new(2)), Some(U256::from(0x43)));
 
         // ADD 2
-        assert_eq!(bytecode.const_operand(Inst::from_usize(8), 0), Some(U256::from(0x01)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(8), 1), None);
-        assert_eq!(bytecode.const_output(Inst::from_usize(8)), None);
+        assert_eq!(bytecode.const_operand(Inst::new(8), 0), Some(U256::ONE));
+        assert_eq!(bytecode.const_operand(Inst::new(8), 1), None);
+        assert_eq!(bytecode.const_output(Inst::new(8)), None);
 
         // SUB
-        assert_eq!(bytecode.const_operand(Inst::from_usize(12), 0), Some(U256::from(0x02)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(12), 1), None);
-        assert_eq!(bytecode.const_output(Inst::from_usize(12)), None);
+        assert_eq!(bytecode.const_operand(Inst::new(12), 0), Some(U256::from(0x02)));
+        assert_eq!(bytecode.const_operand(Inst::new(12), 1), None);
+        assert_eq!(bytecode.const_output(Inst::new(12)), None);
     }
 
     #[test]
@@ -2867,8 +2869,7 @@ pub(crate) mod tests {
             })
             .and_then(|to| to.as_str())
             .unwrap();
-        let code = case["pre"][to]["code"].as_str().unwrap().trim_start_matches("0x");
-        hex::decode(code).unwrap()
+        hex::decode(case["pre"][to]["code"].as_str().unwrap()).unwrap()
     }
 }
 
@@ -2977,10 +2978,10 @@ mod tests_edge_cases {
         ",
         );
         // DUP2 output should be 0xAA.
-        assert_eq!(bytecode.const_output(Inst::from_usize(2)), Some(U256::from(0xAA)));
+        assert_eq!(bytecode.const_output(Inst::new(2)), Some(U256::from(0xAA)));
         // At MSTORE (inst 5): TOS = 0x00, second = 0xBB (swapped back).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(5), 0), Some(U256::ZERO));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(5), 1), Some(U256::from(0xBB)));
+        assert_eq!(bytecode.const_operand(Inst::new(5), 0), Some(U256::ZERO));
+        assert_eq!(bytecode.const_operand(Inst::new(5), 1), Some(U256::from(0xBB)));
     }
 
     /// JUMPI with a constant condition should still record both operands.
@@ -3090,7 +3091,7 @@ mod tests_edge_cases {
         let (_, jump) = bytecode.iter_insts().find(|(_, data)| data.opcode == op::JUMPI).unwrap();
         assert!(jump.flags.contains(InstFlags::STATIC_JUMP));
         assert!(!jump.flags.contains(InstFlags::INVALID_JUMP));
-        assert_eq!(jump.static_jump_target(), Inst::from_usize(3));
+        assert_eq!(jump.static_jump_target(), Inst::new(3));
         assert!(!bytecode.has_dynamic_jumps);
     }
 
@@ -3111,7 +3112,7 @@ mod tests_edge_cases {
         let (_, jump) = bytecode.iter_insts().find(|(_, data)| data.opcode == op::JUMPI).unwrap();
         assert!(jump.flags.contains(InstFlags::STATIC_JUMP));
         assert!(!jump.flags.contains(InstFlags::INVALID_JUMP));
-        assert_eq!(jump.static_jump_target(), Inst::from_usize(3));
+        assert_eq!(jump.static_jump_target(), Inst::new(3));
         assert!(!bytecode.has_dynamic_jumps);
     }
 
@@ -3686,10 +3687,10 @@ mod tests_edge_cases {
         );
 
         // DUP1 at inst 2: counter is loop-variant.
-        assert_eq!(bytecode.const_operand(Inst::from_usize(2), 0), None);
+        assert_eq!(bytecode.const_operand(Inst::new(2), 0), None);
         // ADD at inst 9: TOS=1 (const), second=counter (Top).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 0), Some(U256::from(1)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 1), None);
+        assert_eq!(bytecode.const_operand(Inst::new(9), 0), Some(U256::ONE));
+        assert_eq!(bytecode.const_operand(Inst::new(9), 1), None);
     }
 
     /// Loop counter incremented via single-caller subroutine must be Top.
@@ -3749,7 +3750,7 @@ mod tests_edge_cases {
         ",
         );
 
-        assert_eq!(bytecode.const_operand(Inst::from_usize(2), 0), None);
+        assert_eq!(bytecode.const_operand(Inst::new(2), 0), None);
     }
 
     /// Loop counter incremented via multi-caller subroutine must be Top.
@@ -3821,7 +3822,7 @@ mod tests_edge_cases {
         );
 
         // DUP1 at inst 11: counter is loop-variant.
-        assert_eq!(bytecode.const_operand(Inst::from_usize(11), 0), None);
+        assert_eq!(bytecode.const_operand(Inst::new(11), 0), None);
     }
 
     /// loopExp statetest: loop counters through checked_add subroutine must be Top.
@@ -3870,10 +3871,10 @@ mod tests_edge_cases {
         );
         assert!(bytecode.has_dynamic_jumps);
         // Block-local constant survives.
-        assert_eq!(bytecode.const_output(Inst::from_usize(8)), Some(U256::ZERO));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 0), Some(U256::ZERO));
+        assert_eq!(bytecode.const_output(Inst::new(8)), Some(U256::ZERO));
+        assert_eq!(bytecode.const_operand(Inst::new(9), 0), Some(U256::ZERO));
         // Cross-block value must be restored to Top.
-        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 1), None);
+        assert_eq!(bytecode.const_operand(Inst::new(9), 1), None);
     }
 
     /// Same as above but asserting const_output: block-local PUSH output survives,
@@ -3900,11 +3901,11 @@ mod tests_edge_cases {
         );
         assert!(bytecode.has_dynamic_jumps);
         // Purely local push output preserved.
-        assert_eq!(bytecode.const_output(Inst::from_usize(8)), Some(U256::from(0x01)));
+        assert_eq!(bytecode.const_output(Inst::new(8)), Some(U256::ONE));
         // ADD: local operand preserved, inherited operand restored to Top.
-        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 0), Some(U256::from(0x01)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 1), None);
-        assert_eq!(bytecode.const_output(Inst::from_usize(9)), None);
+        assert_eq!(bytecode.const_operand(Inst::new(9), 0), Some(U256::ONE));
+        assert_eq!(bytecode.const_operand(Inst::new(9), 1), None);
+        assert_eq!(bytecode.const_output(Inst::new(9)), None);
     }
 
     /// Fallthrough block after a JUMPI in a suspect JUMPDEST block becomes
@@ -3939,10 +3940,10 @@ mod tests_edge_cases {
         );
         assert!(bytecode.has_dynamic_jumps);
         // Block-local constant in propagated-suspect fallthrough survives.
-        assert_eq!(bytecode.const_output(Inst::from_usize(13)), Some(U256::ZERO));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(14), 0), Some(U256::ZERO));
+        assert_eq!(bytecode.const_output(Inst::new(13)), Some(U256::ZERO));
+        assert_eq!(bytecode.const_operand(Inst::new(14), 0), Some(U256::ZERO));
         // Cross-block inherited value restored to Top.
-        assert_eq!(bytecode.const_operand(Inst::from_usize(14), 1), None);
+        assert_eq!(bytecode.const_operand(Inst::new(14), 1), None);
     }
 
     /// Non-suspect blocks must retain their fixpoint-derived snapshots even when
@@ -3982,16 +3983,16 @@ mod tests_edge_cases {
         assert!(bytecode.has_dynamic_jumps);
         // Fallthrough block: block-local constants survive.
         // ADD
-        assert_eq!(bytecode.const_operand(Inst::from_usize(6), 0), Some(U256::from(0x0B)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(6), 1), Some(U256::from(0x0A)));
-        assert_eq!(bytecode.const_output(Inst::from_usize(6)), Some(U256::from(0x15)));
+        assert_eq!(bytecode.const_operand(Inst::new(6), 0), Some(U256::from(0x0B)));
+        assert_eq!(bytecode.const_operand(Inst::new(6), 1), Some(U256::from(0x0A)));
+        assert_eq!(bytecode.const_output(Inst::new(6)), Some(U256::from(0x15)));
         // MSTORE 1
-        assert_eq!(bytecode.const_operand(Inst::from_usize(8), 0), Some(U256::from(0)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(8), 1), Some(U256::from(0x15)));
+        assert_eq!(bytecode.const_operand(Inst::new(8), 0), Some(U256::ZERO));
+        assert_eq!(bytecode.const_operand(Inst::new(8), 1), Some(U256::from(0x15)));
         // MLOAD: single predecessor (no JUMPDEST), so cross-block value resolves.
-        assert_eq!(bytecode.const_operand(Inst::from_usize(9), 0), Some(U256::from(0x69)));
+        assert_eq!(bytecode.const_operand(Inst::new(9), 0), Some(U256::from(0x69)));
         // Target block: block-local PUSH survives.
-        assert_eq!(bytecode.const_output(Inst::from_usize(18)), Some(U256::from(0x42)));
+        assert_eq!(bytecode.const_output(Inst::new(18)), Some(U256::from(0x42)));
     }
 
     /// JUMPI in a suspect JUMPDEST block: the fallthrough block inherits
@@ -4036,9 +4037,9 @@ mod tests_edge_cases {
         assert!(bytecode.has_dynamic_jumps);
         // ADD at inst 18: TOS (depth 0) = 0xBB (block-local), depth 1 = Top
         // (incoming from suspect predecessor, block-local pass saw it as Top).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(18), 0), Some(U256::from(0xBB)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(18), 1), None);
-        assert_eq!(bytecode.const_output(Inst::from_usize(18)), None);
+        assert_eq!(bytecode.const_operand(Inst::new(18), 0), Some(U256::from(0xBB)));
+        assert_eq!(bytecode.const_operand(Inst::new(18), 1), None);
+        assert_eq!(bytecode.const_output(Inst::new(18)), None);
     }
 
     /// Bytecode that is just STOP — minimal edge case.
@@ -4249,11 +4250,11 @@ mod tests_edge_cases {
         ",
         );
         assert!(!bytecode.has_dynamic_jumps);
-        assert_eq!(bytecode.const_operand(Inst::from_usize(16), 1), Some(U256::from(7)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(16), 0), None);
-        assert_eq!(bytecode.const_output(Inst::from_usize(16)), None);
-        let targets = bytecode.multi_jump_targets(Inst::from_usize(18)).unwrap();
-        assert_eq!(targets, [Inst::from_usize(5), Inst::from_usize(12)]);
+        assert_eq!(bytecode.const_operand(Inst::new(16), 1), Some(U256::from(7)));
+        assert_eq!(bytecode.const_operand(Inst::new(16), 0), None);
+        assert_eq!(bytecode.const_output(Inst::new(16)), None);
+        let targets = bytecode.multi_jump_targets(Inst::new(18)).unwrap();
+        assert_eq!(targets, [Inst::new(5), Inst::new(12)]);
     }
 
     /// A recursive function's return must resolve to all of its return sites.
@@ -4399,14 +4400,14 @@ mod tests_edge_cases {
         // Memory that was never written is not assumed to be zero.
         assert_eq!(mload_0x40_after("PUSH 0x60 MLOAD POP"), known);
         let bytecode = analyze_asm("PUSH 0x60 MLOAD PUSH0 MSTORE STOP");
-        assert_eq!(bytecode.const_output(Inst::from_usize(1)), None);
+        assert_eq!(bytecode.const_output(Inst::new(1)), None);
     }
 
     #[test]
     fn mload_known_word_after_mstore() {
         let known = Some(U256::from(0x80));
         assert_eq!(mload_0x40_after("PUSH 1 PUSH0 CALLDATALOAD MSTORE"), None);
-        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x40 MSTORE"), Some(U256::from(1)));
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x40 MSTORE"), Some(U256::ONE));
         assert_eq!(mload_0x40_after("PUSH0 CALLDATALOAD PUSH 0x40 MSTORE"), None);
         assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x21 MSTORE"), None);
         assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x5f MSTORE"), None);

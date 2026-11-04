@@ -43,7 +43,7 @@ pub unsafe fn __revmc_builtin_framedataload<T: EvmTypesHost>(
 ) -> BuiltinResult {
     let rev![offset, index] = sp;
     let data = ecx.host().frame_data(index.to_u256()).ok_or(InstrStop::OpcodeNotFound)?;
-    let offset = word_to_usize_saturated(offset.to_u256());
+    let offset = offset.to_u256().saturating_to::<usize>();
     *index = U256::from_be_bytes(read_word_padded(&data, offset).0).into();
     Ok(())
 }
@@ -130,7 +130,7 @@ fn copy_frame_bytes<T: EvmTypesHost>(
     checked: bool,
 ) -> BuiltinResult {
     let len = word_to_usize(len)?;
-    let offset = word_to_usize_saturated(offset);
+    let offset = offset.saturating_to::<usize>();
     if checked && offset.checked_add(len).is_none_or(|end| end > data.len()) {
         return Err(InstrStop::OutOfOffset.into());
     }

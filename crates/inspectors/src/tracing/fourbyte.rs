@@ -23,7 +23,7 @@
 //! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
 
 use alloc::format;
-use alloy_primitives::{Selector, hex, map::HashMap};
+use alloy_primitives::{Selector, map::HashMap};
 use alloy_rpc_types_trace::geth::FourByteFrame;
 use evm2::{
     EvmTypes, Inspector, InspectorConfig,
@@ -79,7 +79,7 @@ impl From<&FourByteInspector> for FourByteFrame {
                 .inner
                 .iter()
                 .map(|((selector, calldata_size), count)| {
-                    let key = format!("0x{}-{}", hex::encode(selector), *calldata_size);
+                    let key = format!("0x{selector:x}-{}", *calldata_size);
                     (key, *count)
                 })
                 .collect(),

@@ -273,22 +273,17 @@ mod tests {
         },
         BlockStateAccumulator,
     };
-    use crate::interpreter::Word;
+    use crate::{interpreter::Word, test_utils::storage_slot};
     use alloy_primitives::{Address, map::U256Map};
     use core::convert::Infallible;
 
     use super::super::StateChangeSink;
-    #[cfg(feature = "serde")]
     use crate::bytecode::Bytecode;
     use alloc::{vec, vec::Vec};
-    #[cfg(feature = "serde")]
-    use alloy_primitives::B256;
+    use alloy_primitives::{B256, Bytes};
 
     #[test]
     fn code_sorted_orders_by_hash() {
-        use crate::bytecode::Bytecode;
-        use alloy_primitives::{B256, Bytes};
-
         let mut block = BlockStateAccumulator::new();
         // Inserted descending, so map order cannot be mistaken for sorted order.
         for byte in [0xcc_u8, 0x11, 0x77] {
@@ -326,14 +321,7 @@ mod tests {
     }
 
     fn slot(key: Word, original: Word, current: Word) -> U256Map<StorageSlot> {
-        U256Map::from_iter([(
-            key,
-            StorageSlot {
-                value: Tracked::from_parts(original, current),
-                is_warm: false,
-                _non_exhaustive: (),
-            },
-        )])
+        U256Map::from_iter([(key, storage_slot(original, current))])
     }
 
     #[cfg(feature = "serde")]
@@ -352,8 +340,8 @@ mod tests {
 
     #[test]
     fn block_accumulator_collapses_create_then_delete() {
-        let address = Address::from([0x50; 20]);
-        let key = Word::from(1);
+        let address = Address::repeat_byte(0x50);
+        let key = Word::ONE;
         let created = AccountInfo::default().with_nonce(1);
         let mut accumulator = BlockStateAccumulator::new();
 
@@ -376,8 +364,8 @@ mod tests {
 
     #[test]
     fn block_accumulator_preserves_original_for_delete_then_recreate() {
-        let address = Address::from([0x51; 20]);
-        let key = Word::from(1);
+        let address = Address::repeat_byte(0x51);
+        let key = Word::ONE;
         let original = AccountInfo::default().with_balance(Word::from(3));
         let recreated = AccountInfo::default().with_nonce(1);
         let mut accumulator = BlockStateAccumulator::new();
@@ -475,9 +463,9 @@ mod tests {
         // Selfdestruct followed by a revival in a later transaction of the same block (a plain
         // transfer or a re-create): the revived account is a live account, which does not wipe
         // storage at a sink by itself, so the sink must still see the wipe.
-        let address = Address::from([0x55; 20]);
+        let address = Address::repeat_byte(0x55);
         let original = AccountInfo::default().with_balance(Word::from(3));
-        let revived = AccountInfo::default().with_balance(Word::from(1));
+        let revived = AccountInfo::default().with_balance(Word::ONE);
         let mut accumulator = BlockStateAccumulator::new();
 
         changes(address, Some(original.clone()), None, true, U256Map::default())
@@ -560,8 +548,8 @@ mod tests {
 
     #[test]
     fn block_accumulator_keeps_nonzero_write_after_storage_wipe() {
-        let address = Address::from([0x52; 20]);
-        let key = Word::from(1);
+        let address = Address::repeat_byte(0x52);
+        let key = Word::ONE;
         let original = AccountInfo::default().with_balance(Word::from(3));
         let mut accumulator = BlockStateAccumulator::new();
 
@@ -585,8 +573,8 @@ mod tests {
 
     #[test]
     fn block_accumulator_reinserts_unchanged_slot_after_wiping_created_account() {
-        let address = Address::from([0x53; 20]);
-        let key = Word::from(1);
+        let address = Address::repeat_byte(0x53);
+        let key = Word::ONE;
         let account = AccountInfo::default().with_nonce(1);
         let mut accumulator = BlockStateAccumulator::new();
 
@@ -617,8 +605,8 @@ mod tests {
 
     #[test]
     fn block_accumulator_normalizes_storage_when_creation_arrives_after_slots() {
-        let address = Address::from([0x54; 20]);
-        let key = Word::from(1);
+        let address = Address::repeat_byte(0x54);
+        let key = Word::ONE;
         let account = AccountInfo::default().with_nonce(1);
         let mut accumulator = BlockStateAccumulator::new();
 
@@ -638,8 +626,8 @@ mod tests {
 
     #[test]
     fn block_accumulator_deletion_subsumes_storage_writes() {
-        let address = Address::from([0x56; 20]);
-        let key = Word::from(1);
+        let address = Address::repeat_byte(0x56);
+        let key = Word::ONE;
         let original = AccountInfo::default().with_balance(Word::from(3));
         let mut accumulator = BlockStateAccumulator::new();
 
@@ -657,8 +645,8 @@ mod tests {
 
     #[test]
     fn block_accumulator_collapses_storage_wipe_write_wipe() {
-        let address = Address::from([0x52; 20]);
-        let key = Word::from(1);
+        let address = Address::repeat_byte(0x52);
+        let key = Word::ONE;
         let mut accumulator = BlockStateAccumulator::new();
 
         let first = changes(address, None, None, true, slot(key, Word::from(5), Word::from(7)));
@@ -674,8 +662,8 @@ mod tests {
 
     #[test]
     fn block_accumulator_drops_storage_reverted_to_original() {
-        let address = Address::from([0x57; 20]);
-        let key = Word::from(1);
+        let address = Address::repeat_byte(0x57);
+        let key = Word::ONE;
         let mut accumulator = BlockStateAccumulator::new();
 
         changes(address, None, None, false, slot(key, Word::from(3), Word::from(4)))
@@ -690,8 +678,8 @@ mod tests {
 
     #[test]
     fn block_accumulator_isolates_storage_between_accounts() {
-        let [a, b, c, d, e] = [0x61, 0x62, 0x63, 0x64, 0x65].map(|byte| Address::from([byte; 20]));
-        let (k1, k2) = (Word::from(1), Word::from(2));
+        let [a, b, c, d, e] = [0x61, 0x62, 0x63, 0x64, 0x65].map(Address::repeat_byte);
+        let (k1, k2) = (Word::ONE, Word::from(2));
         let info = AccountInfo::default().with_nonce(1);
         let w = Word::from;
         let mut accumulator = BlockStateAccumulator::new();
@@ -754,10 +742,10 @@ mod tests {
 
     #[test]
     fn block_accumulator_keeps_account_only_and_storage_only_changes_separate() {
-        let account_address = Address::from([0x53; 20]);
-        let storage_address = Address::from([0x54; 20]);
-        let key = Word::from(1);
-        let original = AccountInfo::default().with_balance(Word::from(1));
+        let account_address = Address::repeat_byte(0x53);
+        let storage_address = Address::repeat_byte(0x54);
+        let key = Word::ONE;
+        let original = AccountInfo::default().with_balance(Word::ONE);
         let current = AccountInfo::default().with_balance(Word::from(2));
         let mut accumulator = BlockStateAccumulator::new();
 

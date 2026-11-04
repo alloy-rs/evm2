@@ -706,7 +706,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             // SAFETY: The inspector pointer is valid while the frame executes.
             && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
         {
-            self.0.result = Err(InstrStop::Reload);
+            self.set_result(Err(InstrStop::Reload));
         }
     }
 
@@ -740,10 +740,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     /// Returns the host implementation.
     #[inline]
     pub const fn host(&mut self) -> &mut T::Host<'host> {
-        // SAFETY: `host` is initialized at the beginning of `run` and cleared before the
-        // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
-        // `run` host borrow.
-        unsafe { self.0.host.unwrap_unchecked().as_mut() }
+        self.0.host()
     }
 
     /// Returns the active runtime version data.
@@ -840,8 +837,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
-        self.0.pc = pc.as_ptr();
-        self.0.stack_len = stack_len;
+        self.set_pc_stack_len(pc.as_ptr(), stack_len);
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
@@ -850,13 +846,12 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
-        self.0.pc = pc.as_ptr();
-        self.0.stack_len = stack_len;
+        self.set_pc_stack_len(pc.as_ptr(), stack_len);
         let reload = self.0.result == Err(InstrStop::Reload);
         if reload {
             cold_path();
             // The hook sees the instruction as done, with the pc after it.
-            self.0.result = Ok(());
+            self.set_result(Ok(()));
             // SAFETY: A next instruction follows the instruction at `pc`.
             self.0.pc = unsafe { pc.as_ptr().add(dispatch::instruction_len(pc.op())) };
         } else if self.0.result.is_err() {
@@ -874,7 +869,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         if reload {
             self.0.pc = pc.as_ptr();
             if self.0.result.is_ok() {
-                self.0.result = Err(InstrStop::Reload);
+                self.set_result(Err(InstrStop::Reload));
             }
         }
     }

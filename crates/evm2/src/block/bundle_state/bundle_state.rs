@@ -600,7 +600,7 @@ impl BundleState {
             for (&key, &slot) in account.storage.iter() {
                 // If storage was destroyed that means that storage was wiped.
                 // In that case we need to check if present storage value is different then ZERO.
-                let destroyed_and_not_zero = was_destroyed && !slot.present_value.is_zero();
+                let destroyed_and_not_zero = was_destroyed && !slot.present_value().is_zero();
 
                 // If account is not destroyed check if original values was changed,
                 // so we can update it.
@@ -610,7 +610,7 @@ impl BundleState {
                     || destroyed_and_not_zero
                     || not_destroyed_and_changed
                 {
-                    account_storage_changed.push((key, slot.present_value));
+                    account_storage_changed.push((key, slot.present_value()));
                 }
             }
 
@@ -674,7 +674,7 @@ impl BundleState {
                         for (key, storage_slot) in other_account.storage {
                             // Update present value or insert storage slot.
                             this.storage.entry(key).or_insert(storage_slot).present_value =
-                                storage_slot.present_value;
+                                storage_slot.present_value();
                         }
                     }
                     this.info = other_account.info;
@@ -728,7 +728,7 @@ impl BundleState {
                     // A `Destroyed` slot in `other` means the value before the wipe, which is
                     // this bundle's present value, not the database value.
                     for (key, value) in this_account.storage.drain() {
-                        let previous = RevertToSlot::Some(value.present_value);
+                        let previous = RevertToSlot::Some(value.present_value());
                         revert
                             .storage
                             .entry(key)
@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn transition_states() {
         // Dummy data
-        let address = Address::new([0x01; 20]);
+        let address = Address::repeat_byte(0x01);
         let acc1 = AccountInfo { balance: U256::from(10), nonce: 1, ..Default::default() };
 
         let mut bundle_state = BundleState::default();
@@ -871,11 +871,7 @@ mod tests {
 
         let transition = TransitionAccount {
             info: Some(acc1),
-            status: AccountStatus::InMemoryChange,
-            previous_info: None,
-            previous_status: AccountStatus::LoadedNotExisting,
-            storage: StorageWithOriginalValues::default(),
-            storage_was_destroyed: false,
+            ..TransitionAccount::new_empty_eip161(StorageWithOriginalValues::default())
         };
 
         // Apply first transition
@@ -886,11 +882,11 @@ mod tests {
     }
 
     const fn account1() -> Address {
-        Address::new([0x60; 20])
+        Address::repeat_byte(0x60)
     }
 
     const fn account2() -> Address {
-        Address::new([0x61; 20])
+        Address::repeat_byte(0x61)
     }
 
     fn slot1() -> U256 {
@@ -911,8 +907,8 @@ mod tests {
                     None,
                     Some(AccountInfo { nonce: 1, balance: U256::from(10), ..Default::default() }),
                     HashMap::from_iter([
-                        (slot1(), (U256::from(0), U256::from(10))),
-                        (slot2(), (U256::from(0), U256::from(15))),
+                        (slot1(), (U256::ZERO, U256::from(10))),
+                        (slot2(), (U256::ZERO, U256::from(15))),
                     ]),
                 ),
                 (
@@ -923,7 +919,7 @@ mod tests {
                 ),
             ],
             vec![vec![
-                (account1(), Some(None), vec![(slot1(), U256::from(0)), (slot2(), U256::from(0))]),
+                (account1(), Some(None), vec![(slot1(), U256::ZERO), (slot2(), U256::ZERO)]),
                 (account2(), Some(None), vec![]),
             ]],
             vec![],
@@ -938,7 +934,7 @@ mod tests {
                 account1(),
                 None,
                 Some(AccountInfo { nonce: 3, balance: U256::from(20), ..Default::default() }),
-                HashMap::from_iter([(slot1(), (U256::from(0), U256::from(15)))]),
+                HashMap::from_iter([(slot1(), (U256::ZERO, U256::from(15)))]),
             )],
             vec![vec![(
                 account1(),
@@ -958,7 +954,7 @@ mod tests {
             )
             .state_storage(
                 account1(),
-                HashMap::from_iter([(slot1(), (U256::from(0), U256::from(10)))]),
+                HashMap::from_iter([(slot1(), (U256::ZERO, U256::from(10)))]),
             )
             .state_address(account2())
             .state_present_account_info(
@@ -967,7 +963,7 @@ mod tests {
             )
             .revert_address(0, account1())
             .revert_account_info(0, account1(), Some(None))
-            .revert_storage(0, account1(), vec![(slot1(), U256::from(0))])
+            .revert_storage(0, account1(), vec![(slot1(), U256::ZERO)])
             .revert_account_info(0, account2(), Some(None))
             .build()
     }
@@ -981,7 +977,7 @@ mod tests {
             )
             .state_storage(
                 account1(),
-                HashMap::from_iter([(slot1(), (U256::from(0), U256::from(15)))]),
+                HashMap::from_iter([(slot1(), (U256::ZERO, U256::from(15)))]),
             )
             .revert_address(0, account1())
             .revert_account_info(
@@ -997,7 +993,7 @@ mod tests {
     /// to the status accumulated over the earlier blocks.
     #[test]
     fn extend_reverts_to_accumulated_status() {
-        let address = Address::new([0x70; 20]);
+        let address = Address::repeat_byte(0x70);
         let info = AccountInfo { nonce: 1, balance: U256::from(10), ..Default::default() };
         let destroy = TransitionAccount {
             info: None,
@@ -1012,14 +1008,10 @@ mod tests {
         };
         let recreate = TransitionAccount {
             info: Some(info),
-            status: AccountStatus::InMemoryChange,
-            previous_info: None,
-            previous_status: AccountStatus::LoadedNotExisting,
-            storage: HashMap::from_iter([(
+            ..TransitionAccount::new_empty_eip161(HashMap::from_iter([(
                 slot2(),
                 StorageSlot::new_changed(U256::ZERO, U256::from(5)),
-            )]),
-            storage_was_destroyed: false,
+            )]))
         };
         let block_bundle = |transition| {
             let mut bundle = BundleState::default();
@@ -1062,7 +1054,7 @@ mod tests {
     /// blocks, not only the first one.
     #[test]
     fn extend_reverts_later_blocks_to_accumulated_status() {
-        let address = Address::new([0x71; 20]);
+        let address = Address::repeat_byte(0x71);
         let info = AccountInfo { nonce: 1, balance: U256::from(10), ..Default::default() };
         let changed = AccountInfo { balance: U256::from(11), ..info.clone() };
         let transition = |previous: &AccountInfo, next: &AccountInfo, from, to| TransitionAccount {
@@ -1231,7 +1223,7 @@ mod tests {
 
     #[test]
     fn test_multi_reverts_with_delete() {
-        let mut state = BundleBuilder::new(0..=3)
+        let mut state = BundleState::builder(0..=3)
             .revert_address(0, account1())
             .revert_account_info(2, account1(), Some(Some(AccountInfo::default())))
             .revert_account_info(3, account1(), Some(None))
@@ -1239,12 +1231,12 @@ mod tests {
 
         state.revert_latest();
         // State for account one was deleted
-        assert_eq!(state.state.get(&account1()), None);
+        assert_eq!(state.account(&account1()), None);
 
         state.revert_latest();
         // State is set to
         assert_eq!(
-            state.state.get(&account1()),
+            state.account(&account1()),
             Some(&BundleAccount::new(
                 None,
                 Some(AccountInfo::default()),
@@ -1338,18 +1330,18 @@ mod tests {
 
         test.prepend_state(previous_state);
 
-        assert_eq!(test.state.len(), 2);
+        assert_eq!(test.len(), 2);
         // The receiver keeps its own reverts.
         assert_eq!(test.reverts, present_reverts);
         // Account1 is not overwritten.
-        assert_eq!(test.state.get(&address1).unwrap().info, Some(account1_changed));
+        assert_eq!(test.account(&address1).unwrap().info, Some(account1_changed));
         // Account2 got inserted
-        assert_eq!(test.state.get(&address2).unwrap().info, Some(account2));
+        assert_eq!(test.account(&address2).unwrap().info, Some(account2));
     }
 
     #[test]
     fn test_getters() {
-        let mut builder = BundleBuilder::new(0..=3);
+        let mut builder = BundleState::builder(0..=3);
 
         // Test get_states and get_states_mut
         assert!(builder.get_states().is_empty());
@@ -1386,7 +1378,7 @@ mod tests {
 
         // Test get_revert_storage_mut
         assert!(builder.get_revert_storage_mut().is_empty());
-        builder.get_revert_storage_mut().insert((0, account1()), vec![(slot1(), U256::from(0))]);
+        builder.get_revert_storage_mut().insert((0, account1()), vec![(slot1(), U256::ZERO)]);
         assert!(builder.get_revert_storage_mut().contains_key(&(0, account1())));
 
         // Test get_contracts_mut
