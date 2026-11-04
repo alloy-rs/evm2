@@ -59,11 +59,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) stack: Box<StackBacking>,
 
     pub(in crate::interpreter) gas: Gas,
-    /// Remaining gas plus spilled state gas at the start of the current inspected step.
-    step_gas_before: u64,
-    /// Remaining gas plus spilled state gas once the current step finished charging, if it
-    /// marked that point.
-    step_gas_after_charge: Option<u64>,
     pub(in crate::interpreter) result: Result,
     error: Option<ExecutionError>,
     spec: SpecId,
@@ -103,8 +98,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             bytecode_ref: None,
             stack_len: 0,
             gas: Gas::new(0),
-            step_gas_before: 0,
-            step_gas_after_charge: None,
             memory: Memory::new(),
             result: Ok(()),
             error: None,
@@ -257,26 +250,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn set_gas(&mut self, gas: Gas) {
         self.gas = gas;
-    }
-
-    /// Returns the execution gas the current step charged, before its effects.
-    ///
-    /// This is the gas remaining at the start of the step minus the gas remaining once the step
-    /// finished charging, leaving out state gas that spills into the remaining gas because the
-    /// reservoir was short or is refilled from it. State gas is not part of the execution cost;
-    /// [`Gas::state_gas_spent`] reports it. Call and create steps finish charging right before
-    /// they hand gas to the child, so their cost includes the forwarded gas for calls and
-    /// excludes it for creates. Any other step finishes charging when it ends, which makes its
-    /// cost the execution gas it consumed.
-    ///
-    /// Only meaningful in [`Inspector::step_end`](crate::inspector::Inspector::step_end).
-    #[inline]
-    pub const fn step_cost(&self) -> u64 {
-        let after = match self.step_gas_after_charge {
-            Some(after) => after,
-            None => self.gas.remaining_excluding_state_spill(),
-        };
-        self.step_gas_before.saturating_sub(after)
     }
 
     /// Returns the current linear memory.
@@ -732,7 +705,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             // SAFETY: The inspector pointer is valid while the frame executes.
             && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
         {
-            self.0.result = Err(InstrStop::Reload);
+            self.set_result(Err(InstrStop::Reload));
         }
     }
 
@@ -766,10 +739,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     /// Returns the host implementation.
     #[inline]
     pub const fn host(&mut self) -> &mut T::Host<'host> {
-        // SAFETY: `host` is initialized at the beginning of `run` and cleared before the
-        // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
-        // `run` host borrow.
-        unsafe { self.0.host.unwrap_unchecked().as_mut() }
+        self.0.host()
     }
 
     /// Returns the active runtime version data.
@@ -867,8 +837,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.set_pc_stack_len(pc.as_ptr(), stack_len);
-        self.0.step_gas_before = self.0.gas.remaining_excluding_state_spill();
-        self.0.step_gas_after_charge = None;
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
@@ -882,13 +850,13 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         if reload {
             cold_path();
             // The hook sees the instruction as done, with the pc after it.
-            self.0.result = Ok(());
+            self.set_result(Ok(()));
             // SAFETY: A next instruction follows the instruction at `pc`.
             self.0.pc = unsafe { pc.as_ptr().add(dispatch::instruction_len(pc.op())) };
         } else if self.0.result.is_err() {
             cold_path();
             if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
-                // Failed charges may leave a wrapped counter until frame settlement.
+                // An out-of-gas frame has burned all its gas, so 0 is the real remaining gas.
                 self.0.gas.set_remaining(0);
             }
         }
@@ -900,16 +868,9 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         if reload {
             self.0.pc = pc.as_ptr();
             if self.0.result.is_ok() {
-                self.0.result = Err(InstrStop::Reload);
+                self.set_result(Err(InstrStop::Reload));
             }
         }
-    }
-
-    /// Marks that the current step finished charging gas, so [`Interpreter::step_cost`] stops
-    /// counting gas after this point.
-    #[inline]
-    pub(crate) const fn finish_step_charge(&mut self, gas: &Gas) {
-        self.0.step_gas_after_charge = Some(gas.remaining_excluding_state_spill());
     }
 
     #[inline]

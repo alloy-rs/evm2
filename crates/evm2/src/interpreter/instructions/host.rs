@@ -1,3 +1,4 @@
+use super::require_non_staticcall;
 use crate::{
     EvmFeatures, EvmTypesHost,
     evm::SStore,
@@ -9,14 +10,6 @@ use crate::{
 };
 use alloy_primitives::{Address, B256};
 use evm2_macros::instruction;
-
-#[inline]
-const fn require_non_staticcall<T: EvmTypesHost>(state: &InterpreterState<'_, '_, T>) -> Result {
-    if state.is_static() {
-        return Err(InstrStop::StateChangeDuringStaticCall);
-    }
-    Ok(())
-}
 
 #[instruction(dynamic_gas)]
 pub fn sload(cx: _, [key]: [Word]) -> Result<out> {

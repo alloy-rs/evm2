@@ -2,7 +2,7 @@
 
 use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output,
-    SpecId, TestDbExt, TransactTo, TxEnv,
+    SpecId, TestDbExt, TransactTo, TxEnv, a,
 };
 use alloy_primitives::{Address, B256, Log, U256, address, bytes, hex};
 use evm2_inspectors::{
@@ -284,18 +284,6 @@ fn discards_internal_create_transfer_on_nonce_overflow() {
         }]
     );
     assert_eq!(evm.inspector().logs(), &[transfer(deployer, factory, 10)]);
-}
-
-const fn a(n: u64) -> Address {
-    let mut bytes = [0; 20];
-    let (_, low) = bytes.split_at_mut(12);
-    let n = n.to_be_bytes();
-    let mut i = 0;
-    while i < 8 {
-        low[i] = n[i];
-        i += 1;
-    }
-    Address::new(bytes)
 }
 
 fn transfer(from: Address, to: Address, value: u64) -> Log {

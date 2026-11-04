@@ -55,7 +55,7 @@ impl<I: Idx, T, S> std::ops::Index<I> for Interner<I, T, S> {
 
     #[inline]
     fn index(&self, idx: I) -> &T {
-        &self.set[idx.index()]
+        self.get(idx)
     }
 }
 

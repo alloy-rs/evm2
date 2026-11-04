@@ -69,7 +69,7 @@ impl BalContext {
     /// Attaches an EIP-7928 BAL consulted on reads, and returns `self`.
     #[inline]
     pub fn with_bal(mut self, bal: Arc<Bal>) -> Self {
-        self.bal = Some(bal);
+        self.set_bal(bal);
         self
     }
 
@@ -112,7 +112,7 @@ impl BalContext {
     /// Enables EIP-7928 BAL construction, installing an empty builder, and returns `self`.
     #[inline]
     pub fn with_bal_builder(mut self) -> Self {
-        self.bal_builder = Some(Bal::new());
+        self.enable_bal_builder();
         self
     }
 

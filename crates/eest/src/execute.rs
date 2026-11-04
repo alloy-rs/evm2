@@ -426,7 +426,7 @@ fn execute_spec(
     Ok(outcome)
 }
 
-fn print_db_stats(counts: DbStatsCounts) {
+pub(crate) fn print_db_stats(counts: DbStatsCounts) {
     let style = db_stats_style();
     eprintln!("{style}db stats{style:#}: get_account={}", counts.get_account);
     eprintln!("{style}db stats{style:#}: get_code_by_hash={}", counts.get_code_by_hash);

@@ -4,7 +4,7 @@
 use crate::{
     interpreter::GasTracker,
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult, eip7823},
-    utils::{left_pad, left_pad_vec_be, read_word_padded, right_pad_vec},
+    utils::{b256_to_word, left_pad, left_pad_vec_be, read_word_padded, right_pad_vec},
 };
 #[cfg(feature = "gmp")]
 use alloc::vec;
@@ -202,9 +202,9 @@ pub fn run_inner(
     const HEADER_LENGTH: usize = 96;
 
     // Extract the header
-    let base_len = U256::from_be_bytes(read_word_padded(input, 0).0);
-    let exp_len = U256::from_be_bytes(read_word_padded(input, 32).0);
-    let mod_len = U256::from_be_bytes(read_word_padded(input, 64).0);
+    let base_len = b256_to_word(read_word_padded(input, 0));
+    let exp_len = b256_to_word(read_word_padded(input, 32));
+    let mod_len = b256_to_word(read_word_padded(input, 64));
 
     // Lengths that do not fit in 64 bits cost more gas than any call has.
     let [base_len64, exp_len64, mod_len64] =
@@ -353,8 +353,7 @@ fn osaka_multiplication_complexity(max_len: u64) -> U256 {
         return U256::from(16);
     }
 
-    let words = U256::from(max_len.div_ceil(8));
-    words * words * U256::from(2)
+    berlin_multiplication_complexity(max_len) * U256::from(2)
 }
 
 #[cfg(test)]

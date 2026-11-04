@@ -12,10 +12,14 @@ use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{
     Address, B256, Bytes, Log, TxKind, U256, address, bytes, hex, keccak256, map::HashMap,
 };
-use alloy_rpc_types_trace::geth::{
-    CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
-    GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
-    PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
+use alloy_rpc_types_eth::TransactionInfo;
+use alloy_rpc_types_trace::{
+    geth::{
+        CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
+        GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
+        PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
+    },
+    parity::{Action, CallType},
 };
 use evm2::{
     AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, EvmTypesHost, ExecutionConfig,
@@ -327,8 +331,7 @@ fn test_geth_calltracer_logs() {
     let addr =
         deploy_contract(&mut evm, code.into(), deployer, SpecId::LONDON).created_address().unwrap();
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
 
     // Three logs emitted by preceding transactions in the block.
     insp.set_next_log_index(3);
@@ -1453,8 +1456,7 @@ fn test_geth_calltracer_nested_revert() {
     );
 
     // Test revert with topcall
-    let mut insp3 =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp3 = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
     let mut evm3 = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
 
     let addr3 = deploy_contract(&mut evm3, code.into(), deployer, SpecId::LONDON)
@@ -1889,8 +1891,7 @@ fn test_geth_calltracer_logs_eip7708() {
             );
         });
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
 
     let mut evm = context.build_mainnet().with_inspector(&mut insp);
 
@@ -1975,8 +1976,7 @@ fn test_geth_calltracer_logs_address_regular() {
             );
         });
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
 
     let mut evm = context.build_mainnet().with_inspector(&mut insp);
 
@@ -2058,8 +2058,7 @@ fn test_geth_calltracer_logs_delegatecall() {
             );
         });
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
 
     let mut evm = context.build_mainnet().with_inspector(&mut insp);
 
@@ -2180,7 +2179,7 @@ fn test_geth_opcode_limit_end_to_end() {
 /// geth emits a child's steps right after the call step that entered it. A zero-value call to an
 /// excluded precompile attaches no child, so it must not take the next call's child.
 #[test]
-fn test_geth_struct_logs_follow_calls_with_excluded_precompiles() {
+fn test_geth_struct_logs_follow_calls_to_precompiles() {
     let account = address!("1000000000000000000000000000000000000001");
     let child = address!("0000000000000000000000000000000000001234");
     let call = |target: [u8; 2]| {
@@ -2206,8 +2205,7 @@ fn test_geth_struct_logs_follow_calls_with_excluded_precompiles() {
                 );
             }
         });
-    let config = TracingInspectorConfig::default_geth().set_exclude_precompile_calls(true);
-    let mut inspector = TracingInspector::new(config);
+    let mut inspector = TracingInspector::new(TracingInspectorConfig::default_geth());
     let mut evm = context.build_mainnet().with_inspector(&mut inspector);
     let res = evm
         .inspect_tx(TxEnv {
@@ -2451,8 +2449,7 @@ fn test_geth_calltracer_log_index_eip7708_revert() {
             );
         });
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
     let mut evm = context.build_mainnet().with_inspector(&mut insp);
 
     let res = evm
@@ -2880,6 +2877,115 @@ fn keccak256_preimage_tracer_stops_recording_at_the_byte_limit() {
     }
 }
 
+fn precompile_call_contract(code: &[u8]) -> (Address, CacheDB<EmptyDB>) {
+    let contract = Address::with_last_byte(0x42);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo::default()
+            .with_balance(U256::from(2))
+            .with_code(Bytecode::new_raw(code.to_vec().into())),
+    );
+    (contract, db)
+}
+
+#[test]
+fn flat_call_tracer_excludes_call_and_staticcall_to_precompiles() {
+    // CALL 0x04 with value 1, STATICCALL 0x04, CALLCODE 0x04 with value 1, DELEGATECALL 0x02 and
+    // CALLCODE 0x06 without value.
+    let (contract, db) = precompile_call_contract(&hex!(
+        "5f5f5f5f600160045af1505f5f5f5f60045afa505f5f5f5f600160045af2505f5f5f5f60025af450"
+        "5f5f5f5f5f60065af25000"
+    ));
+    let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
+        TracingInspector::new(TracingInspectorConfig::default_parity()),
+    );
+    evm.inspect_tx(TxEnv {
+        gas_limit: 1_000_000,
+        kind: TransactTo::Call(contract),
+        ..Default::default()
+    })
+    .unwrap();
+
+    for (include_precompiles, expected) in [
+        (
+            None,
+            vec![CallType::Call, CallType::CallCode, CallType::DelegateCall, CallType::CallCode],
+        ),
+        (
+            Some(true),
+            vec![
+                CallType::Call,
+                CallType::Call,
+                CallType::StaticCall,
+                CallType::CallCode,
+                CallType::DelegateCall,
+                CallType::CallCode,
+            ],
+        ),
+    ] {
+        let config = FlatCallConfig { include_precompiles, ..Default::default() };
+        let traces = evm
+            .inspector
+            .clone()
+            .into_flat_call_builder(&config)
+            .into_localized_transaction_traces(TransactionInfo::default());
+        let call_types: Vec<_> = traces
+            .iter()
+            .map(|trace| match &trace.trace.action {
+                Action::Call(call) => call.call_type,
+                action => panic!("unexpected action {action:?}"),
+            })
+            .collect();
+        assert_eq!(call_types, expected);
+        assert_eq!(traces[0].trace.subtraces, expected.len() - 1);
+    }
+}
+
+#[test]
+fn mux_flat_call_tracer_does_not_shift_call_tracer_log_positions() {
+    // CALL 0x01, then LOG0.
+    let (contract, db) = precompile_call_contract(&hex!("5f5f5f5f5f60015af1505f5fa000"));
+    let call_config = CallConfig { only_top_call: Some(false), with_log: Some(true) };
+    let config = MuxConfig(HashMap::from_iter([
+        (
+            GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer),
+            Some(GethDebugTracerConfig(serde_json::to_value(call_config).unwrap())),
+        ),
+        (GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FlatCallTracer), None),
+    ]));
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(MuxInspector::try_from_config(config).unwrap());
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    let frame =
+        inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
+
+    let GethTrace::CallTracer(call_frame) =
+        &frame.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer)]
+    else {
+        panic!("expected a call tracer frame");
+    };
+    assert_eq!(call_frame.calls.len(), 1);
+    assert_eq!(call_frame.logs[0].position, Some(1));
+
+    let GethTrace::FlatCallTracer(traces) =
+        &frame.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FlatCallTracer)]
+    else {
+        panic!("expected a flat call tracer frame");
+    };
+    assert_eq!(traces.len(), 1);
+}
+
 #[test]
 fn mux_runs_nested_mux_and_erc7562_tracers() {
     let (contract, db) = contract_with_code(&hex!("5f5f00"));
@@ -3183,13 +3289,12 @@ fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreSt
     );
     db.insert_account_info(
         &contract,
-        AccountInfo {
-            balance: U256::from(7),
-            nonce: 1,
-            code_hash: alloy_primitives::keccak256(&code),
-            code: Some(Bytecode::new_raw(code)),
-            ..Default::default()
-        },
+        AccountInfo::new(
+            U256::from(7),
+            1,
+            alloy_primitives::keccak256(&code),
+            Some(Bytecode::new_raw(code)),
+        ),
     );
     db.insert_account_storage(&contract, &U256::ONE, &U256::from(0x2a));
     let evm = Context::mainnet()
@@ -3269,6 +3374,54 @@ fn test_geth_prestate_selfdestruct_reports_slots_before_the_wipe() {
             }
         })
     );
+}
+
+#[test]
+fn test_geth_erc7562_operand_overflow_is_not_out_of_gas() {
+    let root = address!("1000000000000000000000000000000000000001");
+    let child = address!("1000000000000000000000000000000000000002");
+    // geth rejects a >64-bit memory operand before metering dynamic gas, but an
+    // affordable-size expansion with insufficient gas is still an out-of-gas error.
+    for (offset, out_of_gas) in
+        [(U256::MAX, false), (U256::from(0x10_0000), true), (U256::from(u32::MAX), true)]
+    {
+        let mut child_code = vec![op::PUSH1, 0, op::PUSH32];
+        child_code.extend_from_slice(&offset.to_be_bytes::<32>());
+        child_code.push(op::MSTORE);
+        let mut root_code = hex!("60006000600060006000").to_vec();
+        root_code.push(op::PUSH20);
+        root_code.extend_from_slice(child.as_slice());
+        root_code.extend_from_slice(&hex!("61fffff15000"));
+        let mut db = CacheDB::<EmptyDB>::default();
+        for (address, code) in [(root, root_code), (child, child_code)] {
+            db.insert_account_info(
+                &address,
+                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+            );
+        }
+        let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default());
+        let mut inspector = DebugInspector::new(opts).unwrap();
+        let mut evm = Context::mainnet().with_db(db).build_mainnet().with_inspector(&mut inspector);
+        let res = evm
+            .inspect_tx(TxEnv {
+                gas_limit: 1_000_000,
+                kind: TransactTo::Call(root),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(res.result.is_success(), "{res:#?}");
+        let (ctx, inspector) = evm.ctx_inspector();
+        let tx = ctx.tx().envelope();
+        let block = *ctx.block();
+        let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+        let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+        assert!(!frame.out_of_gas);
+        assert_eq!(frame.calls.len(), 1);
+        let call = &frame.calls[0];
+        assert!(call.error.is_some(), "offset={offset:#x}");
+        assert_eq!(call.used_opcodes, HashMap::from_iter([(op::MSTORE, 1)]));
+        assert_eq!(call.out_of_gas, out_of_gas, "offset={offset:#x}");
+    }
 }
 
 /// Forwards every hook to `inner` and records the opcodes it steps. Steps every opcode if `all`.
@@ -3394,7 +3547,6 @@ fn tracing_inspector_steps_only_what_its_config_records() {
             ..Default::default()
         }),
         TracingInspectorConfig::from_geth_prestate_config(&PreStateConfig::default()),
-        TracingInspectorConfig::from_flat_call_config(&FlatCallConfig::default()),
         TracingInspectorConfig::default_parity(),
         TracingInspectorConfig::parity_statediff(),
         TracingInspectorConfig { record_opcodes_filter: Some(filter), ..Default::default() },

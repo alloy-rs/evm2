@@ -649,21 +649,18 @@ impl CaseTx {
                 self.caller,
             ),
             FuzzTxKind::Eip7702 => Recovered::new_unchecked(
-                TxEnvelope::Eip7702(
-                    TxEip7702 {
-                        chain_id: 1,
-                        nonce: self.nonce,
-                        gas_limit: self.gas_limit,
-                        max_fee_per_gas: self.gas_price,
-                        max_priority_fee_per_gas: 0,
-                        to: self.target,
-                        value: self.value,
-                        access_list: self.access_list.clone(),
-                        authorization_list: self.eip7702_authorization_list(),
-                        input: self.input.clone(),
-                    }
-                    .into(),
-                ),
+                TxEnvelope::from(TxEip7702 {
+                    chain_id: 1,
+                    nonce: self.nonce,
+                    gas_limit: self.gas_limit,
+                    max_fee_per_gas: self.gas_price,
+                    max_priority_fee_per_gas: 0,
+                    to: self.target,
+                    value: self.value,
+                    access_list: self.access_list.clone(),
+                    authorization_list: self.eip7702_authorization_list(),
+                    input: self.input.clone(),
+                }),
                 self.caller,
             ),
         }

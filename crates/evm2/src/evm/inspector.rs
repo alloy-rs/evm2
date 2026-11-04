@@ -136,6 +136,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     }
 
     /// Called after each instruction executes.
+    ///
+    /// If the instruction ran out of gas, the interpreter's remaining gas reads 0.
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
@@ -152,6 +154,10 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
     /// the top-level message it is a frame initialized with the message itself.
+    ///
+    /// A first frame that runs out of gas in the transaction's runtime gas phase halts without
+    /// executing: this hook still fires for it, with a message that carries no bytecode, a
+    /// returned result is ignored, and [`Inspector::call_end`] receives the out-of-gas result.
     #[inline]
     fn call(
         &mut self,
@@ -180,6 +186,10 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
     /// the top-level message it is a frame initialized with the message itself.
+    ///
+    /// A first frame that runs out of gas in the transaction's runtime gas phase halts without
+    /// executing: this hook still fires for it, with a message that carries no bytecode, a
+    /// returned result is ignored, and [`Inspector::create_end`] receives the out-of-gas result.
     #[inline]
     fn create(
         &mut self,
@@ -454,7 +464,10 @@ mod tests {
             MessageResult, MessageResultExt, Word, instructions as instr, op,
         },
         registry::TxRegistry,
-        test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
+        test_utils::{
+            TestHost, TestTypes, call_code, create_code, legacy_bytecode, push, push_all,
+            return_top_word,
+        },
         utils::address_to_word,
     };
     use alloc::{boxed::Box, vec, vec::Vec};
@@ -696,34 +709,6 @@ mod tests {
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
-    }
-
-    /// Appends code that returns the word at the top of the stack as the frame output.
-    fn return_top_word(code: &mut Vec<u8>) {
-        code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
-    }
-
-    fn call_code(target: Address) -> Vec<u8> {
-        let mut code = Vec::new();
-        push_all(
-            &mut code,
-            [
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                address_to_word(&target),
-                Word::from(1000),
-            ],
-        );
-        code
-    }
-
-    fn create_code() -> Vec<u8> {
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
-        code
     }
 
     #[test]
@@ -2406,6 +2391,88 @@ mod tests {
     }
 
     #[test]
+    fn runtime_oog_first_frame_fires_call_hooks() {
+        #[derive(Default)]
+        struct HaltedFrameInspector {
+            calls: Vec<(u16, Address, u64)>,
+            ends: Vec<(InstrStop, u64)>,
+        }
+        impl Inspector<BaseEvmTypes> for HaltedFrameInspector {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                assert!(message.code.is_empty());
+                self.calls.push((message.depth, message.destination, message.gas_limit));
+                // A returned result must not replace the halt.
+                Some(MessageResultExt::default())
+            }
+
+            fn call_end(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                self.ends.push((result.stop, result.gas.spent()));
+            }
+        }
+
+        let key = k256::ecdsa::SigningKey::from_slice(&[0x11; 32]).unwrap();
+        let authorization = alloy_eips::eip7702::Authorization {
+            chain_id: U256::from(1),
+            address: Address::ZERO,
+            nonce: 0,
+        };
+        let (signature, recovery_id) =
+            key.sign_prehash_recoverable(authorization.signature_hash().as_slice());
+        let authorization = alloy_eips::eip7702::SignedAuthorization::new_unchecked(
+            authorization,
+            recovery_id.to_byte(),
+            U256::from_be_slice(&signature.r().to_bytes()),
+            U256::from_be_slice(&signature.s().to_bytes()),
+        );
+        let caller = Address::from([0xaa; 20]);
+        let target = Address::from([0xbb; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        evm.set_inspector(HaltedFrameInspector::default());
+        // The gas covers the intrinsic cost but not the new authority's state gas.
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::from(alloy_consensus::TxEip7702 {
+                chain_id: 1,
+                gas_limit: 60_000,
+                to: target,
+                authorization_list: vec![authorization],
+                ..Default::default()
+            }),
+            caller,
+        );
+
+        let result = evm.transact(&tx).expect("transaction should execute").discard();
+        assert!(!result.status);
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        let inspector = evm.inspector().unwrap().downcast_ref::<HaltedFrameInspector>().unwrap();
+        let [(0, destination, gas_limit)] = inspector.calls[..] else {
+            panic!("expected one depth-0 call hook, got {:?}", inspector.calls)
+        };
+        assert_eq!(destination, target);
+        // The halt burns the whole budget the frame was given.
+        assert_eq!(inspector.ends, [(InstrStop::OutOfGas, gas_limit)]);
+    }
+
+    #[test]
     fn cooling_loaded_slot_respects_access_list() {
         struct CoolSlotInspector {
             prewarmed: bool,
@@ -2483,8 +2550,7 @@ mod tests {
                 if marker == Address::with_last_byte(0x44) {
                     self.snapshot = Some(interp.host().state().clone_with(EmptyDB::default()));
                 } else if marker == Address::with_last_byte(0x55) {
-                    *interp.host().state_mut() =
-                        self.snapshot.as_ref().unwrap().clone_with(EmptyDB::default());
+                    *interp.host().state_mut() = self.snapshot.as_ref().unwrap().clone();
                     self.restored = true;
                 } else {
                     return None;

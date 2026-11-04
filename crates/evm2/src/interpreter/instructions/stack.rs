@@ -34,7 +34,7 @@ pub fn dupn(cx: _) -> Result {
 pub fn swapn(cx: _) -> Result {
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
-    stack.exchange(0, n)
+    stack.swap(n)
 }
 
 #[instruction(no_stack_preamble)]
