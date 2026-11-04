@@ -64,3 +64,15 @@ pub fn inspect_deploy_contract<I: InspectorSlot>(
     evm.ctx.tx.nonce += 1;
     DeployResult { result }
 }
+
+pub(crate) const fn a(n: u64) -> Address {
+    let mut bytes = [0; 20];
+    let (_, low) = bytes.split_at_mut(12);
+    let n = n.to_be_bytes();
+    let mut i = 0;
+    while i < 8 {
+        low[i] = n[i];
+        i += 1;
+    }
+    Address::new(bytes)
+}

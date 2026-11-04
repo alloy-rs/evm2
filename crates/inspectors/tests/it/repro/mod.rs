@@ -99,13 +99,12 @@ pub fn build_db_from_prestate(prestate: &BTreeMap<Address, AccountState>) -> Cac
 
         db.insert_account_info(
             addr,
-            AccountInfo {
+            AccountInfo::new(
                 balance,
                 nonce,
-                code_hash: code.as_ref().map(|c| c.hash_slow()).unwrap_or_default(),
+                code.as_ref().map(|c| c.hash_slow()).unwrap_or_default(),
                 code,
-                ..Default::default()
-            },
+            ),
         );
 
         // Insert storage
