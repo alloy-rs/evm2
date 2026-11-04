@@ -17,13 +17,17 @@ use evm2::{
 };
 use evm2_jit_builtins::gas;
 
-/// `KECCAK256` opcode gas cost (base + dynamic).
-const fn keccak256_cost(len: u64) -> Option<u64> {
-    let words = len.div_ceil(32);
-    match words.checked_mul(gas::KECCAK256WORD as u64) {
-        Some(dyn_cost) => Some((gas::KECCAK256 as u64).saturating_add(dyn_cost)),
+/// Opcode gas cost of `base` plus `per_word` for each 32-byte word of `len`.
+const fn word_cost(base: u64, per_word: u64, len: u64) -> Option<u64> {
+    match len.div_ceil(32).checked_mul(per_word) {
+        Some(dyn_cost) => Some(base.saturating_add(dyn_cost)),
         None => None,
     }
+}
+
+/// `KECCAK256` opcode gas cost (base + dynamic).
+const fn keccak256_cost(len: u64) -> Option<u64> {
+    word_cost(gas::KECCAK256 as u64, gas::KECCAK256WORD as u64, len)
 }
 
 /// `LOG` opcode gas cost (base + topics + dynamic).
@@ -38,11 +42,7 @@ const fn log_cost(n_topics: u8, len: u64) -> Option<u64> {
 
 /// `CALLDATACOPY`, `CODECOPY`, `RETURNDATACOPY` opcode gas cost (base + dynamic).
 const fn verylowcopy_cost(len: u64) -> Option<u64> {
-    let words = len.div_ceil(32);
-    match words.checked_mul(gas::COPY as u64) {
-        Some(dyn_cost) => Some((gas::VERYLOW as u64).saturating_add(dyn_cost)),
-        None => None,
-    }
+    word_cost(gas::VERYLOW as u64, gas::COPY as u64, len)
 }
 
 #[macro_use]

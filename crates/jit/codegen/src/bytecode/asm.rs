@@ -553,7 +553,7 @@ fn parse_items<'a>(tokens: &[Token<'a>]) -> Result<Vec<Item<'a>>> {
                             push_kind: PushKind::Fixed(1),
                         }));
                     } else {
-                        let imm_len = opc.info().immediate_size();
+                        let imm_len = opc.immediate_size();
                         if imm_len > 0 {
                             let imm = expect_imm(tokens, &mut i, opc)?;
                             items.push(Item::Inst(Inst {

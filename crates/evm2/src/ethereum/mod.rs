@@ -63,6 +63,7 @@ pub struct PreparedTx {
     pub(super) intrinsic: u64,
     pub(super) initial_state_gas: u64,
     pub(super) floor_gas: u64,
+    pub(super) sender_nonce: u64,
 }
 
 impl From<EthereumTxEnvelope<TxEip4844>> for TxEnvelope {
@@ -425,6 +426,7 @@ pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult
 }
 
 /// Loads and validates the sender account, then marks it warm and bumps its nonce.
+/// Returns the sender's pre-bump state nonce.
 ///
 /// One account handle does all three, so the sender is looked up and journaled once.
 pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
@@ -432,7 +434,7 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     caller: Address,
     nonce: u64,
     max_upfront: U256,
-) -> HandlerResult<()> {
+) -> HandlerResult<u64> {
     let has_nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
@@ -459,8 +461,9 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     }
     // The sender is warm from the start of the transaction (EIP-2929).
     sender.warm();
+    let sender_nonce = sender.nonce();
     sender.bump_nonce();
-    Ok(())
+    Ok(sender_nonce)
 }
 
 /// Warms the accounts required by every transaction other than the sender, which
