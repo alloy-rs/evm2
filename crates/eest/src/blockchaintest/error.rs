@@ -19,7 +19,7 @@ pub struct TestError {
 impl TestError {
     /// Creates an error for an unknown test name.
     pub(crate) fn unknown(path: impl Into<PathBuf>, kind: TestErrorKind) -> Self {
-        Self { path: path.into().display().to_string(), name: "Unknown".to_string(), kind }
+        Self::case(path, "Unknown", kind)
     }
 
     /// Creates an error for a named test case.

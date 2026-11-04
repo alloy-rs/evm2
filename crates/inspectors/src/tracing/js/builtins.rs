@@ -1,6 +1,6 @@
 //! Builtin functions
 
-use crate::tracing::types::CallKind;
+use crate::tracing::{js::bindings::type_error, types::CallKind};
 use alloc::{borrow::Cow, format, rc::Rc, vec::Vec};
 use alloy_primitives::{Address, B256, FixedBytes, U256, hex, map::HashSet};
 use boa_engine::{
@@ -188,9 +188,7 @@ pub(crate) fn bytes_from_value(val: JsValue, context: &mut Context) -> JsResult<
         return hex_decode_js_string(&js_string);
     }
 
-    Err(JsError::from_native(
-        JsNativeError::typ().with_message(format!("invalid buffer type: {}", val.type_of())),
-    ))
+    Err(type_error(format!("invalid buffer type: {}", val.type_of())))
 }
 
 /// Copies the viewed bytes of a `Uint8Array` directly out of its buffer.

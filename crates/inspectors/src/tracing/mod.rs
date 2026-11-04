@@ -423,7 +423,7 @@ impl TracingInspector {
         trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
 
         trace.status = Some(result.stop);
-        trace.success = result.stop.is_success();
+        trace.success = result.is_success();
         trace.output = result.output.clone();
         if !trace.success {
             self.log_count = log_count;

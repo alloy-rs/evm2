@@ -169,7 +169,7 @@ fn compiled_eest_subset_allows(subset: Option<CompiledEestSubset>, name: &str) -
     let subset = subset.unwrap_or_else(|| default_compiled_eest_subset(name));
     match subset {
         CompiledEestSubset::All => true,
-        CompiledEestSubset::CiAot => CI_AOT_STATE_DIRS.iter().any(|path| name.contains(path)),
+        CompiledEestSubset::CiAot => contains_any(name, CI_AOT_STATE_DIRS),
         CompiledEestSubset::CiSmoke => CI_SMOKE_STATE_FILES.iter().any(|path| name.ends_with(path)),
     }
 }
@@ -182,6 +182,11 @@ fn default_compiled_eest_subset(name: &str) -> CompiledEestSubset {
     } else {
         CompiledEestSubset::All
     }
+}
+
+/// Returns whether `name` contains any of `patterns`.
+pub(crate) fn contains_any(name: &str, patterns: &[&str]) -> bool {
+    patterns.iter().any(|pattern| name.contains(pattern))
 }
 
 const CI_AOT_STATE_DIRS: &[&str] = &[

@@ -122,7 +122,7 @@ impl TracingInspectorConfig {
     pub const fn parity_vm_trace() -> Self {
         Self::default_parity()
             .set_record_inputs(false)
-            .set_steps(true)
+            .steps()
             .set_bytecode(true)
             .set_stack_snapshots(StackSnapshotType::Pushes)
             .set_step_deltas(true)

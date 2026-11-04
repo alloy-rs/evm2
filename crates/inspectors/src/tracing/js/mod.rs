@@ -1122,7 +1122,7 @@ fn with_message_suffix(err: JsError, suffix: &str, ctx: &mut Context) -> JsError
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{interrupt_tests::transaction, *};
     use alloc::{string::ToString, vec, vec::Vec};
     use alloy_consensus::{TxEip1559, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
@@ -1837,14 +1837,7 @@ mod tests {
             db,
             Precompiles::base(SpecId::CANCUN),
         );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_limit: 1_000_000,
-                to: TxKind::Call(addr),
-                ..Default::default()
-            }),
-            Address::ZERO,
-        );
+        let tx = transaction(TxKind::Call(addr));
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
@@ -1914,14 +1907,7 @@ mod tests {
             db,
             Precompiles::base(SpecId::CANCUN),
         );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_limit: 1_000_000,
-                to: TxKind::Call(addr),
-                ..Default::default()
-            }),
-            Address::ZERO,
-        );
+        let tx = transaction(TxKind::Call(addr));
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();

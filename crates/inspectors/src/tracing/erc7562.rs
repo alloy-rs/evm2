@@ -33,6 +33,7 @@ use evm2::{
     DatabaseError, EvmTypes, Inspector, TxResultExt,
     evm::DbResult,
     interpreter::{InstrStop, Interpreter, Message, MessageResult, opcode::op},
+    utils::WordExt,
 };
 use thiserror::Error;
 
@@ -283,10 +284,6 @@ fn record<V: Default>(first: &mut Option<DatabaseError>, error: DatabaseError) -
     V::default()
 }
 
-fn word_to_address(word: U256) -> Address {
-    Address::from_word(word.into())
-}
-
 impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         self.calls.initialize_interp(interp);
@@ -311,7 +308,7 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
             && let Some(top) = last.top
             && !(last.op == op::EXTCODESIZE && op == op::ISZERO)
         {
-            frame.ext_code_access_info.push(word_to_address(top));
+            frame.ext_code_access_info.push(top.to_address());
         }
         if last.is_some_and(|last| last.op == op::GAS) && !is_call(op) {
             *frame.used_opcodes.entry(op::GAS).or_default() += 1;
@@ -325,7 +322,7 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
             op if is_ext(op) || is_call(op) => {
                 // The code size of the account that the instruction addresses.
                 if let Some(word) = if is_ext(op) { top } else { second } {
-                    let address = word_to_address(word);
+                    let address = word.to_address();
                     if let Entry::Vacant(entry) = frame.contract_size.entry(address) {
                         let contract_size = Self::code_size(interp, &address)
                             .unwrap_or_else(|error| record(&mut self.error, error));
