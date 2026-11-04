@@ -719,54 +719,50 @@ mod tests {
     #[test]
     fn test_modexp_edge_cases() {
         // Test case 1: Zero base with non-zero exponent and modulus
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              00\
              05\
-             07",
-        )
-        .unwrap();
+             07"
+        );
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         assert_eq!(res.bytes(), vec![0x00], "0^5 mod 7 should be 0");
 
         // Test case 2: Base equals modulus
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              07\
              03\
-             07",
-        )
-        .unwrap();
+             07"
+        );
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         assert_eq!(res.bytes(), vec![0x00], "7^3 mod 7 should be 0");
 
         // Test case 3: Exponent is zero (result should always be 1)
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000000\
              0000000000000000000000000000000000000000000000000000000000000001\
              05\
-             07",
-        )
-        .unwrap();
+             07"
+        );
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         assert_eq!(res.bytes(), vec![0x01], "5^0 mod 7 should be 1");
 
         // Test case 4: Large base with small modulus
         // Actually, (2^256 - 1) mod 3 = 0, so 0^2 = 0
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000020\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
              02\
-             03",
-        )
-        .unwrap();
+             03"
+        );
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         // (2^256 - 1) = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
         // This is divisible by 3, so (2^256 - 1) mod 3 = 0
@@ -789,15 +785,14 @@ mod tests {
         assert_eq!(gas.spent(), 200, "Empty input should use minimum gas 200 for Berlin");
 
         // Test gas consumption with very small inputs
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              01\
              01\
-             01",
-        )
-        .unwrap();
+             01"
+        );
         // For Byzantium, check that it computes correctly
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         assert_eq!(res.bytes(), vec![0x00], "1^1 mod 1 = 0");
@@ -811,15 +806,14 @@ mod tests {
     #[test]
     fn test_modexp_padding() {
         // Test that results are properly padded to modulus length
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000020\
              02\
              03\
-             0000000000000000000000000000000000000000000000000000000000000101",
-        )
-        .unwrap();
+             0000000000000000000000000000000000000000000000000000000000000101"
+        );
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         assert_eq!(res.bytes().len(), 32, "Result should be padded to modulus length");
         assert_eq!(res.bytes()[31], 8, "2^3 mod 257 = 8");
@@ -828,15 +822,14 @@ mod tests {
     #[test]
     fn test_modexp_berlin_vs_byzantium_gas() {
         // Test that Berlin gas costs are lower than Byzantium for the same input
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000020\
              0000000000000000000000000000000000000000000000000000000000000020\
              0000000000000000000000000000000000000000000000000000000000000020\
              ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
              ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
-             fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd",
-        )
-        .unwrap();
+             fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd"
+        );
 
         let gas_limit = 10_000_000u64;
         let mut byzantium_gas = GasTracker::new(gas_limit);
@@ -856,30 +849,28 @@ mod tests {
     #[test]
     fn test_modexp_osaka_size_limits() {
         // Test Osaka's 1024-byte limit per parameter
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000400\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              00\
              01\
-             01",
-        )
-        .unwrap();
+             01"
+        );
 
         // Should succeed with exactly 1024 bytes
         let res = run_osaka(&input, &mut GasTracker::new(100_000_000));
         assert!(res.is_ok(), "1024-byte base should be allowed");
 
         // Test with 1025 bytes - should fail
-        let input_fail = hex::decode(
+        let input_fail = hex!(
             "0000000000000000000000000000000000000000000000000000000000000401\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              00\
              01\
-             01",
-        )
-        .unwrap();
+             01"
+        );
 
         let res = run_osaka(&input_fail, &mut GasTracker::new(100_000_000));
         assert_matches!(
@@ -892,13 +883,13 @@ mod tests {
     #[test]
     fn test_modexp_input_truncation() {
         // Test behavior when input is shorter than expected
-        let input = hex::decode(
+        // Only 1 byte provided for 2-byte base
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000002\
              0000000000000000000000000000000000000000000000000000000000000002\
              0000000000000000000000000000000000000000000000000000000000000002\
-             ff", // Only 1 byte provided for 2-byte base
-        )
-        .unwrap();
+             ff"
+        );
 
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         // Should pad with zeros and compute ff00^ff00 mod ff00
@@ -908,15 +899,14 @@ mod tests {
     #[test]
     fn test_modexp_maximum_values() {
         // Test with maximum U256 values
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000020\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000020\
              ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
              01\
-             fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe",
-        )
-        .unwrap();
+             fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe"
+        );
 
         let res = run_byzantium(&input, &mut GasTracker::new(10_000_000)).unwrap();
         assert_eq!(res.bytes().len(), 32, "Result should be 32 bytes");
@@ -967,12 +957,11 @@ mod tests {
     #[test]
     fn test_modexp_out_of_gas() {
         // Test that large inputs properly return out of gas error
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000100\
              0000000000000000000000000000000000000000000000000000000000000100\
-             0000000000000000000000000000000000000000000000000000000000000100",
-        )
-        .unwrap();
+             0000000000000000000000000000000000000000000000000000000000000100"
+        );
 
         // Provide insufficient gas
         let res = run_byzantium(&input, &mut GasTracker::new(1000));

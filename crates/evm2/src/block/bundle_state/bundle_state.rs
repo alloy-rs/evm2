@@ -600,7 +600,7 @@ impl BundleState {
             for (&key, &slot) in account.storage.iter() {
                 // If storage was destroyed that means that storage was wiped.
                 // In that case we need to check if present storage value is different then ZERO.
-                let destroyed_and_not_zero = was_destroyed && !slot.present_value.is_zero();
+                let destroyed_and_not_zero = was_destroyed && !slot.present_value().is_zero();
 
                 // If account is not destroyed check if original values was changed,
                 // so we can update it.
@@ -610,7 +610,7 @@ impl BundleState {
                     || destroyed_and_not_zero
                     || not_destroyed_and_changed
                 {
-                    account_storage_changed.push((key, slot.present_value));
+                    account_storage_changed.push((key, slot.present_value()));
                 }
             }
 
@@ -674,7 +674,7 @@ impl BundleState {
                         for (key, storage_slot) in other_account.storage {
                             // Update present value or insert storage slot.
                             this.storage.entry(key).or_insert(storage_slot).present_value =
-                                storage_slot.present_value;
+                                storage_slot.present_value();
                         }
                     }
                     this.info = other_account.info;
@@ -728,7 +728,7 @@ impl BundleState {
                     // A `Destroyed` slot in `other` means the value before the wipe, which is
                     // this bundle's present value, not the database value.
                     for (key, value) in this_account.storage.drain() {
-                        let previous = RevertToSlot::Some(value.present_value);
+                        let previous = RevertToSlot::Some(value.present_value());
                         revert
                             .storage
                             .entry(key)
@@ -1223,7 +1223,7 @@ mod tests {
 
     #[test]
     fn test_multi_reverts_with_delete() {
-        let mut state = BundleBuilder::new(0..=3)
+        let mut state = BundleState::builder(0..=3)
             .revert_address(0, account1())
             .revert_account_info(2, account1(), Some(Some(AccountInfo::default())))
             .revert_account_info(3, account1(), Some(None))
@@ -1341,7 +1341,7 @@ mod tests {
 
     #[test]
     fn test_getters() {
-        let mut builder = BundleBuilder::new(0..=3);
+        let mut builder = BundleState::builder(0..=3);
 
         // Test get_states and get_states_mut
         assert!(builder.get_states().is_empty());

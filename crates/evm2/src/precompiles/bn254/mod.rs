@@ -269,92 +269,85 @@ mod tests {
 
     #[test]
     fn test_bn254_add() {
-        let input = hex::decode(
+        let input = hex!(
             "\
              18b18acfb4c2c30276db5411368e7185b311dd124691610c5d3b74034e093dc9\
              063c909c4720840cb5134cb9f59fa749755796819658d32efc0d288198f37266\
              07c2b7f58a84bd6145f00c9c2bc0bb1a187f20ff2c92963a88019e7c6a014eed\
-             06614e20c147e940f2d70da3f74c9a17df361706a4485c742bd6788478fa17d7",
-        )
-        .unwrap();
-        let expected = hex::decode(
+             06614e20c147e940f2d70da3f74c9a17df361706a4485c742bd6788478fa17d7"
+        );
+        let expected = hex!(
             "\
             2243525c5efd4b9c3d3c45ac0ca3fe4dd85e830a4ce6b65fa1eeaee202839703\
-            301d1d33be6da8e509df21cc35964723180eed7532537db9ae5e7d48f195c915",
-        )
-        .unwrap();
+            301d1d33be6da8e509df21cc35964723180eed7532537db9ae5e7d48f195c915"
+        );
 
-        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        let outcome = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // Zero sum test
-        let input = hex::decode(
+        let input = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000000\
             0000000000000000000000000000000000000000000000000000000000000000\
             0000000000000000000000000000000000000000000000000000000000000000\
-            0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
-        let expected = hex::decode(
+            0000000000000000000000000000000000000000000000000000000000000000"
+        );
+        let expected = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000000\
-            0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
+            0000000000000000000000000000000000000000000000000000000000000000"
+        );
 
-        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        let outcome = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // Out of gas test
-        let input = hex::decode(
+        let input = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000000\
             0000000000000000000000000000000000000000000000000000000000000000\
             0000000000000000000000000000000000000000000000000000000000000000\
-            0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
+            0000000000000000000000000000000000000000000000000000000000000000"
+        );
 
-        let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(499));
+        let res = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(499));
 
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
 
         // No input test
         let input = [0u8; 0];
-        let expected = hex::decode(
+        let expected = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000000\
-            0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
+            0000000000000000000000000000000000000000000000000000000000000000"
+        );
 
-        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        let outcome = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // Point not on curve fail
-        let input = hex::decode(
+        let input = hex!(
             "\
             1111111111111111111111111111111111111111111111111111111111111111\
             1111111111111111111111111111111111111111111111111111111111111111\
             1111111111111111111111111111111111111111111111111111111111111111\
-            1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
+            1111111111111111111111111111111111111111111111111111111111111111"
+        );
 
-        let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
+        let res = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
         assert_matches!(
             res,
             Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
         );
 
         // Short input is right-padded. This makes the first field element non-canonical.
-        let res = run_add(&[0x40], BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
+        let res = add::run(&[0x40], BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
         // A coordinate equal to the field modulus is non-canonical.
         let input = hex!("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47");
-        let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
+        let res = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
         // The largest canonical coordinate, p - 1, is accepted: (p - 1, sqrt(2)) is on the curve.
@@ -365,133 +358,122 @@ mod tests {
         input[32..64].copy_from_slice(&hex!(
             "279d7bc4e184e3a57f5fa684690c6df6b484a7f1daa1de608d266a2a4be6593f"
         ));
-        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        let outcome = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
         assert_eq!(outcome.bytes(), &input[..64]);
 
-        let input = hex::decode(
+        let input = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000001\
             30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45\
             0000000000000000000000000000000000000000000000000000000000000001\
-            30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45",
-        )
-        .unwrap();
-        let expected = hex::decode(
+            30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45"
+        );
+        let expected = hex!(
             "\
             030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3\
-            1a76dae6d3272396d0cbe61fced2bc532edac647851e3ac53ce1cc9c7e645a83",
-        )
-        .unwrap();
+            1a76dae6d3272396d0cbe61fced2bc532edac647851e3ac53ce1cc9c7e645a83"
+        );
 
-        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        let outcome = add::run(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
         assert_eq!(outcome.bytes(), expected);
     }
 
     #[test]
     fn test_bn254_mul() {
-        let input = hex::decode(
+        let input = hex!(
             "\
             2bd3e6d0f3b142924f5ca7b49ce5b9d54c4703d7ae5648e61d02268b1a0a9fb7\
             21611ce0a6af85915e2f1d70300909ce2e49dfad4a4619c8390cae66cefdb204\
-            00000000000000000000000000000000000000000000000011138ce750fa15c2",
-        )
-        .unwrap();
-        let expected = hex::decode(
+            00000000000000000000000000000000000000000000000011138ce750fa15c2"
+        );
+        let expected = hex!(
             "\
             070a8d6a982153cae4be29d434e8faef8a47b274a053f5a4ee2a6c9c13c31e5c\
-            031b8ce914eba3a9ffb989f9cdd5b0f01943074bf4f0f315690ec3cec6981afc",
-        )
-        .unwrap();
+            031b8ce914eba3a9ffb989f9cdd5b0f01943074bf4f0f315690ec3cec6981afc"
+        );
 
         let outcome =
-            run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
+            mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // Out of gas test
-        let input = hex::decode(
+        let input = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000000\
             0000000000000000000000000000000000000000000000000000000000000000\
-            0200000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
+            0200000000000000000000000000000000000000000000000000000000000000"
+        );
 
-        let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(39_999));
+        let res = mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(39_999));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
 
         // Zero multiplication test
-        let input = hex::decode(
+        let input = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000000\
             0000000000000000000000000000000000000000000000000000000000000000\
-            0200000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
-        let expected = hex::decode(
+            0200000000000000000000000000000000000000000000000000000000000000"
+        );
+        let expected = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000000\
-            0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
+            0000000000000000000000000000000000000000000000000000000000000000"
+        );
 
         let outcome =
-            run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
+            mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // No input test
         let input = [0u8; 0];
-        let expected = hex::decode(
+        let expected = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000000\
-            0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
+            0000000000000000000000000000000000000000000000000000000000000000"
+        );
 
         let outcome =
-            run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
+            mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
         assert_eq!(outcome.bytes(), expected);
 
         // Point not on curve fail
-        let input = hex::decode(
+        let input = hex!(
             "\
             1111111111111111111111111111111111111111111111111111111111111111\
             1111111111111111111111111111111111111111111111111111111111111111\
-            0f00000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
+            0f00000000000000000000000000000000000000000000000000000000000000"
+        );
 
-        let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
+        let res = mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
         assert_matches!(
             res,
             Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
         );
 
         // Short input is right-padded. This makes the point x-coordinate non-canonical.
-        let res = run_mul(&[0x40], BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
+        let res = mul::run(&[0x40], BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
-        let input = hex::decode(
+        let input = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000001\
             30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45\
-            0000000000000000000000000000000000000000000000000000000000000002",
-        )
-        .unwrap();
-        let expected = hex::decode(
+            0000000000000000000000000000000000000000000000000000000000000002"
+        );
+        let expected = hex!(
             "\
             030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3\
-            1a76dae6d3272396d0cbe61fced2bc532edac647851e3ac53ce1cc9c7e645a83",
-        )
-        .unwrap();
+            1a76dae6d3272396d0cbe61fced2bc532edac647851e3ac53ce1cc9c7e645a83"
+        );
 
         let outcome =
-            run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
+            mul::run(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
         assert_eq!(outcome.bytes(), expected);
     }
 
     #[test]
     fn test_bn254_pair() {
-        let input = hex::decode(
+        let input = hex!(
             "\
             1c76476f4def4bb94541d57ebba1193381ffa7aa76ada664dd31c16024c43f59\
             3034dd2920f673e204fee2811c678745fc819b55d3e9d294e45c9b03a76aef41\
@@ -504,14 +486,11 @@ mod tests {
             198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2\
             1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed\
             090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b\
-            12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa",
-        )
-        .unwrap();
-        let expected =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
+            12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa"
+        );
+        let expected = hex!("0000000000000000000000000000000000000000000000000000000000000001");
 
-        let outcome = run_pair(
+        let outcome = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -521,7 +500,7 @@ mod tests {
         assert_eq!(outcome.bytes(), expected);
 
         // Out of gas test
-        let input = hex::decode(
+        let input = hex!(
             "\
             1c76476f4def4bb94541d57ebba1193381ffa7aa76ada664dd31c16024c43f59\
             3034dd2920f673e204fee2811c678745fc819b55d3e9d294e45c9b03a76aef41\
@@ -534,11 +513,10 @@ mod tests {
             198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2\
             1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed\
             090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b\
-            12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa",
-        )
-        .unwrap();
+            12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa"
+        );
 
-        let res = run_pair(
+        let res = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -548,11 +526,9 @@ mod tests {
 
         // No input test
         let input = [0u8; 0];
-        let expected =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
+        let expected = hex!("0000000000000000000000000000000000000000000000000000000000000001");
 
-        let outcome = run_pair(
+        let outcome = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -562,18 +538,17 @@ mod tests {
         assert_eq!(outcome.bytes(), expected);
 
         // Point not on curve fail
-        let input = hex::decode(
+        let input = hex!(
             "\
             1111111111111111111111111111111111111111111111111111111111111111\
             1111111111111111111111111111111111111111111111111111111111111111\
             1111111111111111111111111111111111111111111111111111111111111111\
             1111111111111111111111111111111111111111111111111111111111111111\
             1111111111111111111111111111111111111111111111111111111111111111\
-            1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
+            1111111111111111111111111111111111111111111111111111111111111111"
+        );
 
-        let res = run_pair(
+        let res = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -585,18 +560,17 @@ mod tests {
         );
 
         // G2 point on the curve but not in the subgroup fail
-        let input = hex::decode(
+        let input = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000001\
             0000000000000000000000000000000000000000000000000000000000000002\
             0000000000000000000000000000000000000000000000000000000000000000\
             0000000000000000000000000000000000000000000000000000000000000001\
             0d1271953ed9ea0836846e70a1934187998c7f790cb4d7511b7f8da82de048a4\
-            2869111d5381f072f8e2728fdb825a51aadd70e52c9830e9ab4b871c0531f1bb",
-        )
-        .unwrap();
+            2869111d5381f072f8e2728fdb825a51aadd70e52c9830e9ab4b871c0531f1bb"
+        );
 
-        let res = run_pair(
+        let res = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -623,7 +597,7 @@ mod tests {
         let pair_infinity_with = |g2: &str| {
             let mut input = [0u8; PAIR_ELEMENT_LEN];
             hex::decode_to_slice(g2, &mut input[G1_LEN..]).unwrap();
-            run_pair(
+            pair::run(
                 &input,
                 BYZANTIUM_PAIR_PER_POINT,
                 BYZANTIUM_PAIR_BASE,
@@ -641,7 +615,7 @@ mod tests {
 
         let mut input = [0u8; PAIR_ELEMENT_LEN];
         input[0] = 0x40;
-        let res = run_pair(
+        let res = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -650,16 +624,15 @@ mod tests {
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)));
 
         // Invalid input length
-        let input = hex::decode(
+        let input = hex!(
             "\
             1111111111111111111111111111111111111111111111111111111111111111\
             1111111111111111111111111111111111111111111111111111111111111111\
             111111111111111111111111111111\
-        ",
-        )
-        .unwrap();
+        "
+        );
 
-        let res = run_pair(
+        let res = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -669,21 +642,18 @@ mod tests {
 
         // Test with point at infinity - should return true (identity element)
         // G1 point at infinity (0,0) followed by a valid G2 point
-        let input = hex::decode(
+        let input = hex!(
             "\
             0000000000000000000000000000000000000000000000000000000000000000\
             0000000000000000000000000000000000000000000000000000000000000000\
             209dd15ebff5d46c4bd888e51a93cf99a7329636c63514396b4a452003a35bf7\
             04bf11ca01483bfa8b34b43561848d28905960114c8ac04049af4b6315a41678\
             2bb8324af6cfc93537a2ad1a445cfd0ca2a71acd7ac41fadbf933c2a51be344d\
-            120a2a4cf30c1bf9845f20c6fe39e07ea2cce61f0c9bb048165fe5e4de877550",
-        )
-        .unwrap();
-        let expected =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
+            120a2a4cf30c1bf9845f20c6fe39e07ea2cce61f0c9bb048165fe5e4de877550"
+        );
+        let expected = hex!("0000000000000000000000000000000000000000000000000000000000000001");
 
-        let outcome = run_pair(
+        let outcome = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,
@@ -694,18 +664,17 @@ mod tests {
 
         // Test with G2 point at infinity - should also return true
         // Valid G1 point followed by G2 point at infinity (0,0,0,0)
-        let input = hex::decode(
+        let input = hex!(
             "\
             1c76476f4def4bb94541d57ebba1193381ffa7aa76ada664dd31c16024c43f59\
             3034dd2920f673e204fee2811c678745fc819b55d3e9d294e45c9b03a76aef41\
             0000000000000000000000000000000000000000000000000000000000000000\
             0000000000000000000000000000000000000000000000000000000000000000\
             0000000000000000000000000000000000000000000000000000000000000000\
-            0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
+            0000000000000000000000000000000000000000000000000000000000000000"
+        );
 
-        let outcome = run_pair(
+        let outcome = pair::run(
             &input,
             BYZANTIUM_PAIR_PER_POINT,
             BYZANTIUM_PAIR_BASE,

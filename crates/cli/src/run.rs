@@ -599,7 +599,7 @@ impl PreparedBench {
         let jit = self.run_jit()?;
         if self.assert_success {
             eyre::ensure!(
-                interpreter.status,
+                interpreter.is_success(),
                 "{} benchmark transaction failed:\n  interpreter: {:?}\n  JIT: {:?}",
                 self.name,
                 interpreter,
@@ -607,7 +607,7 @@ impl PreparedBench {
             );
         }
         eyre::ensure!(
-            interpreter.status == jit.status
+            interpreter.is_success() == jit.is_success()
                 && (!compare_gas
                     || (interpreter.output == jit.output
                         && interpreter.total_gas_spent == jit.total_gas_spent)),
@@ -676,7 +676,7 @@ fn parse_fixture_bench(bench: &Bench, fixture_path: &str) -> eyre::Result<Prepar
     let (case_name, unit, post) = select_case(&suite, &bench.name, bench.spec_id)?;
     let block = parse_block(&unit.env);
     let mut db = InMemoryDB::default();
-    let mut accounts = Vec::new();
+    let mut accounts = Vec::with_capacity(unit.pre.len());
     for (address, account) in &unit.pre {
         let bytecode = Bytecode::from_stored(account.code.clone());
         let code_hash = bytecode.hash_slow();

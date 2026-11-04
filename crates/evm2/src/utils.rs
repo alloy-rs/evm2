@@ -279,7 +279,7 @@ pub fn left_pad_vec_be(data: &[u8], len: usize) -> Cow<'_, [u8]> {
 /// This is optimized to not allocate at runtime by using 2 static arrays.
 #[inline]
 pub const fn bool_to_bytes32(value: bool) -> Bytes {
-    Bytes::from_static(&bool_to_b256(value).0)
+    Bytes::from_static(bool_to_b256(value).as_slice())
 }
 
 /// Converts a boolean to a left-padded [`B256`] value.

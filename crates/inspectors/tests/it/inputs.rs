@@ -1,10 +1,11 @@
 //! Recording inputs is optional and does not affect execution.
 
-use crate::utils::{AccountInfo, Bytecode, CacheDB, EmptyDB, SpecId, TransactTo, TxEnv};
+use crate::utils::{AccountInfo, Bytecode, SpecId, TransactTo, TxEnv};
 use alloy_primitives::{Address, Bytes, U256, bytes, hex};
 use evm2::{
     BaseEvmTypes, Evm, ExecutionConfig, Inspector, Precompiles, Version,
-    constants::CALL_DEPTH_LIMIT, ethereum::ethereum_tx_registry, interpreter::opcode::op,
+    constants::CALL_DEPTH_LIMIT, ethereum::ethereum_tx_registry, evm::InMemoryDB,
+    interpreter::opcode::op,
 };
 use evm2_inspectors::{
     access_list::AccessListInspector,
@@ -41,7 +42,7 @@ fn inspect_with_limits(
     limits: TraceLimits,
 ) -> (TracingInspector, bool) {
     let target = Address::with_last_byte(0x42);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     for (address, code) in [(target, code), (Address::with_last_byte(0x43), &hex!("00")[..])] {
         db.insert_account_info(
             &address,
@@ -264,10 +265,10 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
     let code = bytes!("5f5f5f5f600160435af100");
     for initial_call_depth in [0, 7, u16::MAX - CALL_DEPTH_LIMIT - 1] {
         for kind in [TransactTo::Call(Address::with_last_byte(0x42)), TransactTo::Create] {
-            let target = kind.to().copied().unwrap_or_else(|| caller.create(0));
+            let target = kind.into_to().unwrap_or_else(|| caller.create(0));
             let data = if kind.is_create() { code.clone() } else { Bytes::from_static(&[1, 2]) };
             let run = |inspector: &mut dyn Inspector<BaseEvmTypes>| {
-                let mut db = CacheDB::<EmptyDB>::default();
+                let mut db = InMemoryDB::default();
                 db.insert_account_info(
                     &caller,
                     AccountInfo::default().with_balance(U256::from(100)),
@@ -301,7 +302,7 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
                     data: data.clone(),
                     ..Default::default()
                 };
-                assert!(evm.transact(&tx.envelope()).unwrap().result().status);
+                assert!(evm.transact(&tx.envelope()).unwrap().result().is_success());
             };
             let mut tracer = TracingInspector::new(
                 TracingInspectorConfig::default_geth().set_record_inputs(true),
@@ -337,7 +338,7 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
             assert_eq!(transfers.transfers().len(), 1);
             assert_eq!(transfers.transfers()[0].from, target);
             assert_eq!(transfers.transfers()[0].to, child);
-            let mut opcodes = OpcodeGasInspector::default();
+            let mut opcodes = OpcodeGasInspector::new();
             run(&mut opcodes);
             assert!(
                 opcodes

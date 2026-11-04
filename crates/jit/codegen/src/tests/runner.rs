@@ -1,5 +1,8 @@
 use super::*;
-use alloy_primitives::address;
+use alloy_primitives::{
+    address,
+    map::{AddressMap, U256Map},
+};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles,
     bytecode::Bytecode,
@@ -174,8 +177,8 @@ pub static DEF_CD: &[u8] = &[0xaa; 64];
 pub static DEF_RD: &[u8] = &[0xbb; 64];
 pub static DEF_DATA: &[u8] = &[0xcc; 64];
 pub const DEF_VALUE: U256 = uint!(123_456_789_U256);
-pub static DEF_STORAGE: OnceLock<HashMap<U256, U256>> = OnceLock::new();
-pub static DEF_CODEMAP: OnceLock<HashMap<Address, Bytecode>> = OnceLock::new();
+pub static DEF_STORAGE: OnceLock<U256Map<U256>> = OnceLock::new();
+pub static DEF_CODEMAP: OnceLock<AddressMap<Bytecode>> = OnceLock::new();
 pub const OTHER_ADDR: Address = Address::repeat_byte(0x69);
 pub const DEF_BN: U256 = uint!(500_U256);
 
@@ -185,7 +188,7 @@ pub const STACK_WHAT_INTERPRETER_SAYS: &[U256] =
 pub const MEMORY_WHAT_INTERPRETER_SAYS: &[u8] = &GAS_WHAT_INTERPRETER_SAYS.to_be_bytes();
 pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
 
-pub fn def_storage() -> &'static HashMap<U256, U256> {
+pub fn def_storage() -> &'static U256Map<U256> {
     DEF_STORAGE.get_or_init(|| {
         let mut map = HashMap::default();
         map.insert(U256::ZERO, U256::ONE);
@@ -195,7 +198,7 @@ pub fn def_storage() -> &'static HashMap<U256, U256> {
     })
 }
 
-pub fn def_codemap() -> &'static HashMap<Address, Bytecode> {
+pub fn def_codemap() -> &'static AddressMap<Bytecode> {
     DEF_CODEMAP.get_or_init(|| {
         let mut map = HashMap::default();
         map.insert(
@@ -327,8 +330,8 @@ fn def_database() -> InMemoryDB {
 
 /// Host state snapshot for codegen assertions.
 pub struct HostState {
-    pub storage: HashMap<U256, U256>,
-    pub transient_storage: HashMap<U256, U256>,
+    pub storage: U256Map<U256>,
+    pub transient_storage: U256Map<U256>,
     pub logs: Vec<Log>,
 }
 

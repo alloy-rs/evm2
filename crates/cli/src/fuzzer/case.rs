@@ -12,7 +12,10 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::IndexMap};
+use alloy_primitives::{
+    Address, B256, Bytes, TxKind, U256,
+    map::{IndexMap, U256IndexMap},
+};
 use evm2::{
     SpecId,
     env::{BlockEnv, BlockEnvExt},
@@ -735,7 +738,7 @@ pub(crate) struct CaseAccount {
     pub(crate) balance: U256,
     pub(crate) nonce: u64,
     pub(crate) code: Bytes,
-    pub(crate) storage: IndexMap<U256, U256>,
+    pub(crate) storage: U256IndexMap<U256>,
 }
 
 mod spec_serde {

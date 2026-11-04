@@ -2,7 +2,7 @@ use crate::{
     EvmTypesHost,
     evm::AccountLoad,
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
-    utils::{WordExt, b256_to_word, read_word_padded},
+    utils::{WordExt, read_word_padded},
     version::GasParams,
 };
 use evm2_macros::instruction;
@@ -72,7 +72,7 @@ pub fn callvalue(cx: _) -> out {
 #[instruction]
 pub fn calldataload(cx: _, [offset]: [Word]) -> out {
     let offset = offset.to_usize_saturated();
-    *out = b256_to_word(read_word_padded(&cx.state.message().input, offset));
+    *out = read_word_padded(&cx.state.message().input, offset).into();
 }
 
 #[instruction]
@@ -118,7 +118,7 @@ pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
 #[instruction(dynamic_gas)]
 pub fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
     let account = load_account(&mut cx, *addr, false)?;
-    *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
+    *out = if account.is_empty { Word::ZERO } else { account.code_hash.into() };
 }
 
 #[instruction(dynamic_gas)]

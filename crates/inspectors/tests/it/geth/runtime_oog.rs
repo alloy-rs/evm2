@@ -3,7 +3,7 @@
 use super::*;
 use alloy_primitives::bytes;
 use alloy_rpc_types_trace::geth::{CallFrame, CallLogFrame};
-use evm2::interpreter::InstrStop;
+use evm2::{evm::InMemoryDB, interpreter::InstrStop};
 use evm2_inspectors::tracing::TracingInspector;
 
 #[test]
@@ -21,7 +21,7 @@ fn runtime_oog_call_frames_and_reuse() {
             let mut inspector =
                 DebugInspector::new(serde_json::from_value(options).unwrap()).unwrap();
             let context = Context::mainnet()
-                .with_db(CacheDB::<EmptyDB>::default())
+                .with_db(InMemoryDB::default())
                 .modify_cfg_chained(|cfg| cfg.spec = SpecId::AMSTERDAM)
                 .modify_db_chained(|db| {
                     db.insert_account_info(
@@ -51,7 +51,7 @@ fn runtime_oog_call_frames_and_reuse() {
                     })
                     .unwrap();
                 let result = &res.tx_result.result;
-                assert_eq!(result.status, !halted);
+                assert_eq!(result.is_success(), !halted);
                 assert_eq!(result.tx_gas_used(), gas_limit);
                 let (ctx, inspector) = evm.ctx_inspector();
                 let tx = ctx.tx().envelope();
@@ -107,7 +107,7 @@ fn runtime_oog_frame_reaches_four_byte_tracer() {
     let options = serde_json::json!({"tracer": "4byteTracer"});
     let mut inspector = DebugInspector::new(serde_json::from_value(options).unwrap()).unwrap();
     let context = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::AMSTERDAM)
         .modify_db_chained(|db| {
             db.insert_account_info(
@@ -140,7 +140,7 @@ fn runtime_oog_root_reports_the_execution_budget() {
     let caller = address!("1000000000000000000000000000000000000001");
     let recipient = address!("1000000000000000000000000000000000000002");
     let context = Context::mainnet()
-        .with_db(CacheDB::<EmptyDB>::default())
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::AMSTERDAM)
         .modify_db_chained(|db| {
             db.insert_account_info(

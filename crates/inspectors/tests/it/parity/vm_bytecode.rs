@@ -1,4 +1,4 @@
-use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv};
+use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, SpecId, TransactTo, TxEnv};
 use alloy_consensus::{TxEip7702, transaction::Recovered};
 use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, Bytes, U256, bytes, hex, map::HashSet};
@@ -6,14 +6,15 @@ use alloy_rpc_types_trace::parity::{TraceResults, TraceType};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles,
     ethereum::{LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    evm::InMemoryDB,
 };
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
-fn trace(db: CacheDB<EmptyDB>, tx: TxEnv) -> TraceResults {
+fn trace(db: InMemoryDB, tx: TxEnv) -> TraceResults {
     trace_envelope(db, tx.envelope())
 }
 
-fn trace_envelope(mut db: CacheDB<EmptyDB>, tx: RecoveredTxEnvelope) -> TraceResults {
+fn trace_envelope(mut db: InMemoryDB, tx: RecoveredTxEnvelope) -> TraceResults {
     let types = HashSet::from_iter([TraceType::VmTrace]);
     let mut inspector = TracingInspector::new(TracingInspectorConfig::from_parity_config(&types));
     let mut evm = Evm::<BaseEvmTypes>::new(

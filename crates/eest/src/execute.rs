@@ -499,7 +499,7 @@ fn commit_system_call<T: EvmTypes>(
     data: Bytes,
 ) {
     let executed = evm.system_call(SystemTx::new(address, data)).expect("system call errored");
-    assert!(executed.result().status, "pre-block system call failed: {address}");
+    assert!(executed.result().is_success(), "pre-block system call failed: {address}");
     let Ok(_) = executed.commit_with(post);
 }
 
@@ -643,7 +643,6 @@ fn access_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::LogData;
     use evm2::interpreter::op;
 
     #[cfg(feature = "jit")]
@@ -705,10 +704,11 @@ mod tests {
 
     #[test]
     fn logs_hash_hashes_logs() {
-        let log = Log {
-            address: Address::repeat_byte(0x22),
-            data: LogData::new_unchecked(vec![B256::with_last_byte(1)], Bytes::from_static(&[2])),
-        };
+        let log = Log::new_unchecked(
+            Address::repeat_byte(0x22),
+            vec![B256::with_last_byte(1)],
+            Bytes::from_static(&[2]),
+        );
 
         assert_ne!(logs_hash(&[log]), B256::ZERO);
     }

@@ -1,6 +1,7 @@
-use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv};
+use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, SpecId, TransactTo, TxEnv};
 use alloy_primitives::{Address, B256, U64, U256, bytes, hex, map::HashSet};
 use alloy_rpc_types_trace::parity::{Delta, TraceType};
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
 #[test]
@@ -13,7 +14,7 @@ fn existing_account_selfdestruct_across_cancun() {
             // then selfdestruct.
             let code =
                 Bytecode::new_raw(bytes!("600054506009600155600360025560035450600060045533ff"));
-            let mut db = CacheDB::<EmptyDB>::default();
+            let mut db = InMemoryDB::default();
             db.insert_account_info(
                 &target,
                 AccountInfo { balance: U256::from(69), nonce: 1, ..Default::default() }
@@ -98,7 +99,7 @@ fn created_account_selfdestruct_across_cancun() {
         for prefunded in [false, true] {
             let caller = Address::with_last_byte(0x42);
             let target = caller.create(0);
-            let mut db = CacheDB::<EmptyDB>::default();
+            let mut db = InMemoryDB::default();
             if prefunded {
                 db.insert_account_info(
                     &target,
@@ -194,7 +195,7 @@ fn deleted_account_diff_does_not_depend_on_accessed_slots() {
     let target = Address::with_last_byte(0x42);
     let diffs = [&hex!("60005450600960015533ff")[..], &hex!("33ff")[..]].map(|code| {
         let code = Bytecode::new_raw(code.to_vec().into());
-        let mut db = CacheDB::<EmptyDB>::default();
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &target,
             AccountInfo { balance: U256::from(69), nonce: 1, ..Default::default() }.with_code(code),

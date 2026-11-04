@@ -1054,7 +1054,7 @@ mod tests {
             );
         } else {
             let result = result.unwrap();
-            assert!(result.status);
+            assert!(result.is_success());
             assert_eq!(result.total_gas_spent, 31_020);
             assert_eq!(result.floor_gas, 31_050);
             assert_eq!(result.tx_gas_used(), 31_050);
@@ -1294,7 +1294,7 @@ mod tests {
             caller,
         );
 
-        assert!(evm.transact(&tx).unwrap().commit().status);
+        assert!(evm.transact(&tx).unwrap().commit().is_success());
         let reward = evm.read_account_info(&beneficiary).unwrap().unwrap().balance;
         assert_eq!(reward, U256::from(21_000 * beneficiary_gas_price));
     }
@@ -1668,7 +1668,7 @@ mod tests {
                             if value == 2 {
                                 assert_eq!(result.stop, InstrStop::OutOfFunds, "{case}");
                             } else {
-                                assert_eq!(result.status, input[0] == op::STOP, "{case}");
+                                assert_eq!(result.is_success(), input[0] == op::STOP, "{case}");
                             }
                             let nonce = evm.read_account_info(&caller).unwrap().unwrap().nonce;
                             assert_eq!(nonce, 11, "{case}");

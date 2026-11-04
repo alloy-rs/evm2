@@ -1340,7 +1340,7 @@ mod tests {
             fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let mut gas = interp.gas();
                 gas.set_remaining(100);
-                gas.set_refunded(7);
+                gas.set_refund(7);
                 interp.set_gas(gas);
             }
 
@@ -2121,7 +2121,7 @@ mod tests {
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
-        assert!(result.status);
+        assert!(result.is_success());
         assert_eq!(state.initialized, 1);
         assert_eq!(state.steps, 4);
         assert_eq!(state.step_ends, 4);
@@ -2162,7 +2162,7 @@ mod tests {
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
-        assert!(result.result.status);
+        assert!(result.result.is_success());
         assert_eq!(result.result.logs.len(), 1);
         assert_eq!(state.logs, result.result.logs);
         assert_eq!(state.logs[0].address, SYSTEM_ADDRESS);
@@ -2198,7 +2198,7 @@ mod tests {
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
-        assert!(result.status);
+        assert!(result.is_success());
         assert_eq!(state.initialized, 1);
         assert_eq!(state.steps, 1);
         assert_eq!(state.step_ends, 1);
@@ -2290,7 +2290,7 @@ mod tests {
             );
 
             let result = evm.transact(&tx).expect("transaction should execute").discard();
-            assert!(result.status);
+            assert!(result.is_success());
             let inspector = evm.inspector().unwrap().downcast_ref::<CheckpointInspector>().unwrap();
             let (before_hook, caller_balance, target_exists) = inspector.observed.unwrap();
             // The value transfer, and for a create the account creation, follow the checkpoint.
@@ -2381,7 +2381,7 @@ mod tests {
         );
 
         let result = evm.transact(&tx).expect("transaction should execute").discard();
-        assert!(result.status);
+        assert!(result.is_success());
         let inspector = evm.inspector().unwrap().downcast_ref::<CheckpointInspector>().unwrap();
         // The create frame's checkpoint follows the creator's nonce bump and precedes the
         // account creation.

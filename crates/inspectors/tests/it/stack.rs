@@ -1,7 +1,8 @@
 //! Stack snapshot tests
 
-use crate::utils::{CacheDB, Context, EmptyDB, SpecId, inspect_deploy_contract};
+use crate::utils::{Context, SpecId, inspect_deploy_contract};
 use alloy_primitives::{Address, U256, bytes};
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::tracing::{StackSnapshotType, TracingInspector, TracingInspectorConfig};
 
 /// Runs `PUSH1 1; PUSH1 2; PUSH1 3; STOP` as create init code and returns the recorded stack
@@ -11,10 +12,8 @@ fn stack_snapshots(snapshot_type: StackSnapshotType) -> Vec<Option<Box<[U256]>>>
         TracingInspectorConfig::none().steps().set_stack_snapshots(snapshot_type),
     );
 
-    let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
-        .build_mainnet()
-        .with_inspector(&mut insp);
+    let mut evm =
+        Context::mainnet().with_db(InMemoryDB::default()).build_mainnet().with_inspector(&mut insp);
 
     let res =
         inspect_deploy_contract(&mut evm, bytes!("60016002600300"), Address::ZERO, SpecId::CANCUN);

@@ -55,13 +55,13 @@ fn custom_opcode() -> HandlerResult<()> {
     println!(
         "custom opcode: tx_type=0x{:02x} expected status=true stop=Stop gas_used={expected_gas}; got status={} stop={:?} gas_used={}",
         tx.ty(),
-        result.status,
+        result.is_success(),
         result.stop,
         result.tx_gas_used(),
     );
 
     assert_eq!(result.stop, InstrStop::Stop);
-    assert!(result.status);
+    assert!(result.is_success());
     assert_eq!(result.tx_gas_used(), expected_gas);
     assert!(result.ext.handled_custom_tx);
     Ok(())
@@ -86,22 +86,27 @@ fn state_change_consumer() -> HandlerResult<()> {
 
     println!(
         "state consumer: expected status=true accounts=0 storage_writes=1 slot=1 value=0xdead; got status={} accounts={} storage_writes={} slot={} value={:#x}",
-        result.status,
+        result.is_success(),
         consumer.account_changes,
         consumer.storage_changes.len(),
         storage_change.key,
         storage_change.current,
     );
 
-    assert!(result.status);
+    assert!(result.is_success());
     assert_eq!(consumer.bytecodes, 0);
     assert_eq!(consumer.account_changes, 0);
     assert_eq!(consumer.storage_wipes, 0);
     assert_eq!(consumer.storage_changes.len(), 1);
-    assert_eq!(storage_change.address, target);
-    assert_eq!(storage_change.key, U256::ONE);
-    assert_eq!(storage_change.original, U256::ZERO);
-    assert_eq!(storage_change.current, U256::from(0xdead_u64));
+    assert_eq!(
+        *storage_change,
+        StorageChange {
+            address: target,
+            key: U256::ONE,
+            original: U256::ZERO,
+            current: U256::from(0xdead_u64),
+        }
+    );
     Ok(())
 }
 
@@ -122,11 +127,13 @@ fn l1_blocknumber_opcode() -> HandlerResult<()> {
 
     println!(
         "l1 blocknumber opcode: expected status=true stop=Return output={expected:?}; got status={} stop={:?} output={:?}",
-        result.status, result.stop, result.output,
+        result.is_success(),
+        result.stop,
+        result.output,
     );
 
     assert_eq!(result.stop, InstrStop::Return);
-    assert!(result.status);
+    assert!(result.is_success());
     assert_eq!(result.output, expected);
     assert!(result.ext.handled_custom_tx);
     Ok(())
@@ -140,11 +147,12 @@ fn mainnet_fallback() -> HandlerResult<()> {
 
     println!(
         "mainnet fallback: expected status=false stop=OpcodeNotFound; got status={} stop={:?}",
-        result.status, result.stop,
+        result.is_success(),
+        result.stop,
     );
 
     assert_eq!(result.stop, InstrStop::OpcodeNotFound);
-    assert!(!result.status);
+    assert!(!result.is_success());
     Ok(())
 }
 
@@ -170,7 +178,7 @@ fn inspector() -> HandlerResult<()> {
 
     println!(
         "inspector: expected status=true initialized=1 steps=5 step_ends=5 logs=1 calls=1 opcodes={expected_opcodes:?}; got status={} initialized={} steps={} step_ends={} logs={} calls={} opcodes={:?}",
-        result.status,
+        result.is_success(),
         inspector_state.initialized,
         inspector_state.steps,
         inspector_state.step_ends,
@@ -179,7 +187,7 @@ fn inspector() -> HandlerResult<()> {
         inspector_state.opcodes,
     );
 
-    assert!(result.status);
+    assert!(result.is_success());
     assert_eq!(inspector_state.initialized, 1);
     assert_eq!(inspector_state.steps, expected_opcodes.len());
     assert_eq!(inspector_state.step_ends, expected_opcodes.len());

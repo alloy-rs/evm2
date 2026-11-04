@@ -908,7 +908,7 @@ mod tests {
             .unwrap()
             .discard();
 
-        assert!(result.status);
+        assert!(result.is_success());
         assert_eq!(result.tx_gas_used(), 0);
     }
 
@@ -930,7 +930,7 @@ mod tests {
         .unwrap()
         .discard();
 
-        assert!(result.status);
+        assert!(result.is_success());
         assert_eq!(result.tx_gas_used(), 0);
     }
 
@@ -976,7 +976,7 @@ mod tests {
             .unwrap()
             .discard();
 
-        assert!(result.status);
+        assert!(result.is_success());
     }
 
     #[test]
@@ -1102,7 +1102,7 @@ mod tests {
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap().commit();
 
-        assert!(result.status);
+        assert!(result.is_success());
         assert_eq!(result.tx_gas_used(), 5_291_175);
         assert_eq!(
             evm.state_mut().storage_slot_untracked(&target, &Word::ZERO).unwrap(),

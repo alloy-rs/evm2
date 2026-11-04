@@ -692,7 +692,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub(crate) fn reset_selfdestructed_for_finalization(&mut self) {
         let balance = self.balance();
-        self.tracked.present = Some(AccountInfo::default().with_balance(balance));
+        self.tracked.present = Some(empty_account().with_balance(balance));
     }
 
     /// Overrides the live balance and the balance restored by this handle's revert snapshot,
@@ -730,7 +730,7 @@ mod tests {
     fn transfer_to_self_requires_balance() {
         let address = Address::repeat_byte(0x77);
         let mut database = CacheDB::default();
-        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(3)));
+        database.insert_account_info(&address, empty_account().with_balance(Word::from(3)));
         let mut state = State::new(database);
 
         assert!(!state.transfer(&address, &address, &Word::from(4)).unwrap());
@@ -793,8 +793,8 @@ mod tests {
         use alloy_primitives::Bytes;
 
         let code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
-        let with_code = AccountInfo::default().with_code(code.clone());
-        let other = AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0])));
+        let with_code = empty_account().with_code(code.clone());
+        let other = empty_account().with_code(Bytecode::new_raw(Bytes::from_static(&[0])));
 
         let created = Account::new(None, Some(with_code.clone()));
         assert_eq!(created.changed_code(), Some((with_code.code_hash, &code)));
@@ -806,11 +806,8 @@ mod tests {
             Account::new(Some(with_code.clone()), Some(with_code.clone())).changed_code(),
             None
         );
-        assert_eq!(
-            Account::new(Some(with_code), Some(AccountInfo::default())).changed_code(),
-            None
-        );
-        assert_eq!(Account::new(None, Some(AccountInfo::default())).changed_code(), None);
+        assert_eq!(Account::new(Some(with_code), Some(empty_account())).changed_code(), None);
+        assert_eq!(Account::new(None, Some(empty_account())).changed_code(), None);
     }
 
     #[test]
@@ -848,10 +845,7 @@ mod tests {
         let mut database = CacheDB::default();
         database.insert_account_info(
             &address,
-            AccountInfo::default()
-                .with_balance(Word::from(10))
-                .with_nonce(2)
-                .with_code(original_code),
+            empty_account().with_balance(Word::from(10)).with_nonce(2).with_code(original_code),
         );
         let mut state = State::new(database);
 
@@ -883,7 +877,7 @@ mod tests {
     fn journaled_account_read_only_handle_journals_nothing() {
         let address = Address::repeat_byte(0x89);
         let mut database = CacheDB::default();
-        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(5)));
+        database.insert_account_info(&address, empty_account().with_balance(Word::from(5)));
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
@@ -903,7 +897,7 @@ mod tests {
 
         let address = Address::repeat_byte(0x8a);
         let mut database = CacheDB::default();
-        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(5)));
+        database.insert_account_info(&address, empty_account().with_balance(Word::from(5)));
         let mut state = State::new(database);
 
         // A cold, not-yet-loaded account signals the skip instead of reading the database.
@@ -921,7 +915,7 @@ mod tests {
     #[test]
     fn account_overrides_update_only_selected_snapshot_fields() {
         let address = Address::with_last_byte(0x90);
-        let original = AccountInfo::default().with_balance(Word::from(100)).with_nonce(7);
+        let original = empty_account().with_balance(Word::from(100)).with_nonce(7);
         for (override_balance, override_nonce) in [(true, false), (false, true), (true, true)] {
             let mut db = CacheDB::default();
             db.insert_account_info(&address, original.clone());
@@ -1004,7 +998,7 @@ mod tests {
     #[test]
     fn account_overrides_preserve_earlier_handles_snapshots() {
         let address = Address::with_last_byte(0x92);
-        let original = AccountInfo::default().with_balance(Word::from(100)).with_nonce(7);
+        let original = empty_account().with_balance(Word::from(100)).with_nonce(7);
         let mut db = CacheDB::default();
         db.insert_account_info(&address, original.clone());
         let mut state = State::new(db);

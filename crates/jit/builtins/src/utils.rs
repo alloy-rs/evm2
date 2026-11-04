@@ -36,11 +36,6 @@ pub(crate) fn require_non_staticcall<T: EvmTypesHost>(
     Ok(())
 }
 
-#[inline]
-pub(crate) fn word_to_u64_saturated(value: U256) -> u64 {
-    value.saturating_to::<u64>()
-}
-
 // JIT code writes stack words with 8-byte stores, so read them back with scalar loads. The
 // interpreter's helpers use one 32-byte load, which can't take its data from those stores.
 
@@ -51,12 +46,6 @@ pub(crate) fn word_to_usize(value: U256) -> Result<usize, InstrStop> {
         cold_path();
         InstrStop::InvalidOperandOOG
     })
-}
-
-/// Converts a word to `usize`, saturating on overflow.
-#[inline]
-pub(crate) fn word_to_usize_saturated(value: U256) -> usize {
-    value.saturating_to::<usize>()
 }
 
 /// Loads an account, handling cold load gas accounting.
@@ -113,7 +102,7 @@ pub(crate) unsafe fn copy_operation<T: EvmTypesHost>(
         ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
         let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
-        let data_offset = word_to_usize_saturated(data_offset.to_u256());
+        let data_offset = data_offset.to_u256().saturating_to::<usize>();
         ecx.memory_mut().set_data(memory_offset, data_offset, len, data);
     }
     Ok(())

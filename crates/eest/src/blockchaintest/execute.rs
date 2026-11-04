@@ -626,7 +626,7 @@ fn execute_block<'a>(
                         gas_used: gas.tx_gas_used(),
                         execution_gas_used: gas.regular_gas_used(),
                         state_gas_used: gas.state_gas_used(),
-                        success: receipt.status(),
+                        success: receipt.is_success(),
                         logs: receipt.logs(),
                     });
                     if let Some(base) = &receipt_base {
@@ -867,7 +867,7 @@ impl ReceiptBuilder for HarnessReceiptBuilder {
     ) -> ReceiptEnvelope {
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
         let receipt = Receipt {
-            status: Eip658Value::Eip658(result.status),
+            status: Eip658Value::Eip658(result.is_success()),
             cumulative_gas_used,
             logs: result.logs,
         };
@@ -1046,9 +1046,7 @@ fn reject_block(
     }
 }
 
-fn parse_state(
-    accounts: &std::collections::BTreeMap<Address, Account>,
-) -> Result<InMemoryDB, TestErrorKind> {
+fn parse_state(accounts: &BTreeMap<Address, Account>) -> Result<InMemoryDB, TestErrorKind> {
     let mut database = InMemoryDB::default();
     for (address, account) in accounts {
         let nonce = account.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
@@ -1166,7 +1164,7 @@ const fn base_block_reward(spec: SpecId) -> u128 {
 
 fn validate_post_state(
     database: &InMemoryDB,
-    expected: &std::collections::BTreeMap<Address, Account>,
+    expected: &BTreeMap<Address, Account>,
 ) -> Result<(), TestErrorKind> {
     for (address, expected_account) in expected {
         let info = database.cache.accounts.get(address).cloned().flatten().unwrap_or_default();
@@ -1287,7 +1285,7 @@ fn check_block_access_list(
         }
     }
 
-    if built.as_slice() == expected.as_slice() {
+    if built == *expected {
         return Ok(());
     }
     Err(TestErrorKind::BlockAccessListMismatch {
@@ -1297,18 +1295,15 @@ fn check_block_access_list(
 }
 
 /// Renders a compact per-account summary of how the built and expected block access lists differ.
-fn format_bal_diff(
-    built: &alloy_eip7928::BlockAccessList,
-    expected: &alloy_eip7928::BlockAccessList,
-) -> String {
+fn format_bal_diff(built: &BlockAccessList, expected: &BlockAccessList) -> String {
     use std::{
         collections::{BTreeMap, BTreeSet},
         fmt::Write,
     };
 
-    let built: BTreeMap<_, _> = built.iter().map(|account| (account.address, account)).collect();
+    let built: BTreeMap<_, _> = built.iter().map(|account| (account.address(), account)).collect();
     let expected: BTreeMap<_, _> =
-        expected.iter().map(|account| (account.address, account)).collect();
+        expected.iter().map(|account| (account.address(), account)).collect();
     let addresses: BTreeSet<_> = built.keys().chain(expected.keys()).copied().collect();
 
     let mut out = String::new();
@@ -2346,7 +2341,7 @@ mod tests {
         assert_eq!(pass["errorMsg"], "");
 
         let failure: Result<Option<B256>, TestError> = Err(TestError::case(
-            std::path::Path::new("f.json"),
+            Path::new("f.json"),
             "case-b",
             TestErrorKind::UnexpectedFailure("boom".to_string()),
         ));

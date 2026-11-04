@@ -841,7 +841,7 @@ fn write_pause_ack<W: Write + ?Sized>(stdout: &mut BufWriter<W>, id: u64) -> eyr
 
 fn write_message<T, W: Write + ?Sized>(w: &mut BufWriter<W>, message: &T) -> std::io::Result<()>
 where
-    T: wincode::SchemaWrite<wincode::config::DefaultConfig, Src = T>,
+    T: SchemaWrite<wincode::config::DefaultConfig, Src = T>,
 {
     wincode::serialize_into(w, message)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))

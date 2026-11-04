@@ -561,7 +561,7 @@ mod tests {
     }
 
     impl crate::evm::Database for CountingDB {
-        type Error = core::convert::Infallible;
+        type Error = Infallible;
 
         fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
             self.account_loads += 1;
@@ -599,13 +599,13 @@ mod tests {
         let loaded = cache.get_account(&address).unwrap().unwrap();
         assert_eq!(loaded.code_hash, KECCAK256_EMPTY);
 
-        let mut cache = CacheDB::new(crate::evm::EmptyDB::default());
+        let mut cache = InMemoryDB::default();
         cache.insert_account_info(&address, zero_hash.clone());
         assert_eq!(cache.account_info(&address).unwrap().code_hash, KECCAK256_EMPTY);
 
         let mut incoming = Cache::default();
         incoming.accounts.insert(address, Some(zero_hash));
-        let mut cache = CacheDB::new(crate::evm::EmptyDB::default());
+        let mut cache = InMemoryDB::default();
         cache.cache.merge(incoming);
         let loaded = cache.get_account(&address).unwrap().unwrap();
         assert_eq!(loaded.code_hash, KECCAK256_EMPTY);

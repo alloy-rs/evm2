@@ -2125,13 +2125,12 @@ tests! {
             expected_return: InstrStop::InvalidOperandOOG,
         }),
         mload_const_offset_too_large(@raw {
-            bytecode: &{
-                let mut code = Vec::new();
-                code.push(op::PUSH9);
-                code.extend_from_slice(&0x1_0000_0000_0000_0000_U256.to_be_bytes::<32>()[23..]);
-                code.push(op::MLOAD);
-                code
-            },
+            bytecode: &[
+                &[op::PUSH9][..],
+                &0x1_0000_0000_0000_0000_U256.to_be_bytes::<32>()[23..],
+                &[op::MLOAD][..],
+            ]
+            .concat(),
             expected_return: InstrStop::InvalidOperandOOG,
         }),
         mstore1(@raw {
@@ -2535,7 +2534,7 @@ tests! {
             assert_host: Some(|host| {
                 assert_eq!(host.logs, [Log {
                     address: DEF_ADDR,
-                    data: LogData::new(vec![], Bytes::copy_from_slice(&0x6942_U256.to_be_bytes::<32>())).unwrap(),
+                    data: LogData::new(vec![], Bytes::from(0x6942_U256.to_be_bytes::<32>())).unwrap(),
                 }]);
             }),
         }),

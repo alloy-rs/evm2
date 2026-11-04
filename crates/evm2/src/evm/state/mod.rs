@@ -862,8 +862,8 @@ impl<'a> State<'a> {
     pub fn rollback(&mut self, checkpoint: StateCheckpoint, features: EvmFeatures) {
         // Restoring an older snapshot can leave active cursors past the current lengths. Preserve
         // shorter prefixes and revert only entries beyond each cursor.
-        self.logs.truncate(checkpoint.logs_len);
-        while self.journal.len() > checkpoint.journal_len {
+        self.logs.truncate(checkpoint.logs_len());
+        while self.journal.len() > checkpoint.journal_len() {
             let Some(entry) = self.journal.pop() else {
                 unreachable!("journal length is checked above")
             };
@@ -885,7 +885,7 @@ impl<'a> State<'a> {
                         .get_mut(&address)
                         .and_then(|account| account.storage.slots.get_mut(&key))
                     {
-                        slot.value.current = previous;
+                        slot.value.set_current(previous);
                     }
                 }
                 JournalEntry::TransientStorageChange { address, key, previous } => match previous {

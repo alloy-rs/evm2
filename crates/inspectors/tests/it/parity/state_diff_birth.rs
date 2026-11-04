@@ -1,11 +1,10 @@
-use crate::utils::{
-    AccountInfo, CacheDB, Context, DatabaseCommit, EmptyDB, SpecId, TransactTo, TxEnv,
-};
+use crate::utils::{AccountInfo, Context, DatabaseCommit, SpecId, TransactTo, TxEnv};
 use alloy_primitives::{Address, U64, U256, map::HashSet};
 use alloy_rpc_types_trace::parity::{Delta, StateDiff, TraceType};
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
-fn trace(db: &mut CacheDB<EmptyDB>, tx: TxEnv, beneficiary: Address, spec: SpecId) -> StateDiff {
+fn trace(db: &mut InMemoryDB, tx: TxEnv, beneficiary: Address, spec: SpecId) -> StateDiff {
     let mut evm = Context::mainnet()
         .modify_cfg_chained(|cfg| cfg.spec = spec)
         .modify_block_chained(|block| block.beneficiary = beneficiary)
@@ -33,7 +32,7 @@ fn transfer_creates_account_then_changes_existing_account() {
     let caller = Address::with_last_byte(0x41);
     let recipient = Address::with_last_byte(0x42);
     let beneficiary = Address::with_last_byte(0x43);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &caller,
         AccountInfo { balance: U256::from(1_000_000), ..Default::default() },
@@ -73,7 +72,7 @@ fn transfer_creates_account_then_changes_existing_account() {
 
 #[test]
 fn zero_value_call_does_not_create_account() {
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     let recipient = Address::with_last_byte(0x42);
     let beneficiary = Address::with_last_byte(0x43);
     let diff = trace(
@@ -92,7 +91,7 @@ fn creation_uses_account_existence_not_initial_balance() {
     let target = caller.create(0);
     for initial_balance in [None, Some(0), Some(9)] {
         for runtime in [false, true] {
-            let mut db = CacheDB::<EmptyDB>::default();
+            let mut db = InMemoryDB::default();
             if let Some(balance) = initial_balance {
                 db.insert_account_info(
                     &target,
@@ -139,7 +138,7 @@ fn creation_uses_account_existence_not_initial_balance() {
 fn frontier_materializes_empty_account() {
     let caller = Address::with_last_byte(0x41);
     let recipient = Address::with_last_byte(0x42);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &caller,
         AccountInfo { balance: U256::from(100_000), ..Default::default() },

@@ -2,7 +2,7 @@
 
 use crate::tracing::{js::bindings::type_error, types::CallKind};
 use alloc::{borrow::Cow, format, rc::Rc, vec::Vec};
-use alloy_primitives::{Address, B256, FixedBytes, U256, hex, map::HashSet};
+use alloy_primitives::{Address, B256, FixedBytes, U256, hex, map::AddressSet};
 use boa_engine::{
     Context, JsArgs, JsBigInt, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
     Source,
@@ -225,7 +225,7 @@ pub(crate) fn address_to_uint8_array(
     addr: Address,
     context: &mut Context,
 ) -> JsResult<JsUint8Array> {
-    JsUint8Array::from_iter(addr, context)
+    to_uint8_array(addr, context)
 }
 
 /// Create a new [JsUint8Array] array buffer from the address' bytes.
@@ -449,7 +449,7 @@ pub(crate) fn slice(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResul
 ///
 /// Unset until the transaction starts, like geth's list of active precompiles.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PrecompileList(Rc<RefCell<Option<HashSet<Address>>>>);
+pub(crate) struct PrecompileList(Rc<RefCell<Option<AddressSet>>>);
 
 impl PrecompileList {
     /// Registers the global callable `isPrecompiled`, which reads this list.

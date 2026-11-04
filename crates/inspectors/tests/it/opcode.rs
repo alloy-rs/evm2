@@ -1,6 +1,9 @@
-use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, TransactTo, TxEnv};
+use crate::utils::{AccountInfo, Bytecode, Context, TransactTo, TxEnv};
 use alloy_primitives::{Address, address};
-use evm2::interpreter::opcode::{OpCode, op};
+use evm2::{
+    evm::InMemoryDB,
+    interpreter::opcode::{OpCode, op},
+};
 use evm2_inspectors::opcode::OpcodeGasInspector;
 
 #[test]
@@ -37,20 +40,19 @@ fn opcode_gas_records_parent_call_after_child_execution() {
         (vec![op::INVALID], 1, 0),
         (vec![0x0c], 0, 0),
     ] {
-        let context =
-            Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-                db.insert_account_info(
-                    &child,
-                    AccountInfo {
-                        code: Some(Bytecode::new_legacy(child_code.into())),
-                        ..Default::default()
-                    },
-                );
-                db.insert_account_info(
-                    &parent,
-                    AccountInfo { code: Some(parent_code.clone()), ..Default::default() },
-                );
-            });
+        let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+            db.insert_account_info(
+                &child,
+                AccountInfo {
+                    code: Some(Bytecode::new_legacy(child_code.into())),
+                    ..Default::default()
+                },
+            );
+            db.insert_account_info(
+                &parent,
+                AccountInfo { code: Some(parent_code.clone()), ..Default::default() },
+            );
+        });
 
         let mut inspector = OpcodeGasInspector::new();
         let mut evm = context.build_mainnet().with_inspector(&mut inspector);
@@ -82,13 +84,12 @@ fn opcode_gas_excludes_uncharged_sentry_gas() {
     for (gas_limit, expected_cost, success) in
         [(23_306, 0, false), (24_000, 2_994, false), (100_000, 22_100, true)]
     {
-        let context =
-            Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-                db.insert_account_info(
-                    &target,
-                    AccountInfo { code: Some(code.clone()), ..Default::default() },
-                );
-            });
+        let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+            db.insert_account_info(
+                &target,
+                AccountInfo { code: Some(code.clone()), ..Default::default() },
+            );
+        });
         let mut inspector = OpcodeGasInspector::new();
         let mut evm = context.build_mainnet().with_inspector(&mut inspector);
         let res = evm
@@ -131,10 +132,9 @@ fn opcode_gas_preserves_cold_call_out_of_gas() {
         ]
         .into(),
     );
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(&target, AccountInfo { code: Some(code), ..Default::default() });
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(&target, AccountInfo { code: Some(code), ..Default::default() });
+    });
     let mut inspector = OpcodeGasInspector::new();
     let mut evm = context.build_mainnet().with_inspector(&mut inspector);
     let res = evm

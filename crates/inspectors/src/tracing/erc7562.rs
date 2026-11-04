@@ -203,7 +203,7 @@ impl Erc7562Inspector {
                 // geth's OnExit checks ErrOutOfGas / ErrCodeStoreOutOfGas, not the bare
                 // ErrGasUintOverflow of an oversized memory operand. The root is excluded.
                 out_of_gas: idx != 0
-                    && node.trace.status.is_some_and(|status| {
+                    && node.status().is_some_and(|status| {
                         status.is_out_of_gas() && status != InstrStop::InvalidOperandOOG
                     }),
                 keccak: if idx == 0 { self.keccak.iter().cloned().collect() } else { Vec::new() },
