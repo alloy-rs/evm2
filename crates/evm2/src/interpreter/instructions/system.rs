@@ -135,7 +135,6 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         stack_gas_limit
     };
     gas.spend(gas_limit)?;
-    state.finish_step_charge(gas);
 
     if transfers_value {
         gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend));
@@ -274,8 +273,7 @@ fn call_inner<T: EvmTypesHost>(
 /// It may charge or credit `gas` or fail the instruction. A fatal child result returns before
 /// `after` runs.
 ///
-/// An `Err` from either hook stops the instruction with that error. Gas the hooks charge is not
-/// part of the step cost reported to inspectors.
+/// An `Err` from either hook stops the instruction with that error.
 ///
 /// The result can be the stop for a config reload. Return it as the last step of the instruction.
 #[inline]
@@ -444,8 +442,6 @@ pub fn create_with<T: EvmTypesHost>(
             charged_create_state_gas = true;
         }
     }
-    // The state gas charged above spills into regular gas but stays out of the step cost.
-    state.finish_step_charge(gas);
     let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {

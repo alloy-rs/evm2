@@ -246,7 +246,6 @@ impl DebugInspector {
         let res = match self {
             Self::FourByte(inspector) => FourByteFrame::from(&*inspector).into(),
             Self::CallTracer(inspector, config) => {
-                inspector.recover_runtime_oog_root(tx, &res.result);
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
                 inspector
@@ -274,7 +273,6 @@ impl DebugInspector {
                 inspector.try_into_mux_frame(res, tx, block_env, tx_context, db)?.into()
             }
             Self::FlatCallTracer(inspector, config) => {
-                inspector.recover_runtime_oog_root(tx, &res.result);
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
                 inspector

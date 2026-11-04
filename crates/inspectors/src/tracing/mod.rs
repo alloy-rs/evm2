@@ -8,12 +8,11 @@ use crate::{
     },
 };
 use alloc::{boxed::Box, vec::Vec};
-use alloy_consensus::{Transaction, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use alloy_rpc_types_trace::{geth::FlatCallConfig, parity::StorageDelta};
 use core::{mem, ops::Range};
 use evm2::{
-    EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId, TxResultExt,
+    EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId,
     interpreter::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
@@ -96,7 +95,7 @@ pub struct TracingInspector {
     ///
     /// This is a stack because nested calls are executed between the `step` and `step_end` of the
     /// call instruction itself. A `usize::MAX` step index marks a step that was not recorded.
-    step_stack: Vec<(usize, usize)>,
+    step_stack: Vec<PendingStep>,
     /// Number of opcode steps captured across all calls since the last reset.
     recorded_steps: u64,
     /// The spec id of the EVM.
@@ -436,7 +435,7 @@ impl TracingInspector {
             && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get());
         if !record {
             // Push a sentinel so that the upcoming `step_end` stays paired with this step.
-            self.step_stack.push((trace_idx, usize::MAX));
+            self.step_stack.push(PendingStep::new(trace_idx, usize::MAX, 0));
             return;
         }
 
@@ -526,7 +525,11 @@ impl TracingInspector {
         });
 
         node.ordering.push(TraceMemberOrder::Step(step_idx));
-        self.step_stack.push((trace_idx, step_idx));
+        self.step_stack.push(PendingStep::new(
+            trace_idx,
+            step_idx,
+            interp.gas().remaining_excluding_state_spill(),
+        ));
 
         if self.config.record_step_deltas {
             let write_range = memory_write_range(op.get(), interp.stack().as_slice());
@@ -547,12 +550,30 @@ impl TracingInspector {
         }
     }
 
+    /// Records the gas a call or create step has charged, when its message starts.
+    ///
+    /// Invoked on [Inspector::call] and [Inspector::create], where the parent has charged the step,
+    /// including the gas forwarded to the child, and the child has not returned any gas yet. A
+    /// call step costs the forwarded gas too, a create step does not, so `forwarded` is the gas to
+    /// give back.
+    fn finish_step_charge<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>, forwarded: u64) {
+        // The step's own message is the first one it starts; a precompile may start more.
+        if let Some(pending) = self.step_stack.last_mut()
+            && pending.gas_after_charge.is_none()
+        {
+            pending.gas_after_charge =
+                Some(interp.gas().remaining_excluding_state_spill().saturating_add(forwarded));
+        }
+    }
+
     /// Fills the current trace with the output of a step.
     ///
     /// Invoked on [Inspector::step_end].
     #[cold]
     fn fill_step_on_step_end<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        let Some((trace_idx, step_idx)) = self.step_stack.pop() else {
+        let Some(PendingStep { trace_idx, step_idx, gas_before, gas_after_charge }) =
+            self.step_stack.pop()
+        else {
             return;
         };
         let node = &mut self.traces.arena[trace_idx];
@@ -584,12 +605,20 @@ impl TracingInspector {
             );
         }
 
-        // An out-of-gas step consumes the whole remainder, except the reentrancy sentry, which
-        // halts before any charge.
-        step.gas_cost = if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
+        // A call or create step is charged once its message starts, which includes the gas
+        // forwarded by a call and excludes it for a create. An out-of-gas step consumes the whole
+        // remainder it started with, except the reentrancy sentry, which halts before any charge.
+        // Any other step is charged when it ends. State gas that spills into the remaining gas is
+        // not part of the cost.
+        let result = interp.result();
+        step.gas_cost = if result == Err(InstrStop::ReentrancySentryOOG) {
             0
+        } else if let Some(after) = gas_after_charge {
+            gas_before.saturating_sub(after)
+        } else if result.is_err_and(InstrStop::is_out_of_gas) {
+            step.gas_remaining
         } else {
-            interp.step_cost()
+            gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill())
         };
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
@@ -631,37 +660,6 @@ impl TracingInspector {
                 );
             }
         }
-    }
-
-    /// Restores a root omitted when evm2 halts during runtime gas charging, before its hooks run.
-    pub(crate) fn recover_runtime_oog_root<E>(
-        &mut self,
-        tx: &Recovered<impl Transaction>,
-        result: &TxResultExt<E>,
-    ) {
-        // The arena starts with a default root. After execution, call_end/create_end have set
-        // its status if the root was recorded, even when it executed no opcodes.
-        if self.traces.arena[0].trace.status.is_some() || result.stop != InstrStop::OutOfGas {
-            return;
-        }
-
-        let (kind, address) = match tx.kind() {
-            TxKind::Call(address) => (CallKind::Call, address),
-            TxKind::Create => (CallKind::Create, tx.signer().create(tx.nonce())),
-        };
-        self.traces.arena[0].trace = CallTrace {
-            caller: tx.signer(),
-            address,
-            kind,
-            value: tx.value(),
-            data: if self.config.record_inputs { tx.input().clone() } else { Bytes::new() },
-            gas_limit: tx.gas_limit(),
-            gas_used: result.tx_gas_used(),
-            status: Some(InstrStop::OutOfGas),
-            ..Default::default()
-        };
-        // Do not guess the EVM features from the halt or its gas accounting. The normal hooks did
-        // not run, and the transaction result does not identify the active fork.
     }
 }
 
@@ -730,6 +728,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             self.spec_id = Some(interp.spec());
         }
         self.features = interp.version().features;
+        self.finish_step_charge(interp, 0);
 
         // determine correct `from` and `to` based on the call scheme
         let (from, to) = match message.kind {
@@ -784,6 +783,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             self.spec_id = Some(interp.spec());
         }
         self.features = interp.version().features;
+        self.finish_step_charge(interp, message.gas_limit);
 
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
@@ -931,4 +931,22 @@ const fn storage_write(op: u8, stack: &[U256]) -> Option<StorageDelta> {
 struct TraceStackEntry {
     trace_idx: usize,
     log_count: usize,
+}
+
+/// A step waiting for `step_end`.
+#[derive(Clone, Copy, Debug)]
+struct PendingStep {
+    trace_idx: usize,
+    step_idx: usize,
+    /// The remaining gas plus spilled state gas when the step started.
+    gas_before: u64,
+    /// The same measure once a call or create step charged everything it charges before its
+    /// message starts.
+    gas_after_charge: Option<u64>,
+}
+
+impl PendingStep {
+    const fn new(trace_idx: usize, step_idx: usize, gas_before: u64) -> Self {
+        Self { trace_idx, step_idx, gas_before, gas_after_charge: None }
+    }
 }
