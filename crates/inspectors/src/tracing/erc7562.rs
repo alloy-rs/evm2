@@ -168,7 +168,6 @@ impl Erc7562Inspector {
         if let Some(error) = &self.error {
             return Err(Error::Database(error.clone()));
         }
-        self.calls.recover_runtime_oog_root(tx, result);
         self.calls.set_transaction_gas_limit(tx.gas_limit());
         self.calls.set_transaction_caller(tx.signer());
         let nodes = self.calls.traces.nodes();
