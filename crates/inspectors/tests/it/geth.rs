@@ -3507,7 +3507,6 @@ fn tracing_inspector_steps_only_what_its_config_records() {
             ..Default::default()
         }),
         TracingInspectorConfig::from_geth_prestate_config(&PreStateConfig::default()),
-        TracingInspectorConfig::from_flat_call_config(&FlatCallConfig::default()),
         TracingInspectorConfig::default_parity(),
         TracingInspectorConfig::parity_statediff(),
         TracingInspectorConfig { record_opcodes_filter: Some(filter), ..Default::default() },
