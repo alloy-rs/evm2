@@ -7,7 +7,8 @@ use crate::{
     ethereum::ethereum_tx_registry,
     evm::{
         AccountInfo, BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
-        InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS, },
+        InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
+    },
     utils::b256_to_word,
 };
 use alloc::vec;
