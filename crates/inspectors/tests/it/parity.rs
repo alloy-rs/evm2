@@ -8,6 +8,7 @@ use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex, map::Hash
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
     filter::TraceFilter,
+    geth::FlatCallConfig,
     parity::{
         Action, CallAction, CallType, CreationMethod, SelfdestructAction, TraceType,
         TransactionTrace, VmTrace,
@@ -1478,6 +1479,22 @@ fn call_like_step_is_not_paired_with_the_child_of_a_left_out_step() {
         let call = first(&hex!("5f5f5f5f5f600461fffff1505f5f5f5f604361fffffa00"), config, "CALL");
         assert_eq!(call.sub, Some(VmTrace::default()));
     }
+}
+
+#[test]
+fn call_step_is_not_paired_with_the_precompile_call_of_a_left_out_step() {
+    // The filter leaves out a STATICCALL to an excluded precompile. The recorded CALL after it,
+    // whose value transfer fails its balance precheck, has no child and gets none of its own.
+    let config = TracingInspectorConfig {
+        record_opcodes_filter: Some([op::CALL].into_iter().collect()),
+        ..TracingInspectorConfig::parity_vm_trace()
+    };
+    let code = hex!("5f5f5f5f600461fffffa505f5f5f5f6001600461fffff100");
+    let trace = inspect_code(&code, &[], SpecId::AMSTERDAM, config)
+        .into_flat_call_builder(&FlatCallConfig::default())
+        .vm_trace();
+    let call = trace.ops.into_iter().find(|op| op.op.as_deref() == Some("CALL")).unwrap();
+    assert_eq!(call.sub, None);
 }
 
 #[test]
