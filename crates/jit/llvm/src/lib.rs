@@ -1938,6 +1938,10 @@ fn init_() -> Result<()> {
         // functions alias analysis lets EVM memory and builtin calls alias the stack, and LICM
         // cannot promote loop-carried stack slots to registers.
         c"-capture-tracking-max-uses-to-explore=1000000".as_ptr(),
+        // Emit a trap for `unreachable`, as rustc does, so that a builtin call that is expected
+        // to leave through `evm2_jit_exit` but returns faults instead of running into the next
+        // block.
+        c"-trap-unreachable".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe { LLVMParseCommandLineOptions(args.len() as i32, args.as_ptr(), std::ptr::null()) }
