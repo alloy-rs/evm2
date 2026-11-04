@@ -7,9 +7,8 @@ extern crate tracing;
 
 use alloy_primitives::map::{FxBuildHasher, HashSet};
 use evm2_jit_backend::{
-    Attribute as OurAttr, Backend, BackendConfig, BackendTypes, Builder, CallConv, IntCC,
-    OptimizationLevel, Result, TailCallKind, TypeMethods, U256, eyre, eyre::OptionExt,
-    format_bytes,
+    Backend, BackendConfig, BackendTypes, Builder, CallConv, IntCC, OptimizationLevel, Result,
+    TailCallKind, TypeMethods, U256, eyre, eyre::OptionExt, format_bytes,
 };
 use llvm_sys::{
     LLVMCallConv, LLVMIntPredicate, LLVMLinkage, LLVMModuleFlagBehavior, LLVMTailCallKind,
@@ -2004,6 +2003,8 @@ const fn convert_opt_level(level: OptimizationLevel) -> LLVMCodeGenOptLevel {
 }
 
 fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute) -> Attribute {
+    use evm2_jit_backend::Attribute as OurAttr;
+
     enum AttrValue<'a> {
         String(&'a str),
         Enum(u64),
