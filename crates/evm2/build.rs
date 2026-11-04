@@ -1,4 +1,4 @@
-//! Configures the optional tail-call interpreter backend.
+//! Selects the interpreter dispatch backend.
 
 use std::{ffi::OsString, process::Command};
 
