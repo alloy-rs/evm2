@@ -54,7 +54,9 @@ pub struct PrestateInspector {
     /// The `CREATE` and `CREATE2` that are running, one per depth. They run frames of their own
     /// before their steps end, which `pending` does not survive.
     creates: Vec<(u16, Create)>,
-    /// Whether EIP-7702 delegation is active, which the first call of the transaction tells.
+    /// Whether EIP-7702 delegation is active, as the first call of the transaction tells. A
+    /// transaction can halt on the charges of EIP-2780, EIP-7702 or EIP-8037 before any call runs,
+    /// and Prague has delegation already, so the flag starts as active.
     delegation: bool,
 }
 
@@ -107,7 +109,7 @@ impl PrestateInspector {
             deleted: AddressSet::default(),
             pending: None,
             creates: Vec::new(),
-            delegation: false,
+            delegation: true,
         }
     }
 
@@ -119,7 +121,7 @@ impl PrestateInspector {
         self.deleted.clear();
         self.pending = None;
         self.creates.clear();
-        self.delegation = false;
+        self.delegation = true;
     }
 
     /// Returns the result of the tracer for a transaction that ran with this inspector.

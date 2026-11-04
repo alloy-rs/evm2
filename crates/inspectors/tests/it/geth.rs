@@ -3647,6 +3647,51 @@ fn test_geth_prestate_names_no_delegation_target_before_prague() {
     assert!(!prestate.0.contains_key(&target), "{prestate:#?}");
 }
 
+/// A transaction that halts on its charges before any call runs gives the inspector no call hook,
+/// and geth still names the delegation target of the recipient.
+#[test]
+fn test_geth_prestate_names_the_delegation_target_without_a_call() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let recipient = address!("1000000000000000000000000000000000000001");
+    let target = address!("aaaa000000000000000000000000000000000001");
+    let mut code = vec![0xef, 0x01, 0x00];
+    code.extend_from_slice(target.as_slice());
+    let code = Bytes::from(code);
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &recipient,
+        AccountInfo {
+            balance: U256::from(1),
+            code_hash: keccak256(&code),
+            code: Some(Bytecode::new_raw(code)),
+            ..Default::default()
+        },
+    );
+    db.insert_account_info(&target, AccountInfo { balance: U256::from(1), ..Default::default() });
+    let mut evm = Context::mainnet()
+        .with_db(db.clone())
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::PRAGUE)
+        .build_mainnet();
+    let tx = TxEnv {
+        caller: sender,
+        gas_limit: 100_000,
+        kind: TransactTo::Call(recipient),
+        ..Default::default()
+    };
+    // No inspector ran, as when the transaction halts before its first call.
+    let res = evm.inspect_tx(tx.clone()).unwrap();
+    let block = *evm.ctx.block();
+    let mut inspector = PrestateInspector::new(PreStateConfig::default());
+    let frame = inspector.frame(&tx.envelope(), &block, &res.tx_result, &mut db).unwrap();
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+    assert!(prestate.0.contains_key(&target), "{prestate:#?}");
+}
+
 /// The addresses that `CREATE` and `CREATE2` create are named, including ones that already hold a
 /// balance.
 #[test]
