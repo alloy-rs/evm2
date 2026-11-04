@@ -18,10 +18,7 @@ use evm2::{
     BaseEvmTypes, EvmTypesHost,
     bytecode::Bytecode,
     constants::BLOCK_HASH_HISTORY,
-    interpreter::{
-        Host, MessageExt, MessageKind, Word, derive_create_destination, i256,
-        should_charge_new_account_gas,
-    },
+    interpreter::{Host, MessageExt, MessageKind, Word, derive_create_destination, i256},
     utils::read_word_padded,
     version::{EvmFeatures, GasId},
 };
@@ -872,6 +869,14 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
     Ok(())
 }
 
+const fn should_charge_new_account_gas(
+    eip161: bool,
+    transfers_value: bool,
+    target_is_empty_for_new_account_gas: bool,
+) -> bool {
+    target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
+}
+
 fn load_acc_and_calc_gas<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     to: Address,
@@ -918,11 +923,8 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         code_address = delegated_address;
     }
     if create_empty_account
-        && should_charge_new_account_gas(
-            ecx.enables(EvmFeatures::EIP161),
-            transfers_value,
-            account.is_empty_for_new_account_gas,
-        )
+        && (!features.contains(EvmFeatures::EIP161) || transfers_value)
+        && account.is_empty_for_new_account_gas
     {
         cost += version.gas_params.get(GasId::NewAccountCost);
         if ecx.enables(EvmFeatures::EIP8037) && transfers_value {

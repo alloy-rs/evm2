@@ -1,6 +1,5 @@
 //! System opcode implementations.
 
-use super::require_non_staticcall;
 use crate::{
     EvmFeatures, EvmTypesHost,
     bytecode::Bytecode,
@@ -15,9 +14,16 @@ use alloy_primitives::{Address, B256, Bytes};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
-/// Returns `true` if CALL or SELFDESTRUCT charges the new-account gas for the target.
 #[inline]
-pub const fn should_charge_new_account_gas(
+const fn require_non_staticcall<T: EvmTypesHost>(state: &InterpreterState<'_, '_, T>) -> Result {
+    if state.is_static() {
+        return Err(InstrStop::StateChangeDuringStaticCall);
+    }
+    Ok(())
+}
+
+#[inline]
+const fn should_charge_new_account_gas(
     eip161: bool,
     transfers_value: bool,
     target_is_empty_for_new_account_gas: bool,
@@ -107,18 +113,16 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         code = delegated_account.code;
         code_address = delegated_address;
     }
+    let features = state.version().features;
     let mut new_account_state_gas = 0;
     if create_empty_account
-        && should_charge_new_account_gas(
-            state.feature(EvmFeatures::EIP161),
-            transfers_value,
-            account.is_empty_for_new_account_gas,
-        )
+        && (!features.contains(EvmFeatures::EIP161) || transfers_value)
+        && account.is_empty_for_new_account_gas
     {
         cost += state.gas_params().get(GasId::NewAccountCost);
         // EIP-8037: value transfer to a new account also charges state gas from
         // the reservoir. Charged before the 63/64 child gas split below.
-        if state.feature(EvmFeatures::EIP8037) && transfers_value {
+        if features.contains(EvmFeatures::EIP8037) && transfers_value {
             new_account_state_gas = state.gas_params().new_account_state_gas();
         }
     }
