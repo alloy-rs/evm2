@@ -276,6 +276,21 @@ fn def_message(gas_limit: u64) -> Message<BaseEvmTypes> {
     }
 }
 
+fn test_message(
+    gas_limit: u64,
+    bytecode: &[u8],
+    modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
+) -> Message<BaseEvmTypes> {
+    let mut message = def_message(gas_limit);
+    if let Some(modify_message) = modify_message {
+        modify_message(&mut message);
+    }
+    Message::<BaseEvmTypes> {
+        code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+        ..message
+    }
+}
+
 fn def_database() -> InMemoryDB {
     let mut database = InMemoryDB::default();
     database.insert_account_info(
@@ -393,14 +408,7 @@ fn with_evm_context_and_host_mut<
     modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
     f: F,
 ) -> R {
-    let mut message = def_message(DEF_GAS_LIMIT);
-    if let Some(modify_message) = modify_message {
-        modify_message(&mut message);
-    }
-    let message = Message::<BaseEvmTypes> {
-        code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
-        ..message
-    };
+    let message = test_message(DEF_GAS_LIMIT, bytecode, modify_message);
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
     interpreter.prepare_run(host);
 
@@ -503,15 +511,8 @@ fn run_compiled_test_case_with_context(
     }
 
     // Interpreter - run evm2 as the oracle
-    let mut message = def_message(gas_limit);
-    if let Some(modify_message) = modify_message {
-        modify_message(&mut message);
-    }
+    let mut message = test_message(gas_limit, bytecode, modify_message);
     message.caller_is_static = is_static;
-    let message = Message::<BaseEvmTypes> {
-        code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
-        ..message
-    };
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
     let mut int_host = prepare_host(spec_id);
     let int_result = interpreter.run(&mut int_host).unwrap();

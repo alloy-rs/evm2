@@ -78,7 +78,7 @@ impl<'a> OpcodesIter<'a> {
     /// Create a new iterator over the given bytecode slice.
     #[inline]
     pub fn new(slice: &'a [u8], spec_id: SpecId) -> Self {
-        Self { iter: slice.iter(), info: op_info_map(spec_id) }
+        Self::with_infos(slice, op_info_map(spec_id))
     }
 
     /// Create a new iterator over the given bytecode slice with the given opcode infos.
