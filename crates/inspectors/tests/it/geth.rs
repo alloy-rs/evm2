@@ -3800,6 +3800,42 @@ fn test_geth_prestate_diff_selfdestruct_after_colliding_create2() {
     assert_eq!(diff.pre[&victim].storage[&B256::ZERO], B256::with_last_byte(5));
 }
 
+/// A create transaction whose nonce differs from the nonce of its sender, which only runs with the
+/// nonce check off, creates its contract from the nonce of the transaction.
+#[test]
+fn test_geth_prestate_diff_names_the_create_of_a_transaction_nonce() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.nonce_check = false)
+        .build_mainnet();
+
+    // Init code that returns one byte of code.
+    let init_code = Bytes::from(hex!("60006000f3"));
+    let (res, frame) = trace_prestate(
+        evm,
+        PreStateConfig { diff_mode: Some(true), ..Default::default() },
+        TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            kind: TransactTo::Create,
+            data: init_code,
+            nonce: 7,
+            ..Default::default()
+        },
+    );
+    assert!(res.result.is_success(), "{res:#?}");
+    let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
+
+    assert!(diff.post.contains_key(&sender.create(7)), "{diff:#?}");
+    assert!(!diff.post.contains_key(&sender.create(0)), "{diff:#?}");
+}
+
 /// Runs a transaction with a [`PrestateInspector`] and returns the result and the frame.
 fn trace_prestate(
     evm: TestEvm,

@@ -161,7 +161,9 @@ impl PrestateInspector {
                 }
                 to
             }
-            None => from.create(db.get_account(&from)?.unwrap_or_default().nonce),
+            // The create address comes from the nonce of the transaction, which the state of
+            // the sender matches unless the nonce check is off.
+            None => from.create(tx.nonce()),
         };
         accounts.extend([from, to, block_env.beneficiary]);
         // An authorization whose signature does not recover names no account.
