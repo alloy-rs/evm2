@@ -464,7 +464,10 @@ mod tests {
             MessageResult, MessageResultExt, Word, instructions as instr, op,
         },
         registry::TxRegistry,
-        test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
+        test_utils::{
+            TestHost, TestTypes, call_code, create_code, legacy_bytecode, push, push_all,
+            return_top_word,
+        },
         utils::address_to_word,
     };
     use alloc::{boxed::Box, vec, vec::Vec};
@@ -706,34 +709,6 @@ mod tests {
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
-    }
-
-    /// Appends code that returns the word at the top of the stack as the frame output.
-    fn return_top_word(code: &mut Vec<u8>) {
-        code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
-    }
-
-    fn call_code(target: Address) -> Vec<u8> {
-        let mut code = Vec::new();
-        push_all(
-            &mut code,
-            [
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                address_to_word(&target),
-                Word::from(1000),
-            ],
-        );
-        code
-    }
-
-    fn create_code() -> Vec<u8> {
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
-        code
     }
 
     #[test]
@@ -2575,8 +2550,7 @@ mod tests {
                 if marker == Address::with_last_byte(0x44) {
                     self.snapshot = Some(interp.host().state().clone_with(EmptyDB::default()));
                 } else if marker == Address::with_last_byte(0x55) {
-                    *interp.host().state_mut() =
-                        self.snapshot.as_ref().unwrap().clone_with(EmptyDB::default());
+                    *interp.host().state_mut() = self.snapshot.as_ref().unwrap().clone();
                     self.restored = true;
                 } else {
                     return None;

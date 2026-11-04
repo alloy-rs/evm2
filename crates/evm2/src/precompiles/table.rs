@@ -668,7 +668,7 @@ mod tests {
         map.warm_addresses(&mut warm);
         assert!(warm.is_warm(&identity_address));
         assert!(warm.is_warm(&long));
-        assert!(!warm.is_warm(&sha256_address));
+        assert!(warm.is_cold(&sha256_address));
 
         map.move_precompiles([(long, sha256_address)]).unwrap();
         assert!(!map.contains(&long));
@@ -677,6 +677,6 @@ mod tests {
         let mut warm = PrewarmSet::new();
         map.warm_addresses(&mut warm);
         assert!(warm.is_warm(&sha256_address));
-        assert!(!warm.is_warm(&long));
+        assert!(warm.is_cold(&long));
     }
 }

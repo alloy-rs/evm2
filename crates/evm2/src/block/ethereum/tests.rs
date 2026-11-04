@@ -9,6 +9,7 @@ use crate::{
         AccountInfo, BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
         InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
     },
+    utils::b256_to_word,
 };
 use alloc::vec;
 use alloy_consensus::{Signed, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered};
@@ -128,10 +129,10 @@ fn executes_prague_block() {
     let state = &output.state;
     assert_eq!(balance(state, RECIPIENT), Some(U256::from(1)));
     // EIP-2935 stores the parent hash at slot `(number - 1) % 8191`.
-    let parent_hash = U256::from_be_bytes(PARENT_HASH.0);
+    let parent_hash = b256_to_word(PARENT_HASH);
     assert_eq!(storage(state, HISTORY_STORAGE_ADDRESS, U256::ZERO), Some(parent_hash));
     // EIP-4788 stores the timestamp at `timestamp % 8191` and the root 8191 slots later.
-    let root = U256::from_be_bytes(PARENT_BEACON_BLOCK_ROOT.0);
+    let root = b256_to_word(PARENT_BEACON_BLOCK_ROOT);
     assert_eq!(storage(state, BEACON_ROOTS_ADDRESS, U256::from(12)), Some(U256::from(12)));
     assert_eq!(storage(state, BEACON_ROOTS_ADDRESS, U256::from(12 + 8191)), Some(root));
 }

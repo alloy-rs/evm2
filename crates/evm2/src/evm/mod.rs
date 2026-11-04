@@ -888,8 +888,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Replaces the precompile provider.
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
-        self.assert_precompiles_mutable();
-        self.precompiles = boxed_precompile_provider(precompiles);
+        self.set_boxed_precompiles(boxed_precompile_provider(precompiles));
     }
 
     /// Replaces the precompile provider with an already boxed one.
@@ -1002,8 +1001,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Sets the active execution inspector.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
-        self.assert_inspector_mutable();
-        self.inspector = Some(InspectorSlot::Owned(boxed_inspector(inspector)));
+        self.set_boxed_inspector(boxed_inspector(inspector));
     }
 
     /// Sets the active boxed execution inspector.
@@ -1055,9 +1053,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Sets the optional external interpreter runner.
     #[inline]
     pub fn set_interpreter_runner<R: InterpreterRunner<T>>(&mut self, runner: R) {
-        self.assert_interpreter_runner_mutable();
-        self.interpreter_runner = Some(Arc::new(runner));
-        self.refresh_runner_support();
+        self.set_shared_interpreter_runner(Arc::new(runner));
     }
 
     /// Sets the optional shared external interpreter runner.
@@ -1403,7 +1399,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
         // `destination` already holds the create's contract address (set when the message was
         // constructed), so the create hook observes it directly.
-        let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
+        let is_create = message.kind.is_create();
 
         // Keeps the top-level frame's bytecode alive when a hook replaces `message.code`.
         let top_code;
@@ -2150,11 +2146,12 @@ mod tests {
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         env::BlockEnvExt,
-        ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+        ethereum::{TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
         registry::{HandlerError, TxRequest, handler},
-        test_utils::{legacy_bytecode, push_address},
+        test_utils::{handle_test_tx, legacy_bytecode, push_address, test_tx},
+        utils::address_to_word,
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -2199,22 +2196,6 @@ mod tests {
         assert_eq!(*evm.ext(), 41);
         *evm.ext_mut() += 1;
         assert_eq!(*evm.ext(), 42);
-    }
-
-    fn test_tx(value: u64) -> RecoveredTxEnvelope {
-        Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy { nonce: value, ..TxLegacy::default() }),
-            Address::ZERO,
-        )
-    }
-
-    fn handle_test_tx(req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>) -> HandlerResult<TxResult> {
-        let _ = req.host.spec_id();
-        Ok(TxResultExt {
-            status: true,
-            total_gas_spent: req.tx.nonce + 1,
-            ..TxResultExt::default()
-        })
     }
 
     #[derive(Debug)]
@@ -2551,7 +2532,7 @@ mod tests {
             Host::load_account(&mut evm, &address, true, true),
             Err(HostError::Halt(InstrStop::OutOfGas))
         ));
-        let stats = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
+        let stats = evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts();
         assert_eq!(stats.get_account, 0);
         assert_eq!(stats.get_code_by_hash, 0);
 
@@ -2561,7 +2542,7 @@ mod tests {
             Host::sload(&mut evm, &address, &Word::ZERO, true),
             Err(HostError::Halt(InstrStop::OutOfGas))
         ));
-        let stats = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
+        let stats = evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts();
         assert_eq!(stats.get_account, 1);
         assert_eq!(stats.get_storage, 0);
         assert_eq!(stats.get_code_by_hash, 0);
@@ -2729,7 +2710,7 @@ mod tests {
             precompiles,
         );
 
-        let error = evm.transact(&tx).map(ExecutedTx::discard).unwrap_err();
+        let error = evm.call_tx(&tx).unwrap_err();
         let HandlerError::Fatal(error) = error else { panic!("expected fatal precompile error") };
         assert!(error.downcast_ref::<TestPrecompileError>().is_some());
         assert_eq!(error.to_string(), "test precompile error");
@@ -3125,10 +3106,10 @@ mod tests {
         let executed = evm.transact_with_inspector(&tx, &mut OriginInspector(origin)).unwrap();
         assert!(executed.commit().status);
 
-        let origin_word = Word::from_be_slice(origin.as_slice());
+        let origin_word = address_to_word(&origin);
         assert_eq!(evm.state.storage_slot_untracked(&target, &Word::ZERO).unwrap(), origin_word);
         assert_eq!(evm.state.storage_slot_untracked(&inner, &Word::from(1)).unwrap(), origin_word);
-        assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce, 1);
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().nonce, 1);
     }
 
     #[test]
@@ -3430,7 +3411,7 @@ mod tests {
         set_spec(&mut evm, SpecId::PRAGUE);
         assert_eq!(run(&mut evm), (InstrStop::Return, 2));
 
-        let mut version = *Version::base(SpecId::PRAGUE);
+        let mut version = Version::new(SpecId::PRAGUE);
         version.initial_call_depth = 1;
         evm.set_block_and_execution_config_within_spec(
             BlockEnvExt::default(),
@@ -3519,7 +3500,7 @@ mod tests {
             TxEnvelope::as_legacy,
             handler(|_| Ok(()), |req, ()| fail(req)),
         );
-        let error = evm.transact(&test_tx(7)).map(ExecutedTx::discard).unwrap_err();
+        let error = evm.call_tx(&test_tx(7)).unwrap_err();
         let HandlerError::Fatal(error) = error else { panic!("expected fatal handler error") };
         assert_eq!(error.to_string(), "handler failed");
         assert!(evm.logs().is_empty());
@@ -3821,7 +3802,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
     }
 
     #[test]
@@ -4032,12 +4013,11 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let pending = evm.state.take_pending_state();
-        let account =
-            pending.accounts.get(&created).and_then(|entry| entry.present.as_ref()).unwrap();
+        let account = pending.account_info(&created).unwrap();
         assert!(account.is_empty_code_hash());
     }
 
@@ -4188,7 +4168,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let pending = evm.state.take_pending_state();
@@ -4223,7 +4203,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let pending = evm.state.take_pending_state();
@@ -4289,7 +4269,7 @@ mod tests {
         };
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
-        assert!(result.stop.is_success());
+        assert!(result.is_success());
 
         let version = *evm.version();
         evm.state.finalize_transaction_(&version);
@@ -4872,7 +4852,7 @@ mod tests {
         assert_eq!(changes.account_info(&caller).unwrap().nonce, 1);
         let slot = changes.account_changes_for(&target).unwrap().storage.slots[&Word::ZERO].value;
         assert_eq!(slot.current, Word::from(1));
-        let mut in_place = changes.account_changes().map(|c| c.address).collect::<Vec<_>>();
+        let mut in_place = executed.account_changes().map(|c| c.address).collect::<Vec<_>>();
         in_place.sort();
         let _ = executed.discard();
 
@@ -4881,8 +4861,7 @@ mod tests {
         let executed = evm.transact(&tx).unwrap();
         assert!(executed.result().status);
         let pending = executed.detach().pending_state;
-        let mut detached =
-            pending.changes().account_changes().map(|c| c.address).collect::<Vec<_>>();
+        let mut detached = pending.account_changes().map(|c| c.address).collect::<Vec<_>>();
         detached.sort();
         assert_eq!(in_place, detached);
         assert_eq!(pending.changes().account_info(&caller).unwrap().nonce, 1);

@@ -273,7 +273,7 @@ mod tests {
         },
         BlockStateAccumulator,
     };
-    use crate::interpreter::Word;
+    use crate::{interpreter::Word, test_utils::storage_slot};
     use alloy_primitives::{Address, map::U256Map};
     use core::convert::Infallible;
 
@@ -326,14 +326,7 @@ mod tests {
     }
 
     fn slot(key: Word, original: Word, current: Word) -> U256Map<StorageSlot> {
-        U256Map::from_iter([(
-            key,
-            StorageSlot {
-                value: Tracked::from_parts(original, current),
-                is_warm: false,
-                _non_exhaustive: (),
-            },
-        )])
+        U256Map::from_iter([(key, storage_slot(original, current))])
     }
 
     #[cfg(feature = "serde")]

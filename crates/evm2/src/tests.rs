@@ -10,7 +10,7 @@ use crate::{
     evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
     interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
-    test_utils::{legacy_bytecode, push, push_address, push_all},
+    test_utils::{legacy_bytecode, push, push_address, push_all, return_top_word},
     version::GasId,
 };
 use alloc::{vec, vec::Vec};
@@ -29,7 +29,7 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         ..Default::default()
     };
     let result = Host::execute_message(evm, &mut message).unwrap();
-    assert!(result.stop.is_success());
+    assert!(result.is_success());
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     };
     let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
-    assert!(result.stop.is_success());
+    assert!(result.is_success());
     assert_eq!(result.gas.refunded(), 0);
 }
 
@@ -490,11 +490,6 @@ fn log_collection_tx() -> RecoveredTxEnvelope {
     )
 }
 
-/// Appends code that returns the word at the top of the stack.
-fn return_top_word(code: &mut Vec<u8>) {
-    code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
-}
-
 #[test]
 fn log_collection_off_keeps_log_semantics() {
     // LOG4 over memory that is already allocated, then LOG0 past it, which grows memory to four
@@ -663,7 +658,7 @@ fn precompile_dispatch_uses_original_callee(
     .unwrap();
     let result = Host::execute_message(&mut evm, &mut frame.message).unwrap();
 
-    assert!(result.stop.is_success(), "{:?}", result.stop);
+    assert!(result.is_success(), "{:?}", result.stop);
     assert_eq!(result.output.as_ref(), expected_output);
     // Geth's Prague gas usage includes delegation resolution even for precompile callees.
     let expected_gas = match opcode {
