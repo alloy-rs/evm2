@@ -1,16 +1,15 @@
 use crate::{
     args::Replay,
     error::{Error, Result},
-    fixture::{self, FixtureKind},
-    style,
+    fixture, style,
 };
 use alloy_primitives::U256;
 use evm2_eest::{
     BlockchainTestBlockFailed, BlockchainTestBlockFinished, BlockchainTestBlockStarted,
     BlockchainTestCaseStarted, BlockchainTestExecuteConfig, BlockchainTestExecutionMode,
     BlockchainTestHook, BlockchainTestTransactionFailed, BlockchainTestTransactionFinished,
-    BlockchainTestTransactionStarted, NameFilter, StateTestExecuteConfig, StateTestExecutionMode,
-    execute_blockchain_tests_str, execute_blockchain_tests_suite,
+    BlockchainTestTransactionStarted, FixtureKind, NameFilter, StateTestExecuteConfig,
+    StateTestExecutionMode, execute_blockchain_tests_str, execute_blockchain_tests_suite,
     execute_state_tests_str_with_filter,
 };
 use std::{
@@ -145,7 +144,7 @@ fn run_dir(dir: &Path, options: &ReplayOptions) -> Result<()> {
 /// Replays one fixture file, auto-detecting its kind (binary blockchain, or a
 /// text state/blockchain test).
 fn replay_file(path: &Path, options: &ReplayOptions) -> Result<FileReplay> {
-    if fixture::is_binary_path(path) {
+    if FixtureKind::from_path(path).is_some() {
         let suite = fixture::read_blockchain(path)?;
         let mut hook = ReplayProgressHook::default();
         let summary = execute_blockchain_tests_suite(
@@ -174,7 +173,7 @@ fn replay_file(path: &Path, options: &ReplayOptions) -> Result<FileReplay> {
 
     let input = fixture::read_text(path)?;
     match fixture::detect_str(path, &input)? {
-        Some(FixtureKind::StateTest) => {
+        Some(FixtureKind::State) => {
             let summary = execute_state_tests_str_with_filter(
                 path,
                 &input,
@@ -190,7 +189,7 @@ fn replay_file(path: &Path, options: &ReplayOptions) -> Result<FileReplay> {
             .map_err(|source| Error::StateTest { source })?;
             Ok(FileReplay { kind: "state", executed: summary.executed, skipped: summary.skipped })
         }
-        Some(FixtureKind::BlockchainTest) => {
+        Some(FixtureKind::Blockchain) => {
             let mut hook = ReplayProgressHook::default();
             let summary = execute_blockchain_tests_str(
                 path,

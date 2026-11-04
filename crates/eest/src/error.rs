@@ -1,4 +1,8 @@
-use crate::{execution::ExecutionResourceError, tx::TxBuildError};
+use crate::{
+    blockchaintest::{BlobFork, ForkSpec},
+    execution::ExecutionResourceError,
+    tx::TxBuildError,
+};
 use alloy_primitives::{B256, Bytes};
 use std::{io, path::PathBuf};
 use thiserror::Error;
@@ -18,7 +22,7 @@ pub struct TestError {
 impl TestError {
     /// Creates an error for an unknown test name.
     pub(crate) fn unknown(path: impl Into<PathBuf>, kind: TestErrorKind) -> Self {
-        Self { path: path.into().display().to_string(), name: "Unknown".to_string(), kind }
+        Self::case(path, "Unknown", kind)
     }
 
     /// Creates an error for a named test case.
@@ -78,6 +82,15 @@ pub(crate) enum TestErrorKind {
     /// Numeric value overflowed the target type.
     #[error("value overflows {0}")]
     Overflow(&'static str),
+    /// The runner does not support the test's fork.
+    #[error("unsupported fork: {0:?}")]
+    UnsupportedFork(ForkSpec),
+    /// The test's chain configuration has no blob parameters for the fork.
+    #[error("blob schedule has no entry for {0:?}")]
+    MissingBlobSchedule(BlobFork),
+    /// The test's blob schedule has a zero base fee update fraction for the fork.
+    #[error("blob schedule entry for {0:?} has a zero base fee update fraction")]
+    ZeroBlobUpdateFraction(BlobFork),
     /// Transaction part index was invalid.
     #[error("bad transaction index: {0}")]
     BadIndex(&'static str),
