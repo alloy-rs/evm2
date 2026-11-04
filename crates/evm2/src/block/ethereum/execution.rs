@@ -8,7 +8,11 @@ use crate::{
         InternalBlockExecutionError, InvalidTxError, StateUpdate, map_database_error,
         map_handler_error,
     },
-    evm::{AccountChangeRef, AccountInfo, StateChangeSink, SystemTx},
+    evm::{
+        AccountChangeRef, AccountInfo, BEACON_ROOTS_ADDRESS, BUILDER_DEPOSIT_REQUEST_ADDRESS,
+        BUILDER_EXIT_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
+        StateChangeSink, SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
+    },
     interpreter::InstrStop,
     registry::HandlerError,
 };
@@ -22,17 +26,11 @@ use alloy_consensus::{
 };
 use alloy_eips::{
     eip2718::Typed2718,
-    eip2935::HISTORY_STORAGE_ADDRESS,
-    eip4788::BEACON_ROOTS_ADDRESS,
     eip4895::Withdrawal,
     eip6110::{DEPOSIT_REQUEST_TYPE, MAINNET_DEPOSIT_CONTRACT_ADDRESS},
-    eip7002::{WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS, WITHDRAWAL_REQUEST_TYPE},
-    eip7251::{CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS, CONSOLIDATION_REQUEST_TYPE},
+    eip7002::WITHDRAWAL_REQUEST_TYPE,
+    eip7251::CONSOLIDATION_REQUEST_TYPE,
     eip7685::Requests,
-    eip8282::{
-        BUILDER_DEPOSIT_CONTRACT_ADDRESS, BUILDER_DEPOSIT_REQUEST_TYPE,
-        BUILDER_EXIT_CONTRACT_ADDRESS, BUILDER_EXIT_REQUEST_TYPE,
-    },
 };
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{Address, B256, Bytes, Log, U256, b256, map::AddressMap};
@@ -396,7 +394,7 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
         block_state,
         stream_state,
         on_state_update,
-        WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+        WITHDRAWAL_REQUEST_ADDRESS,
     )?;
     requests.push_request_with_type(
         WITHDRAWAL_REQUEST_TYPE,
@@ -408,7 +406,7 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
         block_state,
         stream_state,
         on_state_update,
-        CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+        CONSOLIDATION_REQUEST_ADDRESS,
     )?;
     requests.push_request_with_type(
         CONSOLIDATION_REQUEST_TYPE,
@@ -421,7 +419,7 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
             block_state,
             stream_state,
             on_state_update,
-            BUILDER_DEPOSIT_CONTRACT_ADDRESS,
+            BUILDER_DEPOSIT_REQUEST_ADDRESS,
         )?;
         requests.push_request_with_type(
             BUILDER_DEPOSIT_REQUEST_TYPE,
@@ -433,7 +431,7 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
             block_state,
             stream_state,
             on_state_update,
-            BUILDER_EXIT_CONTRACT_ADDRESS,
+            BUILDER_EXIT_REQUEST_ADDRESS,
         )?;
         requests.push_request_with_type(
             BUILDER_EXIT_REQUEST_TYPE,
@@ -476,12 +474,10 @@ fn execute_system_call<T: EvmTypes>(
         let reason = executed.result().stop;
         let _ = executed.discard();
         return Err(match address {
-            WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS => {
-                BlockValidationError::WithdrawalRequestsContractCall {
-                    message: alloc::format!("{reason:?}"),
-                }
-            }
-            CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS => {
+            WITHDRAWAL_REQUEST_ADDRESS => BlockValidationError::WithdrawalRequestsContractCall {
+                message: alloc::format!("{reason:?}"),
+            },
+            CONSOLIDATION_REQUEST_ADDRESS => {
                 BlockValidationError::ConsolidationRequestsContractCall {
                     message: alloc::format!("{reason:?}"),
                 }

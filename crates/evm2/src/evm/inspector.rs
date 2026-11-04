@@ -448,7 +448,7 @@ mod tests {
         constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
         ethereum::{TxEnvelope, ethereum_tx_registry},
-        evm::{AccountInfo, EmptyDB, InMemoryDB, State, StateCheckpoint},
+        evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
             GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageKind,
             MessageResult, MessageResultExt, Word, instructions as instr, op,
@@ -462,7 +462,6 @@ mod tests {
     };
     use alloc::{boxed::Box, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_eips::eip4788::SYSTEM_ADDRESS;
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
     use core::assert_matches;
     use evm2_macros::instruction;

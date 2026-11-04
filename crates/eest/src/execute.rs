@@ -16,9 +16,7 @@ use crate::{
     },
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
-use alloy_eips::{
-    eip2935::HISTORY_STORAGE_ADDRESS, eip4788::BEACON_ROOTS_ADDRESS, eip7840::BlobParams,
-};
+use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use alloy_trie::{
@@ -30,7 +28,10 @@ use evm2::{
     BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo as EvmAccountInfo, DbStats, DbStatsCounts, InMemoryDB, SystemTx},
+    evm::{
+        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, DbStats, DbStatsCounts,
+        HISTORY_STORAGE_ADDRESS, InMemoryDB, SystemTx,
+    },
     registry::HandlerError,
 };
 use serde_json::json;

@@ -23,7 +23,7 @@ pub use evm2::{
 
 pub type TransactTo = TxKind;
 
-pub const ETH_TRANSFER_LOG_ADDRESS: Address = alloy_eips::eip4788::SYSTEM_ADDRESS;
+pub const ETH_TRANSFER_LOG_ADDRESS: Address = evm2::evm::SYSTEM_ADDRESS;
 
 #[derive(Clone, Debug)]
 pub struct TxEnv {
