@@ -130,7 +130,8 @@ impl TracingInspectorConfig {
 
     /// Returns a config for geth style traces.
     ///
-    /// This config does _not_ record opcode level traces and is suited for `debug_traceTransaction`
+    /// This config records opcode-level steps with full stack snapshots and is suited for
+    /// `debug_traceTransaction` with the default struct logger.
     ///
     /// This will configure the default output of geth's default
     /// [StructLogTracer](alloy_rpc_types_trace::geth::DefaultFrame).
