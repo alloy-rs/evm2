@@ -84,7 +84,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     validate_execution_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
-    validate_sender_and_bump_nonce(
+    let sender_nonce = validate_sender_and_bump_nonce(
         req.host,
         caller,
         tx.nonce,
@@ -97,7 +97,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     H::before_execution(req.host, envelope, caller, effective_gas_cost)?;
 
-    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas })
+    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas, sender_nonce })
 }
 
 /// Executes and settles a prepared EIP-7702 transaction.
@@ -105,7 +105,8 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
     prepared: PreparedTx,
 ) -> HandlerResult<TxResult<T>> {
-    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
+    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas, sender_nonce } =
+        prepared;
     let tx = req.tx.inner();
     let envelope = req.envelope;
     let chain_id = req.host.version().chain_id;
@@ -185,7 +186,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         prepare_initial_frame(
             req.host,
             caller,
-            tx.nonce,
+            sender_nonce,
             tx.to.into(),
             &tx.input,
             tx.value,

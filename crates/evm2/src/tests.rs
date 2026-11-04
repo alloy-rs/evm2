@@ -14,7 +14,7 @@ use crate::{
     version::GasId,
 };
 use alloc::{vec, vec::Vec};
-use alloy_consensus::{TxEip7702, TxLegacy, transaction::Recovered};
+use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered};
 use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, Log, TxKind, U256, hex};
 
@@ -335,6 +335,93 @@ fn apply_auth_list_refunds_touched_absent_authority() {
     // An authority is refunded unless it is absent and untouched.
     let per_auth = evm.version().gas_params.get(GasId::TxEip7702AuthRefund);
     assert_eq!(refunds.execution_refund, per_auth);
+}
+
+#[rstest::rstest]
+#[case::legacy(0)]
+#[case::eip2930(1)]
+#[case::eip1559(2)]
+fn top_level_create_uses_sender_state_nonce(
+    #[case] tx_type: u8,
+    #[values(false, true)] occupied_first_address: bool,
+    #[values((false, 0), (false, 9), (true, 5))] nonce_check_and_tx_nonce: (bool, u64),
+) {
+    let (nonce_check, nonce) = nonce_check_and_tx_nonce;
+    let caller = Address::from([0xbb; 20]);
+    let destination = caller.create(5);
+    let first_address = caller.create(0);
+    let code = legacy_bytecode([op::STOP]);
+    let mut database = InMemoryDB::default();
+    database.insert_account_info(
+        &caller,
+        AccountInfo { nonce: 5, balance: U256::from(u64::MAX), ..Default::default() },
+    );
+    if occupied_first_address {
+        database.insert_account_info(
+            &first_address,
+            AccountInfo::default().with_nonce(1).with_code(code.clone()),
+        );
+    }
+    let mut version = Version::new(SpecId::OSAKA);
+    version.features.set(EvmFeatures::NONCE_CHECK, nonce_check);
+    let chain_id = version.chain_id;
+    let mut evm = TestEvm::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+        SpecId::OSAKA,
+        BlockEnvExt::default(),
+        ethereum_tx_registry(SpecId::OSAKA),
+        database,
+        Precompiles::base(SpecId::OSAKA),
+    );
+    // Return one zero byte as deployed STOP code.
+    let input = [op::PUSH1, 1, op::PUSH1, 0, op::RETURN].into();
+    let gas_limit = 100_000;
+    let value = U256::from(7);
+    let tx = match tx_type {
+        0 => TxEnvelope::Legacy(TxLegacy {
+            nonce,
+            gas_limit,
+            value,
+            input,
+            to: TxKind::Create,
+            ..Default::default()
+        }),
+        1 => TxEnvelope::Eip2930(TxEip2930 {
+            chain_id,
+            nonce,
+            gas_limit,
+            value,
+            input,
+            to: TxKind::Create,
+            ..Default::default()
+        }),
+        2 => TxEnvelope::Eip1559(TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit,
+            value,
+            input,
+            to: TxKind::Create,
+            ..Default::default()
+        }),
+        _ => unreachable!(),
+    };
+    let result = evm.transact(&Recovered::new_unchecked(tx, caller)).unwrap().commit();
+    assert!(result.status, "{result:?}");
+    assert_eq!(result.created_address, Some(destination));
+    let created = evm.state.account_info_untracked(&destination).unwrap().unwrap();
+    assert_eq!(created.nonce, 1);
+    assert_eq!(created.balance, value);
+    assert_eq!(created.code_hash, code.hash_slow());
+    assert_eq!(evm.state.account(&caller).unwrap().nonce(), 6);
+    let first = evm.state.account(&first_address).unwrap();
+    if occupied_first_address {
+        assert_eq!(first.nonce(), 1);
+        assert_eq!(first.code_hash(), code.hash_slow());
+        assert_eq!(first.balance(), U256::ZERO);
+    } else {
+        assert!(first.get().is_none());
+    }
 }
 
 #[test]

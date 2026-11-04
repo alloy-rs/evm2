@@ -39,6 +39,7 @@ num-bigint = { workspace = true, optional = true }
 [dev-dependencies]
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-hardforks.workspace = true
+evm2 = { workspace = true, features = ["block"] }
 snapbox = { workspace = true, features = ["term-svg"] }
 
 [features]

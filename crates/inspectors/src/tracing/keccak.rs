@@ -13,7 +13,7 @@ use crate::tracing::{TraceLimits, limits::TraceBudget};
 use alloc::{borrow::Cow, vec};
 use alloy_primitives::{B256, Bytes, hex, keccak256, map::HashMap};
 use evm2::{
-    EvmTypes, Inspector,
+    EvmTypes, Inspector, InspectorConfig, OpcodeSet,
     interpreter::{Interpreter, opcode::op},
 };
 use serde_json::Value;
@@ -50,8 +50,8 @@ impl Default for Keccak256PreimageInspector {
 }
 
 impl Keccak256PreimageInspector {
-    /// Returns an inspector that records preimages up to the given limits, which default to
-    /// [`DEFAULT_MAX_RECORDED_BYTES`].
+    /// Returns an inspector that records preimages up to the given limits.
+    /// [`Default`] caps recorded bytes at [`DEFAULT_MAX_RECORDED_BYTES`].
     pub fn new(limits: TraceLimits) -> Self {
         Self { inner: HashMap::default(), budget: TraceBudget { limits, ..Default::default() } }
     }
@@ -87,6 +87,10 @@ impl Keccak256PreimageInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for Keccak256PreimageInspector {
+    fn inspector_config(&self) -> InspectorConfig {
+        InspectorConfig::new().with_steps([op::KECCAK256].into_iter().collect::<OpcodeSet>())
+    }
+
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if interp.opcode() != op::KECCAK256 || self.budget.exceeded() {
             return;

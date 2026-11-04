@@ -1519,7 +1519,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
         let nested = message.depth > self.version().initial_call_depth;
         let info = if message.value > 0 || nested {
-            self.state.account_info_untracked(&message.caller).map_err(HostError::from)?
+            self.state.account_info_untracked(&message.caller)?
         } else {
             None
         };
@@ -1548,9 +1548,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline(never)]
     fn create_message_account(&mut self, message: &Message<T>) -> Result<(), HostError> {
-        self.state
-            .create_account(&message.caller, &message.destination, &message.value, self.features)
-            .map_err(HostError::from)??;
+        self.state.create_account(
+            &message.caller,
+            &message.destination,
+            &message.value,
+            self.features,
+        )??;
 
         self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         Ok(())
@@ -1875,11 +1878,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
 
         // load code
-        let code = if load_code {
-            account.load_code().map_err(HostError::from)?
-        } else {
-            Bytecode::default()
-        };
+        let code = if load_code { account.load_code()? } else { Bytecode::default() };
         Ok(AccountLoad {
             balance,
             nonce,
@@ -2007,8 +2006,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
 
         if contract != target {
-            let transferred =
-                self.state.transfer(contract, target, &balance).map_err(HostError::from)?;
+            let transferred = self.state.transfer(contract, target, &balance)?;
             if transferred {
                 self.log_eip7708_transfer(contract, target, &balance);
             }
