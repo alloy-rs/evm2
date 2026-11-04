@@ -1,8 +1,8 @@
 //! EVM to IR translation.
 
 use crate::{
-    Backend, Builder, Bytecode, EvmContext, EvmStack, Inst, InstData, InstFlags, IntCC, Result,
-    StackSection, decode_pair, decode_single,
+    Backend, Builder, Bytecode, EvmContext, Inst, InstData, InstFlags, IntCC, Result, StackSection,
+    decode_pair, decode_single,
 };
 use alloy_primitives::U256;
 use evm2::{
@@ -20,6 +20,7 @@ mod peephole;
 mod vstack;
 use vstack::{VSlot, VStack};
 
+const STACK_CAP: usize = 1024;
 /// The size of a stack word in bytes. Stack lengths are kept in bytes so that stack addresses
 /// need no scaling.
 const WORD_SIZE: i64 = 32;
@@ -313,7 +314,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // Use a local alloca for the stack to allow the backend to eliminate dead stores.
         let local_stack = config.local_stack && !config.inspect_stack;
         let stack = if local_stack {
-            let stack_type = bcx.type_array(word_type, EvmStack::CAPACITY as u32);
+            let stack_type = bcx.type_array(word_type, STACK_CAP as u32);
             bcx.new_stack_slot(stack_type, "stack.addr")
         } else {
             Pointer::new_address(word_type, sp_arg)
@@ -1966,10 +1967,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         };
         let overflow = |this: &mut Self| {
             debug_assert!(diff > 0);
-            if diff > EvmStack::CAPACITY as i64 {
+            if diff > STACK_CAP as i64 {
                 return this.bcx.bool_const(true);
             }
-            let max = (EvmStack::CAPACITY as i64 - diff) * WORD_SIZE;
+            let max = (STACK_CAP as i64 - diff) * WORD_SIZE;
             this.bcx.icmp_imm(IntCC::UnsignedGreaterThan, this.bytes_before, max)
         };
 

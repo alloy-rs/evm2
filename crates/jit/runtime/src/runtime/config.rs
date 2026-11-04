@@ -4,7 +4,7 @@ use crate::{CompileTimings, eyre, runtime::storage::ArtifactStore};
 use alloy_primitives::B256;
 use evm2::{
     BaseEvmTypes, EvmTypesHost, ExecutionConfig, OpcodeConfig, OpcodeView, SpecId,
-    constants::MAX_CODE_SIZE, version::GasParams,
+    version::GasParams,
 };
 use evm2_jit_builtins::Builtin;
 use evm2_jit_codegen::HostLayout;
@@ -14,6 +14,7 @@ const JIT_MODE_ENV: &str = "EVM2_JIT_MODE";
 const JIT_HELPER_PATH_ENV: &str = "EVM2_JIT_HELPER_PATH";
 const JIT_HELPER_MEMORY_LIMIT_ENV: &str = "EVM2_JIT_HELPER_MEMORY_LIMIT_BYTES";
 const JIT_HELPER_CPU_COUNT_ENV: &str = "EVM2_JIT_HELPER_CPU_COUNT";
+const DEFAULT_JIT_MAX_BYTECODE_LEN: usize = 24 * 1024;
 
 /// Runtime configuration.
 #[derive(Clone, derive_more::Debug)]
@@ -387,7 +388,7 @@ impl Default for RuntimeTuning {
             shutdown_timeout: Duration::from_secs(5),
             sync_compile_timeout: Duration::from_secs(30),
             jit_hot_threshold: 8,
-            jit_max_bytecode_len: MAX_CODE_SIZE,
+            jit_max_bytecode_len: DEFAULT_JIT_MAX_BYTECODE_LEN,
             jit_max_pending_jobs: 2048,
             jit_worker_count: worker_count,
             jit_timeout: Duration::from_secs(5),

@@ -17,7 +17,6 @@ use core::{
 pub use evm2::interpreter::{Gas, InstrStop, Memory};
 use evm2::{
     BaseEvmTypes, EvmTypesHost, SpecId,
-    constants::STACK_LIMIT,
     env::{BlockEnv, TxEnv},
     interpreter::{Host, Interpreter, Message},
     version::{EvmFeatures, GasParams},
@@ -420,7 +419,7 @@ impl EvmCompilerFn {
 /// EVM context stack.
 #[repr(C)]
 #[allow(missing_debug_implementations)]
-pub struct EvmStack([MaybeUninit<EvmWord>; STACK_LIMIT]);
+pub struct EvmStack([MaybeUninit<EvmWord>; 1024]);
 
 #[allow(clippy::new_without_default)]
 impl EvmStack {
@@ -428,7 +427,7 @@ impl EvmStack {
     pub const SIZE: usize = 32 * Self::CAPACITY;
 
     /// The size of the stack in U256 elements.
-    pub const CAPACITY: usize = STACK_LIMIT;
+    pub const CAPACITY: usize = 1024;
 
     /// Creates a new EVM stack, allocated on the stack.
     ///
@@ -441,7 +440,7 @@ impl EvmStack {
     /// Creates a vector that can be used as a stack.
     #[inline]
     pub fn new_heap() -> Vec<EvmWord> {
-        Vec::with_capacity(Self::CAPACITY)
+        Vec::with_capacity(1024)
     }
 
     /// Creates a stack from a vector's buffer.
