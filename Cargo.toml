@@ -65,7 +65,7 @@ alloy-consensus = { version = "2.0.4", default-features = false }
 alloy-chains = { version = "0.2.34", default-features = false }
 alloy-eip2930 = { version = "0.2.4", default-features = false }
 alloy-eip7928 = { version = "0.4.11", default-features = false }
-alloy-eips = { version = "2.5.0", default-features = false }
+alloy-eips = { version = "2.0.4", default-features = false }
 alloy-hardforks = { version = "0.4", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
 alloy-provider = { version = "2.0.4", default-features = false }
