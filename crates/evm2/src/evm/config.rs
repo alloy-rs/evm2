@@ -277,7 +277,7 @@ impl EvmTypesHost for BaseEvmTypes {
 
     #[cfg(dispatch_match)]
     const BASE_MATCH_LOOPS: Option<[MatchLoop<Self>; SpecId::COUNT]> =
-        Some(crate::interpreter::dispatch::base_match_loops());
+        Some(crate::interpreter::dispatch::base_match_loops::all());
 }
 
 /// Base EVM configuration for an inherited base specification ID.

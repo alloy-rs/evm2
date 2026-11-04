@@ -196,17 +196,21 @@ where
     )
 }
 
-/// Returns the match loops of the base configs for [`BaseEvmTypes`].
+/// The match loops of the base configs for [`BaseEvmTypes`].
 ///
-/// The loops are instantiated here, behind non-generic functions, so that the crates that use
-/// the base types link to them instead of each instantiating its own copy.
+/// The loops are instantiated here, behind public non-generic functions, so that the crates that
+/// use the base types link to them instead of each instantiating its own copy. A private function
+/// would be instantiated again in every crate that references it.
 #[cfg(dispatch_match)]
-pub(crate) const fn base_match_loops() -> [MatchLoop<BaseEvmTypes>; crate::SpecId::COUNT] {
+pub mod base_match_loops {
+    use super::*;
+
     macro_rules! base_match_loops {
-        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {{
+        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {
             $(
+                #[doc(hidden)]
                 #[inline(never)]
-                fn $name(interpreter: &mut Interpreter<'_, '_, BaseEvmTypes>) -> InstrStop {
+                pub fn $name(interpreter: &mut Interpreter<'_, '_, BaseEvmTypes>) -> InstrStop {
                     // A spec that shares its predecessor's loop never uses its own.
                     if const { shares_loop(crate::SpecId::$spec as usize) } {
                         unreachable!()
@@ -216,14 +220,18 @@ pub(crate) const fn base_match_loops() -> [MatchLoop<BaseEvmTypes>; crate::SpecI
                     )
                 }
             )*
-            share_equal_loops(
-                SelectorOpcodeConfig::<BaseEvmTypes, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG,
-                [$($name as MatchLoop<BaseEvmTypes>,)*],
-            )
-        }};
+
+            /// Returns the loop of each base spec.
+            pub(crate) const fn all() -> [MatchLoop<BaseEvmTypes>; crate::SpecId::COUNT] {
+                share_equal_loops(
+                    SelectorOpcodeConfig::<BaseEvmTypes, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG,
+                    [$($name as MatchLoop<BaseEvmTypes>,)*],
+                )
+            }
+        };
     }
 
-    crate::for_each_spec!([] base_match_loops)
+    crate::for_each_spec!([] base_match_loops);
 }
 
 /// Returns whether the base spec `i` shares the loop of spec `i - 1`.
