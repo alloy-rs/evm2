@@ -54,6 +54,12 @@ pub trait EvmTypesHost: Sized + 'static {
 
     /// Host type used by this EVM.
     type Host<'a>: Host<Self> + ?Sized;
+
+    /// The match loops of the base configs, for types that instantiate them in their own crate.
+    ///
+    /// Without them, every crate that uses the types instantiates its own copies of the loops.
+    #[cfg(dispatch_match)]
+    const BASE_MATCH_LOOPS: Option<[MatchLoop<Self>; SpecId::COUNT]> = None;
 }
 
 /// Runtime EVM type family whose host is [`Evm`] for every stored-object lifetime.
@@ -86,6 +92,10 @@ pub trait EvmConfigSelector<T: EvmTypesHost>: Sized {
     /// runtime ID type. `CUSTOM_SPEC_ID` is a selector-specific `u32` discriminant; `u32::MAX`
     /// represents the base table inherited from `BASE_SPEC_ID`.
     type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32>: EvmConfig<T>;
+
+    /// Whether the configs of base spec ids with the base sentinel are [`BaseEvmConfig`]s.
+    #[cfg(dispatch_match)]
+    const BASE_CONFIGS: bool = false;
 
     /// Returns the selected execution config for `spec_id`.
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T>;
@@ -264,6 +274,10 @@ impl EvmTypesHost for BaseEvmTypes {
     type TxResultExt = ();
     type BlockEnvExt = ();
     type Host<'a> = Evm<'a, Self>;
+
+    #[cfg(dispatch_match)]
+    const BASE_MATCH_LOOPS: Option<[MatchLoop<Self>; SpecId::COUNT]> =
+        Some(crate::interpreter::dispatch::base_match_loops());
 }
 
 /// Base EVM configuration for an inherited base specification ID.
@@ -283,6 +297,9 @@ pub struct BaseEvmConfigSelector(());
 
 impl<T: EvmTypesHost> EvmConfigSelector<T> for BaseEvmConfigSelector {
     type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> = BaseEvmConfig<BASE_SPEC_ID>;
+
+    #[cfg(dispatch_match)]
+    const BASE_CONFIGS: bool = true;
 
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T> {
         ExecutionConfig::for_base_spec::<Self>(spec_id.into())

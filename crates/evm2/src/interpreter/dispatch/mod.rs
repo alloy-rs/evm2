@@ -7,6 +7,9 @@ use crate::{
     trustme,
 };
 
+#[cfg(dispatch_match)]
+use crate::{BaseEvmConfig, BaseEvmTypes, interpreter::InstrStop};
+
 macro_rules! for_each_opcode_value {
     ($m:ident) => {
         $m! {
@@ -164,8 +167,6 @@ where
 }
 
 /// Returns the match loop of each spec of selector `F`.
-///
-/// A spec whose opcode config equals its predecessor's shares the predecessor's loop.
 #[cfg(dispatch_match)]
 const fn make_selector_match_loops<T, F, const CUSTOM_SPEC_ID: u32>()
 -> [MatchLoop<T>; crate::SpecId::COUNT]
@@ -173,28 +174,80 @@ where
     T: EvmTypesHost,
     F: EvmConfigSelector<T>,
 {
-    let configs = SelectorOpcodeConfig::<T, F, CUSTOM_SPEC_ID>::OPCODE_CONFIG;
+    if F::BASE_CONFIGS
+        && CUSTOM_SPEC_ID == u32::MAX
+        && let Some(loops) = T::BASE_MATCH_LOOPS
+    {
+        return loops;
+    }
 
     macro_rules! make_selector_match_loops {
-        ([$($extra:tt)*] $first:ident $first_name:ident, $($spec:ident $name:ident,)*) => {{
-            let mut loops = [imp::run_match::<
-                T,
-                F::Config<{ crate::SpecId::$first as u32 }, CUSTOM_SPEC_ID>,
-            > as MatchLoop<T>; crate::SpecId::COUNT];
+        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {
+            [$(
+                imp::run_match::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>>
+                    as MatchLoop<T>,
+            )*]
+        };
+    }
+
+    share_equal_loops(
+        SelectorOpcodeConfig::<T, F, CUSTOM_SPEC_ID>::OPCODE_CONFIG,
+        crate::for_each_spec!([] make_selector_match_loops),
+    )
+}
+
+/// Returns the match loops of the base configs for [`BaseEvmTypes`].
+///
+/// The loops are instantiated here, behind non-generic functions, so that the crates that use
+/// the base types link to them instead of each instantiating its own copy.
+#[cfg(dispatch_match)]
+pub(crate) const fn base_match_loops() -> [MatchLoop<BaseEvmTypes>; crate::SpecId::COUNT] {
+    macro_rules! base_match_loops {
+        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {{
             $(
-                let i = crate::SpecId::$spec as usize;
-                loops[i] = if configs[i].same_revisions(configs[i - 1]) {
-                    loops[i - 1]
-                } else {
-                    imp::run_match::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>>
-                        as MatchLoop<T>
-                };
+                #[inline(never)]
+                fn $name(interpreter: &mut Interpreter<'_, '_, BaseEvmTypes>) -> InstrStop {
+                    // A spec that shares its predecessor's loop never uses its own.
+                    if const { shares_loop(crate::SpecId::$spec as usize) } {
+                        unreachable!()
+                    }
+                    imp::run_match::<BaseEvmTypes, BaseEvmConfig<{ crate::SpecId::$spec as u32 }>>(
+                        interpreter,
+                    )
+                }
             )*
-            loops
+            share_equal_loops(
+                SelectorOpcodeConfig::<BaseEvmTypes, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG,
+                [$($name as MatchLoop<BaseEvmTypes>,)*],
+            )
         }};
     }
 
-    crate::for_each_spec!([] make_selector_match_loops)
+    crate::for_each_spec!([] base_match_loops)
+}
+
+/// Returns whether the base spec `i` shares the loop of spec `i - 1`.
+#[cfg(dispatch_match)]
+const fn shares_loop(i: usize) -> bool {
+    let configs =
+        SelectorOpcodeConfig::<BaseEvmTypes, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG;
+    i > 0 && configs[i].same_revisions(configs[i - 1])
+}
+
+/// Makes each spec whose opcode config equals its predecessor's use the predecessor's loop.
+#[cfg(dispatch_match)]
+const fn share_equal_loops<T: EvmTypesHost>(
+    configs: &[&OpcodeConfig<T>; crate::SpecId::COUNT],
+    mut loops: [MatchLoop<T>; crate::SpecId::COUNT],
+) -> [MatchLoop<T>; crate::SpecId::COUNT] {
+    let mut i = 1;
+    while i < crate::SpecId::COUNT {
+        if configs[i].same_revisions(configs[i - 1]) {
+            loops[i] = loops[i - 1];
+        }
+        i += 1;
+    }
+    loops
 }
 
 pub(crate) struct ConfigInstrTables<T, C>(core::marker::PhantomData<fn() -> (T, C)>);

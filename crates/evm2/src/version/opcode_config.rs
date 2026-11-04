@@ -132,6 +132,7 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
     }
 
     /// Returns whether `self` and `other` have the same dispatch-table revision for every opcode.
+    #[cfg(dispatch_match)]
     pub(crate) const fn same_revisions(&self, other: &Self) -> bool {
         let mut op = 0;
         while op < 256 {
