@@ -985,7 +985,7 @@ mod tests {
         BaseEvmTypes, ExecutionConfig, Precompiles,
         constants::MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
         env::BlockEnvExt,
-        evm::InMemoryDB,
+        evm::{InMemoryDB, handler::TxHandlerHooks},
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
@@ -997,8 +997,6 @@ mod tests {
     fn adjusted_floor_gas_controls_validation_and_settlement(
         #[values(31_049, 31_050)] gas_limit: u64,
     ) {
-        use crate::evm::handler::TxHandlerHooks;
-
         struct CalldataSurcharge;
 
         impl TxHandlerHooks<BaseEvmTypes> for CalldataSurcharge {

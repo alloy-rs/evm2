@@ -53,7 +53,13 @@ use evm2::{
 };
 #[cfg(feature = "jit")]
 use std::path::PathBuf;
-use std::{borrow::Cow, collections::BTreeMap, mem, path::Path};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write,
+    mem,
+    path::Path,
+};
 
 pub use crate::execution::ExecutionMode;
 
@@ -1296,11 +1302,6 @@ fn check_block_access_list(
 
 /// Renders a compact per-account summary of how the built and expected block access lists differ.
 fn format_bal_diff(built: &BlockAccessList, expected: &BlockAccessList) -> String {
-    use std::{
-        collections::{BTreeMap, BTreeSet},
-        fmt::Write,
-    };
-
     let built: BTreeMap<_, _> = built.iter().map(|account| (account.address(), account)).collect();
     let expected: BTreeMap<_, _> =
         expected.iter().map(|account| (account.address(), account)).collect();
@@ -1577,7 +1578,7 @@ const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::types::{ChainConfig, SealEngine, State},
+        super::types::{ChainConfig, DecodedBlock, SealEngine, State},
         *,
     };
     use alloy_eips::eip7840::BLOB_BASE_COST;
@@ -1823,17 +1824,6 @@ mod tests {
 
     #[test]
     fn blockchain_tests_apply_ommer_rewards_before_merge() {
-        use super::{
-            super::types::{
-                Account, Block, BlockHeader, BlockchainTest, BlockchainTestCase, DecodedBlock,
-                ForkSpec, SealEngine, State,
-            },
-            ExecuteConfig, NoopHook, ONE_ETHER, execute_suite,
-        };
-        use crate::filter::NameFilter;
-        use alloy_primitives::{Address, B256, U256};
-        use std::{collections::BTreeMap, path::Path};
-
         let miner = Address::with_last_byte(1);
         let ommer_miner = Address::with_last_byte(2);
         let genesis_hash = B256::with_last_byte(1);
@@ -1922,16 +1912,6 @@ mod tests {
 
     #[test]
     fn receipt_root_check_rejects_invalid_empty_block_root() {
-        use super::{
-            super::types::{
-                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
-            },
-            ExecuteConfig, ExecutionMode, NoopHook, execute_str,
-        };
-        use crate::filter::NameFilter;
-        use alloy_primitives::{B256, U256};
-        use std::{collections::BTreeMap, path::Path};
-
         let genesis_hash = B256::with_last_byte(1);
         let suite = BlockchainTest(BTreeMap::from([(
             "invalid-receipt-root".to_string(),
@@ -2008,16 +1988,6 @@ mod tests {
 
     #[test]
     fn rejects_block_with_wrong_parent_hash() {
-        use super::{
-            super::types::{
-                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
-            },
-            ExecuteConfig, NoopHook, execute_str,
-        };
-        use crate::filter::NameFilter;
-        use alloy_primitives::{B256, U256};
-        use std::{collections::BTreeMap, path::Path};
-
         let genesis_hash = B256::with_last_byte(1);
         let block_hash = B256::with_last_byte(2);
         let suite = BlockchainTest(BTreeMap::from([(
@@ -2067,16 +2037,6 @@ mod tests {
 
     #[test]
     fn discards_expected_block_with_wrong_parent_hash() {
-        use super::{
-            super::types::{
-                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
-            },
-            ExecuteConfig, NoopHook, execute_str,
-        };
-        use crate::filter::NameFilter;
-        use alloy_primitives::{B256, U256};
-        use std::{collections::BTreeMap, path::Path};
-
         let genesis_hash = B256::with_last_byte(1);
         let suite = BlockchainTest(BTreeMap::from([(
             "expected-wrong-parent-hash".to_string(),
@@ -2121,16 +2081,6 @@ mod tests {
 
     #[test]
     fn rejects_case_with_wrong_last_block_hash() {
-        use super::{
-            super::types::{
-                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
-            },
-            ExecuteConfig, NoopHook, execute_str,
-        };
-        use crate::filter::NameFilter;
-        use alloy_primitives::{B256, U256};
-        use std::{collections::BTreeMap, path::Path};
-
         let genesis_hash = B256::with_last_byte(1);
         let block_hash = B256::with_last_byte(2);
         let suite = BlockchainTest(BTreeMap::from([(
@@ -2324,15 +2274,6 @@ mod tests {
 
     #[test]
     fn json_outcome_reports_pass_and_failure() {
-        use super::{
-            super::{
-                error::{TestError, TestErrorKind},
-                types::ForkSpec,
-            },
-            json_outcome_value,
-        };
-        use alloy_primitives::B256;
-
         let root = B256::with_last_byte(7);
         let pass = json_outcome_value("case-a", ForkSpec::Byzantium, &Ok(Some(root)));
         assert_eq!(pass["pass"], true);

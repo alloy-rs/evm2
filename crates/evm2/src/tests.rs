@@ -163,14 +163,6 @@ fn evm_reports_invalid_transaction_execution() {
 
 #[test]
 fn eip8037_sibling_refill_restores_parent_gas_left() {
-    use crate::{
-        EvmFeatures, ExecutionConfig, Version,
-        ethereum::{TxEnvelope, ethereum_tx_registry},
-        version::GasId,
-    };
-    use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{TxKind, U256};
-
     let parent = Address::repeat_byte(0x11);
     let setter = Address::repeat_byte(0xa1);
     let clearer = Address::repeat_byte(0xb2);

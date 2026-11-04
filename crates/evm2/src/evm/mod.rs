@@ -2482,7 +2482,6 @@ mod tests {
 
     #[test]
     fn owned_database_error_survives_nested_precompile_calls() {
-        use crate::{DatabaseError, evm::bal::BalError};
         let precompiles = precompiles_with([
             test_precompile(TEST_PRECOMPILE, |evm, _, _| {
                 let mut child = precompile_message(INNER_TEST_PRECOMPILE);
