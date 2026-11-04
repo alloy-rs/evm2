@@ -250,7 +250,7 @@ fn call_inner<T: EvmTypesHost>(
     call_with(stack, gas, state, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
 }
 
-////// Executes a call opcode of `kind` with hooks around its child message.
+/// Executes a call opcode of `kind` with hooks around its child message.
 ///
 /// This is the body of [`call`], [`callcode`], [`delegatecall`] and [`staticcall`], for custom
 /// call instructions that need extra behavior. Use it from an
