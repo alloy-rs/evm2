@@ -15,10 +15,11 @@ pub mod legacy;
 pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
-    Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
+    Evm, EvmFeatures, EvmTypes, HostError, Precompiles, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
+    env::BlockEnv,
     evm::{
-        AccountInfo,
+        AccountInfo, DynDatabase,
         handler::{DefaultTxHandlerHooks, GasSettlement},
     },
     interpreter::{
@@ -276,6 +277,23 @@ pub fn ethereum_tx_registry<T: EvmTypes<Tx = TxEnvelope>>(
     }
 
     registry
+}
+
+impl<'a, T: EvmTypes<Tx = TxEnvelope>> Evm<'a, T>
+where
+    T::EvmExt: Default,
+{
+    /// Creates an EVM for `spec_id` with the Ethereum transaction registry, the base precompiles,
+    /// and the provided database.
+    #[inline]
+    pub fn ethereum(
+        spec_id: T::SpecId,
+        block: BlockEnv<T>,
+        database: impl DynDatabase + 'a,
+    ) -> Self {
+        let spec = spec_id.into();
+        Self::new(spec_id, block, ethereum_tx_registry(spec), database, Precompiles::base(spec))
+    }
 }
 
 /// Validates the effective gas price against the block base fee.
