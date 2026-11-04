@@ -67,7 +67,9 @@ pub struct CallTrace {
     pub address: Address,
     /// Whether this is a call to a precompile.
     ///
-    /// Note: This is optional because not all tracers make use of this.
+    /// Only recorded if
+    /// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls)
+    /// is set, otherwise `None`.
     pub maybe_precompile: Option<bool>,
     /// The address of the selfdestructed contract.
     pub selfdestruct_address: Option<Address>,
