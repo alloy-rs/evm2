@@ -410,7 +410,7 @@ impl BundleState {
     /// Creates it with new and old values of both Storage and AccountInfo.
     pub fn new(
         state: impl IntoIterator<
-            Item = (Address, Option<AccountInfo>, Option<AccountInfo>, U256Map<(U256, U256)>),
+            Item = (Address, Option<AccountInfo>, Option<AccountInfo>, HashMap<U256, (U256, U256)>),
         >,
         reverts: impl IntoIterator<
             Item = impl IntoIterator<
