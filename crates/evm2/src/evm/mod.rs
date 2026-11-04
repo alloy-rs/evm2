@@ -133,7 +133,7 @@ use crate::{
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+use alloy_primitives::{Address, B256, Bytes, Log};
 use core::ptr::NonNull;
 #[cfg(feature = "async")]
 use core::{any::TypeId, future::Future};
@@ -2136,15 +2136,11 @@ fn eip7708_transfer_log(from: &Address, to: &Address, value: &Word) -> Option<Lo
     if value.is_zero() || from == to {
         return None;
     }
-    let topics = vec![
-        EIP7708_TRANSFER_TOPIC,
-        B256::left_padding_from(from.as_slice()),
-        B256::left_padding_from(to.as_slice()),
-    ];
-    Some(Log {
-        address: SYSTEM_ADDRESS,
-        data: LogData::new_unchecked(topics, Bytes::copy_from_slice(&value.to_be_bytes::<32>())),
-    })
+    Some(Log::new_unchecked(
+        SYSTEM_ADDRESS,
+        vec![EIP7708_TRANSFER_TOPIC, from.into_word(), to.into_word()],
+        Bytes::copy_from_slice(&value.to_be_bytes::<32>()),
+    ))
 }
 
 #[cfg(test)]
@@ -4301,14 +4297,7 @@ mod tests {
         assert_eq!(logs.len(), 1);
         let log = &logs[0];
         assert_eq!(log.address, SYSTEM_ADDRESS);
-        assert_eq!(
-            log.topics(),
-            &[
-                EIP7708_TRANSFER_TOPIC,
-                B256::left_padding_from(caller.as_slice()),
-                B256::left_padding_from(target.as_slice()),
-            ]
-        );
+        assert_eq!(log.topics(), &[EIP7708_TRANSFER_TOPIC, caller.into_word(), target.into_word()]);
         assert_eq!(log.data.data, Bytes::copy_from_slice(&U256::from(7).to_be_bytes::<32>()));
     }
 
