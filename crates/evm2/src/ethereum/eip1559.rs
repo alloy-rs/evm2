@@ -72,7 +72,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     validate_execution_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
-    validate_sender_and_bump_nonce(
+    let sender_nonce = validate_sender_and_bump_nonce(
         req.host,
         caller,
         tx.nonce,
@@ -85,7 +85,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost)?;
 
-    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas })
+    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas, sender_nonce })
 }
 
 /// Executes and settles a prepared EIP-1559 transaction.
@@ -93,7 +93,8 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     req: TxRequest<'_, '_, T, TxEip1559>,
     prepared: PreparedTx,
 ) -> HandlerResult<TxResult<T>> {
-    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
+    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas, sender_nonce } =
+        prepared;
     let tx = req.tx.inner();
 
     let (execution_gas_limit, reservoir) =
@@ -106,8 +107,15 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     };
     let mut tx_gas =
         GasTracker::new_with_execution_gas_and_reservoir(execution_gas_limit, reservoir);
-    let frame =
-        prepare_initial_frame(req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, &mut tx_gas)?;
+    let frame = prepare_initial_frame(
+        req.host,
+        caller,
+        sender_nonce,
+        tx.to,
+        &tx.input,
+        tx.value,
+        &mut tx_gas,
+    )?;
     let result =
         execute_initial_frame(req.host, frame, &mut tx_gas, execution_gas_limit, reservoir)?;
     H::settle_transaction(

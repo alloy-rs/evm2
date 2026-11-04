@@ -12,7 +12,8 @@ use alloy_rpc_types_trace::geth::{
     StateGasTrace, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    DatabaseError, EvmTypes, EvmTypesHost, Inspector, NoopInspector, TxResultWithState,
+    DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, NoopInspector,
+    TxResultWithState,
     env::BlockEnv,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
@@ -97,9 +98,7 @@ impl DebugInspector {
                         Self::FourByte(FourByteInspector::default())
                     }
                     GethDebugBuiltInTracerType::CallTracer => {
-                        let config = tracer_config
-                            .into_call_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let config = tracer_config.into_call_config()?;
 
                         Self::CallTracer(
                             TracingInspector::new(TracingInspectorConfig::from_geth_call_config(
@@ -109,9 +108,7 @@ impl DebugInspector {
                         )
                     }
                     GethDebugBuiltInTracerType::PreStateTracer => {
-                        let config = tracer_config
-                            .into_pre_state_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let config = tracer_config.into_pre_state_config()?;
 
                         Self::PreStateTracer(
                             TracingInspector::new(
@@ -125,16 +122,12 @@ impl DebugInspector {
                         Self::StateGasTracer(NoopInspector::default())
                     }
                     GethDebugBuiltInTracerType::MuxTracer => {
-                        let config = tracer_config
-                            .into_mux_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let config = tracer_config.into_mux_config()?;
 
                         Self::Mux(MuxInspector::try_from_config(config.clone())?, config)
                     }
                     GethDebugBuiltInTracerType::FlatCallTracer => {
-                        let flat_call_config = tracer_config
-                            .into_flat_call_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let flat_call_config = tracer_config.into_flat_call_config()?;
 
                         Self::FlatCallTracer(
                             TracingInspector::new(TracingInspectorConfig::default_parity()),
@@ -145,9 +138,7 @@ impl DebugInspector {
                         let config = if tracer_config.is_null() {
                             Erc7562Config::default()
                         } else {
-                            tracer_config
-                                .from_value()
-                                .map_err(|_| DebugInspectorError::InvalidTracerConfig)?
+                            tracer_config.from_value()?
                         };
 
                         Self::Erc7562Tracer(Erc7562Inspector::new(config))
@@ -351,7 +342,7 @@ macro_rules! delegate {
             Self::StateGasTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Mux($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             #[cfg(feature = "js-tracer")]
-            Self::Js($insp) => Inspector::<T>::$method(&mut **$insp, $($arg),*),
+            Self::Js($insp) => Inspector::<T>::$method($insp, $($arg),*),
         }
     };
 }
@@ -359,6 +350,10 @@ macro_rules! delegate {
 impl<T: EvmTypes> Inspector<T> for DebugInspector {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         delegate!(self => inspector.initialize_interp(interp))
+    }
+
+    fn inspector_config(&self) -> InspectorConfig {
+        delegate!(self => inspector.inspector_config())
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
@@ -422,8 +417,8 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
 #[derive(Debug, Error)]
 pub enum DebugInspectorError {
     /// Invalid tracer configuration
-    #[error("invalid tracer config")]
-    InvalidTracerConfig,
+    #[error("invalid tracer config: {0}")]
+    InvalidTracerConfig(#[from] serde_json::Error),
     /// Unsupported tracer
     #[error("unsupported tracer")]
     UnsupportedTracer,

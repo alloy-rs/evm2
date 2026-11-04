@@ -7,6 +7,7 @@ use boa_engine::NativeFunction;
 use boa_gc::{Finalize, Trace};
 use evm2::{
     BaseEvmTypes, Precompiles, SpecId,
+    block::ethereum::execution::execute_transaction_without_commit,
     bytecode::Bytecode,
     env::BlockEnvExt,
     ethereum::{TxEnvelope, ethereum_tx_registry},
@@ -260,7 +261,7 @@ fn run(
         Precompiles::base(SpecId::CANCUN),
     );
     evm.set_inspector(inspector);
-    let result = evm.transact(&transaction(kind)).map(|result| result.detach());
+    let result = execute_transaction_without_commit(&mut evm, &transaction(kind));
     (*evm.clear_inspector_as::<JsInspector>().unwrap(), result)
 }
 
@@ -271,7 +272,7 @@ fn assert_interrupted(result: Result<TxResultWithState, HandlerError>) {
     ));
 }
 
-fn transaction(kind: TxKind) -> Recovered<TxEnvelope> {
+pub(super) fn transaction(kind: TxKind) -> Recovered<TxEnvelope> {
     Recovered::new_unchecked(
         TxEnvelope::Legacy(TxLegacy { gas_limit: 1_000_000, to: kind, ..Default::default() }),
         Address::ZERO,
