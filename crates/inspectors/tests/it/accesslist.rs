@@ -1,6 +1,6 @@
 //! Accesslist tests
 
-use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, TransactTo, TxEnv};
+use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, TransactTo, TxEnv, a};
 use alloy_consensus::{TxEip7702, crypto::secp256k1::sign_message};
 use alloy_eip2930::{AccessList, AccessListItem};
 use alloy_eips::eip7702::Authorization;
@@ -137,18 +137,6 @@ fn test_access_list_authorization_exclusions() {
     assert!(!excluded.contains(&max_nonce_authority));
     // The unrecoverable authorization has no authority and therefore adds nothing.
     assert_eq!(excluded.len(), 2);
-}
-
-const fn a(n: u64) -> Address {
-    let mut bytes = [0; 20];
-    let (_, low) = bytes.split_at_mut(12);
-    let n = n.to_be_bytes();
-    let mut i = 0;
-    while i < 8 {
-        low[i] = n[i];
-        i += 1;
-    }
-    Address::new(bytes)
 }
 
 /// A call run through `go-ethereum`'s `eth_createAccessList`, and the list it returned.

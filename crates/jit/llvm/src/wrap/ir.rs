@@ -438,7 +438,7 @@ impl Type {
 
 impl fmt::Debug for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.print_to_string().to_string_lossy())
+        fmt::Display::fmt(&self.print_to_string(), f)
     }
 }
 
@@ -1032,6 +1032,5 @@ impl Drop for Builder {
 }
 
 fn fmt_value(value: LLVMValueRef, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let string = unsafe { LLVMString::from_raw(LLVMPrintValueToString(value)) };
-    f.write_str(&string.to_string_lossy())
+    fmt::Display::fmt(&unsafe { LLVMString::from_raw(LLVMPrintValueToString(value)) }, f)
 }

@@ -16,7 +16,7 @@ use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256};
 use alloy_rpc_types_trace::parity::StorageDelta;
 use core::{mem, ops::Range};
 use evm2::{
-    Evm, EvmFeatures, EvmTypes, Inspector, SpecId, TxResultExt,
+    Evm, EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId, TxResultExt,
     interpreter::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
@@ -33,7 +33,7 @@ pub use builder::{
 };
 
 mod config;
-pub use config::{OpcodeFilter, StackSnapshotType, TracingInspectorConfig};
+pub use config::{StackSnapshotType, TracingInspectorConfig};
 
 mod erc7562;
 pub use erc7562::{Erc7562Inspector, Error as Erc7562Error};
@@ -56,8 +56,6 @@ pub use opcount::OpcodeCountInspector;
 
 pub mod types;
 use types::{CallLog, CallTrace, CallTraceStep};
-
-mod tx_state;
 
 mod utils;
 
@@ -425,7 +423,7 @@ impl TracingInspector {
         trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
 
         trace.status = Some(result.stop);
-        trace.success = result.stop.is_success();
+        trace.success = result.is_success();
         trace.output = result.output.clone();
         if !trace.success {
             self.log_count = log_count;
@@ -728,6 +726,20 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         if self.config.record_bytecode {
             self.last_trace().trace.bytecode = Some(interp.original_bytecode());
         }
+    }
+
+    #[inline]
+    fn inspector_config(&self) -> InspectorConfig {
+        // The step hooks record steps, and halt the execution once a halting byte budget is
+        // exceeded, which any hook can cause.
+        let steps = if self.budget.can_halt() {
+            OpcodeSet::ALL
+        } else if self.config.record_steps {
+            self.config.record_opcodes_filter.unwrap_or(OpcodeSet::ALL)
+        } else {
+            OpcodeSet::EMPTY
+        };
+        InspectorConfig::new().with_steps(steps)
     }
 
     #[inline]

@@ -5,8 +5,8 @@ use alloy_eip2930::AccessList;
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypesHost, Inspector, NoopInspector, Precompiles, TxResult,
-    TxResultWithState, env as evm_env,
+    BaseEvmTypes, Evm, EvmTypesHost, Inspector, InspectorConfig, NoopInspector, Precompiles,
+    TxResult, TxResultWithState, env as evm_env,
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::PendingState,
     interpreter::{Interpreter, Message, MessageResult},
@@ -172,7 +172,7 @@ impl Context {
     }
 
     pub fn modify_tx_chained(mut self, f: impl FnOnce(&mut TxEnv)) -> Self {
-        f(&mut self.tx);
+        self.modify_tx(f);
         self
     }
 
@@ -347,21 +347,18 @@ impl TxEnv {
         if !self.authorization_list.is_empty() {
             let TxKind::Call(to) = self.kind else { panic!("EIP-7702 transactions must be calls") };
             return Recovered::new_unchecked(
-                TxEnvelope::Eip7702(
-                    TxEip7702 {
-                        chain_id: self.chain_id.unwrap_or(1),
-                        nonce: self.nonce,
-                        gas_limit: self.gas_limit,
-                        max_fee_per_gas: self.gas_price,
-                        max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or(self.gas_price),
-                        to,
-                        value: self.value,
-                        access_list: Default::default(),
-                        authorization_list: self.authorization_list.clone(),
-                        input: self.data.clone(),
-                    }
-                    .into(),
-                ),
+                TxEnvelope::from(TxEip7702 {
+                    chain_id: self.chain_id.unwrap_or(1),
+                    nonce: self.nonce,
+                    gas_limit: self.gas_limit,
+                    max_fee_per_gas: self.gas_price,
+                    max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or(self.gas_price),
+                    to,
+                    value: self.value,
+                    access_list: Default::default(),
+                    authorization_list: self.authorization_list.clone(),
+                    input: self.data.clone(),
+                }),
                 self.caller,
             );
         }
@@ -574,6 +571,11 @@ impl<I> RawInspector<I> {
 impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().initialize_interp(interp);
+    }
+
+    fn inspector_config(&self) -> InspectorConfig {
+        // SAFETY: As in `inner`.
+        unsafe { &*self.inspector }.inspector_config()
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {

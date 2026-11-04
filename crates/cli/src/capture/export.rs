@@ -7,10 +7,10 @@ use alloy_consensus::{
     EthereumTxEnvelope, Header, TxEip4844,
     transaction::{Transaction as _, to_eip155_value},
 };
-use alloy_eips::{eip2930::AccessList, eip7702::SignedAuthorization, eip7840::BlobParams};
+use alloy_eips::{eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
-use evm2::SpecId;
+use evm2::{SpecId, utils::b256_to_word};
 use evm2_eest::{
     AccessListItem, TestAuthorization,
     blockchaintest::{
@@ -109,23 +109,23 @@ fn mainnet_blob_fork(header: &Header) -> Result<Option<BlobFork>, CaptureError> 
         Some(EthereumHardfork::Bpo1) => Ok(Some(BlobFork::Bpo1)),
         Some(EthereumHardfork::Bpo2) => Ok(Some(BlobFork::Bpo2)),
         Some(EthereumHardfork::Amsterdam) => Ok(Some(BlobFork::Amsterdam)),
-        _ => Err(CaptureError::UnsupportedSpec(spec as u32)),
+        _ => Err(CaptureError::UnsupportedSpec(u32::from(spec))),
     }
 }
 
 /// Returns the mainnet blob parameters of every fork up to `last`, or none before Cancun.
 fn mainnet_blob_schedule(last: Option<BlobFork>) -> BTreeMap<BlobFork, BlobScheduleEntry> {
     [
-        (BlobFork::Cancun, BlobParams::cancun()),
-        (BlobFork::Prague, BlobParams::prague()),
-        (BlobFork::Osaka, BlobParams::osaka()),
-        (BlobFork::Bpo1, BlobParams::bpo1()),
-        (BlobFork::Bpo2, BlobParams::bpo2()),
-        (BlobFork::Amsterdam, BlobParams::bpo2()),
+        BlobFork::Cancun,
+        BlobFork::Prague,
+        BlobFork::Osaka,
+        BlobFork::Bpo1,
+        BlobFork::Bpo2,
+        BlobFork::Amsterdam,
     ]
     .into_iter()
-    .filter(|(fork, _)| Some(*fork) <= last)
-    .map(|(fork, params)| (fork, params.into()))
+    .filter(|fork| Some(*fork) <= last)
+    .filter_map(|fork| Some((fork, fork.mainnet_params()?.into())))
     .collect()
 }
 
@@ -154,7 +154,7 @@ fn export_state(capture: &CapturedCase, state: &CapturedState) -> EestState {
             let storage = account
                 .storage
                 .iter()
-                .map(|entry| (U256::from_be_bytes(entry.slot.0), entry.value))
+                .map(|entry| (b256_to_word(entry.slot), entry.value))
                 .collect();
             (
                 account.address,

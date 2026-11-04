@@ -220,6 +220,31 @@ fn prepare_call<T: EvmTypesHost>(
     Ok(new_account_state_gas)
 }
 
+#[instruction(no_stack_preamble, hooked)]
+pub fn call(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, MessageKind::Call)
+}
+
+#[instruction(no_stack_preamble, hooked)]
+pub fn callcode(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, MessageKind::CallCode)
+}
+
+#[instruction(no_stack_preamble, hooked)]
+pub fn delegatecall(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, MessageKind::DelegateCall)
+}
+
+#[instruction(no_stack_preamble, hooked)]
+pub fn staticcall(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, MessageKind::StaticCall)
+}
+
+#[instruction(no_stack_preamble, hooked)]
+pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
+    create_inner(stack, cx.gas, cx.state, IS_CREATE2)
+}
+
 #[inline(never)]
 fn call_inner<T: EvmTypesHost>(
     stack: StackMut<'_>,
@@ -234,8 +259,9 @@ fn call_inner<T: EvmTypesHost>(
 ///
 /// This is the body of [`call`], [`callcode`], [`delegatecall`] and [`staticcall`], for custom
 /// call instructions that need extra behavior. Use it from an
-/// `#[instruction(no_stack_preamble, dynamic_gas)]` function with `stack`, `cx.gas` and
-/// `cx.state`.
+/// `#[instruction(no_stack_preamble, hooked)]` function with `stack`, `cx.gas` and
+/// `cx.state`. The instruction must be `hooked`, so that the hooks and the host see its pc, opcode,
+/// stack and gas.
 ///
 /// `before` runs after every charge the opcode makes, the EIP-8037 new-account state gas
 /// included, and after the forwarded gas is taken from `gas`, right before the child message
@@ -248,6 +274,8 @@ fn call_inner<T: EvmTypesHost>(
 /// `after` runs.
 ///
 /// An `Err` from either hook stops the instruction with that error.
+///
+/// The result can be the stop for a config reload. Return it as the last step of the instruction.
 #[inline]
 pub fn call_with<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
@@ -273,6 +301,7 @@ pub fn call_with<T: EvmTypesHost>(
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
+    state.note_inspector_config_change();
     gas.merge_child_gas(result.gas, result.stop);
     // EIP-8037: a value-bearing CALL that creates the target charges NEW_ACCOUNT state
     // gas upfront on this frame. If the call does not succeed (depth/balance failure,
@@ -288,32 +317,9 @@ pub fn call_with<T: EvmTypesHost>(
         state.memory().set_unchecked(return_memory_range.start, output);
     }
     state.swap_return_data(&mut result.output);
-    stack.push_u64(result.stop.is_success() as u64)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn call(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::Call)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn callcode(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::CallCode)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn delegatecall(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::DelegateCall)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn staticcall(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::StaticCall)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
-    create_inner(stack, cx.gas, cx.state, IS_CREATE2)
+    stack.push_u64(result.stop.is_success() as u64)?;
+    // A hook's stop or a config reload.
+    state.result()
 }
 
 #[inline(never)]
@@ -341,6 +347,7 @@ fn create_inner<T: EvmTypesHost>(
 /// A fatal child result returns before `after` runs.
 ///
 /// Both hooks may charge or credit `gas` or fail the instruction, as in [`call_with`].
+/// Its result can be the stop for a config reload, as in [`call_with`].
 #[inline]
 pub fn create_with<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
@@ -461,6 +468,7 @@ pub fn create_with<T: EvmTypesHost>(
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
+    state.note_inspector_config_change();
     gas.merge_child_gas(result.gas, result.stop);
 
     // EIP-8037: when the opcode charged the conditional `create_state_gas`
@@ -479,7 +487,9 @@ pub fn create_with<T: EvmTypesHost>(
     } else {
         state.clear_return_data();
     }
-    stack.push(result.created_address_for_parent())
+    stack.push(result.created_address_for_parent())?;
+    // A hook's stop or a config reload.
+    state.result()
 }
 
 #[instruction(dynamic_gas)]
@@ -1084,7 +1094,7 @@ mod tests {
 
     // Keeps `KEPT_GAS` of the forwarded gas in the caller and charges `AFTER_FEE` after a
     // successful child; a failed child fails the instruction.
-    #[instruction(no_stack_preamble, dynamic_gas)]
+    #[instruction(no_stack_preamble, hooked)]
     fn hooked_call(cx: _) -> Result {
         call_with(
             stack,
@@ -1102,7 +1112,7 @@ mod tests {
         )
     }
 
-    #[instruction(no_stack_preamble, dynamic_gas)]
+    #[instruction(no_stack_preamble, hooked)]
     fn hooked_create(cx: _) -> Result {
         create_with(
             stack,

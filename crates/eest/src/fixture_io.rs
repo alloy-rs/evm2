@@ -38,7 +38,7 @@ pub enum FixtureWriteError {
 }
 
 /// Returns true when the path uses the binary fixture extension.
-pub fn is_binary_path(path: &Path) -> bool {
+pub(crate) fn is_binary_path(path: &Path) -> bool {
     has_extension(path, "bin") || is_zstd_path(path) && stem_has_extension(path, "bin")
 }
 
@@ -109,12 +109,10 @@ fn is_zstd_path(path: &Path) -> bool {
     has_extension(path, "zst")
 }
 
-fn has_extension(path: &Path, extension: &str) -> bool {
+pub(crate) fn has_extension(path: &Path, extension: &str) -> bool {
     path.extension().is_some_and(|candidate| candidate == extension)
 }
 
 fn stem_has_extension(path: &Path, extension: &str) -> bool {
-    path.file_stem().is_some_and(|stem| {
-        Path::new(stem).extension().is_some_and(|candidate| candidate == extension)
-    })
+    path.file_stem().is_some_and(|stem| has_extension(Path::new(stem), extension))
 }

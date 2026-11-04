@@ -2,7 +2,7 @@ use super::{
     env::blockchain_test_roots,
     execute::{ExecuteConfig, ExecutionMode, execute_test_suite},
 };
-use crate::harness::{TestSuite, run_json_harnesses};
+use crate::harness::{TestSuite, contains_any, run_json_harnesses};
 #[cfg(feature = "jit")]
 use crate::{
     blockchaintest::execute::execute_test_suites, execution::CompiledMode, harness::compiled_roots,
@@ -127,7 +127,7 @@ fn should_descend(path: &Path) -> bool {
 }
 
 fn should_ignore(name: &str) -> bool {
-    IGNORED_TESTS.iter().any(|ignored| name.contains(ignored))
+    contains_any(name, IGNORED_TESTS)
 }
 
 #[rustfmt::skip]
