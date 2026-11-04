@@ -1119,6 +1119,7 @@ mod tests {
     use boa_engine::{Source, object::builtins::JsUint8Array};
     use core::convert::Infallible;
     use evm2::evm::{Database, Db, InMemoryDB};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     /// Records and enters a step with the given pre- and post-execution stack.
     fn with_step<'a, R>(
@@ -1525,8 +1526,6 @@ mod tests {
 
     #[test]
     fn test_scopes_revoke_access_on_return_error_and_unwind() {
-        use std::panic::{AssertUnwindSafe, catch_unwind};
-
         let mut ctx = Context::default();
         register_builtins(&mut ctx).unwrap();
         let log = ReusableStepLog::new(&mut ctx, OpcodeNames::new()).unwrap();

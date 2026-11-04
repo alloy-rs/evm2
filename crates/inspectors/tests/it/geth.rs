@@ -35,6 +35,7 @@ use evm2_inspectors::tracing::{
     Keccak256PreimageInspector, MEMORY_PAD_LIMIT, MuxInspector, TraceLimitBehavior, TraceLimits,
     TracingInspector, TracingInspectorConfig,
 };
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
@@ -2100,8 +2101,6 @@ fn test_geth_calltracer_logs_delegatecall() {
 /// Exercise JSON options, tracer dispatch, EVM execution, and serialized trace output together.
 #[test]
 fn test_geth_opcode_limit_end_to_end() {
-    use serde_json::{Value, json};
-
     let account = address!("1000000000000000000000000000000000000001");
     let child = Address::with_last_byte(0xff);
     for terminal in [op::RETURN, op::REVERT] {

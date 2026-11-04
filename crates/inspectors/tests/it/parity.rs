@@ -487,7 +487,6 @@ fn inspect_funded_code(
     balance: u64,
     gas_limit: u64,
 ) -> TracingInspector {
-    use crate::utils::Bytecode;
     let target = Address::with_last_byte(0x42);
     let child_address = Address::with_last_byte(0x43);
     let mut db = InMemoryDB::default();

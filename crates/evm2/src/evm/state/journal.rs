@@ -87,7 +87,7 @@ mod tests {
         },
     };
     use alloc::vec::Vec;
-    use alloy_primitives::Log;
+    use alloy_primitives::{Bytes, Log};
 
     #[test]
     fn destruct_change_rolls_back_to_checkpoint() {
@@ -104,8 +104,6 @@ mod tests {
 
     #[test]
     fn log_rolls_back_to_checkpoint() {
-        use alloy_primitives::Bytes;
-
         let mut state = State::new(CacheDB::default());
         let kept =
             Log::new_unchecked(Address::repeat_byte(0x44), Vec::new(), Bytes::from_static(&[0x01]));
