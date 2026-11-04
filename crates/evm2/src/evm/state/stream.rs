@@ -41,6 +41,10 @@ pub struct AccountChanges<'a> {
     pub current: Option<&'a AccountInfo>,
     /// Whether the account was created during the transaction.
     pub created: bool,
+    /// Whether the account's creation discarded its storage baseline, so its unloaded slots read
+    /// as zero. A created account an embedder resumed with
+    /// [`AccountHandle::mark_created`](super::AccountHandle::mark_created) keeps it.
+    pub discards_storage: bool,
     /// Whether the account was selfdestructed during the transaction.
     pub selfdestructed: bool,
     /// Whether the account was touched by the transaction, even if [`Self::is_changed`] is false.

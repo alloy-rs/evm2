@@ -555,7 +555,7 @@ impl EvmDbReader for StateDbReader<'_, '_> {
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-        self.state.read_committed_storage(address, slot)
+        self.state.storage_slot_untracked(address, slot)
     }
 }
 
@@ -598,7 +598,17 @@ impl EvmDbReader for ChangesDbReader<'_> {
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-        // Storage is always read from the backing database, not the transaction changes.
+        if let Some(account) = self.changes.account_changes_for(address) {
+            // A loaded slot holds its final value, zero if the account was wiped.
+            if let Some(loaded) = account.storage.slots.get(slot) {
+                return Ok(loaded.value.current);
+            }
+            // A deleted or wiped account has only the storage it wrote. So does one whose creation
+            // discarded its storage; a resumed account keeps the database as its baseline.
+            if account.current.is_none() || account.storage.wiped || account.discards_storage {
+                return Ok(Word::ZERO);
+            }
+        }
         self.db.get_storage(address, slot)
     }
 }
@@ -1118,7 +1128,10 @@ mod tests {
     use alloc::vec;
     use boa_engine::{Source, object::builtins::JsUint8Array};
     use core::convert::Infallible;
-    use evm2::evm::{CacheDB, Database, Db, EmptyDB};
+    use evm2::{
+        PendingState,
+        evm::{CacheDB, Database, Db, EmptyDB},
+    };
 
     /// Records and enters a step with the given pre- and post-execution stack.
     fn with_step<'a, R>(
