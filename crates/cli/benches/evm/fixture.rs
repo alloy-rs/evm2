@@ -3,7 +3,7 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::Bytes;
 use alloy_primitives::{B256, TxKind, U256};
 use evm2::{
-    SpecId, Version,
+    SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, TxEnvelope},
@@ -62,7 +62,7 @@ impl Suite {
         let post = unit
             .post
             .iter()
-            .filter(|(spec_name, _)| spec_name.to_spec_id() == Some(spec))
+            .filter(|(spec_name, _)| spec_name.to_state_spec_id() == Some(spec))
             .flat_map(|(_, posts)| posts)
             .next()
             .unwrap_or_else(|| panic!("fixture suite does not contain {name} post for {spec:?}"));
@@ -108,7 +108,7 @@ impl Case<'_> {
     pub(crate) fn state(&self) -> InMemoryDB {
         let mut db = InMemoryDB::default();
         for (address, account) in &self.unit.pre {
-            let bytecode = Bytecode::new_legacy(account.code.clone());
+            let bytecode = Bytecode::from_stored(account.code.clone());
             // Keep first-use jump analysis outside the timed execution.
             let _ = bytecode.legacy_jump_table();
             let mut info = AccountInfo::default().with_code(bytecode);
@@ -123,12 +123,12 @@ impl Case<'_> {
         db
     }
 
-    pub(crate) fn tx(&self, spec: SpecId) -> RecoveredTxEnvelope {
+    pub(crate) fn tx(&self) -> RecoveredTxEnvelope {
         let raw = &self.unit.transaction;
         let indexes = self.post.indexes;
-        let gas_limit =
-            raw.gas_limit.get(indexes.gas).copied().expect("fixture gas index must exist");
-        let gas_limit = u64_value(gas_limit).min(Version::base(spec).tx_gas_limit_cap);
+        let gas_limit = u64_value(
+            raw.gas_limit.get(indexes.gas).copied().expect("fixture gas index must exist"),
+        );
         let tx = TxLegacy {
             chain_id: None,
             nonce: u64_value(raw.nonce),
@@ -168,7 +168,7 @@ impl Case<'_> {
                 if account.code.is_empty() {
                     return None;
                 }
-                let bytecode = Bytecode::new_legacy(account.code.clone());
+                let bytecode = Bytecode::from_stored(account.code.clone());
                 Some(CompiledAccount {
                     code_hash: bytecode.hash_slow(),
                     bytecode: account.code.clone(),

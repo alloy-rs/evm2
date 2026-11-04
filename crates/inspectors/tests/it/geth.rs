@@ -9,21 +9,27 @@ use crate::utils::{
 };
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
+use alloy_primitives::{
+    Address, B256, Bytes, Log, TxKind, U256, address, hex, keccak256, map::HashMap,
+};
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
     GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
     PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Precompiles, Version,
+    AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, EvmTypesHost, ExecutionConfig,
+    Inspector, InspectorConfig, OpcodeSet, Precompiles, Version,
     ethereum::ethereum_tx_registry,
+    evm::{DbResult, DynDatabase},
+    interpreter::{Interpreter, Message, MessageResult, Word},
 };
 use evm2_inspectors::tracing::{
-    DebugInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MEMORY_PAD_LIMIT,
-    MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig,
+    DebugInspector, Erc7562Error, Erc7562Inspector, KECCAK256_PREIMAGE_TRACER,
+    Keccak256PreimageInspector, MEMORY_PAD_LIMIT, MuxInspector, TraceLimitBehavior, TraceLimits,
+    TracingInspector, TracingInspectorConfig,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
 fn test_calltracer_invalid_opcode_errors() {
@@ -266,6 +272,20 @@ fn test_debug_nonempty_tracer() {
 }
 
 #[test]
+fn test_debug_invalid_tracer_config() {
+    let opts = serde_json::from_value(
+        serde_json::json!({"tracer": "callTracer", "tracerConfig": {"onlyTopCall": "yes"}}),
+    )
+    .unwrap();
+    let err = DebugInspector::new(opts).unwrap_err();
+    assert!(matches!(err, evm2_inspectors::tracing::DebugInspectorError::InvalidTracerConfig(_)));
+    assert_eq!(
+        err.to_string(),
+        r#"invalid tracer config: invalid type: string "yes", expected a boolean"#
+    );
+}
+
+#[test]
 fn test_geth_calltracer_logs() {
     /*
     contract LogTracing {
@@ -402,6 +422,425 @@ fn test_geth_erc7562_tracer() {
         }
         _ => panic!("Expected Erc7562Tracer"),
     }
+}
+
+#[test]
+fn test_geth_erc7562_counts_like_geth() {
+    let (root, target, failing, empty) = (
+        address!("1000000000000000000000000000000000000001"),
+        address!("1000000000000000000000000000000000000002"),
+        address!("1000000000000000000000000000000000000003"),
+        address!("1000000000000000000000000000000000000004"),
+    );
+    let push_address = |code: &mut Vec<u8>, address: Address| {
+        code.push(op::PUSH20);
+        code.extend_from_slice(address.as_slice());
+    };
+    // A call with no value, no data and no return data.
+    let call = |code: &mut Vec<u8>, address: Address, gas: &[u8]| {
+        code.extend_from_slice(&hex!("60006000600060006000"));
+        push_address(code, address);
+        code.extend_from_slice(gas);
+        code.extend_from_slice(&[op::CALL, op::POP]);
+    };
+    let mut code = vec![op::GAS, op::POP];
+    // `ISZERO` after `EXTCODESIZE` is a check, not an access.
+    push_address(&mut code, target);
+    code.extend_from_slice(&[op::EXTCODESIZE, op::ISZERO, op::POP]);
+    push_address(&mut code, target);
+    code.extend_from_slice(&[op::EXTCODESIZE, op::POP]);
+    // The second call runs out of gas at its `KECCAK256`, and `GAS` before a call does not count.
+    call(&mut code, empty, &[op::GAS]);
+    call(&mut code, failing, &hex!("6028"));
+    // The same preimage twice, from a range that memory does not reach yet.
+    for _ in 0..2 {
+        code.extend_from_slice(&hex!("60206000"));
+        code.extend_from_slice(&[op::KECCAK256, op::POP]);
+    }
+    code.push(op::STOP);
+    let target_code = Bytes::from_static(&[op::STOP]);
+    let failing_code = Bytes::from_static(&hex!("6001600020"));
+
+    let mut db = CacheDB::<EmptyDB>::default();
+    for (address, code) in [
+        (root, Bytes::from(code)),
+        (target, target_code),
+        (failing, failing_code),
+        (empty, Bytes::from_static(&[op::STOP, op::STOP])),
+    ] {
+        db.insert_account_info(
+            &address,
+            AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
+        );
+    }
+    let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default());
+    let mut inspector = DebugInspector::new(opts).unwrap();
+    let mut evm = Context::mainnet().with_db(db).build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(root),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+
+    // `GAS` counts unless a call follows, and the ignored opcodes do not count.
+    assert_eq!(
+        frame.used_opcodes,
+        HashMap::from_iter([
+            (op::GAS, 1),
+            (op::EXTCODESIZE, 2),
+            (op::CALL, 2),
+            (op::KECCAK256, 2),
+            (op::STOP, 1),
+        ])
+    );
+    assert_eq!(frame.ext_code_access_info, [format!("{target:?}")]);
+    let size = |address: Address| frame.contract_size[&address].clone();
+    assert_eq!(
+        [size(target), size(empty), size(failing)].map(|size| (size.contract_size, size.opcode)),
+        [(1, op::EXTCODESIZE), (2, op::CALL), (5, op::CALL)]
+    );
+    assert!(!frame.out_of_gas);
+    assert_eq!(frame.calls.len(), 2);
+    assert_eq!(frame.calls[0].used_opcodes, HashMap::from_iter([(op::STOP, 1)]));
+    // A frame that fails at its `KECCAK256` still counts it and leaves its preimage.
+    assert!(frame.calls[1].out_of_gas);
+    assert_eq!(frame.calls[1].used_opcodes, HashMap::from_iter([(op::KECCAK256, 1)]));
+    // The preimages of all frames are on the root, sorted and without repeats.
+    assert_eq!(frame.keccak, [Bytes::from_static(&[0]), Bytes::from(vec![0; 32])]);
+    assert!(frame.calls.iter().all(|call| call.keccak.is_empty()));
+}
+
+#[test]
+fn test_geth_erc7562_accessed_slots_and_ignored_opcodes() {
+    let contract = address!("1000000000000000000000000000000000000001");
+    let code = Bytes::from(vec![
+        // SLOAD of slot 1 reads 0x2a, and the SSTORE after it is counted.
+        op::PUSH1,
+        1,
+        op::SLOAD,
+        op::POP,
+        op::PUSH1,
+        7,
+        op::PUSH1,
+        1,
+        op::SSTORE,
+        // The slot was read and written, so a second SLOAD adds no read. Slot 2 is read once.
+        op::PUSH1,
+        1,
+        op::SLOAD,
+        op::POP,
+        op::PUSH1,
+        2,
+        op::SLOAD,
+        op::POP,
+        // Slot 3 is written before it is read, so it has no read at all.
+        op::PUSH1,
+        7,
+        op::PUSH1,
+        3,
+        op::SSTORE,
+        op::PUSH1,
+        3,
+        op::SLOAD,
+        op::POP,
+        op::PUSH1,
+        4,
+        op::TLOAD,
+        op::POP,
+        op::PUSH1,
+        5,
+        op::PUSH1,
+        4,
+        op::TSTORE,
+        op::STOP,
+    ]);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
+    );
+    db.insert_account_storage(&contract, &U256::from(1), &U256::from(0x2a));
+    db.insert_account_storage(&contract, &U256::from(2), &U256::from(0x2b));
+
+    // Only `SLOAD` and `STOP` are ignored, which is not the default list.
+    let ignored_opcodes = vec![op::SLOAD, op::STOP];
+    let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config {
+        ignored_opcodes,
+        ..Default::default()
+    });
+    let mut inspector = DebugInspector::new(opts).unwrap();
+    let mut evm = Context::mainnet().with_db(db).build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+
+    let slot = |slot: u8| B256::with_last_byte(slot);
+    let slots = &frame.accessed_slots;
+    assert_eq!(
+        slots.reads,
+        HashMap::from_iter([
+            (slot(1), vec![B256::with_last_byte(0x2a)]),
+            (slot(2), vec![B256::with_last_byte(0x2b)]),
+        ])
+    );
+    assert_eq!(slots.writes, HashMap::from_iter([(slot(1), 1), (slot(3), 1)]));
+    assert_eq!(slots.transient_reads, HashMap::from_iter([(slot(4), 1)]));
+    assert_eq!(slots.transient_writes, HashMap::from_iter([(slot(4), 1)]));
+    // The opcodes of the config are not counted, and every other opcode is, including `PUSH1`.
+    assert_eq!(
+        frame.used_opcodes,
+        HashMap::from_iter([
+            (op::PUSH1, 11),
+            (op::POP, 5),
+            (op::SSTORE, 2),
+            (op::TLOAD, 1),
+            (op::TSTORE, 1),
+        ])
+    );
+}
+
+#[test]
+fn test_geth_erc7562_bounds_retained_preimages() {
+    let contract = address!("1000000000000000000000000000000000000001");
+    let spec = SpecId::CANCUN;
+    // KECCAK256 of 60 and of 61 bytes of zero padding.
+    let code = Bytes::from(vec![
+        op::PUSH1,
+        60,
+        op::PUSH0,
+        op::KECCAK256,
+        op::POP,
+        op::PUSH1,
+        61,
+        op::PUSH0,
+        op::KECCAK256,
+        op::STOP,
+    ]);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
+    );
+    let block = *Context::mainnet().block();
+    for (limit, preimages) in [(121, Some(2)), (120, None)] {
+        let mut inspector = Erc7562Inspector::new(Erc7562Config::default())
+            .with_limits(TraceLimits::default().set_max_recorded_bytes(Some(limit)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            db.clone(),
+            Precompiles::base(spec),
+        );
+        evm.set_inspector(&mut inspector);
+        let tx = TxEnv {
+            gas_limit: 1_000_000,
+            gas_price: 0,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        };
+        let envelope = tx.envelope();
+        let res = evm.transact(&envelope).unwrap().detach();
+        drop(evm);
+
+        assert_eq!(inspector.limit_exceeded(), preimages.is_none());
+        assert_eq!(
+            inspector.frame(&envelope, &res.result).ok().map(|frame| frame.keccak.len()),
+            preimages
+        );
+    }
+}
+
+/// A database whose storage reads fail.
+struct NoStorageDb(CacheDB<EmptyDB>);
+
+impl DynDatabase for NoStorageDb {
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        DynDatabase::get_account(&mut self.0, address)
+    }
+
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+        DynDatabase::get_code_by_hash(&mut self.0, code_hash)
+    }
+
+    fn get_storage(&mut self, _address: &Address, _key: &Word) -> DbResult<Word> {
+        Err(DatabaseError::new(AnyError::from("no storage"), true))
+    }
+
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
+        DynDatabase::get_block_hash(&mut self.0, number)
+    }
+}
+
+#[test]
+fn test_geth_erc7562_reports_a_failed_state_read() {
+    let contract = address!("1000000000000000000000000000000000000001");
+    let spec = SpecId::CANCUN;
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(Bytes::from_static(&[op::PUSH1, 1, op::SLOAD, op::STOP]))),
+            ..Default::default()
+        },
+    );
+    let block = *Context::mainnet().block();
+    // The transaction runs out of gas at the `SLOAD`, before it reads the slot, and does not fail.
+    let tx = TxEnv {
+        gas_limit: 21_000 + 3 + 2_099,
+        gas_price: 0,
+        kind: TransactTo::Call(contract),
+        ..Default::default()
+    };
+    let envelope = tx.envelope();
+    for fails in [false, true] {
+        let mut inspector = Erc7562Inspector::new(Erc7562Config::default());
+        let mut evm = if fails {
+            Evm::<BaseEvmTypes>::new(
+                spec,
+                block,
+                ethereum_tx_registry(spec),
+                NoStorageDb(db.clone()),
+                Precompiles::base(spec),
+            )
+        } else {
+            Evm::<BaseEvmTypes>::new(
+                spec,
+                block,
+                ethereum_tx_registry(spec),
+                db.clone(),
+                Precompiles::base(spec),
+            )
+        };
+        evm.set_inspector(&mut inspector);
+        let res = evm.transact(&envelope).unwrap().detach();
+        drop(evm);
+
+        assert!(!res.result.is_success());
+        let frame = inspector.frame(&envelope, &res.result);
+        assert_eq!(matches!(frame, Err(Erc7562Error::Database(_))), fails, "{frame:?}");
+    }
+}
+
+#[test]
+fn test_geth_erc7562_contract_size_reads_accepted_state() {
+    let (root, target) = (
+        address!("1000000000000000000000000000000000000001"),
+        address!("1000000000000000000000000000000000000002"),
+    );
+    let spec = SpecId::CANCUN;
+    let mut code = vec![op::PUSH20];
+    code.extend_from_slice(target.as_slice());
+    code.extend_from_slice(&[op::EXTCODESIZE, op::STOP]);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &root,
+        AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+    );
+    let block = *Context::mainnet().block();
+    let mut inspector =
+        DebugInspector::new(GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default()))
+            .unwrap();
+    let mut evm = Evm::<BaseEvmTypes>::new(
+        spec,
+        block,
+        ethereum_tx_registry(spec),
+        db.clone(),
+        Precompiles::base(spec),
+    );
+    // The code is in the accepted state only, like that of an earlier transaction of the block.
+    evm.overlay_db_mut().insert_account_info(
+        &target,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(Bytes::from_static(&[op::STOP; 3]))),
+            ..Default::default()
+        },
+    );
+    evm.set_inspector(&mut inspector);
+    let tx = TxEnv {
+        gas_limit: 1_000_000,
+        gas_price: 0,
+        kind: TransactTo::Call(root),
+        ..Default::default()
+    };
+    let envelope = tx.envelope();
+    let res = evm.transact(&envelope).unwrap().detach();
+    drop(evm);
+
+    let trace = inspector.get_result(None, &envelope, &block, &res, &mut db).unwrap();
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+    let size = &frame.contract_size[&target];
+    assert_eq!((size.contract_size, size.opcode), (3, op::EXTCODESIZE));
+}
+
+/// geth reads each slot in `OnOpcode`, so a frame records its first read of a slot that an earlier
+/// frame already warmed.
+#[test]
+fn test_geth_erc7562_records_warm_first_reads() {
+    let outer = address!("1000000000000000000000000000000000000001");
+    let inner = address!("1000000000000000000000000000000000000003");
+    let caller = address!("1000000000000000000000000000000000000002");
+
+    // SLOAD 1, then DELEGATECALL the inner code, which SLOADs the same, now warm, slot.
+    let outer_code =
+        hex!("6001545060006000600060007310000000000000000000000000000000000000035af45000").to_vec();
+    let inner_code = hex!("6001545000").to_vec();
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            for (address, code) in [(outer, outer_code), (inner, inner_code)] {
+                db.insert_account_info(
+                    &address,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(code.into())),
+                        ..Default::default()
+                    },
+                );
+            }
+            db.insert_account_storage(&outer, &U256::from(1), &U256::from(0x2a));
+        });
+
+    let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config::default());
+    let mut inspector = DebugInspector::new(opts).unwrap();
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller,
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(outer),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Erc7562Tracer(frame) = trace else { panic!("Expected Erc7562Tracer") };
+
+    let slot = B256::from(U256::from(1));
+    let value = B256::from(U256::from(0x2a));
+    assert_eq!(frame.accessed_slots.reads[&slot], vec![value]);
+    assert_eq!(frame.calls.len(), 1);
+    assert_eq!(frame.calls[0].accessed_slots.reads[&slot], vec![value]);
 }
 
 fn trace_contract(
@@ -1739,6 +2178,58 @@ fn test_geth_opcode_limit_end_to_end() {
     }
 }
 
+/// geth emits a child's steps right after the call step that entered it. A zero-value call to an
+/// excluded precompile attaches no child, so it must not take the next call's child.
+#[test]
+fn test_geth_struct_logs_follow_calls_with_excluded_precompiles() {
+    let account = address!("1000000000000000000000000000000000000001");
+    let child = address!("0000000000000000000000000000000000001234");
+    let call = |target: [u8; 2]| {
+        [
+            vec![op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0, op::PUSH1, 0],
+            vec![op::PUSH2, target[0], target[1], op::PUSH2, 0xff, 0xff, op::CALL, op::POP],
+        ]
+        .concat()
+    };
+    // Call the identity precompile, then the child, which runs a few opcodes.
+    let code = [call([0, 4]), call([0x12, 0x34]), vec![op::STOP]].concat();
+    let child_code = vec![op::PUSH1, 1, op::PUSH1, 1, op::ADD, op::STOP];
+
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            for (addr, code) in [(account, code), (child, child_code)] {
+                db.insert_account_info(
+                    &addr,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(code.into())),
+                        ..Default::default()
+                    },
+                );
+            }
+        });
+    let config = TracingInspectorConfig::default_geth().set_exclude_precompile_calls(true);
+    let mut inspector = TracingInspector::new(config);
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TxKind::Call(account),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = inspector.geth_builder().geth_traces(0, Bytes::new(), Default::default());
+    let ops: Vec<_> = frame.struct_logs.iter().map(|log| (&*log.op, log.depth)).collect();
+    let mut expected = vec![("PUSH1", 1); 5];
+    expected.extend([("PUSH2", 1), ("PUSH2", 1), ("CALL", 1), ("POP", 1)]);
+    expected.extend(vec![("PUSH1", 1); 5]);
+    expected.extend([("PUSH2", 1), ("PUSH2", 1), ("CALL", 1)]);
+    expected.extend([("PUSH1", 2), ("PUSH1", 2), ("ADD", 2), ("STOP", 2)]);
+    expected.extend([("POP", 1), ("STOP", 1)]);
+    assert_eq!(ops, expected);
+}
+
 /// Returns the bytes of the JSON geth writes for a struct log, which leaves out a zero refund and
 /// empty return data, memory and storage.
 fn geth_json_len(log: &serde_json::Value) -> usize {
@@ -1864,22 +2355,14 @@ fn test_geth_opcode_limit() {
 
 #[test]
 fn test_geth_opcode_limit_ignores_named_tracers() {
-    for tracer in
-        [GethDebugBuiltInTracerType::CallTracer, GethDebugBuiltInTracerType::Erc7562Tracer]
-    {
-        let opts = GethDebugTracingOptions {
-            tracer: Some(GethDebugTracerType::BuiltInTracer(tracer)),
-            config: GethDefaultTracingOptions { limit: Some(2), ..Default::default() },
-            ..Default::default()
-        };
-        let inspector = DebugInspector::new(opts).unwrap();
-        let config = match &inspector {
-            DebugInspector::CallTracer(inspector, _)
-            | DebugInspector::Erc7562Tracer(inspector, _) => inspector.config(),
-            _ => panic!("unexpected tracer"),
-        };
-        assert_eq!(config.step_limit, None);
-    }
+    let opts = GethDebugTracingOptions {
+        tracer: Some(GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer)),
+        config: GethDefaultTracingOptions { limit: Some(2), ..Default::default() },
+        ..Default::default()
+    };
+    let inspector = DebugInspector::new(opts).unwrap();
+    let DebugInspector::CallTracer(inspector, _) = &inspector else { panic!("unexpected tracer") };
+    assert_eq!(inspector.config().step_limit, None);
 }
 
 #[test]
@@ -2197,7 +2680,7 @@ fn test_geth_failed_root_logs() {
             let mut inspector = TracingInspector::new(
                 TracingInspectorConfig::from_geth_call_config(&CallConfig::default().with_log()),
             );
-            let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+            let mut evm = context.clone().build_mainnet().with_inspector(&mut inspector);
             let res = evm
                 .inspect_tx(TxEnv {
                     kind: if create { TxKind::Create } else { TxKind::Call(contract) },
@@ -2225,14 +2708,32 @@ fn test_geth_failed_root_logs() {
                         assert_eq!(serde_json::to_value(frame).unwrap().get("logs"), None);
                     }
                 }
+            }
 
-                let frame = builder
-                    .geth_erc7562_traces(
-                        Erc7562Config { with_log: Some(with_log), ..Default::default() },
-                        res.result.tx_gas_used(),
-                        &mut EmptyDB::default(),
-                    )
+            for with_log in [false, true] {
+                let opts = GethDebugTracingOptions::erc7562_tracer(Erc7562Config {
+                    with_log: Some(with_log),
+                    ..Default::default()
+                });
+                let mut inspector = DebugInspector::new(opts).unwrap();
+                let mut evm = context.clone().build_mainnet().with_inspector(&mut inspector);
+                let res = evm
+                    .inspect_tx(TxEnv {
+                        kind: if create { TxKind::Create } else { TxKind::Call(contract) },
+                        data: if create { code.clone() } else { Bytes::new() },
+                        gas_limit: 100_000,
+                        ..Default::default()
+                    })
                     .unwrap();
+                let (ctx, inspector) = evm.ctx_inspector();
+                let tx = ctx.tx().envelope();
+                let block = *ctx.block();
+                let trace =
+                    inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+                let GethTrace::Erc7562Tracer(frame) = trace else {
+                    panic!("Expected Erc7562Tracer")
+                };
+                let expected_logs = usize::from(with_log && error.is_none());
                 assert_eq!(frame.error.as_deref(), error);
                 assert_eq!(frame.logs.len(), expected_logs);
                 if expected_logs == 0 {
@@ -2311,6 +2812,28 @@ fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
         inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
     let GethTrace::JS(preimages) = &frame.0[&key] else { panic!("expected a JSON object") };
     assert_eq!(preimages.as_object().unwrap().len(), 1);
+}
+
+#[test]
+fn mux_and_debug_inspector_forward_the_steps_of_their_members() {
+    let steps = |inspector: &dyn Inspector<BaseEvmTypes>| inspector.inspector_config().steps();
+    let four_byte = GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FourByteTracer);
+    let keccak = GethDebugTracerType::JsTracer(KECCAK256_PREIMAGE_TRACER.into());
+    let mux = |tracers: &[&GethDebugTracerType]| {
+        let config = MuxConfig(tracers.iter().map(|tracer| ((*tracer).clone(), None)).collect());
+        MuxInspector::try_from_config(config).unwrap()
+    };
+
+    // The 4byte tracer only needs message hooks, and the keccak tracer steps `KECCAK256`.
+    let keccak_steps: OpcodeSet = [op::KECCAK256].into_iter().collect();
+    assert_eq!(steps(&mux(&[&four_byte])), OpcodeSet::EMPTY);
+    assert_eq!(steps(&mux(&[&four_byte, &keccak])), keccak_steps);
+    let options: GethDebugTracingOptions =
+        serde_json::from_value(serde_json::json!({"tracer": "4byteTracer"})).unwrap();
+    assert_eq!(steps(&DebugInspector::new(options).unwrap()), OpcodeSet::EMPTY);
+    let options: GethDebugTracingOptions =
+        serde_json::from_value(serde_json::json!({"tracer": "keccak256PreimageTracer"})).unwrap();
+    assert_eq!(steps(&DebugInspector::new(options).unwrap()), keccak_steps);
 }
 
 #[test]
@@ -2653,13 +3176,11 @@ fn test_geth_prestate_diff_reports_cleared_code() {
     );
 }
 
-/// Geth keeps the pre state of a selfdestructed account whole, with every slot the transaction
-/// read, including unchanged and zero ones.
-#[test]
-fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
+/// Runs a London transaction that reads slots 1 (holds `0x2a`) and 2 (zero) of a contract and
+/// selfdestructs it, and returns the contract and the prestate frame.
+fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreStateFrame) {
     let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
     let contract = address!("1111111111111111111111111111111111111111");
-    let beneficiary = address!("3333333333333333333333333333333333333333");
 
     // SLOAD 1, SLOAD 2, SELFDESTRUCT to the beneficiary.
     let code = Bytes::from(hex!("6001545060025450733333333333333333333333333333333333333333ff"));
@@ -2684,7 +3205,6 @@ fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
         .build_mainnet();
 
-    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
     let mut insp =
         TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
     let mut db = evm.ctx.db.clone();
@@ -2704,6 +3224,16 @@ fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
         .geth_builder()
         .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
         .unwrap();
+    (contract, frame)
+}
+
+/// Geth keeps the pre state of a selfdestructed account whole, with every slot the transaction
+/// read, including unchanged and zero ones.
+#[test]
+fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
+    let beneficiary = address!("3333333333333333333333333333333333333333");
+    let (contract, frame) =
+        trace_london_selfdestruct(PreStateConfig { diff_mode: Some(true), ..Default::default() });
     let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
 
     // Output of geth's `evm t8n --state.fork London` with the prestate tracer in diff mode.
@@ -3147,4 +3677,224 @@ mod frames {
             );
         }
     }
+}
+
+/// geth reads a slot before the transaction runs, so the pre state of a contract that selfdestructs
+/// reports the value the slot held, not the zero its storage wipe leaves behind.
+#[test]
+fn test_geth_prestate_selfdestruct_reports_slots_before_the_wipe() {
+    let (contract, frame) = trace_london_selfdestruct(PreStateConfig::default());
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+
+    // Output of geth's `evm t8n --state.fork London` with the prestate tracer.
+    assert_eq!(
+        serde_json::to_value(&prestate.0[&contract]).unwrap(),
+        serde_json::json!({
+            "balance": "0x7",
+            "code": "0x6001545060025450733333333333333333333333333333333333333333ff",
+            "nonce": 1,
+            "storage": {
+                "0x0000000000000000000000000000000000000000000000000000000000000001":
+                    "0x000000000000000000000000000000000000000000000000000000000000002a",
+                "0x0000000000000000000000000000000000000000000000000000000000000002":
+                    "0x0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        })
+    );
+}
+
+/// Forwards every hook to `inner` and records the opcodes it steps. Steps every opcode if `all`.
+struct SteppedSpy<I> {
+    inner: I,
+    all: bool,
+    stepped: BTreeSet<u8>,
+}
+
+impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for SteppedSpy<I> {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.inner.initialize_interp(interp);
+    }
+
+    fn inspector_config(&self) -> InspectorConfig {
+        if self.all { InspectorConfig::new() } else { self.inner.inspector_config() }
+    }
+
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.stepped.insert(interp.opcode());
+        self.inner.step(interp);
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.inner.step_end(interp);
+    }
+
+    fn log(&mut self, log: &Log, host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>) {
+        self.inner.log(log, host);
+    }
+
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &mut Message<BaseEvmTypes>,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.inner.call(interp, message)
+    }
+
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &Message<BaseEvmTypes>,
+        result: &mut MessageResult<BaseEvmTypes>,
+    ) {
+        self.inner.call_end(interp, message, result);
+    }
+
+    fn create(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &mut Message<BaseEvmTypes>,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.inner.create(interp, message)
+    }
+
+    fn create_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &Message<BaseEvmTypes>,
+        result: &mut MessageResult<BaseEvmTypes>,
+    ) {
+        self.inner.create_end(interp, message, result);
+    }
+
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>,
+    ) {
+        self.inner.selfdestruct(contract, target, value, host);
+    }
+}
+
+/// Traces a contract that stores, loads, writes memory, logs and calls a second contract that
+/// stores and loads.
+fn run_spy(config: TracingInspectorConfig, all: bool) -> SteppedSpy<TracingInspector> {
+    let (contract, mut db) = contract_with_code(&hex!(
+        // SSTORE(0, 5), SLOAD(0), MSTORE8(0, 0xaa), LOG0(0, 1), CALL(0x2000, 0x43), STOP.
+        "6005" "5f55" "5f54" "50" "60aa" "5f53" "6001" "5f" "a0"
+        "5f5f5f5f5f" "6043" "612000" "f1" "50" "00"
+    ));
+    db.insert_account_info(
+        &Address::with_last_byte(0x43),
+        AccountInfo::default().with_code(Bytecode::new_raw(
+            // SSTORE(1, 7), SLOAD(0), STOP.
+            hex!("6007" "6001" "55" "5f54" "50" "00").to_vec().into(),
+        )),
+    );
+    let mut spy =
+        SteppedSpy { inner: TracingInspector::new(config), all, stepped: BTreeSet::new() };
+    Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(&mut spy)
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+    spy
+}
+
+#[test]
+fn tracing_inspector_steps_only_what_its_config_records() {
+    let steps = |config: TracingInspectorConfig| {
+        Inspector::<BaseEvmTypes>::inspector_config(&TracingInspector::new(config)).steps()
+    };
+    let filter: OpcodeSet = [op::SLOAD, op::SSTORE, op::CALL].into_iter().collect();
+    let filtered = TracingInspectorConfig {
+        record_opcodes_filter: Some(filter),
+        ..TracingInspectorConfig::default_geth()
+    };
+
+    // The call tracer, the prestate tracer and the parity traces other than `vmTrace` record no
+    // steps, and the struct logger, `vmTrace` and an unfiltered config step every opcode.
+    for config in [
+        TracingInspectorConfig::none(),
+        TracingInspectorConfig::from_geth_call_config(&CallConfig {
+            with_log: Some(true),
+            ..Default::default()
+        }),
+        TracingInspectorConfig::from_geth_prestate_config(&PreStateConfig::default()),
+        TracingInspectorConfig::from_flat_call_config(&FlatCallConfig::default()),
+        TracingInspectorConfig::default_parity(),
+        TracingInspectorConfig::parity_statediff(),
+        TracingInspectorConfig { record_opcodes_filter: Some(filter), ..Default::default() },
+    ] {
+        assert_eq!(steps(config), OpcodeSet::EMPTY, "{config:?}");
+    }
+    for config in [
+        TracingInspectorConfig::all(),
+        TracingInspectorConfig::default_geth(),
+        TracingInspectorConfig::parity_vm_trace(),
+    ] {
+        assert_eq!(steps(config), OpcodeSet::ALL, "{config:?}");
+    }
+    assert_eq!(steps(filtered), filter);
+
+    // Exceeding a halting budget in any hook halts the next step, so every opcode steps.
+    let halting = TraceLimits::default()
+        .set_max_recorded_bytes(Some(1024))
+        .set_behavior(TraceLimitBehavior::Halt);
+    for config in [TracingInspectorConfig::none(), filtered] {
+        let inspector = TracingInspector::new(config).with_limits(halting);
+        assert_eq!(Inspector::<BaseEvmTypes>::inspector_config(&inspector).steps(), OpcodeSet::ALL);
+    }
+}
+
+#[test]
+fn tracing_inspector_traces_the_same_with_the_steps_it_asks_for_and_with_every_step() {
+    let filter: OpcodeSet = [op::SLOAD, op::SSTORE, op::CALL].into_iter().collect();
+    for (config, stepped) in [
+        (TracingInspectorConfig::none(), Some(OpcodeSet::EMPTY)),
+        (
+            TracingInspectorConfig::from_geth_call_config(&CallConfig {
+                with_log: Some(true),
+                ..Default::default()
+            }),
+            Some(OpcodeSet::EMPTY),
+        ),
+        (TracingInspectorConfig::default_parity(), Some(OpcodeSet::EMPTY)),
+        (TracingInspectorConfig::parity_statediff(), Some(OpcodeSet::EMPTY)),
+        (TracingInspectorConfig::default_geth(), None),
+        (TracingInspectorConfig::parity_vm_trace(), None),
+        (
+            TracingInspectorConfig {
+                record_opcodes_filter: Some(filter),
+                record_memory_snapshots: true,
+                ..TracingInspectorConfig::default_geth()
+            },
+            Some(filter),
+        ),
+    ] {
+        let asked = run_spy(config, false);
+        let every = run_spy(config, true);
+        assert_eq!(
+            format!("{:?}", asked.inner.traces()),
+            format!("{:?}", every.inner.traces()),
+            "{config:?}"
+        );
+        let expected: OpcodeSet = match stepped {
+            Some(set) => {
+                assert!(every.stepped.len() > set_len(set), "{config:?}");
+                set
+            }
+            None => every.stepped.iter().copied().collect(),
+        };
+        assert_eq!(asked.stepped.iter().copied().collect::<OpcodeSet>(), expected, "{config:?}");
+    }
+}
+
+fn set_len(set: OpcodeSet) -> usize {
+    (0..=u8::MAX).filter(|op| set.contains(*op)).count()
 }

@@ -4,10 +4,15 @@ import functools
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
 import time
+
+# `utils` names this module when a jit script runs, so the shared helpers live in `common`.
+sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from common import cargo_env as base_cargo_env, repo_root  # noqa: E402
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -20,20 +25,31 @@ def strip_ansi(s: str) -> str:
     return ANSI_RE.sub("", s)
 
 
-def repo_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
 def _shared_target_dir() -> str:
     """Return a shared CARGO_TARGET_DIR so worktrees reuse the same build cache."""
     return os.path.join(repo_root(), "target")
 
 
 def cargo_env(rust_log: str | None = None) -> dict[str, str]:
-    env = {**os.environ, "NO_COLOR": "1", "CARGO_TARGET_DIR": _shared_target_dir()}
+    env = {**base_cargo_env(), "CARGO_TARGET_DIR": _shared_target_dir()}
     if rust_log:
         env["RUST_LOG"] = rust_log
     return env
+
+
+def pct(before: float | None, after: float | None) -> float | None:
+    """Percent change from ``before`` to ``after``, or ``None`` when there is no baseline."""
+    if before is None or after is None or before == 0:
+        return None
+    return (after - before) / before * 100
+
+
+def geomean_pct(pairs: list[tuple[float, float]]) -> float | None:
+    """Geometric mean of the after/before ratios as a percent change, equal weight per pair."""
+    ratios = [a / b for b, a in pairs if b and a and b > 0 and a > 0]
+    if not ratios:
+        return None
+    return (statistics.geometric_mean(ratios) - 1) * 100
 
 
 def cargo_build(root: str, target_dir: str | None = None) -> str:
@@ -57,12 +73,14 @@ def cargo_build(root: str, target_dir: str | None = None) -> str:
 def llvm_env(root: str) -> dict[str, str]:
     """Put the LLVM version that ``root`` requires first in PATH, if it is installed.
 
-    Base and head can require different LLVM versions, and both llvm-sys and the
-    evm2-jit-llvm build script otherwise use whichever llvm-config comes first in PATH.
+    Base and head can require different LLVM versions, and llvm-sys otherwise uses
+    whichever llvm-config comes first in PATH.
     """
     with open(os.path.join(root, "crates", "jit", "llvm", "Cargo.toml")) as f:
-        m = re.search(r'"llvm(\d+)-\d+"', f.read())
-    llvm_config = m and shutil.which(f"llvm-config-{m[1]}")
+        # Older code selects LLVM through an inkwell feature, newer code through llvm-sys.
+        m = re.search(r'"llvm(\d+)-\d+"|^llvm-sys = "(\d+)\d"', f.read(), re.M)
+    version = m and (m[1] or m[2])
+    llvm_config = version and shutil.which(f"llvm-config-{version}")
     if not llvm_config:
         return {}
     bindir = subprocess.run(
@@ -71,14 +89,20 @@ def llvm_env(root: str) -> dict[str, str]:
     return {"PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
 
 
-def get_benches(binary: str) -> list[str]:
+def get_benches(binary: str) -> dict[str, str]:
+    """Map each built-in benchmark to its fixture path, as listed by ``run --list``."""
     r = subprocess.run(
         [binary, "run", "--list"],
         stdout=subprocess.PIPE,
         text=True,
         check=True,
     )
-    return [line.strip() for line in r.stdout.splitlines() if line.strip()]
+    benches = {}
+    for line in r.stdout.splitlines():
+        name, _, path = line.strip().partition("\t")
+        if name:
+            benches[name] = path
+    return benches
 
 
 def run_cli(
@@ -201,8 +225,12 @@ class NoBenchCounts(Exception):
     """The binary ran without counting a benchmark loop: it predates ``EVM2_PERF_CONTROL``."""
 
 
-def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
-    """Run ``evm2 run`` under ``perf stat``; return ``(instructions, cycles)`` of its bench loop.
+def perf_counts(binary: str, args: list[str]) -> tuple[int, int, int | None]:
+    """Run ``evm2 run`` under ``perf stat``; return ``(instructions, cycles, iterations)``.
+
+    The counts cover its bench loop, and ``iterations`` is the number of iterations the CLI
+    reports having counted on a pipe of its own (``EVM2_PERF_REPORT``), or ``None`` when the
+    binary predates that report. The pipe carries nothing a benchmark name can write.
 
     The counters start disabled and the CLI enables them around the loop through
     ``EVM2_PERF_CONTROL``, so the compile cost, which is large and noisy, is not counted.
@@ -212,7 +240,8 @@ def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
     """
     ctl_read, ctl_write = os.pipe()
     ack_read, ack_write = os.pipe()
-    fds = [ctl_read, ctl_write, ack_read, ack_write]
+    report_read, report_write = os.pipe()
+    fds = [ctl_read, ctl_write, ack_read, ack_write, report_read, report_write]
     try:
         with tempfile.NamedTemporaryFile("r") as out:
             subprocess.run(
@@ -236,9 +265,21 @@ def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
                 stderr=subprocess.PIPE,
                 text=True,
                 check=True,
-                env=fixed_stack_env(binary, args, {"EVM2_PERF_CONTROL": f"{ctl_write},{ack_read}"}),
+                env=fixed_stack_env(
+                    binary,
+                    args,
+                    {
+                        "EVM2_PERF_CONTROL": f"{ctl_write},{ack_read}",
+                        "EVM2_PERF_REPORT": str(report_write),
+                    },
+                ),
                 pass_fds=fds,
             )
+            # The run is over, so the report is in the pipe once the write end closes.
+            os.close(report_write)
+            fds.remove(report_write)
+            with os.fdopen(report_read, closefd=False) as report:
+                counted = report.read().split()
             stats = {}
             for line in out:
                 parts = line.strip().split(",")
@@ -252,4 +293,4 @@ def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
             os.close(fd)
     if not stats.get("instructions:u"):
         raise NoBenchCounts(binary)
-    return int(stats["instructions:u"]), int(stats["cycles:u"])
+    return int(stats["instructions:u"]), int(stats["cycles:u"]), sum(map(int, counted)) or None

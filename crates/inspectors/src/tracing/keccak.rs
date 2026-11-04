@@ -13,7 +13,7 @@ use crate::tracing::{TraceLimits, limits::TraceBudget};
 use alloc::{borrow::Cow, vec};
 use alloy_primitives::{B256, Bytes, hex, keccak256, map::HashMap};
 use evm2::{
-    EvmTypes, Inspector,
+    EvmTypes, Inspector, InspectorConfig, OpcodeSet,
     interpreter::{Interpreter, opcode::op},
 };
 use serde_json::Value;
@@ -87,6 +87,10 @@ impl Keccak256PreimageInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for Keccak256PreimageInspector {
+    fn inspector_config(&self) -> InspectorConfig {
+        InspectorConfig::new().with_steps([op::KECCAK256].into_iter().collect::<OpcodeSet>())
+    }
+
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if interp.opcode() != op::KECCAK256 || self.budget.exceeded() {
             return;
@@ -109,7 +113,7 @@ impl<T: EvmTypes> Inspector<T> for Keccak256PreimageInspector {
 /// Returns the `size` bytes of `memory` at `offset`, zero padded past its end.
 ///
 /// Returns `None` if the range reaches more than [`MEMORY_PAD_LIMIT`] past the end of memory.
-fn memory_copy_padded(memory: &[u8], offset: u64, size: u64) -> Option<Cow<'_, [u8]>> {
+pub(crate) fn memory_copy_padded(memory: &[u8], offset: u64, size: u64) -> Option<Cow<'_, [u8]>> {
     let end = offset.saturating_add(size);
     if end.saturating_sub(memory.len() as u64) > MEMORY_PAD_LIMIT {
         return None;

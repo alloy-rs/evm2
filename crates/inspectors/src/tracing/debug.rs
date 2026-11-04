@@ -1,6 +1,6 @@
 use crate::tracing::{
-    FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MuxInspector,
-    TracingInspector, TracingInspectorConfig, TransactionContext, final_refunded,
+    Erc7562Inspector, FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
+    MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
     utils::transaction_info,
 };
 use alloc::{sync::Arc, vec::Vec};
@@ -12,7 +12,8 @@ use alloy_rpc_types_trace::geth::{
     StateGasTrace, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    DatabaseError, EvmTypes, EvmTypesHost, Inspector, NoopInspector, TxResultWithState,
+    DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, NoopInspector,
+    TxResultWithState,
     env::BlockEnv,
     ethereum::eip8141::FrameGas,
     evm::DynDatabase,
@@ -48,7 +49,7 @@ pub enum DebugInspector {
     /// FlatCallTracer
     FlatCallTracer(TracingInspector),
     /// Erc7562Tracer
-    Erc7562Tracer(TracingInspector, Erc7562Config),
+    Erc7562Tracer(Erc7562Inspector),
     /// Keccak256PreimageTracer
     Keccak256Preimage(Keccak256PreimageInspector),
     /// Default tracer
@@ -71,9 +72,7 @@ impl DebugInspector {
             Self::StateGasTracer(inspector) => Self::StateGasTracer(inspector.clone()),
             Self::Mux(inspector, config) => Self::Mux(inspector.try_clone()?, config.clone()),
             Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
-            Self::Erc7562Tracer(inspector, config) => {
-                Self::Erc7562Tracer(inspector.clone(), config.clone())
-            }
+            Self::Erc7562Tracer(inspector) => Self::Erc7562Tracer(inspector.clone()),
             Self::Keccak256Preimage(inspector) => Self::Keccak256Preimage(inspector.clone()),
             Self::Default(inspector, config) => Self::Default(inspector.clone(), *config),
             #[cfg(feature = "js-tracer")]
@@ -98,9 +97,7 @@ impl DebugInspector {
                         Self::FourByte(FourByteInspector::default())
                     }
                     GethDebugBuiltInTracerType::CallTracer => {
-                        let config = tracer_config
-                            .into_call_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let config = tracer_config.into_call_config()?;
 
                         Self::CallTracer(
                             TracingInspector::new(TracingInspectorConfig::from_geth_call_config(
@@ -110,9 +107,7 @@ impl DebugInspector {
                         )
                     }
                     GethDebugBuiltInTracerType::PreStateTracer => {
-                        let config = tracer_config
-                            .into_pre_state_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let config = tracer_config.into_pre_state_config()?;
 
                         Self::PreStateTracer(
                             TracingInspector::new(
@@ -126,16 +121,12 @@ impl DebugInspector {
                         Self::StateGasTracer(NoopInspector::default())
                     }
                     GethDebugBuiltInTracerType::MuxTracer => {
-                        let config = tracer_config
-                            .into_mux_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let config = tracer_config.into_mux_config()?;
 
                         Self::Mux(MuxInspector::try_from_config(config.clone())?, config)
                     }
                     GethDebugBuiltInTracerType::FlatCallTracer => {
-                        let flat_call_config = tracer_config
-                            .into_flat_call_config()
-                            .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
+                        let flat_call_config = tracer_config.into_flat_call_config()?;
 
                         Self::FlatCallTracer(TracingInspector::new(
                             TracingInspectorConfig::from_flat_call_config(&flat_call_config),
@@ -145,17 +136,10 @@ impl DebugInspector {
                         let config = if tracer_config.is_null() {
                             Erc7562Config::default()
                         } else {
-                            tracer_config
-                                .from_value()
-                                .map_err(|_| DebugInspectorError::InvalidTracerConfig)?
+                            tracer_config.from_value()?
                         };
 
-                        Self::Erc7562Tracer(
-                            TracingInspector::new(
-                                TracingInspectorConfig::from_geth_erc7562_config(&config),
-                            ),
-                            config,
-                        )
+                        Self::Erc7562Tracer(Erc7562Inspector::new(config))
                     }
                     _ => {
                         // Note: this match is non-exhaustive in case we need to add support for
@@ -202,8 +186,8 @@ impl DebugInspector {
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
-            | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => inspector.fuse(),
+            Self::Erc7562Tracer(inspector) => inspector.fuse(),
             Self::Keccak256Preimage(inspector) => inspector.clear(),
             Self::Noop(_) | Self::StateGasTracer(_) => {}
             Self::Mux(inspector, _) => inspector.fuse()?,
@@ -232,8 +216,8 @@ impl DebugInspector {
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
-            | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => inspector.set_next_log_index(index),
+            Self::Erc7562Tracer(inspector) => inspector.set_next_log_index(index),
             Self::Mux(inspector, _) => inspector.set_next_log_index(index),
             _ => {}
         }
@@ -281,7 +265,7 @@ impl DebugInspector {
                 gas_used: res.result.tx_gas_used(),
                 execution_gas_used: res.result.execution_gas_spent(),
                 state_gas_used: res.result.state_gas_spent(),
-                gas_refund: final_refunded(&res.result),
+                gas_refund: res.result.final_refunded(),
             }
             .into(),
             Self::Mux(inspector, _) => {
@@ -298,15 +282,7 @@ impl DebugInspector {
                     .into_localized_transaction_traces(tx_info)
                     .into()
             }
-            Self::Erc7562Tracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx.gas_limit());
-                inspector.set_transaction_caller(tx.signer());
-                inspector
-                    .geth_builder()
-                    .geth_erc7562_traces(config.clone(), res.result.tx_gas_used(), db)
-                    .map_err(DebugInspectorError::Database)?
-                    .into()
-            }
+            Self::Erc7562Tracer(inspector) => inspector.frame(tx, &res.result)?.into(),
             Self::Keccak256Preimage(inspector) => GethTrace::JS(inspector.json_result()?),
             Self::Default(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
@@ -331,7 +307,7 @@ impl DebugInspector {
                         Some((
                             gas.execution_gas_spent(),
                             gas.state_gas_spent(),
-                            final_refunded(gas),
+                            gas.final_refunded(),
                         )),
                         res.result.output.clone(),
                         *config,
@@ -357,14 +333,14 @@ macro_rules! delegate {
             Self::CallTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::PreStateTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::FlatCallTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
-            Self::Erc7562Tracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::Erc7562Tracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Default($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Keccak256Preimage($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Noop($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::StateGasTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Mux($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             #[cfg(feature = "js-tracer")]
-            Self::Js($insp) => Inspector::<T>::$method(&mut **$insp, $($arg),*),
+            Self::Js($insp) => Inspector::<T>::$method($insp, $($arg),*),
         }
     };
 }
@@ -405,6 +381,10 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
 
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         delegate!(self => inspector.initialize_interp(interp))
+    }
+
+    fn inspector_config(&self) -> InspectorConfig {
+        delegate!(self => inspector.inspector_config())
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
@@ -468,8 +448,8 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
 #[derive(Debug, Error)]
 pub enum DebugInspectorError {
     /// Invalid tracer configuration
-    #[error("invalid tracer config")]
-    InvalidTracerConfig,
+    #[error("invalid tracer config: {0}")]
+    InvalidTracerConfig(#[from] serde_json::Error),
     /// Unsupported tracer
     #[error("unsupported tracer")]
     UnsupportedTracer,
@@ -482,6 +462,9 @@ pub enum DebugInspectorError {
     /// The keccak256 preimage tracer reached its limit of recorded bytes
     #[error(transparent)]
     Keccak256Preimage(#[from] crate::tracing::Keccak256PreimageLimitExceeded),
+    /// The erc7562 tracer reached its limit of recorded preimage bytes or failed to read the state
+    #[error(transparent)]
+    Erc7562(#[from] crate::tracing::Erc7562Error),
     /// Error from JS inspector
     #[cfg(feature = "js-tracer")]
     #[error(transparent)]

@@ -1,57 +1,11 @@
 use crate::tracing::builder::geth::MIN_STRUCT_LOG_JSON_LEN;
-use alloy_primitives::{U256, map::HashSet};
+use alloy_primitives::map::HashSet;
 use alloy_rpc_types_trace::{
-    geth::{
-        CallConfig, FlatCallConfig, GethDefaultTracingOptions, PreStateConfig,
-        erc7562::Erc7562Config,
-    },
+    geth::{CallConfig, FlatCallConfig, GethDefaultTracingOptions, PreStateConfig},
     parity::TraceType,
 };
 use core::num::NonZeroU64;
-use evm2::interpreter::opcode::OpCode;
-
-/// 256 bits each marking whether an opcode should be included into steps trace or not.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[must_use]
-pub struct OpcodeFilter(U256);
-
-impl Default for OpcodeFilter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl OpcodeFilter {
-    /// Returns a new [OpcodeFilter] that does not trace any opcodes.
-    #[inline]
-    pub const fn new() -> Self {
-        Self(U256::ZERO)
-    }
-
-    /// Returns whether steps with given [OpCode] should be traced.
-    #[inline]
-    pub const fn is_enabled(&self, op: OpCode) -> bool {
-        self.0.bit(op.get() as usize)
-    }
-
-    /// Enables tracing of given [OpCode].
-    #[inline]
-    pub const fn enable(&mut self, op: OpCode) -> &mut Self {
-        self.0.set_bit(op.get() as usize, true);
-        self
-    }
-
-    /// Enables tracing of given [OpCode].
-    #[inline]
-    pub const fn enabled(mut self, op: OpCode) -> Self {
-        let index = op.get() as usize;
-        let mut limbs = self.0.into_limbs();
-        let (limb, bit) = (index / 64, index % 64);
-        limbs[limb] |= 1 << bit;
-        self.0 = U256::from_limbs(limbs);
-        self
-    }
-}
+use evm2::{OpcodeSet, interpreter::opcode::OpCode};
 
 /// Gives guidance to the [TracingInspector](crate::tracing::TracingInspector).
 ///
@@ -81,7 +35,7 @@ pub struct TracingInspectorConfig {
     pub record_returndata_snapshots: bool,
     /// Optional filter for opcodes to record. If provided, only steps with opcode in this set will
     /// be recorded.
-    pub record_opcodes_filter: Option<OpcodeFilter>,
+    pub record_opcodes_filter: Option<OpcodeSet>,
     /// Whether to ignore precompile calls.
     pub exclude_precompile_calls: bool,
     /// Whether to record logs
@@ -250,23 +204,6 @@ impl TracingInspectorConfig {
             .set_record_inputs(true)
             // call tracer is similar parity tracer with optional support for logs
             .set_record_logs(config.with_log.unwrap_or_default())
-    }
-
-    /// Returns a config for geth's
-    /// [Erc7562Frame](alloy_rpc_types_trace::geth::erc7562::Erc7562Frame).
-    #[inline]
-    pub fn from_geth_erc7562_config(config: &Erc7562Config) -> Self {
-        Self::none()
-            .set_record_inputs(true)
-            // call tracer is similar parity tracer with optional support for logs
-            .set_record_logs(config.with_log.unwrap_or_default())
-            // need memory snapshots for keccak preimages
-            .set_memory_snapshots(true)
-            // need stack snapshots for keccak preimages
-            .set_stack_snapshots(StackSnapshotType::Full)
-            // need state diffs to capture SLOAD values in accessedSlots.reads
-            .set_state_diffs(true)
-            .steps()
     }
 
     /// Returns a config for geth's
@@ -452,11 +389,11 @@ impl TracingInspectorConfig {
         self.set_immediate_bytes(true)
     }
 
-    /// If [OpcodeFilter] is configured, returns whether the given opcode should be recorded.
+    /// If an opcode filter is configured, returns whether the given opcode should be recorded.
     /// Otherwise, always returns true.
     #[inline]
     pub fn should_record_opcode(&self, op: OpCode) -> bool {
-        self.record_opcodes_filter.as_ref().is_none_or(|filter| filter.is_enabled(op))
+        self.record_opcodes_filter.as_ref().is_none_or(|filter| filter.contains(op.get()))
     }
 }
 
@@ -543,7 +480,6 @@ mod tests {
             TracingInspectorConfig::all(),
             TracingInspectorConfig::default_parity(),
             TracingInspectorConfig::from_geth_call_config(&CallConfig::default()),
-            TracingInspectorConfig::from_geth_erc7562_config(&Erc7562Config::default()),
             TracingInspectorConfig::from_flat_call_config(&FlatCallConfig::default()),
         ] {
             assert!(config.record_inputs);

@@ -11,6 +11,8 @@ extern crate alloc;
 #[cfg(feature = "nightly")]
 use ruint as _;
 
+#[cfg(feature = "block")]
+pub mod block;
 pub mod bytecode;
 pub mod constants;
 mod error;
@@ -31,7 +33,7 @@ pub use evm::{
     },
     env, handler, inspector, precompile, registry,
 };
-pub use inspector::{Inspector, NoopInspector};
+pub use inspector::{Inspector, InspectorConfig, NoopInspector, OpcodeSet};
 
 pub mod precompiles;
 pub use precompiles::{
@@ -47,7 +49,7 @@ pub mod version;
 pub use version::{EvmFeatures, OpcodeChange, OpcodeConfig, OpcodeView, Version};
 
 mod spec_id;
-pub use spec_id::SpecId;
+pub use spec_id::{ParseSpecIdError, SpecId};
 
 mod once_lock;
 mod storage_key;

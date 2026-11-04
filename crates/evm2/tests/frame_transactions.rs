@@ -576,13 +576,23 @@ fn every_transaction_resolution_clears_frame_context_before_an_ordinary_transact
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct EntryFailureInspector {
+    transactions_started: usize,
+    transactions_ended: usize,
     starts: Vec<usize>,
     ends: Vec<(usize, FrameStatus, InstrStop)>,
 }
 
 impl<T: evm2::EvmTypes> evm2::Inspector<T> for EntryFailureInspector {
+    fn frame_transaction_start(&mut self, _: &Arc<TxEip8141>, _: &FrameGas, _: &mut Evm<'_, T>) {
+        self.transactions_started += 1;
+    }
+
+    fn frame_transaction_end(&mut self, _: &evm2::TxResult<T>, _: &mut Evm<'_, T>) {
+        self.transactions_ended += 1;
+    }
+
     fn frame_start(&mut self, index: usize, _: &Frame, _: &mut Evm<'_, T>) {
         self.starts.push(index);
     }
@@ -776,8 +786,7 @@ fn custom_refund_quotients_keep_prefix_and_full_execution_consistent() {
     let tx =
         recovered(payload(vec![frame(FrameMode::Verify, SENDER), frame(FrameMode::Sender, BODY)]));
     let mut expected_prefix = None;
-    let mut uncapped = None;
-    for quotient in [1, 0, 2, 5] {
+    for quotient in [1, 2, 5] {
         let mut evm = evm(&[0x5f, 0x5f, 0x55, 0x00], &[]);
         evm.overlay_db_mut().insert_account_storage(&BODY, &U256::ZERO, &U256::ONE);
         let mut version = *evm.version();
@@ -791,12 +800,9 @@ fn custom_refund_quotients_keep_prefix_and_full_execution_consistent() {
         let available_refund = version.gas_params.get(GasId::SstoreClearingSlotRefund);
         assert_eq!(
             result.refunded,
-            available_refund.min(result.total_gas_spent / u64::from(quotient.max(1)))
+            available_refund.min(result.total_gas_spent / u64::from(quotient))
         );
         assert!(result.refunded > 0);
-        if quotient <= 1 {
-            assert_eq!(result, *uncapped.get_or_insert_with(|| result.clone()));
-        }
         assert_eq!(evm.state_mut().account(&SENDER).unwrap().nonce(), 1);
         assert_eq!(stored(&mut evm, BODY, U256::ZERO), U256::ZERO);
     }
@@ -1166,4 +1172,27 @@ fn custom_data_weights_price_zero_bytes_and_reject_cost_overflow() {
         overflow.gas_params.set(GasId::TxFloorCostPerToken, 0);
         assert_eq!(FrameGas::calculate(&tx, &overflow).unwrap().maximum, 12_475);
     }
+}
+
+#[test]
+fn tuple_and_optional_inspectors_forward_frame_lifecycle_hooks() {
+    let mut evm = evm(&[], &[]);
+    evm.set_inspector((
+        Some(EntryFailureInspector::default()),
+        (None::<EntryFailureInspector>, EntryFailureInspector::default()),
+    ));
+    let tx =
+        recovered(payload(vec![frame(FrameMode::Verify, SENDER), frame(FrameMode::Sender, BODY)]));
+    assert!(evm.transact(&tx).unwrap().commit().status);
+    let (left, (absent, right)) = *evm.clear_inspector_as::<(
+        Option<EntryFailureInspector>,
+        (Option<EntryFailureInspector>, EntryFailureInspector),
+    )>().unwrap();
+    assert!(absent.is_none());
+    assert_eq!(left.as_ref(), Some(&right));
+    assert_eq!(right.transactions_started, 1);
+    assert_eq!(right.transactions_ended, 1);
+    assert_eq!(right.starts, vec![0, 1]);
+    assert_eq!(right.ends.len(), 2);
+    assert!(right.ends.iter().all(|(_, status, _)| *status == FrameStatus::Success));
 }

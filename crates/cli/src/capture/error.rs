@@ -47,6 +47,8 @@ pub(crate) enum CaptureError {
     MultipleSpecs,
     #[error("capture uses unsupported spec id {0}")]
     UnsupportedSpec(u32),
+    #[error("block timestamp {timestamp} has no supported mainnet hardfork")]
+    UnsupportedHardfork { timestamp: u64 },
     #[error("capture has conflicting bytecode for code hash {code_hash}")]
     CodeHashCollision { code_hash: B256 },
     #[error(

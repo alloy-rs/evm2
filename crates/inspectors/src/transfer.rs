@@ -4,7 +4,7 @@ use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, B256, Log, U256, address, b256};
 use alloy_sol_types::SolValue;
 use evm2::{
-    Evm, EvmFeatures, EvmTypes, Inspector,
+    Evm, EvmFeatures, EvmTypes, Inspector, InspectorConfig,
     interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 
@@ -166,6 +166,10 @@ impl TransferInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for TransferInspector {
+    fn inspector_config(&self) -> InspectorConfig {
+        InspectorConfig::without_steps()
+    }
+
     fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
         if self.collect_logs
             && let Some(frame) = self.frames.last_mut()

@@ -217,11 +217,31 @@ impl Bytecode {
         }
     }
 
+    /// Creates a new [`Bytecode`] from code read from state.
+    ///
+    /// Valid EIP-7702 delegation designators become EIP-7702 bytecode and anything else is legacy
+    /// code. Unlike [`Self::new_raw_checked`], code starting with the EIP-7702 magic that is not a
+    /// valid designator is accepted as legacy, since it may have been deployed before EIP-3541.
+    #[inline]
+    pub fn from_stored(bytes: Bytes) -> Self {
+        if Self::check_eip7702(&bytes).is_ok() {
+            Self::from_valid_eip7702(bytes)
+        } else {
+            Self::new_legacy(bytes)
+        }
+    }
+
     /// Creates a new EIP-7702 [`Bytecode`] from raw bytes.
     ///
     /// Returns an error if the bytes are not valid EIP-7702 bytecode.
     #[inline]
     pub fn new_eip7702_raw(bytes: Bytes) -> Result<Self, Eip7702DecodeError> {
+        Self::check_eip7702(&bytes)?;
+        Ok(Self::from_valid_eip7702(bytes))
+    }
+
+    /// Checks that `bytes` is a valid EIP-7702 delegation designator.
+    fn check_eip7702(bytes: &[u8]) -> Result<(), Eip7702DecodeError> {
         if bytes.len() != EIP7702_BYTECODE_LEN {
             return Err(Eip7702DecodeError::InvalidLength);
         }
@@ -231,13 +251,18 @@ impl Bytecode {
         if bytes[2] != EIP7702_VERSION {
             return Err(Eip7702DecodeError::UnsupportedVersion);
         }
-        Ok(Self(Some(Arc::new(BytecodeInner {
+        Ok(())
+    }
+
+    /// Wraps `bytes`, which [`Self::check_eip7702`] accepted, as EIP-7702 bytecode.
+    fn from_valid_eip7702(bytes: Bytes) -> Self {
+        Self(Some(Arc::new(BytecodeInner {
             kind: BytecodeKind::Eip7702,
             original_len: bytes.len(),
             bytecode: bytes,
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
-        }))))
+        })))
     }
 
     /// Create new checked bytecode from pre-analyzed components.
@@ -333,6 +358,20 @@ impl Bytecode {
     #[inline]
     pub fn hash_slow(&self) -> B256 {
         *self.inner().hash.get_or_init(|| keccak256(self.original_byte_slice()))
+    }
+
+    /// Caches `hash` as the hash of the original bytecode unless one is already cached.
+    ///
+    /// `hash` must be the keccak256 of [`Self::original_byte_slice`]. Does nothing for empty
+    /// bytecode or the zero hash.
+    #[inline]
+    pub fn seed_hash(&self, hash: B256) {
+        if self.is_empty() || hash.is_zero() {
+            return;
+        }
+        if self.inner().hash.set(hash).is_err() {
+            debug_assert_eq!(self.hash_slow(), hash, "seeded hash differs from cached hash");
+        }
     }
 
     /// Returns a reference to the potentially padded bytecode bytes.
@@ -492,6 +531,51 @@ mod tests {
         assert_eq!(bytecode.eip7702_address(), Some(address));
         assert_eq!(bytecode.original_bytes().len(), EIP7702_BYTECODE_LEN);
         assert_eq!(&bytecode.original_byte_slice()[..3], &[0xEF, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn from_stored_accepts_non_designator_magic_as_legacy() {
+        let address = Address::new([0x01; 20]);
+        let designator = Bytecode::new_eip7702(address).original_bytes();
+        let from_designator = Bytecode::from_stored(designator.clone());
+        assert_eq!(from_designator.kind(), BytecodeKind::Eip7702);
+        assert_eq!(from_designator.eip7702_address(), Some(address));
+
+        for bytes in [
+            Bytes::from_static(&[0xEF, 0x01, 0x00, 0x60, 0x01]),
+            designator.slice(..EIP7702_BYTECODE_LEN - 1),
+            Bytes::from([designator.as_ref(), &[op::STOP]].concat()),
+            Bytes::from_static(&[0xEF, 0x01, 0x01]),
+        ] {
+            assert!(Bytecode::new_raw_checked(bytes.clone()).is_err());
+            let bytecode = Bytecode::from_stored(bytes.clone());
+            assert_eq!(bytecode.kind(), BytecodeKind::Legacy);
+            assert_eq!(bytecode.original_bytes(), bytes);
+        }
+    }
+
+    #[test]
+    fn seed_hash_sets_only_an_empty_cache() {
+        let bytecode = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
+        let seed = B256::repeat_byte(0x5e);
+        bytecode.seed_hash(seed);
+        assert_eq!(bytecode.hash_slow(), seed);
+
+        let empty = Bytecode::new();
+        empty.seed_hash(seed);
+        assert_eq!(empty.hash_slow(), KECCAK256_EMPTY);
+        let bytecode = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
+        bytecode.seed_hash(B256::ZERO);
+        assert_eq!(bytecode.hash_slow(), keccak256([0x60, 0x01]));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "seeded hash differs from cached hash")]
+    fn seed_hash_panics_on_conflicting_hash_in_debug() {
+        let bytecode = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
+        bytecode.seed_hash(B256::repeat_byte(0x5e));
+        bytecode.seed_hash(B256::repeat_byte(0x5f));
     }
 
     #[test]
