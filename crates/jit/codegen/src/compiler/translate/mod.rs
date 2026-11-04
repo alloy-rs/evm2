@@ -491,19 +491,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         Some(next)
     }
 
-    /// Resolves an instruction through dead-block redirects created by dedup.
-    fn effective_inst(&self, inst: Inst) -> Inst {
-        self.bytecode.redirects.get(&inst).copied().unwrap_or(inst)
-    }
-
     /// Returns the IR block for an instruction after applying dedup redirects.
     fn effective_entry(&self, inst: Inst) -> B::BasicBlock {
-        self.inst_entries[self.effective_inst(inst)]
+        self.inst_entries[self.bytecode.effective_inst(inst)]
     }
 
     /// Returns the runtime fallthrough target after applying dedup redirects.
     fn effective_next_inst(&self, inst: Inst) -> Option<Inst> {
-        self.lexical_next_inst(inst).map(|next| self.effective_inst(next))
+        self.lexical_next_inst(inst).map(|next| self.bytecode.effective_inst(next))
     }
 
     /// Returns the IR block for the runtime fallthrough target.
@@ -569,7 +564,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
 
         // Assert that we already skipped the block.
-        debug_assert!(!data.flags.contains(InstFlags::DEAD_CODE));
+        debug_assert!(!data.is_dead_code());
 
         // Disabled instructions don't pay gas.
         if data.flags.contains(InstFlags::DISABLED) {
@@ -1546,14 +1541,19 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.load(self.word_type, ptr, name)
     }
 
-    fn load_interpreter_ptr(&mut self) -> B::Value {
+    /// Loads the pointer stored in the `EvmContext` field at the given offset.
+    fn load_ecx_ptr(&mut self, offset: usize, addr_name: &str, name: &str) -> B::Value {
         let ptr_type = self.bcx.type_ptr();
-        let field = self.get_field(
-            self.ecx,
+        let field = self.get_field(self.ecx, offset, addr_name);
+        self.bcx.load(ptr_type, field, name)
+    }
+
+    fn load_interpreter_ptr(&mut self) -> B::Value {
+        self.load_ecx_ptr(
             mem::offset_of!(EvmContext<'_, '_, '_>, interpreter),
             "ecx.interpreter.addr",
-        );
-        self.bcx.load(ptr_type, field, "ecx.interpreter")
+            "ecx.interpreter",
+        )
     }
 
     fn load_message_ptr(&mut self) -> B::Value {
@@ -1568,23 +1568,19 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     fn load_block_env_ptr(&mut self) -> B::Value {
-        let ptr_type = self.bcx.type_ptr();
-        let field = self.get_field(
-            self.ecx,
+        self.load_ecx_ptr(
             mem::offset_of!(EvmContext<'_, '_, '_>, block_env),
             "ecx.block_env.addr",
-        );
-        self.bcx.load(ptr_type, field, "ecx.block_env")
+            "ecx.block_env",
+        )
     }
 
     fn load_tx_env_ptr(&mut self) -> B::Value {
-        let ptr_type = self.bcx.type_ptr();
-        let field = self.get_field(
-            self.ecx,
+        self.load_ecx_ptr(
             mem::offset_of!(EvmContext<'_, '_, '_>, tx_env),
             "ecx.tx_env.addr",
-        );
-        self.bcx.load(ptr_type, field, "ecx.tx_env")
+            "ecx.tx_env",
+        )
     }
 
     /// Gets a field at the given offset.
@@ -1997,13 +1993,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     fn load_memory_base(&mut self) -> B::Value {
-        let ptr_type = self.bcx.type_ptr();
-        let mem_base_field = self.get_field(
-            self.ecx,
+        self.load_ecx_ptr(
             mem::offset_of!(EvmContext<'_, '_, '_>, mem_base),
             "ecx.mem_base.addr",
-        );
-        self.bcx.load(ptr_type, mem_base_field, "ecx.mem_base")
+            "ecx.mem_base",
+        )
     }
 
     /// Emits under/overflow bounds checks for a stack section.
@@ -2163,7 +2157,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let jumpdests = bytecode
             .iter_insts()
             .filter(|(_, data)| {
-                data.opcode == op::JUMPDEST && bytecode.is_valid_jump(data.jumpdest_pc() as usize)
+                data.is_jumpdest() && bytecode.is_valid_jump(data.jumpdest_pc() as usize)
             })
             .map(|(inst, data)| (data.jumpdest_pc() as usize, inst))
             .collect::<Vec<_>>();

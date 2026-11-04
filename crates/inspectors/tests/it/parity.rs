@@ -13,6 +13,7 @@ use alloy_rpc_types_trace::{
         TransactionTrace, VmTrace,
     },
 };
+use evm2::utils::address_to_word;
 use evm2_inspectors::tracing::{
     TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
 };
@@ -865,8 +866,8 @@ fn vmtrace_stop_only_child_preserves_parent_and_creation_result() {
     assert_eq!(trace.ops.len(), 6);
     let create = &trace.ops[3];
     assert_eq!(
-        create.ex.as_ref().unwrap().push.as_slice(),
-        &[U256::from_be_slice(Address::with_last_byte(0x42).create(0).as_slice())]
+        create.ex.as_ref().unwrap().push,
+        &[address_to_word(&Address::with_last_byte(0x42).create(0))]
     );
     assert!(create.sub.is_some());
 }

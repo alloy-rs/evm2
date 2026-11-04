@@ -118,28 +118,30 @@ impl<T: Copy> VStack<T> {
 
     /// Sets a slot to virtual at the given operand depth.
     pub(super) fn set(&mut self, depth: usize, value: T) {
-        let idx = self.idx(self.offset_at_depth(depth));
-        self.slots[idx] = Some(VSlot::Virtual(value));
+        self.set_slot(self.offset_at_depth(depth), VSlot::Virtual(value));
+    }
+
+    /// Sets the slot at the given section-relative offset.
+    fn set_slot(&mut self, offset: i32, slot: VSlot<T>) {
+        let idx = self.idx(offset);
+        self.slots[idx] = Some(slot);
     }
 
     /// Records that memory at a section-relative offset holds `value`.
     pub(super) fn set_stored_at_offset(&mut self, offset: i32, value: T) {
-        let idx = self.idx(offset);
-        self.slots[idx] = Some(VSlot::Materialized(Some(value)));
+        self.set_slot(offset, VSlot::Materialized(Some(value)));
     }
 
     /// Pushes a virtual value onto the top of the stack.
     pub(super) fn push(&mut self, value: T) {
-        let idx = self.idx(self.top_offset);
-        self.slots[idx] = Some(VSlot::Virtual(value));
+        self.set_slot(self.top_offset, VSlot::Virtual(value));
         self.top_offset += 1;
     }
 
     /// Pushes a materialized marker onto the top of the stack.
     /// Used when a builtin writes directly to the physical stack slot.
     pub(super) fn push_mem(&mut self) {
-        let idx = self.idx(self.top_offset);
-        self.slots[idx] = Some(VSlot::Materialized(None));
+        self.set_slot(self.top_offset, VSlot::Materialized(None));
         self.top_offset += 1;
     }
 

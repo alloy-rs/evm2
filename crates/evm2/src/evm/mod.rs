@@ -124,7 +124,7 @@ use crate::{
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
-        MessageResult, MessageResultExt, Word,
+        MessageResult, MessageResultExt, Word, create_preaccess_failure,
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
@@ -823,8 +823,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ///
     /// This is the consuming counterpart to [`Self::database`]. Unlike
     /// [`Self::database_as_mut`] it needs neither a `'static` bound nor a downcast, so it also
-    /// works for databases that borrow. The in-memory layers â€” accepted state, the journal, and
-    /// transaction scratch â€” are never written through to the database, so nothing the EVM
+    /// works for databases that borrow. The in-memory layers — accepted state, the journal, and
+    /// transaction scratch — are never written through to the database, so nothing the EVM
     /// executed reaches it. The database itself is returned as-is and may differ from the one
     /// passed to the constructor: it can be replaced through [`Self::set_database`], mutated
     /// through [`Self::database_mut`], or changed by its own reads.
@@ -1394,13 +1394,16 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     fn execute_message_inner(
         &mut self,
         message: &mut Message<T>,
+        halted: Option<MessageResult<T>>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let mut checkpoint = self.state.checkpoint();
         if let Some(rt) = &mut self.frame_tx {
             rt.enter_scope();
         }
         let result = if self.inspector.is_some() {
-            self.execute_message_inspected(message, &mut checkpoint)
+            self.execute_message_inspected(message, &mut checkpoint, halted)
+        } else if let Some(halted) = halted {
+            Ok(halted)
         } else {
             self.execute_message_impl(message, &mut checkpoint)
         };
@@ -1443,15 +1446,22 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ///
     /// This is invoked for every message when an inspector is installed; hook overrides skip
     /// execution entirely, including the call depth check.
+    ///
+    /// A `halted` result stands in for the execution: the hooks fire around it, and a hook
+    /// override does not replace it.
     #[inline(never)]
     fn execute_message_inspected<'frame>(
         &mut self,
         message: &'frame mut Message<T>,
         rollback_checkpoint: &mut StateCheckpoint,
+        halted: Option<MessageResult<T>>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let guard = self.enter_execution();
         let Some(inspector) = guard.evm.active_inspector() else {
-            return guard.evm.execute_message_impl(message, rollback_checkpoint);
+            return match halted {
+                Some(result) => Ok(result),
+                None => guard.evm.execute_message_impl(message, rollback_checkpoint),
+            };
         };
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
         // replacement while the hooks are running.
@@ -1498,6 +1508,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
         let mut result = if let Some(error) = frame.take_error() {
             Err(error)
+        } else if let Some(halted) = halted {
+            Ok(halted)
         } else {
             inspected
                 .map(Ok)
@@ -1532,13 +1544,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         message: &mut Message<T>,
         rollback_checkpoint: &mut StateCheckpoint,
     ) -> Result<MessageResult<T>, ExecutionError> {
-        if message.depth > self.version().max_call_depth() {
-            return Ok(Self::error_message_result(
-                InstrStop::CallTooDeep,
-                message.gas_limit,
-                message.reservoir,
-            ));
-        }
         if let Err(error) = self.prepare_create_message(message) {
             return match error {
                 HostError::Halt(stop) => {
@@ -1582,20 +1587,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
         let nested = message.depth > self.version().initial_call_depth;
-        let info = if message.value > 0 || nested {
-            self.state.account_info_untracked(&message.caller)?
-        } else {
-            None
-        };
-
-        if message.value > 0 && info.as_ref().is_none_or(|info| info.balance < message.value) {
-            return Err(InstrStop::OutOfFunds.into());
-        }
-
-        // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 fail the frame and return
-        // zero instead of wrapping or saturating the creator nonce.
-        if nested && info.as_ref().is_some_and(|info| info.nonce == u64::MAX) {
-            return Err(InstrStop::NonceOverflow.into());
+        // A too-deep create fails on depth alone, without reading the creator.
+        let info =
+            if message.depth <= self.version().max_call_depth() && (message.value > 0 || nested) {
+                self.state.account_info_untracked(&message.caller)?
+            } else {
+                None
+            };
+        let (balance, nonce) = info.as_ref().map_or((Word::ZERO, 0), |i| (i.balance, i.nonce));
+        if let Some(stop) =
+            create_preaccess_failure(balance, nonce, message.value, message.depth, self.version())
+        {
+            return Err(stop.into());
         }
 
         // `destination` already holds the contract address (derived when the message was
@@ -1710,7 +1713,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // EIP-8037: hashing the deployed bytecode to compute its code_hash costs
         // execution keccak word gas, and depositing the code costs state gas. The
         // state-gas charge must be the last spend before the journal commit so
-        // that any 0â†’xâ†’0 reservoir refills earlier in the frame are not disturbed.
+        // that any 0→x→0 reservoir refills earlier in the frame are not disturbed.
         if self.feature(EvmFeatures::EIP8037) {
             let params = &self.version().gas_params;
             gas.spend(params.keccak256_word_cost(output.len()))?;
@@ -1908,6 +1911,20 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             inspector.initialize_interp(interp);
         }
     }
+
+    /// Reports a message that halts without executing, such as a transaction's first frame whose
+    /// runtime gas phase ran out of gas.
+    ///
+    /// With an inspector installed, the call or create hook fires and the matching end hook
+    /// receives `result`, as for an executed frame; the hook cannot replace `result`. `result`
+    /// must already have its gas settled for its stop reason.
+    pub fn execute_halted_message(
+        &mut self,
+        message: &mut Message<T>,
+        result: MessageResult<T>,
+    ) -> Result<MessageResult<T>, ExecutionError> {
+        self.execute_message_inner(message, Some(result))
+    }
 }
 
 impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
@@ -2045,15 +2062,17 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     ) -> Result<MessageResult<T>, ExecutionError> {
         #[cfg(feature = "async")]
         if r#async::is_on_fiber() {
-            return self.execute_message_inner(message);
+            return self.execute_message_inner(message, None);
         }
         #[cfg(feature = "std")]
         {
             // Native calls recurse; grow only under stack pressure to preserve the EVM depth limit.
-            stacker::maybe_grow(128 * 1024, 2 * 1024 * 1024, || self.execute_message_inner(message))
+            stacker::maybe_grow(128 * 1024, 2 * 1024 * 1024, || {
+                self.execute_message_inner(message, None)
+            })
         }
         #[cfg(not(feature = "std"))]
-        self.execute_message_inner(message)
+        self.execute_message_inner(message, None)
     }
 
     fn frame_transaction_active(&self) -> bool {

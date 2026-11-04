@@ -157,7 +157,7 @@ impl CallTrace {
     /// Returns true if the status code is a revert.
     #[inline]
     pub fn is_revert(&self) -> bool {
-        self.status.is_some_and(|status| status == InstrStop::Revert)
+        self.status.is_some_and(InstrStop::is_revert)
     }
 
     /// Returns `true` if this trace was a selfdestruct.

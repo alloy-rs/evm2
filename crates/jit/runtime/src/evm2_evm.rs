@@ -128,6 +128,7 @@ mod tests {
         env::BlockEnv,
         evm::{AccountInfo, InMemoryDB, JournalEntry},
         interpreter::{Host, MessageKind, Word},
+        utils::address_to_word,
         version::GasId,
     };
 
@@ -136,7 +137,7 @@ mod tests {
         &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
 
     #[cfg(feature = "llvm")]
-    fn blocking_backend() -> JitBackend {
+    pub(super) fn blocking_backend() -> JitBackend {
         JitBackend::new(RuntimeConfig { enabled: true, blocking: true, ..RuntimeConfig::default() })
             .unwrap()
     }
@@ -329,7 +330,7 @@ mod tests {
     #[cfg(feature = "llvm")]
     fn rejected_gas_schedule_counts_fallback() {
         let spec = SpecId::CANCUN;
-        let mut version = *Version::base(spec);
+        let mut version = Version::new(spec);
         version.gas_params.set(GasId::SstoreStatic, 800);
         let host = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(spec, version),
@@ -780,7 +781,7 @@ mod tests {
     #[cfg(feature = "llvm")]
     fn section_gas_too_large_to_compile_falls_back_to_interpreter() {
         let spec = SpecId::CANCUN;
-        let mut version = *Version::base(spec);
+        let mut version = Version::new(spec);
         version.gas_params.set(GasId::ExpByte, u32::MAX);
         let backend = JitBackend::new(RuntimeConfig {
             enabled: true,
@@ -928,7 +929,7 @@ mod tests {
                         let expected = if kind == MessageKind::Call {
                             Word::from(1)
                         } else {
-                            Word::from_be_slice(destination.as_slice())
+                            address_to_word(&destination)
                         };
                         assert_eq!(returned, expected);
                         assert!(compiled.1);
@@ -951,7 +952,7 @@ mod tests {
 
 #[cfg(all(test, feature = "llvm"))]
 mod custom_host_tests {
-    use super::*;
+    use super::{tests::blocking_backend, *};
     use crate::runtime::{HostConfig, RuntimeConfig};
     use alloy_primitives::{Address, Bytes, U256};
     use evm2::{
@@ -1041,8 +1042,7 @@ mod custom_host_tests {
         assert_eq!(run_interpreter(&backend, &mut compiled, &mut host), Some(InstrStop::Return));
         assert_eq!(compiled.output(), expected_output);
         assert_eq!(compiled.gas(), expected_gas);
-        let wrong =
-            JitBackend::new(RuntimeConfig { blocking: true, ..Default::default() }).unwrap();
+        let wrong = blocking_backend();
         let mut fresh = Interpreter::<CustomTypes>::new(&message);
         assert_eq!(run_interpreter(&wrong, &mut fresh, &mut host), None);
         let config = host.execution_config();

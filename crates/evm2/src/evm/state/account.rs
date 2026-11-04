@@ -937,7 +937,7 @@ mod tests {
         // Skipping leaves the overlay untouched, so a later non-skipped load still works.
         assert_eq!(state.account(&address).unwrap().balance(), Word::from(5));
         // Residency alone does not make a cold access affordable: a loaded-but-cold account still
-        // signals the skip, since warmth â€” not overlay residency â€” decides the cold surcharge.
+        // signals the skip, since warmth — not overlay residency — decides the cold surcharge.
         assert!(matches!(state.account_with_skip(&address, true), Err(LoadError::ColdLoadSkipped)));
         // Once warmed, the affordable warm access yields a handle even when skipping is requested.
         state.account(&address).unwrap().warm();

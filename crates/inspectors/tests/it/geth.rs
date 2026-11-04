@@ -327,8 +327,7 @@ fn test_geth_calltracer_logs() {
     let addr =
         deploy_contract(&mut evm, code.into(), deployer, SpecId::LONDON).created_address().unwrap();
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
 
     // Three logs emitted by preceding transactions in the block.
     insp.set_next_log_index(3);
@@ -1453,8 +1452,7 @@ fn test_geth_calltracer_nested_revert() {
     );
 
     // Test revert with topcall
-    let mut insp3 =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp3 = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
     let mut evm3 = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
 
     let addr3 = deploy_contract(&mut evm3, code.into(), deployer, SpecId::LONDON)
@@ -1889,8 +1887,7 @@ fn test_geth_calltracer_logs_eip7708() {
             );
         });
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
 
     let mut evm = context.build_mainnet().with_inspector(&mut insp);
 
@@ -1975,8 +1972,7 @@ fn test_geth_calltracer_logs_address_regular() {
             );
         });
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
 
     let mut evm = context.build_mainnet().with_inspector(&mut insp);
 
@@ -2058,8 +2054,7 @@ fn test_geth_calltracer_logs_delegatecall() {
             );
         });
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
 
     let mut evm = context.build_mainnet().with_inspector(&mut insp);
 
@@ -2455,8 +2450,7 @@ fn test_geth_calltracer_log_index_eip7708_revert() {
             );
         });
 
-    let mut insp =
-        TracingInspector::new(TracingInspectorConfig::default_geth().set_record_logs(true));
+    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth().record_logs());
     let mut evm = context.build_mainnet().with_inspector(&mut insp);
 
     let res = evm
@@ -3191,13 +3185,12 @@ fn trace_london_selfdestruct(prestate_config: PreStateConfig) -> (Address, PreSt
     );
     db.insert_account_info(
         &contract,
-        AccountInfo {
-            balance: U256::from(7),
-            nonce: 1,
-            code_hash: alloy_primitives::keccak256(&code),
-            code: Some(Bytecode::new_raw(code)),
-            ..Default::default()
-        },
+        AccountInfo::new(
+            U256::from(7),
+            1,
+            alloy_primitives::keccak256(&code),
+            Some(Bytecode::new_raw(code)),
+        ),
     );
     db.insert_account_storage(&contract, &U256::from(1), &U256::from(0x2a));
     let evm = Context::mainnet()

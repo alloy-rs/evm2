@@ -704,8 +704,14 @@ impl JsInspector {
         };
         let refund = call.enclosing_refund + frame_refund;
         debug_assert!(refund >= 0, "transaction-wide refund counter went negative: {refund}");
+        // An out-of-gas step consumes the whole remainder it started with.
+        let cost = if interp.result().is_err_and(InstrStop::is_out_of_gas) {
+            pending.instruction.gas
+        } else {
+            interp.gas().spent().saturating_sub(pending.gas_spent_before)
+        };
         let info = StepInfo {
-            cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
+            cost,
             refund: refund.max(0) as u64,
             // Geth reports the depth starting at 1 for the top-level call.
             depth: u64::from(depth) + 1,
@@ -1374,7 +1380,7 @@ fn with_message_suffix(err: JsError, suffix: &str, ctx: &mut Context) -> JsError
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{interrupt_tests::transaction, *};
     use alloc::{string::ToString, vec, vec::Vec};
     use alloy_consensus::{TxEip1559, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
@@ -2089,14 +2095,7 @@ mod tests {
             db,
             Precompiles::base(SpecId::CANCUN),
         );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_limit: 1_000_000,
-                to: TxKind::Call(addr),
-                ..Default::default()
-            }),
-            Address::ZERO,
-        );
+        let tx = transaction(TxKind::Call(addr));
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
@@ -2166,14 +2165,7 @@ mod tests {
             db,
             Precompiles::base(SpecId::CANCUN),
         );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_limit: 1_000_000,
-                to: TxKind::Call(addr),
-                ..Default::default()
-            }),
-            Address::ZERO,
-        );
+        let tx = transaction(TxKind::Call(addr));
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();

@@ -32,7 +32,7 @@ impl Outcome {
             kind: last.kind,
             gas_used: last.gas_used,
             output: last.output.clone(),
-            logs: receipts.iter().flat_map(|receipt| receipt.logs.clone()).collect(),
+            logs: receipts.iter().flat_map(|receipt| receipt.logs.iter()).cloned().collect(),
             state: last.state.clone(),
             error: last.error.clone(),
             receipts,
