@@ -2033,6 +2033,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::AlwaysInline => ("alwaysinline", AttrValue::Enum(0)),
         OurAttr::NoInline => ("noinline", AttrValue::Enum(0)),
         OurAttr::Speculatable => ("speculatable", AttrValue::Enum(0)),
+        OurAttr::InlineStackProbes => ("probe-stack", AttrValue::String("inline-asm")),
 
         OurAttr::NoAlias => ("noalias", AttrValue::Enum(0)),
         OurAttr::NoCapture => return cpp::create_no_captures_attr(bcx.cx()),
