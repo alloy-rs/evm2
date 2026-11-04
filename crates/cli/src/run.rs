@@ -655,7 +655,6 @@ struct ParsedAccount {
     code_hash: B256,
 }
 
-#[derive(Debug)]
 struct PreparedBenchParts {
     name: Cow<'static, str>,
     accounts: Vec<ParsedAccount>,
