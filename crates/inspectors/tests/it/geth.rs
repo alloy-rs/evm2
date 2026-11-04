@@ -3601,6 +3601,52 @@ fn test_geth_prestate_names_delegation_targets() {
     }
 }
 
+/// Before Prague, code shaped like a delegation designator is plain code, and geth names no target
+/// for it.
+#[test]
+fn test_geth_prestate_names_no_delegation_target_before_prague() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let recipient = address!("1000000000000000000000000000000000000001");
+    let target = address!("aaaa000000000000000000000000000000000001");
+    let mut code = vec![0xef, 0x01, 0x00];
+    code.extend_from_slice(target.as_slice());
+    let code = Bytes::from(code);
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &recipient,
+        AccountInfo {
+            balance: U256::from(1),
+            code_hash: keccak256(&code),
+            code: Some(Bytecode::new_raw(code)),
+            ..Default::default()
+        },
+    );
+    db.insert_account_info(&target, AccountInfo { balance: U256::from(1), ..Default::default() });
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet();
+
+    let (_, frame) = trace_prestate(
+        evm,
+        PreStateConfig::default(),
+        TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            kind: TransactTo::Call(recipient),
+            ..Default::default()
+        },
+    );
+    let PreStateFrame::Default(prestate) = frame else { panic!("expected a prestate frame") };
+    assert!(prestate.0.contains_key(&recipient));
+    assert!(!prestate.0.contains_key(&target), "{prestate:#?}");
+}
+
 /// The addresses that `CREATE` and `CREATE2` create are named, including ones that already hold a
 /// balance.
 #[test]

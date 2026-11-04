@@ -54,6 +54,8 @@ pub struct PrestateInspector {
     /// The `CREATE` and `CREATE2` that are running, one per depth. They run frames of their own
     /// before their steps end, which `pending` does not survive.
     creates: Vec<(u16, Create)>,
+    /// Whether EIP-7702 delegation is active, which the first call of the transaction tells.
+    delegation: bool,
 }
 
 /// The opcodes whose steps the inspector looks at: they address an account or a slot, or create
@@ -105,6 +107,7 @@ impl PrestateInspector {
             deleted: AddressSet::default(),
             pending: None,
             creates: Vec::new(),
+            delegation: false,
         }
     }
 
@@ -116,6 +119,7 @@ impl PrestateInspector {
         self.deleted.clear();
         self.pending = None;
         self.creates.clear();
+        self.delegation = false;
     }
 
     /// Returns the result of the tracer for a transaction that ran with this inspector.
@@ -152,8 +156,9 @@ impl PrestateInspector {
         let to = match tx.to() {
             Some(to) => {
                 // geth looks up the delegation target of the recipient before the authorizations
-                // of the transaction apply. Only EIP-7702 makes such code.
-                if let Some(info) = db.get_account(&to)?
+                // of the transaction apply, from Prague.
+                if self.delegation
+                    && let Some(info) = db.get_account(&to)?
                     && let Some(code) = load_account_code(db, &info)?
                     && let Some(target) = parse_delegation(&code)
                 {
@@ -438,6 +443,9 @@ impl<T: EvmTypes> Inspector<T> for PrestateInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.accounts.push(message.call_target);
+        if message.depth == interp.version().initial_call_depth {
+            self.delegation = interp.version().feature(EvmFeatures::EIP7702);
+        }
         // geth looks up the delegation target of the callee of a call from Prague, and that of the
         // recipient of the transaction before its authorizations apply, which `frame` takes from
         // the state before the transaction. evm2 resolves the target when it builds the message.
@@ -455,7 +463,7 @@ impl<T: EvmTypes> Inspector<T> for PrestateInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // The transaction of a create names the address it creates, and `frame` takes it from the
-        // sender's nonce.
+        // nonce of the transaction.
         self.created.insert(message.destination);
         None
     }
