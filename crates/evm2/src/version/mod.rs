@@ -743,8 +743,8 @@ evm_versions! {
             SstoreSetWithoutLoadCost: SSTORE_SET - WARM_STORAGE_READ_COST,
             SstoreSetRefund: SSTORE_SET - WARM_STORAGE_READ_COST,
             SstoreResetRefund: WARM_SSTORE_RESET - WARM_STORAGE_READ_COST,
-            TxAccessListAddressCost: ACCESS_LIST_ADDRESS,
-            TxAccessListStorageKeyCost: ACCESS_LIST_STORAGE_KEY,
+            TxAccessListAddressCost: EIP2930_ACCESS_LIST_ADDRESS,
+            TxAccessListStorageKeyCost: EIP2930_ACCESS_LIST_STORAGE_KEY,
         ],
     }
 
@@ -761,7 +761,7 @@ evm_versions! {
             SELFDESTRUCT: 5000,
         ],
         dynamic_gas: [
-            SstoreClearingSlotRefund: WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY,
+            SstoreClearingSlotRefund: WARM_SSTORE_RESET + EIP2930_ACCESS_LIST_STORAGE_KEY,
             SelfdestructRefund: 0,
             MaxRefundQuotient: 5,
         ],
