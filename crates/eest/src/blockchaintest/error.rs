@@ -60,8 +60,8 @@ pub(crate) enum TestErrorKind {
     #[error("transaction sender is required")]
     MissingSender,
     /// Signed transaction has an invalid signature.
-    #[error("{0}")]
-    InvalidSignedTransaction(String),
+    #[error(transparent)]
+    InvalidSignedTransaction(TxBuildError),
     /// Sender recovered from the signature differs from the fixture's sender.
     #[error("sender mismatch: recovered {recovered}, fixture {expected}")]
     SenderMismatch {
@@ -152,7 +152,7 @@ impl From<TxBuildError> for TestErrorKind {
             error @ (TxBuildError::Decode(_)
             | TxBuildError::InvalidV(..)
             | TxBuildError::ProtectedLegacy
-            | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error.to_string()),
+            | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error),
         }
     }
 }

@@ -98,8 +98,8 @@ pub(crate) enum TestErrorKind {
     #[error("could not build consensus transaction: {0}")]
     BuildTransaction(String),
     /// Signed transaction could not be decoded or its sender recovered.
-    #[error("{0}")]
-    InvalidSignedTransaction(String),
+    #[error(transparent)]
+    InvalidSignedTransaction(TxBuildError),
     /// Execution resource initialization or compilation failed.
     #[error(transparent)]
     ExecutionResource(#[from] ExecutionResourceError),
@@ -114,7 +114,7 @@ impl From<TxBuildError> for TestErrorKind {
             error @ (TxBuildError::Decode(_)
             | TxBuildError::InvalidV(..)
             | TxBuildError::ProtectedLegacy
-            | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error.to_string()),
+            | TxBuildError::Recover(_)) => Self::InvalidSignedTransaction(error),
         }
     }
 }
