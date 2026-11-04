@@ -2124,7 +2124,7 @@ fn eip7708_transfer_log(from: &Address, to: &Address, value: &Word) -> Option<Lo
     Some(Log::new_unchecked(
         SYSTEM_ADDRESS,
         vec![EIP7708_TRANSFER_TOPIC, from.into_word(), to.into_word()],
-        value.to_be_bytes::<32>().into(),
+        Bytes::copy_from_slice(&value.to_be_bytes::<32>()),
     ))
 }
 
