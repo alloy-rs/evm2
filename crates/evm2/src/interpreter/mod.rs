@@ -32,7 +32,9 @@ mod memory;
 pub use memory::Memory;
 
 mod message;
-pub use message::{Message, MessageExt, MessageKind, derive_create_destination};
+pub use message::{
+    Message, MessageExt, MessageKind, create_preaccess_failure, derive_create_destination,
+};
 
 mod host;
 pub use host::{Host, MessageResult, MessageResultExt};

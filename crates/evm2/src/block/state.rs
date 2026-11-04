@@ -305,9 +305,9 @@ impl crate::evm::StateChangeSource for BundleSource<'_> {
         for (hash, code) in &self.0.contracts {
             sink.bytecode(*hash, code)?;
         }
-        for (address, account) in &self.0.state {
+        for (address, account) in self.0.state() {
             let current = account.info.as_ref();
-            if account.status.was_destroyed() {
+            if account.was_destroyed() {
                 sink.storage_wipe(*address)?;
             }
             sink.account(crate::evm::AccountChangeRef {
@@ -343,19 +343,15 @@ mod tests {
     use super::*;
     use crate::{
         block::bundle_state::OriginalValuesKnown,
-        evm::{
-            AccountChangeRef, AccountChanges, StateChangeSink, StorageChange, StorageOverlay,
-            StorageSlot as NativeSlot, Tracked,
-        },
+        evm::{AccountChangeRef, AccountChanges, StateChangeSink, StorageChange, StorageOverlay},
+        test_utils::storage_slot,
     };
 
     /// Builds a storage overlay from `(key, original, current)` slots.
     fn overlay(wiped: bool, slots: &[(U256, U256, U256)]) -> StorageOverlay {
         let mut storage = StorageOverlay { wiped, ..Default::default() };
         for &(key, original, current) in slots {
-            let slot =
-                NativeSlot { value: Tracked::from_parts(original, current), ..Default::default() };
-            storage.slots.insert(key, slot);
+            storage.slots.insert(key, storage_slot(original, current));
         }
         storage
     }
@@ -395,7 +391,7 @@ mod tests {
         assert_eq!(account.info.as_ref().unwrap().extension.as_ref(), b"updated extension");
         assert!(bundle.revert_latest());
         assert_eq!(
-            bundle.state.get(&address).unwrap().info.as_ref().unwrap().extension.as_ref(),
+            bundle.account(&address).unwrap().info.as_ref().unwrap().extension.as_ref(),
             b"original extension"
         );
     }
@@ -493,7 +489,7 @@ mod tests {
     #[test]
     fn created_account_keeps_its_storage_wipe() {
         let address = Address::with_last_byte(1);
-        let info = AccountInfo { balance: U256::from(1), ..Default::default() };
+        let info = AccountInfo { balance: U256::ONE, ..Default::default() };
         let storage = overlay(true, &[]);
         let mut block = BlockState::new();
         block.commit_account_changes(
@@ -549,7 +545,7 @@ mod tests {
         let info = AccountInfo { nonce: 1, ..Default::default() };
         let mut block = BlockState::new();
         for (wiped, slots) in [
-            (false, &[(U256::from(3), U256::ZERO, U256::from(1))][..]),
+            (false, &[(U256::from(3), U256::ZERO, U256::ONE)][..]),
             (true, &[(U256::from(4), U256::ZERO, U256::from(2))][..]),
         ] {
             let storage = overlay(wiped, slots);

@@ -89,8 +89,7 @@ impl MuxInspector {
                     let flatcall_config =
                         tracer_config.unwrap_or_default().into_flat_call_config()?;
 
-                    inspector_config
-                        .merge(TracingInspectorConfig::from_flat_call_config(&flatcall_config));
+                    inspector_config.merge(TracingInspectorConfig::default_parity());
                     configs.push((builtin, TraceConfig::FlatCall(flatcall_config)));
                 }
                 GethDebugBuiltInTracerType::MuxTracer
@@ -177,9 +176,6 @@ impl MuxInspector {
     }
 
     /// Try converting this [MuxInspector] into a [MuxFrame].
-    ///
-    /// Call traces recover the transaction root when runtime gas charging halts before evm2
-    /// invokes the call/create hooks. Recovered roots report `out of gas`.
     pub fn try_into_mux_frame<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         result: &TxResultWithState<T>,
@@ -189,7 +185,6 @@ impl MuxInspector {
         db: &mut dyn DynDatabase,
     ) -> Result<MuxFrame, Error> {
         if let Some(inspector) = &mut self.tracing {
-            inspector.recover_runtime_oog_root(tx, &result.result);
             inspector.set_transaction_gas_limit(tx.gas_limit());
             inspector.set_transaction_caller(tx.signer());
         }
@@ -219,11 +214,11 @@ impl MuxInspector {
                         continue;
                     }
                 }
-                TraceConfig::FlatCall(_flatcall_config) => {
+                TraceConfig::FlatCall(flatcall_config) => {
                     if let Some(inspector) = &self.tracing {
                         inspector
                             .clone()
-                            .into_parity_builder()
+                            .into_flat_call_builder(flatcall_config)
                             .with_transaction_gas_used(result.result.tx_gas_used())
                             .into_localized_transaction_traces(tx_info)
                             .into()

@@ -123,7 +123,9 @@ impl Context {
     /// Appends a basic block to `function`.
     pub(crate) fn append_basic_block(&self, function: Function, name: &str) -> Block {
         let name = to_c_str(name);
-        Block(unsafe { LLVMAppendBasicBlockInContext(self.raw, function.0, name.as_ptr()) })
+        Block(unsafe {
+            LLVMAppendBasicBlockInContext(self.raw, function.as_value_ref(), name.as_ptr())
+        })
     }
 
     /// Inserts a basic block right after `block`.
@@ -279,7 +281,9 @@ impl Module {
     /// Iterates over the functions of the module.
     pub(crate) fn get_functions(&self) -> impl Iterator<Item = Function> {
         let first = Function::new(unsafe { LLVMGetFirstFunction(self.raw) });
-        std::iter::successors(first, |f| Function::new(unsafe { LLVMGetNextFunction(f.0) }))
+        std::iter::successors(first, |f| {
+            Function::new(unsafe { LLVMGetNextFunction(f.as_value_ref()) })
+        })
     }
 
     /// Adds a global variable in the default address space.
@@ -438,7 +442,7 @@ impl Type {
 
 impl fmt::Debug for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.print_to_string().to_string_lossy())
+        fmt::Display::fmt(&self.print_to_string(), f)
     }
 }
 
@@ -792,7 +796,7 @@ impl Builder {
             LLVMBuildCall2(
                 self.raw,
                 fn_ty.0,
-                function.0,
+                function.as_value_ref(),
                 args.as_ptr().cast_mut().cast(),
                 args.len() as u32,
                 name.as_ptr(),
@@ -1032,6 +1036,5 @@ impl Drop for Builder {
 }
 
 fn fmt_value(value: LLVMValueRef, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let string = unsafe { LLVMString::from_raw(LLVMPrintValueToString(value)) };
-    f.write_str(&string.to_string_lossy())
+    fmt::Display::fmt(&unsafe { LLVMString::from_raw(LLVMPrintValueToString(value)) }, f)
 }

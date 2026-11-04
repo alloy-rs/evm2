@@ -13,7 +13,7 @@ use super::{
 use crate::compiled::{self, FileSummary};
 use crate::{
     dump,
-    execute::state_root_from_database,
+    execute::{print_db_stats, state_root_from_database},
     execution::ExecutionResources,
     filter::NameFilter,
     fixture_io,
@@ -37,7 +37,6 @@ use alloy_eips::{
 };
 use alloy_primitives::{Address, B256, Bloom, Bytes, Signature, U256, aliases::U512};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
-use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     block::{
@@ -54,7 +53,13 @@ use evm2::{
 };
 #[cfg(feature = "jit")]
 use std::path::PathBuf;
-use std::{borrow::Cow, collections::BTreeMap, mem, path::Path};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write,
+    mem,
+    path::Path,
+};
 
 pub use crate::execution::ExecutionMode;
 
@@ -627,7 +632,7 @@ fn execute_block<'a>(
                         gas_used: gas.tx_gas_used(),
                         execution_gas_used: gas.regular_gas_used(),
                         state_gas_used: gas.state_gas_used(),
-                        success: receipt.status(),
+                        success: receipt.is_success(),
                         logs: receipt.logs(),
                     });
                     if let Some(base) = &receipt_base {
@@ -868,7 +873,7 @@ impl ReceiptBuilder for HarnessReceiptBuilder {
     ) -> ReceiptEnvelope {
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
         let receipt = Receipt {
-            status: Eip658Value::Eip658(result.status),
+            status: Eip658Value::Eip658(result.is_success()),
             cumulative_gas_used,
             logs: result.logs,
         };
@@ -879,27 +884,6 @@ impl ReceiptBuilder for HarnessReceiptBuilder {
         };
         ReceiptEnvelope::from_typed(tx_type, receipt)
     }
-}
-
-fn print_db_stats(counts: DbStatsCounts) {
-    let style = db_stats_style();
-    eprintln!("{style}db stats{style:#}: get_account={}", counts.get_account);
-    eprintln!("{style}db stats{style:#}: get_code_by_hash={}", counts.get_code_by_hash);
-    eprintln!("{style}db stats{style:#}: get_storage={}", counts.get_storage);
-    eprintln!(
-        "{style}db stats{style:#}: get_storage_same_address_repeats={}",
-        counts.get_storage_same_address_repeats
-    );
-    eprintln!(
-        "{style}db stats{style:#}: get_storage_same_address_longest_streak={}",
-        counts.get_storage_same_address_longest_streak
-    );
-    eprintln!("{style}db stats{style:#}: get_block_hash={}", counts.get_block_hash);
-}
-
-#[inline]
-const fn db_stats_style() -> Style {
-    Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightCyan))).bold()
 }
 
 fn block_number(block: &Block) -> Option<U256> {
@@ -1068,9 +1052,7 @@ fn reject_block(
     }
 }
 
-fn parse_state(
-    accounts: &std::collections::BTreeMap<Address, Account>,
-) -> Result<InMemoryDB, TestErrorKind> {
+fn parse_state(accounts: &BTreeMap<Address, Account>) -> Result<InMemoryDB, TestErrorKind> {
     let mut database = InMemoryDB::default();
     for (address, account) in accounts {
         let nonce = account.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
@@ -1103,11 +1085,7 @@ fn block_env_from_header(
         gas_limit: header.gas_limit,
         basefee: header.base_fee_per_gas.unwrap_or_default(),
         difficulty: header.difficulty,
-        prevrandao: if header.difficulty.is_zero() {
-            U256::from_be_slice(header.mix_hash.as_slice())
-        } else {
-            U256::ZERO
-        },
+        prevrandao: if header.difficulty.is_zero() { header.mix_hash.into() } else { U256::ZERO },
         blob_basefee,
         slot_num: header.slot_number.unwrap_or_default(),
         ext: (),
@@ -1192,7 +1170,7 @@ const fn base_block_reward(spec: SpecId) -> u128 {
 
 fn validate_post_state(
     database: &InMemoryDB,
-    expected: &std::collections::BTreeMap<Address, Account>,
+    expected: &BTreeMap<Address, Account>,
 ) -> Result<(), TestErrorKind> {
     for (address, expected_account) in expected {
         let info = database.cache.accounts.get(address).cloned().flatten().unwrap_or_default();
@@ -1217,9 +1195,9 @@ fn validate_post_state(
             .unwrap_or_default();
         if actual_code != expected_account.code.as_ref() {
             return Err(TestErrorKind::UnexpectedFailure(format!(
-                "code mismatch for {address}: got 0x{}, expected 0x{}",
-                alloy_primitives::hex::encode(actual_code),
-                alloy_primitives::hex::encode(&expected_account.code)
+                "code mismatch for {address}: got {}, expected {}",
+                alloy_primitives::hex::encode_prefixed(actual_code),
+                alloy_primitives::hex::encode_prefixed(&expected_account.code)
             )));
         }
 
@@ -1313,7 +1291,7 @@ fn check_block_access_list(
         }
     }
 
-    if built.as_slice() == expected.as_slice() {
+    if built == *expected {
         return Ok(());
     }
     Err(TestErrorKind::BlockAccessListMismatch {
@@ -1323,18 +1301,10 @@ fn check_block_access_list(
 }
 
 /// Renders a compact per-account summary of how the built and expected block access lists differ.
-fn format_bal_diff(
-    built: &alloy_eip7928::BlockAccessList,
-    expected: &alloy_eip7928::BlockAccessList,
-) -> String {
-    use std::{
-        collections::{BTreeMap, BTreeSet},
-        fmt::Write,
-    };
-
-    let built: BTreeMap<_, _> = built.iter().map(|account| (account.address, account)).collect();
+fn format_bal_diff(built: &BlockAccessList, expected: &BlockAccessList) -> String {
+    let built: BTreeMap<_, _> = built.iter().map(|account| (account.address(), account)).collect();
     let expected: BTreeMap<_, _> =
-        expected.iter().map(|account| (account.address, account)).collect();
+        expected.iter().map(|account| (account.address(), account)).collect();
     let addresses: BTreeSet<_> = built.keys().chain(expected.keys()).copied().collect();
 
     let mut out = String::new();
@@ -1608,7 +1578,7 @@ const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::types::{ChainConfig, SealEngine, State},
+        super::types::{ChainConfig, DecodedBlock, SealEngine, State},
         *,
     };
     use alloy_eips::eip7840::BLOB_BASE_COST;
@@ -1854,17 +1824,6 @@ mod tests {
 
     #[test]
     fn blockchain_tests_apply_ommer_rewards_before_merge() {
-        use super::{
-            super::types::{
-                Account, Block, BlockHeader, BlockchainTest, BlockchainTestCase, DecodedBlock,
-                ForkSpec, SealEngine, State,
-            },
-            ExecuteConfig, NoopHook, ONE_ETHER, execute_suite,
-        };
-        use crate::filter::NameFilter;
-        use alloy_primitives::{Address, B256, U256};
-        use std::{collections::BTreeMap, path::Path};
-
         let miner = Address::with_last_byte(1);
         let ommer_miner = Address::with_last_byte(2);
         let genesis_hash = B256::with_last_byte(1);
@@ -1953,16 +1912,6 @@ mod tests {
 
     #[test]
     fn receipt_root_check_rejects_invalid_empty_block_root() {
-        use super::{
-            super::types::{
-                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
-            },
-            ExecuteConfig, ExecutionMode, NoopHook, execute_str,
-        };
-        use crate::filter::NameFilter;
-        use alloy_primitives::{B256, U256};
-        use std::{collections::BTreeMap, path::Path};
-
         let genesis_hash = B256::with_last_byte(1);
         let suite = BlockchainTest(BTreeMap::from([(
             "invalid-receipt-root".to_string(),
@@ -2039,16 +1988,6 @@ mod tests {
 
     #[test]
     fn rejects_block_with_wrong_parent_hash() {
-        use super::{
-            super::types::{
-                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
-            },
-            ExecuteConfig, NoopHook, execute_str,
-        };
-        use crate::filter::NameFilter;
-        use alloy_primitives::{B256, U256};
-        use std::{collections::BTreeMap, path::Path};
-
         let genesis_hash = B256::with_last_byte(1);
         let block_hash = B256::with_last_byte(2);
         let suite = BlockchainTest(BTreeMap::from([(
@@ -2098,16 +2037,6 @@ mod tests {
 
     #[test]
     fn discards_expected_block_with_wrong_parent_hash() {
-        use super::{
-            super::types::{
-                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
-            },
-            ExecuteConfig, NoopHook, execute_str,
-        };
-        use crate::filter::NameFilter;
-        use alloy_primitives::{B256, U256};
-        use std::{collections::BTreeMap, path::Path};
-
         let genesis_hash = B256::with_last_byte(1);
         let suite = BlockchainTest(BTreeMap::from([(
             "expected-wrong-parent-hash".to_string(),
@@ -2152,16 +2081,6 @@ mod tests {
 
     #[test]
     fn rejects_case_with_wrong_last_block_hash() {
-        use super::{
-            super::types::{
-                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
-            },
-            ExecuteConfig, NoopHook, execute_str,
-        };
-        use crate::filter::NameFilter;
-        use alloy_primitives::{B256, U256};
-        use std::{collections::BTreeMap, path::Path};
-
         let genesis_hash = B256::with_last_byte(1);
         let block_hash = B256::with_last_byte(2);
         let suite = BlockchainTest(BTreeMap::from([(
@@ -2216,7 +2135,7 @@ mod tests {
     fn execute_simple_storage_block(mode: ExecutionMode) -> ExecuteSummary {
         let secret = B256::with_last_byte(1);
         let caller = recover_address(secret.as_slice()).unwrap();
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let unsigned = TxLegacy {
             chain_id: Some(1),
             nonce: 0,
@@ -2242,7 +2161,7 @@ mod tests {
             target,
             Account {
                 balance: U256::ZERO,
-                code: Bytes::copy_from_slice(BYTECODE_STORE42),
+                code: Bytes::from_static(BYTECODE_STORE42),
                 nonce: U256::ZERO,
                 storage: BTreeMap::new(),
             },
@@ -2264,7 +2183,7 @@ mod tests {
             target,
             Account {
                 balance: U256::ZERO,
-                code: Bytes::copy_from_slice(BYTECODE_STORE42),
+                code: Bytes::from_static(BYTECODE_STORE42),
                 nonce: U256::ZERO,
                 storage: target_storage,
             },
@@ -2355,15 +2274,6 @@ mod tests {
 
     #[test]
     fn json_outcome_reports_pass_and_failure() {
-        use super::{
-            super::{
-                error::{TestError, TestErrorKind},
-                types::ForkSpec,
-            },
-            json_outcome_value,
-        };
-        use alloy_primitives::B256;
-
         let root = B256::with_last_byte(7);
         let pass = json_outcome_value("case-a", ForkSpec::Byzantium, &Ok(Some(root)));
         assert_eq!(pass["pass"], true);
@@ -2372,7 +2282,7 @@ mod tests {
         assert_eq!(pass["errorMsg"], "");
 
         let failure: Result<Option<B256>, TestError> = Err(TestError::case(
-            std::path::Path::new("f.json"),
+            Path::new("f.json"),
             "case-b",
             TestErrorKind::UnexpectedFailure("boom".to_string()),
         ));

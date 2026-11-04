@@ -1,6 +1,5 @@
 use alloy_consensus::{
-    EthereumTxEnvelope, SignableTransaction, TxEip4844, TxEnvelope as AlloyTxEnvelope,
-    TypedTransaction,
+    EthereumTxEnvelope, SignableTransaction, TxEip4844, TypedTransaction,
     crypto::{RecoveryError, secp256k1},
     transaction::Recovered,
 };
@@ -151,7 +150,7 @@ pub(crate) fn build_signed_recovered_tx(
 ) -> Result<(RecoveredTxEnvelope, EthereumTxEnvelope<TxEip4844>), TxBuildError> {
     let tx = consensus_tx(fields)?;
     let caller = tx_caller(&tx, signer)?;
-    let signed = AlloyTxEnvelope::from(tx.clone().into_signed(signature)).into();
+    let signed = tx.clone().into_signed(signature).into();
     Ok((recovered_envelope(tx, caller), signed))
 }
 

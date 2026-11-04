@@ -1,27 +1,22 @@
 //! Stack snapshot tests
 
-use crate::utils::{CacheDB, Context, EmptyDB, SpecId, inspect_deploy_contract};
-use alloy_primitives::{Address, U256, hex};
+use crate::utils::{Context, SpecId, inspect_deploy_contract};
+use alloy_primitives::{Address, U256, bytes};
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::tracing::{StackSnapshotType, TracingInspector, TracingInspectorConfig};
 
 /// Runs `PUSH1 1; PUSH1 2; PUSH1 3; STOP` as create init code and returns the recorded stack
 /// snapshot of each step.
 fn stack_snapshots(snapshot_type: StackSnapshotType) -> Vec<Option<Box<[U256]>>> {
     let mut insp = TracingInspector::new(
-        TracingInspectorConfig::none().set_steps(true).set_stack_snapshots(snapshot_type),
+        TracingInspectorConfig::none().steps().set_stack_snapshots(snapshot_type),
     );
 
-    let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
-        .build_mainnet()
-        .with_inspector(&mut insp);
+    let mut evm =
+        Context::mainnet().with_db(InMemoryDB::default()).build_mainnet().with_inspector(&mut insp);
 
-    let res = inspect_deploy_contract(
-        &mut evm,
-        hex!("60016002600300").into(),
-        Address::ZERO,
-        SpecId::CANCUN,
-    );
+    let res =
+        inspect_deploy_contract(&mut evm, bytes!("60016002600300"), Address::ZERO, SpecId::CANCUN);
     assert!(res.result.is_success());
 
     let nodes = insp.traces().nodes();
@@ -39,7 +34,7 @@ fn test_top_stack_snapshots() {
         vec![
             // The stack is recorded before each step executes.
             Some(Box::default()),
-            Some(Box::from([U256::from(1)])),
+            Some(Box::from([U256::ONE])),
             Some(Box::from([U256::from(2)])),
             Some(Box::from([U256::from(3)])),
         ]

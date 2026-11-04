@@ -919,8 +919,8 @@ mod tests {
 
     #[test]
     fn extern_macro() {
-        let f1 = EvmCompilerFn::new(test_fn).0;
-        let f2 = EvmCompilerFn::new(__test_fn).0;
+        let f1 = EvmCompilerFn::new(test_fn).into_inner();
+        let f2 = EvmCompilerFn::new(__test_fn).into_inner();
         assert!(core::ptr::fn_addr_eq(f1, f2), "{f1:?} != {f2:?}");
     }
 }

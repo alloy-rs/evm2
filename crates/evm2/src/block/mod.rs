@@ -149,7 +149,7 @@ where
     type Tx = &'a E::Transaction;
 
     fn into_parts(self) -> (Recovered<EvmTxOf<E>>, &'a E::Transaction) {
-        let tx = Recovered::new_unchecked(self.inner().clone().into(), self.signer());
+        let tx = Recovered::new_unchecked(self.clone_inner().into(), self.signer());
         (tx, self.inner())
     }
 }

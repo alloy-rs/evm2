@@ -1,4 +1,8 @@
 use super::*;
+use alloy_primitives::{
+    address,
+    map::{AddressMap, U256Map},
+};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles,
     bytecode::Bytecode,
@@ -58,11 +62,11 @@ impl DefEnv {
 pub fn def_env() -> DefEnv {
     DefEnv {
         tx: DefTx {
-            caller: Address::new(hex!("cc0102030405060708090a0b0c0d0e0f101112dd")),
+            caller: address!("cc0102030405060708090a0b0c0d0e0f101112dd"),
             blob_hashes: vec![B256::repeat_byte(0x01), B256::repeat_byte(0x02)],
         },
         block: DefBlock {
-            coinbase: Address::new(hex!("cb1112131415161718191a1b1c1d1e1f202122ee")),
+            coinbase: address!("cb1112131415161718191a1b1c1d1e1f202122ee"),
             timestamp: uint!(0x01_0000000000000002_0000000000001234_U256),
             number: DEF_BN,
             difficulty: uint!(0x03_0000000000000004_000000000000cdef_U256),
@@ -173,8 +177,8 @@ pub static DEF_CD: &[u8] = &[0xaa; 64];
 pub static DEF_RD: &[u8] = &[0xbb; 64];
 pub static DEF_DATA: &[u8] = &[0xcc; 64];
 pub const DEF_VALUE: U256 = uint!(123_456_789_U256);
-pub static DEF_STORAGE: OnceLock<HashMap<U256, U256>> = OnceLock::new();
-pub static DEF_CODEMAP: OnceLock<HashMap<Address, Bytecode>> = OnceLock::new();
+pub static DEF_STORAGE: OnceLock<U256Map<U256>> = OnceLock::new();
+pub static DEF_CODEMAP: OnceLock<AddressMap<Bytecode>> = OnceLock::new();
 pub const OTHER_ADDR: Address = Address::repeat_byte(0x69);
 pub const DEF_BN: U256 = uint!(500_U256);
 
@@ -184,17 +188,17 @@ pub const STACK_WHAT_INTERPRETER_SAYS: &[U256] =
 pub const MEMORY_WHAT_INTERPRETER_SAYS: &[u8] = &GAS_WHAT_INTERPRETER_SAYS.to_be_bytes();
 pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
 
-pub fn def_storage() -> &'static HashMap<U256, U256> {
+pub fn def_storage() -> &'static U256Map<U256> {
     DEF_STORAGE.get_or_init(|| {
         let mut map = HashMap::default();
-        map.insert(U256::from(0), U256::from(1));
-        map.insert(U256::from(1), U256::from(2));
+        map.insert(U256::ZERO, U256::ONE);
+        map.insert(U256::ONE, U256::from(2));
         map.insert(U256::from(69), U256::from(42));
         map
     })
 }
 
-pub fn def_codemap() -> &'static HashMap<Address, Bytecode> {
+pub fn def_codemap() -> &'static AddressMap<Bytecode> {
     DEF_CODEMAP.get_or_init(|| {
         let mut map = HashMap::default();
         map.insert(
@@ -276,6 +280,21 @@ fn def_message(gas_limit: u64) -> Message<BaseEvmTypes> {
     }
 }
 
+fn test_message(
+    gas_limit: u64,
+    bytecode: &[u8],
+    modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
+) -> Message<BaseEvmTypes> {
+    let mut message = def_message(gas_limit);
+    if let Some(modify_message) = modify_message {
+        modify_message(&mut message);
+    }
+    Message::<BaseEvmTypes> {
+        code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+        ..message
+    }
+}
+
 fn def_database() -> InMemoryDB {
     let mut database = InMemoryDB::default();
     database.insert_account_info(
@@ -303,7 +322,7 @@ fn def_database() -> InMemoryDB {
     for (key, value) in def_storage() {
         database.insert_account_storage(&DEF_ADDR, key, value);
     }
-    for number in [DEF_BN - U256::from(1), DEF_BN - U256::from(255), DEF_BN - U256::from(256)] {
+    for number in [DEF_BN - U256::ONE, DEF_BN - U256::from(255), DEF_BN - U256::from(256)] {
         database.insert_block_hash(&number, &number.into());
     }
     database
@@ -311,16 +330,16 @@ fn def_database() -> InMemoryDB {
 
 /// Host state snapshot for codegen assertions.
 pub struct HostState {
-    pub storage: HashMap<U256, U256>,
-    pub transient_storage: HashMap<U256, U256>,
+    pub storage: U256Map<U256>,
+    pub transient_storage: U256Map<U256>,
     pub logs: Vec<Log>,
 }
 
 impl HostState {
     fn from_evm(evm: &mut Evm<'_, BaseEvmTypes>) -> Self {
         let keys = [
-            U256::from(0),
-            U256::from(1),
+            U256::ZERO,
+            U256::ONE,
             U256::from(69),
             U256::from(70),
             U256::from(200),
@@ -360,14 +379,9 @@ fn prepare_host(spec_id: SpecId) -> Evm<'static, BaseEvmTypes> {
     {
         evm.state_mut().prewarm(&address);
     }
-    for key in [
-        U256::from(0),
-        U256::from(1),
-        U256::from(69),
-        U256::from(70),
-        U256::from(200),
-        U256::from(0xff),
-    ] {
+    for key in
+        [U256::ZERO, U256::ONE, U256::from(69), U256::from(70), U256::from(200), U256::from(0xff)]
+    {
         evm.state_mut().prewarm_storage_slot(&DEF_ADDR, key);
     }
     evm
@@ -393,14 +407,7 @@ fn with_evm_context_and_host_mut<
     modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
     f: F,
 ) -> R {
-    let mut message = def_message(DEF_GAS_LIMIT);
-    if let Some(modify_message) = modify_message {
-        modify_message(&mut message);
-    }
-    let message = Message::<BaseEvmTypes> {
-        code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
-        ..message
-    };
+    let message = test_message(DEF_GAS_LIMIT, bytecode, modify_message);
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
     interpreter.prepare_run(host);
 
@@ -503,15 +510,8 @@ fn run_compiled_test_case_with_context(
     }
 
     // Interpreter - run evm2 as the oracle
-    let mut message = def_message(gas_limit);
-    if let Some(modify_message) = modify_message {
-        modify_message(&mut message);
-    }
+    let mut message = test_message(gas_limit, bytecode, modify_message);
     message.caller_is_static = is_static;
-    let message = Message::<BaseEvmTypes> {
-        code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
-        ..message
-    };
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
     let mut int_host = prepare_host(spec_id);
     let int_result = interpreter.run(&mut int_host).unwrap();

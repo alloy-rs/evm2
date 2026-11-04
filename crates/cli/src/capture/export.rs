@@ -10,7 +10,7 @@ use alloy_consensus::{
 use alloy_eips::{eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
-use evm2::SpecId;
+use evm2::{SpecId, utils::b256_to_word};
 use evm2_eest::{
     AccessListItem, TestAuthorization,
     blockchaintest::{
@@ -109,7 +109,7 @@ fn mainnet_blob_fork(header: &Header) -> Result<Option<BlobFork>, CaptureError> 
         Some(EthereumHardfork::Bpo1) => Ok(Some(BlobFork::Bpo1)),
         Some(EthereumHardfork::Bpo2) => Ok(Some(BlobFork::Bpo2)),
         Some(EthereumHardfork::Amsterdam) => Ok(Some(BlobFork::Amsterdam)),
-        _ => Err(CaptureError::UnsupportedSpec(spec as u32)),
+        _ => Err(CaptureError::UnsupportedSpec(u32::from(spec))),
     }
 }
 
@@ -154,7 +154,7 @@ fn export_state(capture: &CapturedCase, state: &CapturedState) -> EestState {
             let storage = account
                 .storage
                 .iter()
-                .map(|entry| (U256::from_be_bytes(entry.slot.0), entry.value))
+                .map(|entry| (b256_to_word(entry.slot), entry.value))
                 .collect();
             (
                 account.address,
@@ -173,7 +173,7 @@ fn export_state(capture: &CapturedCase, state: &CapturedState) -> EestState {
 fn parent_header(first: &Block) -> BlockHeader {
     let mut header = first.block_header.clone().expect("exported blocks include headers");
     header.hash = header.parent_hash;
-    header.number = header.number.saturating_sub(U256::from(1));
+    header.number = header.number.saturating_sub(U256::ONE);
     header.gas_used = U256::ZERO;
     header.transactions_trie = B256::ZERO;
     header.receipt_trie = B256::ZERO;
@@ -191,8 +191,7 @@ fn export_block(input: &CapturedBlock) -> Result<Block, CaptureError> {
         transactions: Some(
             block
                 .body
-                .transactions
-                .iter()
+                .transactions()
                 .zip(input.transactions.iter())
                 .map(|(tx, input_tx)| export_transaction(tx, input_tx.signer))
                 .collect(),
@@ -265,7 +264,7 @@ fn export_transaction(tx: &EthereumTxEnvelope<TxEip4844>, signer: Address) -> Tr
         s: signature.s(),
         v: U256::from(signature_v(tx_type, signature.v(), tx.chain_id())),
         value: tx.value(),
-        to: tx.kind().into_to(),
+        to: tx.to(),
         chain_id: tx.chain_id().map(U256::from),
         access_list: tx.access_list().map(export_access_list),
         max_fee_per_gas: tx.tx_type().is_dynamic_fee().then(|| U256::from(tx.max_fee_per_gas())),

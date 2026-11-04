@@ -26,8 +26,8 @@ cargo st # include EEST fixtures with interpreter, JIT, and AOT suites
 ```
 
 Use `EVM2_DISPATCH_BACKEND` to force an interpreter dispatch backend for manual
-testing. Accepted values are `auto` (default), `tco`, `packed`, `single_return`,
-and `unpacked`, for example:
+testing. Accepted values are `auto` (default), `tco`, `packed`, and `unpacked`,
+for example:
 
 ```bash
 EVM2_DISPATCH_BACKEND=packed cargo nextest run -p evm2-eest --test eest --ignore-default-filter

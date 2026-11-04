@@ -1,7 +1,7 @@
 use crate::tracing::builder::geth::MIN_STRUCT_LOG_JSON_LEN;
 use alloy_primitives::map::HashSet;
 use alloy_rpc_types_trace::{
-    geth::{CallConfig, FlatCallConfig, GethDefaultTracingOptions, PreStateConfig},
+    geth::{CallConfig, GethDefaultTracingOptions, PreStateConfig},
     parity::TraceType,
 };
 use core::num::NonZeroU64;
@@ -36,8 +36,9 @@ pub struct TracingInspectorConfig {
     /// Optional filter for opcodes to record. If provided, only steps with opcode in this set will
     /// be recorded.
     pub record_opcodes_filter: Option<OpcodeSet>,
-    /// Whether to ignore precompile calls.
-    pub exclude_precompile_calls: bool,
+    /// Whether to record which calls target a precompile, so that trace builders can leave them
+    /// out.
+    pub record_precompile_calls: bool,
     /// Whether to record logs
     pub record_logs: bool,
     /// Whether to record immediate bytes for opcodes.
@@ -63,7 +64,7 @@ impl TracingInspectorConfig {
             record_state_diff: true,
             record_returndata_snapshots: true,
             record_opcodes_filter: None,
-            exclude_precompile_calls: false,
+            record_precompile_calls: false,
             record_logs: true,
             record_immediate_bytes: true,
             record_step_deltas: true,
@@ -81,7 +82,7 @@ impl TracingInspectorConfig {
             record_stack_snapshots: StackSnapshotType::None,
             record_state_diff: false,
             record_returndata_snapshots: false,
-            exclude_precompile_calls: false,
+            record_precompile_calls: false,
             record_logs: false,
             record_opcodes_filter: None,
             record_immediate_bytes: false,
@@ -102,7 +103,7 @@ impl TracingInspectorConfig {
             record_stack_snapshots: StackSnapshotType::None,
             record_state_diff: false,
             record_returndata_snapshots: false,
-            exclude_precompile_calls: true,
+            record_precompile_calls: true,
             record_logs: false,
             record_opcodes_filter: None,
             record_immediate_bytes: false,
@@ -122,7 +123,7 @@ impl TracingInspectorConfig {
     pub const fn parity_vm_trace() -> Self {
         Self::default_parity()
             .set_record_inputs(false)
-            .set_steps(true)
+            .steps()
             .set_bytecode(true)
             .set_stack_snapshots(StackSnapshotType::Pushes)
             .set_step_deltas(true)
@@ -130,7 +131,8 @@ impl TracingInspectorConfig {
 
     /// Returns a config for geth style traces.
     ///
-    /// This config does _not_ record opcode level traces and is suited for `debug_traceTransaction`
+    /// This config records opcode-level steps with full stack snapshots and is suited for
+    /// `debug_traceTransaction` with the default struct logger.
     ///
     /// This will configure the default output of geth's default
     /// [StructLogTracer](alloy_rpc_types_trace::geth::DefaultFrame).
@@ -144,7 +146,7 @@ impl TracingInspectorConfig {
             record_stack_snapshots: StackSnapshotType::Full,
             record_state_diff: true,
             record_returndata_snapshots: false,
-            exclude_precompile_calls: false,
+            record_precompile_calls: false,
             record_logs: false,
             record_opcodes_filter: None,
             record_immediate_bytes: false,
@@ -206,19 +208,6 @@ impl TracingInspectorConfig {
             .set_record_logs(config.with_log.unwrap_or_default())
     }
 
-    /// Returns a config for geth's
-    /// [FlatCallTracer](alloy_rpc_types_trace::geth::call::FlatCallFrame).
-    ///
-    /// This returns [Self::default_parity] and sets
-    /// [TracingInspectorConfig::exclude_precompile_calls] if configured in the given
-    /// [FlatCallConfig]
-    #[inline]
-    pub fn from_flat_call_config(config: &FlatCallConfig) -> Self {
-        Self::default_parity()
-            // call tracer is similar parity tracer with optional support for logs
-            .set_exclude_precompile_calls(!config.include_precompiles.unwrap_or_default())
-    }
-
     /// Returns a config for geth's [PrestateTracer](alloy_rpc_types_trace::geth::PreStateFrame).
     ///
     /// Note: This currently returns [Self::none] because the prestate tracer result currently
@@ -251,7 +240,7 @@ impl TracingInspectorConfig {
         self.record_stack_snapshots = other.record_stack_snapshots;
         self.record_state_diff |= other.record_state_diff;
         self.record_returndata_snapshots |= other.record_returndata_snapshots;
-        self.exclude_precompile_calls |= other.exclude_precompile_calls;
+        self.record_precompile_calls |= other.record_precompile_calls;
         self.record_logs |= other.record_logs;
         self.record_opcodes_filter = self.record_opcodes_filter.or(other.record_opcodes_filter);
         self.record_immediate_bytes |= other.record_immediate_bytes;
@@ -262,14 +251,6 @@ impl TracingInspectorConfig {
     /// Configure whether call input and contract creation init code should be recorded.
     pub const fn set_record_inputs(mut self, record_inputs: bool) -> Self {
         self.record_inputs = record_inputs;
-        self
-    }
-
-    /// Configure whether calls to precompiles should be ignored.
-    ///
-    /// If set to `true`, calls to precompiles without value transfers will be ignored.
-    pub const fn set_exclude_precompile_calls(mut self, exclude_precompile_calls: bool) -> Self {
-        self.exclude_precompile_calls = exclude_precompile_calls;
         self
     }
 
@@ -480,7 +461,6 @@ mod tests {
             TracingInspectorConfig::all(),
             TracingInspectorConfig::default_parity(),
             TracingInspectorConfig::from_geth_call_config(&CallConfig::default()),
-            TracingInspectorConfig::from_flat_call_config(&FlatCallConfig::default()),
         ] {
             assert!(config.record_inputs);
         }
@@ -562,17 +542,6 @@ mod tests {
         assert!(config.record_steps);
         // VM storage writes use step deltas; StateDiff uses the execution result.
         assert!(!config.record_state_diff);
-    }
-
-    #[test]
-    fn test_flat_call_config() {
-        let config = FlatCallConfig { include_precompiles: Some(true), ..Default::default() };
-        let config = TracingInspectorConfig::from_flat_call_config(&config);
-        assert!(!config.exclude_precompile_calls);
-
-        let config = FlatCallConfig { include_precompiles: Some(false), ..Default::default() };
-        let config = TracingInspectorConfig::from_flat_call_config(&config);
-        assert!(config.exclude_precompile_calls);
     }
 
     #[test]
