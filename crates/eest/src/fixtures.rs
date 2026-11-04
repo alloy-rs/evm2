@@ -74,3 +74,10 @@ pub(crate) fn apply_subdir_to_roots(roots: &mut Vec<TestRoot>, name: &str) {
 pub(crate) fn workspace_relative(path: PathBuf) -> PathBuf {
     if path.is_absolute() { path } else { workspace_root().join(path) }
 }
+
+/// Returns the explicit test root in the `root_env` variable, with the `subdir_env` filter applied.
+pub(crate) fn explicit_root_from_env(root_env: &str, subdir_env: &str) -> Option<PathBuf> {
+    let mut root = workspace_relative(env::var_os(root_env)?.into());
+    apply_subdir(&mut root, subdir_env);
+    Some(root)
+}

@@ -1,6 +1,6 @@
 //! Tests for native BigInt support in Boa
 
-use alloy_primitives::U256;
+use alloy_primitives::{U256, uint};
 use boa_engine::{Context, JsValue, Source, js_string};
 
 #[test]
@@ -45,9 +45,9 @@ fn test_u256_to_boa_bigint() {
     // Test converting U256 values to BigInt
     let test_values = [
         U256::ZERO,
-        U256::from(1u64),
+        U256::ONE,
         U256::from(u64::MAX),
-        U256::from_str_radix("123456789012345678901234567890", 10).unwrap(),
+        uint!(123456789012345678901234567890_U256),
         U256::MAX,
     ];
 

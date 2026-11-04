@@ -9,6 +9,7 @@ use crate::{
     execute::{self, ExecuteConfig as StateConfig},
     filter::NameFilter,
     fixture_io,
+    fixture_kind::FixtureKind,
     harness::{TestRoot, TestSuite, descend_all},
 };
 use libtest_mimic::Failed;
@@ -39,11 +40,15 @@ fn should_ignore(name: &str) -> bool {
 fn run_file(path: PathBuf) -> Result<(), Failed> {
     let input =
         fixture_io::read_to_string(&path).map_err(|err| format!("{}: {err}", path.display()))?;
-    match detect_kind(&input) {
+    match FixtureKind::from_json(&input).map_err(|err| format!("{}: {err}", path.display()))? {
         Some(FixtureKind::Blockchain) => execute_str(
             &path,
             &input,
-            BlockchainConfig { compare_state_root: true, ..Default::default() },
+            BlockchainConfig {
+                compare_state_root: true,
+                compare_receipt_root: true,
+                ..Default::default()
+            },
             &NameFilter::default(),
             &mut NoopHook,
         )
@@ -56,26 +61,4 @@ fn run_file(path: PathBuf) -> Result<(), Failed> {
         }
         None => Err(format!("could not detect fixture kind in {}", path.display()).into()),
     }
-}
-
-enum FixtureKind {
-    State,
-    Blockchain,
-}
-
-/// Detects a fixture's kind from the fields of its first case.
-fn detect_kind(input: &str) -> Option<FixtureKind> {
-    let value: serde_json::Value = serde_json::from_str(input).ok()?;
-    let first = value.as_object()?.values().find_map(serde_json::Value::as_object)?;
-    if has_any(first, &["blocks", "genesisBlockHeader", "lastblockhash", "network"]) {
-        Some(FixtureKind::Blockchain)
-    } else if has_any(first, &["env", "post", "transaction"]) {
-        Some(FixtureKind::State)
-    } else {
-        None
-    }
-}
-
-fn has_any(object: &serde_json::Map<String, serde_json::Value>, fields: &[&str]) -> bool {
-    fields.iter().any(|field| object.contains_key(*field))
 }

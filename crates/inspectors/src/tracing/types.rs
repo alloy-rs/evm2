@@ -67,7 +67,9 @@ pub struct CallTrace {
     pub address: Address,
     /// Whether this is a call to a precompile.
     ///
-    /// Note: This is optional because not all tracers make use of this.
+    /// Only recorded if
+    /// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls)
+    /// is set, otherwise `None`.
     pub maybe_precompile: Option<bool>,
     /// The address of the selfdestructed contract.
     pub selfdestruct_address: Option<Address>,
@@ -145,7 +147,7 @@ impl CallTrace {
     /// Returns true if the status code is a revert.
     #[inline]
     pub fn is_revert(&self) -> bool {
-        self.status.is_some_and(|status| status == InstrStop::Revert)
+        self.status.is_some_and(InstrStop::is_revert)
     }
 
     /// Returns `true` if this trace was a selfdestruct.

@@ -8,6 +8,7 @@ use alloy_primitives::{
 use evm2::{
     Evm, EvmTypes, Inspector,
     interpreter::{Interpreter, Message, MessageResult, op},
+    utils::WordExt,
 };
 
 /// An [Inspector] that collects touched accounts and storage slots.
@@ -127,10 +128,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
             op::SLOAD | op::SSTORE => {
                 if let Some([slot]) = interp.stack().peekn() {
                     let cur_contract = interp.message().destination;
-                    self.touched_slots
-                        .entry(cur_contract)
-                        .or_default()
-                        .insert(B256::from(slot.to_be_bytes()));
+                    self.touched_slots.entry(cur_contract).or_default().insert(B256::from(slot));
                 }
             }
             op::EXTCODECOPY
@@ -139,7 +137,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
             | op::BALANCE
             | op::SELFDESTRUCT => {
                 if let Some([slot]) = interp.stack().peekn() {
-                    let addr = Address::from_word(B256::from(slot.to_be_bytes()));
+                    let addr = slot.to_address();
                     if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
@@ -149,7 +147,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
                 // `go-ethereum` reads the target once five items are on the stack, even if the call
                 // then underflows.
                 if let Some([_, slot, _, _, _]) = interp.stack().peekn() {
-                    let addr = Address::from_word(B256::from(slot.to_be_bytes()));
+                    let addr = slot.to_address();
                     if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }

@@ -2,7 +2,9 @@ use crate::{
     BaseEvmConfig, EvmConfig, ExecutionConfig, SpecId,
     env::BlockEnvExt,
     interpreter::{Host, InstrStop, Interpreter, Message, Word, op},
-    test_utils::{RunConfig, TestHost, TestInterpreter, TestTypes, legacy_bytecode, push},
+    test_utils::{
+        RunConfig, TestHost, TestInterpreter, TestTypes, legacy_bytecode, push, test_host,
+    },
     version::OpcodeConfig,
 };
 use alloc::vec::Vec;
@@ -124,10 +126,7 @@ fn instruction_macro_no_stack_preamble_attribute() {
 
 #[test]
 fn instruction_macro_concrete_evm_types_equals_attribute() {
-    let mut host = TestHost {
-        block: BlockEnvExt { number: Word::from(42), ..BlockEnvExt::default() },
-        ..TestHost::default()
-    };
+    let mut host = test_host(BlockEnvExt { number: Word::from(42), ..BlockEnvExt::default() });
     let interp = run(RunConfig::new([CONCRETE_EQ_OPCODE, op::STOP]).host(&mut host));
 
     assert_eq!(interp.err, InstrStop::Stop);
@@ -136,10 +135,7 @@ fn instruction_macro_concrete_evm_types_equals_attribute() {
 
 #[test]
 fn instruction_macro_evm_types_colon_bound_attribute() {
-    let mut host = TestHost {
-        block: BlockEnvExt { number: Word::from(31337), ..BlockEnvExt::default() },
-        ..TestHost::default()
-    };
+    let mut host = test_host(BlockEnvExt { number: Word::from(31337), ..BlockEnvExt::default() });
     let interp = run(RunConfig::new([TYPE_BOUND_OPCODE, op::STOP]).host(&mut host));
 
     assert_eq!(interp.err, InstrStop::Stop);
@@ -148,10 +144,7 @@ fn instruction_macro_evm_types_colon_bound_attribute() {
 
 #[test]
 fn instruction_macro_evm_types_assoc_colon_bound_attribute() {
-    let mut host = TestHost {
-        block: BlockEnvExt { number: Word::from(31337), ..BlockEnvExt::default() },
-        ..TestHost::default()
-    };
+    let mut host = test_host(BlockEnvExt { number: Word::from(31337), ..BlockEnvExt::default() });
     let interp = run(RunConfig::new([ASSOC_BOUND_OPCODE, op::STOP]).host(&mut host));
 
     assert_eq!(interp.err, InstrStop::Stop);
