@@ -89,15 +89,12 @@ fn target_is_wasm() -> bool {
     target_arch.starts_with("wasm") || target_family.split(',').any(|family| family == "wasm")
 }
 
-/// Whether the stable `auto` backend is `match`: the targets where it measured faster than
+/// Whether the stable `auto` backend is `match`: the architectures where it measured faster than
 /// `packed` overall.
 fn target_prefers_match() -> bool {
     let target_arch =
         env("CARGO_CFG_TARGET_ARCH").and_then(|value| value.into_string().ok()).unwrap_or_default();
-    let target_vendor = env("CARGO_CFG_TARGET_VENDOR")
-        .and_then(|value| value.into_string().ok())
-        .unwrap_or_default();
-    target_arch == "x86_64" || (target_arch == "aarch64" && target_vendor == "apple")
+    matches!(target_arch.as_str(), "x86_64" | "aarch64")
 }
 
 fn target_pointer_width() -> Option<u32> {
