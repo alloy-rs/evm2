@@ -1,4 +1,0 @@
-selected cryptogams script: cryptogams/x86_64/keccak1600-x86_64.pl
-selected cryptogams script flavor: Some("elf")
-running script: "perl" "cryptogams/x86_64/keccak1600-x86_64.pl" "elf" "/home/ubuntu/github/paradigmxyz/solar-ast-json-core/target/debug/build/sha3-asm/390914ad6e71dffd/out/keccak1600-x86_64.S"
-stdout for cryptogams/x86_64/keccak1600-x86_64.pl is empty: file "/home/ubuntu/github/paradigmxyz/solar-ast-json-core/target/debug/build/sha3-asm/390914ad6e71dffd/out/keccak1600-x86_64.S" was written by perl script

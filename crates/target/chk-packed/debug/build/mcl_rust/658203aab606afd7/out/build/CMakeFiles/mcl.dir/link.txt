@@ -1,1 +1,0 @@
-/usr/bin/c++ -fPIC  -ffunction-sections -fdata-sections -fPIC -m64 -w -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -O3 -DNDEBUG -shared -Wl,-soname,libmcl.so.3 -o lib/libmcl.so.3.3 CMakeFiles/mcl.dir/src/fp.cpp.o "CMakeFiles/mcl.dir/src/asm/bint-x64-amd64.S.o" "CMakeFiles/mcl.dir/src/asm/x86-64.S.o"  msm_avx.o 

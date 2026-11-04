@@ -1,1 +1,0 @@
-{"rustc":4715762987238789970,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[966925859616469517,"build_script_build",false,5381542997059970151]],"local":[{"RerunIfChanged":{"output":"debug/build/ahash/2f4e02a4503285f7/run/stdout","paths":["build.rs"]}}],"rustflags":["-Cforce-frame-pointers","-Dwarnings"],"config":0,"compile_kind":0}
