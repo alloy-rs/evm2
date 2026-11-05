@@ -282,7 +282,8 @@ impl TracingInspector {
     /// precompiles without value, see [PrecompileExclusion::ZeroValue].
     #[inline]
     pub fn into_parity_builder(self) -> ParityTraceBuilder {
-        ParityTraceBuilder::new(self.traces.arena, PrecompileExclusion::ZeroValue)
+        let CallTraceArena { arena, nested } = self.traces;
+        ParityTraceBuilder::with_nested_root(arena, PrecompileExclusion::ZeroValue, nested)
     }
 
     /// Consumes the Inspector and returns a [ParityTraceBuilder] for geth's flatCallTracer.
@@ -296,7 +297,8 @@ impl TracingInspector {
         } else {
             PrecompileExclusion::CallAndStaticCall
         };
-        ParityTraceBuilder::new(self.traces.arena, exclusion)
+        let CallTraceArena { arena, nested } = self.traces;
+        ParityTraceBuilder::with_nested_root(arena, exclusion, nested)
     }
 
     /// Consumes the Inspector and returns a [GethTraceBuilder].
@@ -411,6 +413,11 @@ impl TracingInspector {
         // overridden it, so it wins over the address recorded when the create started.
         if let Some(address) = result.created_address {
             trace.address = address;
+        }
+
+        // Only a top-level call of a batch ends with an empty stack while not being the root.
+        if trace_idx != 0 && self.trace_stack.is_empty() {
+            self.traces.settle_batch_call(trace_idx);
         }
     }
 
