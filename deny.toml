@@ -9,6 +9,8 @@ ignore = [
     # Its uses here verify public transaction/precompile inputs; signing uses fixed test keys.
     # Remove this exception when their RustCrypto dependencies are upgraded.
     { id = "RUSTSEC-2026-0387", reason = "Unpatched 0.5.5 is required by Alloy/revm; vulnerable newer versions are banned below." },
+    # `pin-utils` is unmaintained - transitive dependency
+    "RUSTSEC-2026-0441",
 ]
 
 [bans]
