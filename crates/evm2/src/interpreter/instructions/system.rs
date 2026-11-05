@@ -294,7 +294,6 @@ pub fn call_with<T: EvmTypesHost>(
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
-    state.note_inspector_config_change();
     gas.merge_child_gas(result.gas, result.stop);
     // EIP-8037: a value-bearing CALL that creates the target charges NEW_ACCOUNT state
     // gas upfront on this frame. If the call does not succeed (depth/balance failure,
@@ -465,7 +464,6 @@ pub fn create_with<T: EvmTypesHost>(
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
-    state.note_inspector_config_change();
     gas.merge_child_gas(result.gas, result.stop);
 
     // EIP-8037: when the opcode charged the conditional `create_state_gas`

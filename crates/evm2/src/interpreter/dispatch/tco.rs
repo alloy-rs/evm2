@@ -82,7 +82,6 @@ extern_table! {
         }
         if hooked {
             state.set_pc_stack_len(pc.as_ptr(), stack.len());
-            state.set_hooked_running(true);
         }
         let (r, stack_len) = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
@@ -91,9 +90,6 @@ extern_table! {
             (r, stack_view.len)
         };
         stack.set_len(stack_len);
-        if hooked {
-            state.set_hooked_running(false);
-        }
         if dynamic_gas {
             remaining_gas.set(state.gas_mut().remaining());
         }
@@ -107,11 +103,14 @@ extern_table! {
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         super::inc_pc(&mut pc, OP);
-        if !M::INSPECT && hooked && state.reload_requested() {
-            // The frame continues after the instruction on the table for the new config.
-            cold_path();
-            state.set_result(Err(InstrStop::Reload));
-            tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+        if hooked {
+            state.note_inspector_config_change();
+            if !M::INSPECT && state.reload_requested() {
+                // The frame continues after the instruction on the table for the new config.
+                cold_path();
+                state.set_result(Err(InstrStop::Reload));
+                tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+            }
         }
         if M::INSPECT {
             M::step_end(state, pc, stack.len());

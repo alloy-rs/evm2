@@ -116,14 +116,13 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
             gas.sync_before_exec(state, dynamic_gas);
             if hooked {
                 state.set_pc_stack_len(pc.as_ptr(), *stack.len);
-                state.set_hooked_running(true);
             }
             r = instr(&mut pc, stack.reborrow(), state);
-            if hooked {
-                state.set_hooked_running(false);
-            }
             if r.is_ok() {
                 inc_pc(&mut pc, op);
+                if hooked {
+                    state.note_inspector_config_change();
+                }
             }
             gas.sync_after_exec(state, dynamic_gas);
         }

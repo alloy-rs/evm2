@@ -48,10 +48,8 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
-    /// Whether the running instruction is `hooked`.
-    hooked_running: bool,
-    /// Whether the inspector's config changed while the running instruction ran. The frame leaves
-    /// the dispatch after the instruction and continues on the table for the new config.
+    /// Whether the inspector's config changed while the last `hooked` instruction ran. The frame
+    /// leaves the dispatch after the instruction and continues on the table for the new config.
     reload: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
@@ -111,7 +109,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             host: None,
             inspector: None,
             steps: OpcodeSet::EMPTY,
-            hooked_running: false,
             reload: false,
             inspect_table: None,
             spec: SpecId::DEFAULT,
@@ -692,8 +689,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     }
 
     /// Requests a reload if the inspector's config no longer matches the table this frame runs on.
-    /// A message instruction calls it after its child message, and the dispatch leaves for the
-    /// reload once the instruction returns, whatever the instruction does in between.
+    /// The dispatch calls it after each `hooked` instruction returns, and leaves for the reload.
     #[inline(always)]
     pub(crate) fn note_inspector_config_change(&mut self) {
         if self.0.inspector.is_some() {
@@ -703,7 +699,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline(never)]
     fn reload_if_config_changed(&mut self) {
-        assert!(self.0.hooked_running, "an instruction that runs a message must be `hooked`");
         if let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
             && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
@@ -716,13 +711,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     pub(crate) const fn reload_requested(&self) -> bool {
         self.0.reload
-    }
-
-    /// Records whether the running instruction is `hooked`, so that the dispatch stored the latest
-    /// state into the interpreter before it ran.
-    #[inline]
-    pub(crate) const fn set_hooked_running(&mut self, running: bool) {
-        self.0.hooked_running = running;
     }
 
     #[inline]

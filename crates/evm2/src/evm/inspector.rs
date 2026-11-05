@@ -52,8 +52,8 @@ impl FromIterator<u8> for OpcodeSet {
 /// What an [`Inspector`] observes of execution.
 ///
 /// Returned by [`Inspector::inspector_config`]. The EVM reads it when a frame starts and after each
-/// child message returns into the frame, and runs the frame so that it only pays for what the
-/// config observes. The default observes everything.
+/// `hooked` instruction of the frame, such as a CALL or CREATE, and runs the frame so that it only
+/// pays for what the config observes. The default observes everything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InspectorConfig {
     steps: OpcodeSet,
@@ -115,9 +115,10 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Returns what this inspector observes, as an [`InspectorConfig`].
     ///
-    /// Read when a frame starts and when a child message of the frame returns, so a child message
-    /// may change the answer. A change that a hook makes itself, such as in [`Self::step`], takes
-    /// effect when the next child message of the frame returns. The default observes everything.
+    /// Read when a frame starts and after each `hooked` instruction of the frame returns, such as a
+    /// CALL or CREATE, so a child message may change the answer. A change that a hook makes
+    /// itself, such as in [`Self::step`], takes effect after the next `hooked` instruction of the
+    /// frame. The default observes everything.
     #[inline]
     fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::new()
@@ -462,7 +463,7 @@ mod tests {
             TestHost, TestTypes, call_code, create_code, legacy_bytecode, push, push_all,
             return_top_word,
         },
-        utils::address_to_word,
+        utils::{WordExt, address_to_word},
     };
     use alloc::{boxed::Box, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -1103,19 +1104,6 @@ mod tests {
         };
     }
 
-    /// A call that is not `hooked`, so a config reload would resume from a stale pc.
-    #[instruction(no_stack_preamble, dynamic_gas, EvmTypes = BaseEvmTypes)]
-    fn unflagged_call(cx: _) -> Result {
-        instr::call_with(
-            stack,
-            cx.gas,
-            cx.state,
-            MessageKind::Call,
-            |_, _, _| Ok(()),
-            |_, _, _, _| Ok(()),
-        )
-    }
-
     /// A hooked call that pushes a word after `call_with`.
     #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
     fn call_then_push(cx: _) -> Result {
@@ -1144,15 +1132,36 @@ mod tests {
         };
     }
 
-    /// The base config with the call without the flag installed at [`CUSTOM_CALL`].
-    struct UnflaggedCallConfig;
+    /// A hooked call that runs its child message through the host instead of `call_with`.
+    #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
+    fn host_call(cx: _) -> Result {
+        let [_, to, _, _, _, _, _] = stack.popn::<7>()?;
+        let to = to.to_address();
+        let current = cx.state.message();
+        let mut message = MessageExt {
+            kind: MessageKind::Call,
+            depth: current.depth + 1,
+            gas_limit: 10_000,
+            destination: to,
+            call_target: to,
+            caller: current.destination,
+            code_address: to,
+            ..Default::default()
+        };
+        let result =
+            cx.state.host().execute_message(&mut message).map_err(|error| cx.state.fail(error))?;
+        stack.push_u64(result.stop.is_success() as u64)
+    }
 
-    impl EvmConfig<BaseEvmTypes> for UnflaggedCallConfig {
+    /// The base config with the call through the host installed at [`CUSTOM_CALL`].
+    struct HostCallConfig;
+
+    impl EvmConfig<BaseEvmTypes> for HostCallConfig {
         const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
         const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
             let mut config =
                 OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
-            config.set_instruction::<unflagged_call>(CUSTOM_CALL, 100);
+            config.set_instruction::<host_call>(CUSTOM_CALL, 100);
             config
         };
     }
@@ -1183,16 +1192,14 @@ mod tests {
         (result, *evm.clear_inspector_as::<ConfigInspector>().unwrap())
     }
 
-    #[test]
-    fn custom_call_opcode_rereads_the_steps() {
-        let (expected, full) = run_custom_call::<CustomCallConfig>(
-            ConfigInspector::new(OpcodeSet::ALL),
-            CUSTOM_CALL,
-            &[],
-        );
+    /// Asserts that the frame steps the set that the child message of [`CUSTOM_CALL`] switches to,
+    /// from the opcode after it.
+    fn assert_custom_call_rereads_the_steps<C: EvmConfig<BaseEvmTypes>>() {
+        let (expected, full) =
+            run_custom_call::<C>(ConfigInspector::new(OpcodeSet::ALL), CUSTOM_CALL, &[]);
 
         // The child message of the custom opcode switches the steps to `GAS`, and no steps before.
-        let (result, inspector) = run_custom_call::<CustomCallConfig>(
+        let (result, inspector) = run_custom_call::<C>(
             ConfigInspector::new(OpcodeSet::EMPTY).switching_to(opcode_set([op::GAS])),
             CUSTOM_CALL,
             &[],
@@ -1203,13 +1210,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "an instruction that runs a message must be `hooked`")]
-    fn message_instruction_that_is_not_hooked_is_rejected() {
-        run_custom_call::<UnflaggedCallConfig>(
-            ConfigInspector::new(OpcodeSet::EMPTY),
-            CUSTOM_CALL,
-            &[],
-        );
+    fn custom_call_opcode_rereads_the_steps() {
+        assert_custom_call_rereads_the_steps::<CustomCallConfig>();
+    }
+
+    #[test]
+    fn hooked_opcode_that_runs_a_message_through_the_host_rereads_the_steps() {
+        assert_custom_call_rereads_the_steps::<HostCallConfig>();
     }
 
     #[test]
