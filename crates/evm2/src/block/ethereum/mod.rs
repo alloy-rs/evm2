@@ -257,11 +257,6 @@ where
         &self.rules
     }
 
-    /// Returns a mutable reference to the chain rules of the block.
-    pub const fn rules_mut(&mut self) -> &mut EthBlockRules {
-        &mut self.rules
-    }
-
     /// Returns the accumulated block state.
     pub const fn block_state(&self) -> &BlockState {
         &self.block_state
