@@ -7,7 +7,7 @@ use crate::{
         config::{CompilationEvent, CompilationKind, RuntimeConfig, RuntimeTuning},
         storage::{
             ArtifactKey, ArtifactManifest, ArtifactStore, RuntimeCacheKey, StoredArtifact,
-            compile_config_hash,
+            artifact_mac, compile_config_hash, verify_artifact,
         },
         worker::{
             AotSuccess, CompileJob, JitCodeBacking, JitObjectSuccess, SyncNotifier, WorkerPool,
@@ -70,15 +70,22 @@ pub(crate) struct JitObjectLinker {
     backend: Option<crate::EvmLlvmBackend>,
     /// Resolves the builtins of a custom host, which the helper leaves as symbols.
     resolver: Option<fn(evm2_jit_builtins::Builtin) -> usize>,
+    /// Authenticates stored AOT artifacts before they are linked.
+    auth_key: B256,
 }
 
 #[cfg(not(feature = "llvm"))]
-pub(crate) struct JitObjectLinker;
+pub(crate) struct JitObjectLinker {
+    auth_key: B256,
+}
 
 #[cfg(feature = "llvm")]
 impl JitObjectLinker {
-    pub(crate) const fn new(resolver: Option<fn(evm2_jit_builtins::Builtin) -> usize>) -> Self {
-        Self { backend: None, resolver }
+    pub(crate) const fn new(
+        resolver: Option<fn(evm2_jit_builtins::Builtin) -> usize>,
+        auth_key: B256,
+    ) -> Self {
+        Self { backend: None, resolver, auth_key }
     }
 
     fn link(
@@ -120,8 +127,11 @@ impl JitObjectLinker {
 
 #[cfg(not(feature = "llvm"))]
 impl JitObjectLinker {
-    pub(crate) const fn new(_resolver: Option<fn(evm2_jit_builtins::Builtin) -> usize>) -> Self {
-        Self
+    pub(crate) const fn new(
+        _resolver: Option<fn(evm2_jit_builtins::Builtin) -> usize>,
+        auth_key: B256,
+    ) -> Self {
+        Self { auth_key }
     }
 
     fn link(
@@ -141,8 +151,11 @@ impl JitObjectLinker {
         key: RuntimeCacheKey,
         stored: &StoredArtifact,
     ) -> eyre::Result<CompiledProgram> {
+        // Read once and link exactly the bytes that were authenticated, so replacing the file
+        // after the check changes nothing.
         let object = fs::read(&stored.object_path)
             .wrap_err_with(|| format!("read {:?}", stored.object_path))?;
+        verify_artifact(&self.auth_key, &stored.manifest, &object)?;
         // The object may reference any builtin of the base host.
         let (func, backing) =
             self.link(&stored.manifest.symbol_name, &object, &builtin_symbol_names(None))?;
@@ -688,6 +701,12 @@ impl BackendState {
         let artifact_key = self.artifact_key(key);
 
         let content_hash = keccak256(&success.object_bytes).0;
+        let mac = artifact_mac(
+            &self.jit_object_linker.auth_key,
+            &artifact_key,
+            &success.symbol_name,
+            &success.object_bytes,
+        );
 
         let manifest = ArtifactManifest {
             artifact_key,
@@ -699,6 +718,7 @@ impl BackendState {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
             content_hash,
+            mac,
         };
 
         // Persist to store if available.
@@ -977,7 +997,7 @@ pub(crate) fn run(
         cold_head: None,
         cold_tail: None,
         workers,
-        jit_object_linker: JitObjectLinker::new(config.host.resolver),
+        jit_object_linker: JitObjectLinker::new(config.host.resolver, config.auth_key()),
         result_rx,
         store: config.store,
         tuning: config.tuning,
@@ -1052,7 +1072,7 @@ mod notifier_tests {
             cold_head: None,
             cold_tail: None,
             workers,
-            jit_object_linker: JitObjectLinker::new(config.host.resolver),
+            jit_object_linker: JitObjectLinker::new(config.host.resolver, config.auth_key()),
             result_rx,
             config_hash: compile_config_hash(&config),
             store: config.store,
@@ -1589,7 +1609,7 @@ mod tests {
     fn jit_object_linker_relinks_live_symbol_name() {
         let success = compile_jit_object("jit_duplicate_symbol");
 
-        let mut linker = JitObjectLinker::new(None);
+        let mut linker = JitObjectLinker::new(None, B256::ZERO);
         let link = |linker: &mut JitObjectLinker| {
             linker.link(&success.symbol_name, &success.object_bytes, &success.builtin_symbols)
         };

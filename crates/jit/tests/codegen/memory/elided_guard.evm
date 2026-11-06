@@ -1,0 +1,33 @@
+    CALLVALUE
+    PUSH %large
+    JUMPI
+    PUSH0
+    PUSH0
+    MSTORE
+    PUSH %join
+    JUMP
+large:
+    JUMPDEST
+    PUSH0
+    PUSH0
+    MSTORE
+join:
+    JUMPDEST
+    PUSH 1
+    PUSH0
+    MSTORE
+    PUSH 2
+    PUSH0
+    MSTORE
+    STOP
+
+; The analysis elides the size checks after the join, so the first access is guarded instead and
+; the second reuses that guard.
+; CHECK: call void @llvm.trap()
+; CHECK-COUNT-2: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
+; CHECK-NOT: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
+; CHECK: %ecx.mem_len = load
+; CHECK-NEXT: [[OOB:%.*]] = icmp ult i64 %ecx.mem_len, 32
+; CHECK-NEXT: br i1 [[OOB]], label %trap
+; CHECK-NOT: ecx.mem_len
+; CHECK-NOT: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
