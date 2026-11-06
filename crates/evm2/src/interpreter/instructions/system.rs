@@ -138,12 +138,17 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     Ok((gas_limit, new_account_state_gas, code, code_address))
 }
 
+/// # Safety
+///
+/// If `lend`, the message must be passed to the host as in
+/// [`Interpreter::call_input`](crate::interpreter::Interpreter::call_input).
 #[inline(never)]
-fn prepare_call<T: EvmTypesHost>(
+unsafe fn prepare_call<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
+    lend: bool,
     message: &mut Message<T>,
     return_memory_range: &mut Range<usize>,
 ) -> Result<u64> {
@@ -179,7 +184,12 @@ fn prepare_call<T: EvmTypesHost>(
             kind == MessageKind::Call,
             local_gas_limit,
         )?;
-    let input = memory_range_bytes(state, input_range)?;
+    let input = if lend {
+        // SAFETY: Upheld by the caller.
+        unsafe { state.0.call_input(input_range.start, input_range.len()) }
+    } else {
+        memory_range_bytes(state, input_range)?.into()
+    };
 
     let current = state.message();
     let (destination, caller, call_value, code_address) = match kind {
@@ -247,7 +257,8 @@ fn call_inner<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
 ) -> Result {
-    call_with(stack, gas, state, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
+    // SAFETY: The hooks do nothing.
+    unsafe { call_impl(stack, gas, state, kind, true, |_, _, _| Ok(()), |_, _, _, _| Ok(())) }
 }
 
 /// Executes a call opcode of `kind` with hooks around its child message.
@@ -273,7 +284,7 @@ fn call_inner<T: EvmTypesHost>(
 /// The result can be the stop for a config reload. Return it as the last step of the instruction.
 #[inline]
 pub fn call_with<T: EvmTypesHost>(
-    mut stack: StackMut<'_>,
+    stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
@@ -285,10 +296,46 @@ pub fn call_with<T: EvmTypesHost>(
         &MessageResult<T>,
     ) -> Result,
 ) -> Result {
+    // SAFETY: The input is not lent.
+    unsafe { call_impl(stack, gas, state, kind, false, before, after) }
+}
+
+/// Body of [`call_with`]. If `lend`, the child message borrows its input from memory, so the hooks
+/// must not have access to it.
+///
+/// # Safety
+///
+/// If `lend`, `before` and `after` must do nothing.
+#[inline]
+unsafe fn call_impl<T: EvmTypesHost>(
+    mut stack: StackMut<'_>,
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, '_, T>,
+    kind: MessageKind,
+    lend: bool,
+    before: impl FnOnce(&mut Gas, &mut InterpreterState<'_, '_, T>, &mut Message<T>) -> Result,
+    after: impl FnOnce(
+        &mut Gas,
+        &mut InterpreterState<'_, '_, T>,
+        &Message<T>,
+        &MessageResult<T>,
+    ) -> Result,
+) -> Result {
     let mut message = Message::<T>::default();
     let mut return_memory_range = 0..0;
-    let new_account_state_gas =
-        prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
+    // SAFETY: If `lend`, the hooks do nothing, so the message goes to the host untouched, and
+    // nothing reads it after the host returns.
+    let new_account_state_gas = unsafe {
+        prepare_call(
+            stack.reborrow(),
+            gas,
+            state,
+            kind,
+            lend,
+            &mut message,
+            &mut return_memory_range,
+        )
+    }?;
     before(gas, state, &mut message)?;
 
     let mut result =
@@ -453,7 +500,7 @@ pub fn create_with<T: EvmTypesHost>(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(input.clone()),
-        input,
+        input: input.into(),
         value,
         code_address: destination,
         // CREATE is rejected in a static context (see `require_non_staticcall`).

@@ -33,7 +33,8 @@ pub use memory::Memory;
 
 mod message;
 pub use message::{
-    Message, MessageExt, MessageKind, create_preaccess_failure, derive_create_destination,
+    Message, MessageExt, MessageInput, MessageKind, create_preaccess_failure,
+    derive_create_destination,
 };
 
 mod host;
