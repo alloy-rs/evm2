@@ -439,6 +439,16 @@ fn try_range_fold(
         | op::DUP1..=op::DUP16
         | op::SWAP1..=op::SWAP16
         | op::LOG0..=op::LOG4
+        | op::SETCODEFROM
+        | op::APPROVE
+        | op::TXPARAM
+        | op::FRAMEDATALOAD
+        | op::FRAMEDATACOPY
+        | op::FRAMEPARAM
+        | op::SIGPARAM
+        | op::SIGDATACOPY
+        | op::TXTRACE
+        | op::EVENTDATACOPY
         | op::DUPN
         | op::SWAPN
         | op::EXCHANGE

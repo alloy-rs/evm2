@@ -435,6 +435,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             let bytecode = unsafe { trustme::decouple_lt(self.bytecode) };
             self.bytecode_ref = Some(BytecodeRef::new(bytecode));
         }
+        self.gas.tracker_mut().set_isolated_state(host.frame_transaction_active());
         let config = host.execution_config();
         let version = config.version();
         self.memory.set_memory_limit(version.memory_limit);

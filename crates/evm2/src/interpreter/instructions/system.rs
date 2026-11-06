@@ -493,6 +493,19 @@ pub fn create_with<T: EvmTypesHost>(
 }
 
 #[instruction(dynamic_gas)]
+pub fn setcodefrom(cx: _, [source]: [Word]) -> Result<out> {
+    require_non_staticcall(cx.state)?;
+    let source = source.to_address();
+    let destination = cx.state.message().destination;
+    let adopted = cx
+        .state
+        .host()
+        .set_code_from(&destination, &source, cx.gas)
+        .map_err(|error| cx.state.fail(error))?;
+    out.write(Word::from(adopted));
+}
+
+#[instruction(dynamic_gas)]
 pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
     let target = target.to_address();
@@ -515,7 +528,7 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     if should_charge_topup && cx.state.feature(EvmFeatures::EIP8037) {
         cx.gas.spend_state(cx.state.gas_params().new_account_state_gas())?;
     }
-    if !res.previously_destroyed {
+    if !res.previously_destroyed && !cx.state.feature(EvmFeatures::EIP4758) {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
     }
     cx.state.inspect_selfdestruct(destination, &target, &res.value);

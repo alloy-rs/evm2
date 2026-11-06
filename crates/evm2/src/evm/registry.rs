@@ -7,12 +7,17 @@
 //! it does not force a particular transaction or receipt representation onto
 //! the rest of the crate.
 
-use crate::{AnyError, DatabaseError, EvmTypesHost, ExecutionError};
+use crate::{
+    AnyError, DatabaseError, EvmTypesHost, ExecutionError, ethereum::eip8141::FrameValidationResult,
+};
 use alloc::sync::Arc;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{U256, map::HashMap};
 use core::{error::Error, fmt, marker::PhantomData};
 use thiserror::Error;
+
+mod frame_error;
+pub use frame_error::FrameTransactionError;
 
 /// Convenience result type used by the registry and handlers.
 pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
@@ -39,7 +44,7 @@ pub enum HandlerError {
         expected: u8,
     },
     /// Sender account does not have the expected nonce.
-    #[error("invalid nonce: expected {expected}, got {got}")]
+    #[error("nonce {got} too {direction}, expected {expected}", direction = if got < expected { "low" } else { "high" })]
     InvalidNonce {
         /// Expected nonce.
         expected: u64,
@@ -82,7 +87,7 @@ pub enum HandlerError {
         balance: U256,
     },
     /// Sender account has deployed code.
-    #[error("caller has code")]
+    #[error("reject transactions from senders with deployed code")]
     RejectCallerWithCode,
     /// Transaction nonce cannot be incremented.
     #[error("nonce overflow in transaction")]
@@ -96,7 +101,7 @@ pub enum HandlerError {
         block_gas_limit: U256,
     },
     /// Transaction gas limit exceeds the active per-transaction gas cap.
-    #[error("transaction gas limit {gas_limit} exceeds cap {cap}")]
+    #[error("transaction gas limit ({gas_limit}) is greater than the cap ({cap})")]
     TxGasLimitGreaterThanCap {
         /// Transaction gas limit.
         gas_limit: u64,
@@ -149,7 +154,7 @@ pub enum HandlerError {
     #[error("empty blobs")]
     EmptyBlobs,
     /// EIP-4844 blob transaction contains too many blob hashes.
-    #[error("too many blobs: have {have}, max {max}")]
+    #[error("too many blobs, have {have}, max {max}")]
     TooManyBlobs {
         /// Blob count in the transaction.
         have: usize,
@@ -162,6 +167,17 @@ pub enum HandlerError {
     /// Priority fee is greater than max fee.
     #[error("priority fee greater than max fee")]
     PriorityFeeGreaterThanMaxFee,
+    /// Invalid frame transaction.
+    #[error(transparent)]
+    InvalidFrameTransaction(#[from] FrameTransactionError),
+    /// Frame transaction fee budget does not cover execution and blob base fees.
+    #[error("gas price is less than basefee")]
+    FrameFeeBudgetTooLow {
+        /// Required base-fee budget for all reserved gas and blobs.
+        required: U256,
+        /// Signed maximum total fee.
+        got: U256,
+    },
 }
 
 impl From<DatabaseError> for HandlerError {
@@ -219,6 +235,19 @@ pub trait TxHandler<T: EvmTypesHost, Tx, Output> {
 
     /// Validates and executes the transaction.
     fn execute(&self, req: TxRequest<'_, '_, T, Tx>) -> HandlerResult<Output>;
+
+    /// Executes a payable frame prefix without finalizing the transaction.
+    ///
+    /// The caller owns discarding the prefix's state changes and execution context.
+    fn validate_frame_prefix(
+        &self,
+        _req: TxRequest<'_, '_, T, Tx>,
+        _prefix_end: usize,
+    ) -> HandlerResult<FrameValidationResult> {
+        Err(HandlerError::InvalidFrameTransaction(
+            FrameTransactionError::PrefixRequiresFrameTransaction,
+        ))
+    }
 }
 
 /// Builds a handler from shared preparation and execution closures.
@@ -296,6 +325,18 @@ impl<T: EvmTypesHost, Output> AnyTxHandler<T, Output> {
     ) -> HandlerResult<()> {
         self.inner.validate(env, host)
     }
+
+    /// Executes a frame prefix through its typed handler.
+    ///
+    /// The caller owns discarding prefix effects, as with [`Self::validate`].
+    pub fn validate_frame_prefix<'host>(
+        &self,
+        env: Recovered<&T::Tx>,
+        host: &mut T::Host<'host>,
+        prefix_end: usize,
+    ) -> HandlerResult<FrameValidationResult> {
+        self.inner.validate_frame_prefix(env, host, prefix_end)
+    }
 }
 
 trait ErasedTxHandler<T: EvmTypesHost, Output>: Send + Sync {
@@ -310,6 +351,13 @@ trait ErasedTxHandler<T: EvmTypesHost, Output>: Send + Sync {
         env: Recovered<&T::Tx>,
         host: &mut T::Host<'host>,
     ) -> HandlerResult<()>;
+
+    fn validate_frame_prefix<'host>(
+        &self,
+        env: Recovered<&T::Tx>,
+        host: &mut T::Host<'host>,
+        prefix_end: usize,
+    ) -> HandlerResult<FrameValidationResult>;
 }
 
 struct HandlerAdapter<Tx, H, F> {
@@ -361,6 +409,26 @@ where
             host,
             _non_exhaustive: (),
         })
+    }
+
+    fn validate_frame_prefix<'host>(
+        &self,
+        env: Recovered<&T::Tx>,
+        host: &mut T::Host<'host>,
+        prefix_end: usize,
+    ) -> HandlerResult<FrameValidationResult> {
+        let (envelope, signer) = env.into_parts();
+        let tx = (self.extract)(envelope)
+            .ok_or(HandlerError::WrongTransactionType { expected: self.type_id })?;
+        self.handler.validate_frame_prefix(
+            TxRequest {
+                envelope,
+                tx: Recovered::new_unchecked(tx, signer),
+                host,
+                _non_exhaustive: (),
+            },
+            prefix_end,
+        )
     }
 }
 
@@ -687,6 +755,16 @@ mod tests {
         );
         let handler = registry.try_get_by_type(0x01).unwrap();
         let mut host = TestHost { block: BlockEnvExt::default() };
+        let tx =
+            Recovered::new_unchecked(Envelope::Transfer(TransferTx { amount: 0 }), Address::ZERO);
+        assert_eq!(
+            handler.validate_frame_prefix(tx.as_recovered_ref(), &mut host, 1),
+            Err(HandlerError::InvalidFrameTransaction(
+                FrameTransactionError::PrefixRequiresFrameTransaction
+            ))
+        );
+        assert_eq!(prepared_count.load(Ordering::Relaxed), 0);
+        assert_eq!(executed_count.load(Ordering::Relaxed), 0);
         for amount in 0..3 {
             let tx =
                 Recovered::new_unchecked(Envelope::Transfer(TransferTx { amount }), Address::ZERO);
@@ -722,6 +800,10 @@ mod tests {
         );
         assert_eq!(
             handler.validate(wrong.as_recovered_ref(), &mut host),
+            Err(HandlerError::WrongTransactionType { expected: 0x01 })
+        );
+        assert_eq!(
+            handler.validate_frame_prefix(wrong.as_recovered_ref(), &mut host, 1),
             Err(HandlerError::WrongTransactionType { expected: 0x01 })
         );
         assert_eq!(prepared_count.load(Ordering::Relaxed), 6);
@@ -783,5 +865,36 @@ mod tests {
         original.register(0x03, transfer, handler(|_| Ok(()), |req, ()| handle_transfer(req)));
         assert!(original.contains(0x03));
         assert!(!cloned.contains(0x03));
+    }
+
+    #[test]
+    fn frame_error_messages_do_not_change_other_handler_errors() {
+        for (error, message) in [
+            (
+                HandlerError::FrameFeeBudgetTooLow { required: U256::from(2), got: U256::ONE },
+                "gas price is less than basefee",
+            ),
+            (
+                HandlerError::InvalidFrameTransaction(FrameTransactionError::VerifyFrameFailed),
+                "EIP-8141 VERIFY frame failed",
+            ),
+            (HandlerError::InvalidNonce { expected: 5, got: 4 }, "nonce 4 too low, expected 5"),
+            (HandlerError::InvalidNonce { expected: 5, got: 6 }, "nonce 6 too high, expected 5"),
+            (
+                HandlerError::TxGasLimitGreaterThanCap { gas_limit: 16_777_217, cap: 16_777_216 },
+                "transaction gas limit (16777217) is greater than the cap (16777216)",
+            ),
+            (HandlerError::TooManyBlobs { have: 10, max: 9 }, "too many blobs, have 10, max 9"),
+            (
+                HandlerError::RejectCallerWithCode,
+                "reject transactions from senders with deployed code",
+            ),
+            (
+                HandlerError::Fatal(AnyError::from("JavaScript tracing interrupted")),
+                "fatal error: JavaScript tracing interrupted",
+            ),
+        ] {
+            assert_eq!(error.to_string(), message);
+        }
     }
 }

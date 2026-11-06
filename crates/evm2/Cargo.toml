@@ -27,6 +27,9 @@ derive-where.workspace = true
 thiserror.workspace = true
 typeid.workspace = true
 
+# std
+stacker = { workspace = true, optional = true }
+
 # no_std
 once_cell = { workspace = true, features = ["alloc"] }
 paste = { workspace = true, optional = true }
@@ -103,6 +106,7 @@ postcard = { workspace = true, features = ["alloc"] }
 rand = { workspace = true, features = ["std"] }
 ark-std = { workspace = true }
 rstest.workspace = true
+revm.workspace = true
 
 [[example]]
 name = "custom_evm"
@@ -147,6 +151,7 @@ std = [
     "wincode?/std",
     "triomphe?/std",
     "ruint?/std",
+    "dep:stacker",
 ]
 
 async = ["std", "dep:corosensei"]

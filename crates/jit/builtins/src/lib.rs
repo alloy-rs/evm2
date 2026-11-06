@@ -476,6 +476,7 @@ pub unsafe fn __revmc_builtin_sstore<T: EvmTypesHost>(
         let state_gas = ecx.gas_params().sstore_state_gas(&state_load);
         ecx.gas.spend_state(state_gas)?;
         let refill = ecx.gas_params().sstore_state_gas_refill(&state_load);
+        let refill = ecx.host().frame_sstore_gas(*target, index, state_gas, refill);
         ecx.gas.refill_reservoir(refill);
     }
 
@@ -962,16 +963,8 @@ pub unsafe fn __revmc_builtin_do_return<T: EvmTypesHost>(
 ) -> BuiltinResult {
     let rev![offset, len] = sp;
     let len = word_to_usize(len.to_u256())?;
-    let output = if len != 0 {
-        let offset = word_to_usize(offset.to_u256())?;
-        let Some(end) = offset.checked_add(len) else {
-            return Err(InstrStop::MemoryOOG.into());
-        };
-        ensure_memory(ecx, offset, len)?;
-        offset as u32..end as u32
-    } else {
-        0..0
-    };
+    let offset = if len == 0 { 0 } else { word_to_usize(offset.to_u256())? };
+    let output = output_memory_range(ecx, offset, len)?;
     ecx.interpreter_mut().set_output(output);
     Err(result.into())
 }
@@ -983,19 +976,27 @@ pub unsafe fn __revmc_builtin_do_return_cc<T: EvmTypesHost>(
     len: u64,
     result: InstrStop,
 ) -> BuiltinResult {
-    let offset = offset as usize;
-    let len = len as usize;
-    let output = if len != 0 {
-        let Some(end) = offset.checked_add(len) else {
-            return Err(InstrStop::MemoryOOG.into());
-        };
-        ensure_memory(ecx, offset, len)?;
-        offset as u32..end as u32
-    } else {
-        0..0
-    };
+    let output = output_memory_range(ecx, offset as usize, len as usize)?;
     ecx.interpreter_mut().set_output(output);
     Err(result.into())
+}
+
+#[inline]
+pub unsafe fn __revmc_builtin_setcodefrom<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    source: &mut EvmWord,
+) -> BuiltinResult {
+    require_non_staticcall(ecx)?;
+    let destination = ecx.message().destination;
+    let address = source.to_address();
+    // SAFETY: The context exclusively owns the interpreter borrow; its gas is stored separately.
+    let interpreter = unsafe { ecx.interpreter.as_mut() };
+    let adopted = interpreter
+        .host()
+        .set_code_from(&destination, &address, &mut ecx.gas)
+        .map_err(|error| interpreter.fail(error))?;
+    *source = EvmWord::from(Word::from(adopted));
+    Ok(())
 }
 
 #[inline]
@@ -1028,7 +1029,7 @@ pub unsafe fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
         ecx.gas.spend_state(ecx.gas_params().new_account_state_gas())?;
     }
 
-    if !res.previously_destroyed {
+    if !res.previously_destroyed && !ecx.enables(EvmFeatures::EIP4758) {
         ecx.gas.record_refund(ecx.gas_params().get(GasId::SelfdestructRefund) as i64);
     }
 
@@ -1119,8 +1120,21 @@ mod abi {
         __revmc_builtin_do_return(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2], result: InstrStop) -> BuiltinResult;
         __revmc_builtin_do_return_cc(ecx: &mut EvmContext<'_, '_, '_, T>, offset: u64, len: u64, result: InstrStop) -> BuiltinResult;
         __revmc_builtin_selfdestruct(ecx: &mut EvmContext<'_, '_, '_, T>, target: &mut EvmWord) -> BuiltinResult;
+        __revmc_builtin_setcodefrom(ecx: &mut EvmContext<'_, '_, '_, T>, source: &mut EvmWord) -> BuiltinResult;
+        __revmc_builtin_approve(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 3]) -> BuiltinResult;
+        __revmc_builtin_txparam(ecx: &mut EvmContext<'_, '_, '_, T>, param: &mut EvmWord) -> BuiltinResult;
+        __revmc_builtin_framedataload(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
+        __revmc_builtin_frameparam(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
+        __revmc_builtin_sigparam(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
+        __revmc_builtin_txtrace(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
+        __revmc_builtin_framedatacopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 4]) -> BuiltinResult;
+        __revmc_builtin_sigdatacopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 4]) -> BuiltinResult;
+        __revmc_builtin_eventdatacopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 4]) -> BuiltinResult;
     }
 }
+
+mod frame;
+pub use frame::*;
 
 #[cfg(test)]
 mod tests {

@@ -1412,3 +1412,6 @@ mod custom_host_tests {
         assert_eq!(interpreted.output()[24..], 0xdead_u64.to_be_bytes());
     }
 }
+
+#[cfg(all(test, feature = "llvm"))]
+mod frame_tests;

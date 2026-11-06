@@ -115,6 +115,8 @@ pub enum InstrStop {
     FatalExternalError,
     /// Invalid encoding of an instruction's immediate operand.
     InvalidImmediateEncoding,
+    /// Attempted to change a protocol system contract's code.
+    SystemContractCodeChange,
     /// The inspector's config changed while a child message ran. The frame leaves the dispatch,
     /// continues after the instruction on the table for the new config, and never reports this
     /// stop.

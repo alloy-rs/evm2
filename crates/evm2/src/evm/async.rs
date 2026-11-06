@@ -390,6 +390,12 @@ where
     }
 }
 
+/// Returns whether execution is already using an EVM-owned fiber stack.
+#[inline]
+pub(crate) fn is_on_fiber() -> bool {
+    CURRENT.get().is_some()
+}
+
 fn with_current<R>(f: impl FnOnce(&mut CurrentFiber) -> AsyncResult<R>) -> AsyncResult<R> {
     let mut current = CURRENT.get().ok_or(AsyncError::NotOnFiber)?;
     f(unsafe { current.as_mut() })

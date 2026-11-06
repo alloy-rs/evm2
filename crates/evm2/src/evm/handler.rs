@@ -1,6 +1,9 @@
 //! Transaction handler extension points.
 
-use crate::{Evm, EvmTypes, TxResult, interpreter::MessageResult, registry::HandlerResult};
+use crate::{
+    Evm, EvmTypes, TxResult, ethereum::eip8141::PreparedFrameTx, interpreter::MessageResult,
+    registry::HandlerResult,
+};
 use alloy_primitives::{Address, U256};
 use derive_where::derive_where;
 
@@ -57,6 +60,26 @@ pub trait TxHandlerHooks<T: EvmTypes>: Sized {
         gas: GasSettlement<T>,
     ) -> HandlerResult<TxResult<T>> {
         crate::ethereum::default_settle_gas(host, gas)
+    }
+
+    /// Runs after frame transaction preparation, without charging its sender upfront.
+    fn before_frame_execution(
+        _host: &mut Evm<'_, T>,
+        _envelope: &T::Tx,
+        _prepared: &PreparedFrameTx,
+    ) -> HandlerResult<()> {
+        Ok(())
+    }
+
+    /// Settles frame transaction fees after payment approval and frame rollback handling.
+    fn settle_frame_transaction(
+        host: &mut Evm<'_, T>,
+        _envelope: &T::Tx,
+        prepared: &PreparedFrameTx,
+        result: TxResult<T>,
+    ) -> HandlerResult<TxResult<T>> {
+        crate::ethereum::eip8141::settle_fees(host, prepared, &result)?;
+        Ok(result)
     }
 }
 

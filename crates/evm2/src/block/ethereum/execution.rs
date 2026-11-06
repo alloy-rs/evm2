@@ -122,7 +122,9 @@ impl TryFrom<HandlerError> for EthInvalidTxError {
             | HandlerError::EmptyBlobs
             | HandlerError::TooManyBlobs { .. }
             | HandlerError::BlobVersionNotSupported
-            | HandlerError::PriorityFeeGreaterThanMaxFee => Ok(Self(error)),
+            | HandlerError::PriorityFeeGreaterThanMaxFee
+            | HandlerError::InvalidFrameTransaction(_)
+            | HandlerError::FrameFeeBudgetTooLow { .. } => Ok(Self(error)),
         }
     }
 }

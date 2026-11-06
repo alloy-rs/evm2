@@ -26,8 +26,9 @@ fn load_account<T: EvmTypesHost>(
     Ok(account)
 }
 
+/// Expands memory and copies a zero-padded slice, ignoring offsets for an empty copy.
 #[inline]
-fn copy_data(
+pub(super) fn copy_data(
     gas: &mut Gas,
     memory: &mut Memory,
     gas_params: &GasParams,

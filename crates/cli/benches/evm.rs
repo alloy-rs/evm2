@@ -8,6 +8,8 @@ use std::{env, time::Duration};
 
 #[path = "evm/fixture.rs"]
 mod fixture;
+#[path = "evm/frame.rs"]
+mod frame;
 #[cfg(feature = "jit")]
 #[path = "evm/jit.rs"]
 mod jit;
@@ -52,9 +54,12 @@ fn evm(c: &mut Criterion) {
 
     let shard = env::var("EVM2_BENCH_SHARD").ok();
     assert!(
-        matches!(shard.as_deref(), None | Some("interpreter" | "jit" | "jit-mainnet")),
+        matches!(shard.as_deref(), None | Some("interpreter" | "jit" | "jit-mainnet" | "frame")),
         "unknown EVM2_BENCH_SHARD: {shard:?}"
     );
+    if shard.as_deref() == Some("frame") {
+        return;
+    }
     let bench_interpreter = matches!(shard.as_deref(), None | Some("interpreter"));
     assert!(
         bench_interpreter || cfg!(feature = "jit"),
@@ -170,5 +175,5 @@ fn expand_cases(benches: &[evm_bench::Bench], suites: &fixture::Suites) -> Vec<B
     cases
 }
 
-criterion_group!(benches, evm);
+criterion_group!(benches, evm, frame::bench);
 criterion_main!(benches);

@@ -206,6 +206,7 @@ fn revm_db(case: &EvmCase) -> RevmInMemoryDB {
 mod tests {
     use super::*;
     use crate::fuzzer::{case::CaseGenerator, rng::Gen};
+    use evm2::SpecId;
 
     #[test]
     fn reused_backends_match_fresh_executors() {
@@ -219,5 +220,14 @@ mod tests {
             assert_eq!(Evm2Backend::default().run(case), expected, "fresh evm2 seed {seed}");
             assert_eq!(evm2.run(case), expected, "reused evm2 seed {seed}");
         }
+    }
+
+    #[test]
+    fn unsupported_reference_forks_use_amsterdam() {
+        let mut case = CaseGenerator::default().generate(&mut Gen::new(1)).clone();
+        case.spec = SpecId::AMSTERDAM;
+        let expected = RevmBackend::default().run(&case);
+        case.spec = SpecId::BOGOTA;
+        assert_eq!(RevmBackend::default().run(&case), expected);
     }
 }

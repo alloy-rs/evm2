@@ -757,6 +757,11 @@ mod spec_serde {
         D: Deserializer<'de>,
     {
         let name = String::deserialize(deserializer)?;
+        if name == "BOGOTA" {
+            return Err(de::Error::custom(
+                "BOGOTA is not supported by upstream revm; use native replay",
+            ));
+        }
         name.parse().map_err(|_| de::Error::custom(format!("unknown spec id {name:?}")))
     }
 }
@@ -764,6 +769,17 @@ mod spec_serde {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_bogota_cases_are_rejected_before_differential_execution() {
+        let case = CaseGenerator::default().generate(&mut Gen::new(1)).clone();
+        let mut json = serde_json::to_value(case).unwrap();
+        json["spec"] = serde_json::json!("BOGOTA");
+        assert_eq!(
+            serde_json::from_value::<EvmCase>(json).unwrap_err().to_string(),
+            "BOGOTA is not supported by upstream revm; use native replay"
+        );
+    }
 
     #[test]
     fn regeneration_matches_fresh_case() {

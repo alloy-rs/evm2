@@ -1,20 +1,23 @@
 //! Geth trace builder
+
 use crate::tracing::{
     types::{CallKind, CallTraceNode, CallTraceStepStackItem, StorageChange},
     utils::load_account_code,
 };
-use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, vec, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, format, vec, vec::Vec};
 use alloy_primitives::{
     Address, B256, Bytes, U256,
-    map::{AddressMap, AddressSet, HashMap},
+    map::{AddressMap, AddressSet, Entry, HashMap},
 };
 use alloy_rpc_types_trace::geth::{
     AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode, GethDefaultTracingOptions,
-    PreStateConfig, PreStateFrame, PreStateMode, StructLog, erc7562::CallFrameType,
+    PreStateConfig, PreStateFrame, PreStateMode, StructLog,
+    erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
     EvmFeatures, EvmTypesHost, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase, PendingState},
+    interpreter::{InstrStop, op},
 };
 
 /// The smallest size in bytes of the JSON of a struct log,
@@ -79,11 +82,11 @@ fn struct_log_json_len(log: &StructLog) -> usize {
 }
 
 /// A frame awaiting tree assembly, with visibility inherited by children in the forward pass.
-struct PendingCallFrame {
+struct PendingCallFrame<F = CallFrame> {
     /// Whether this call and its ancestors permit descendant logs. Independent of whether
     /// the frame itself contains logs.
     logs_visible: bool,
-    frame: CallFrame,
+    frame: F,
 }
 
 #[cfg(test)]
@@ -145,15 +148,49 @@ impl<'a> GethTraceBuilder<'a> {
         struct_logs: &mut Vec<StructLog>,
         mut stacks: Option<&mut [StackSnapshots]>,
     ) {
+        let mut json_len = 0;
+        if main_trace_node.trace.frame_transaction_root {
+            for child in &main_trace_node.children {
+                self.fill_geth_trace_at_depth(
+                    &self.nodes[*child],
+                    opts,
+                    storage,
+                    struct_logs,
+                    &mut json_len,
+                    stacks.as_deref_mut(),
+                );
+            }
+            return;
+        }
+        self.fill_geth_trace_at_depth(
+            main_trace_node,
+            opts,
+            storage,
+            struct_logs,
+            &mut json_len,
+            stacks,
+        );
+    }
+
+    /// Flattens a real call subtree without counting the synthetic frame root as EVM depth.
+    fn fill_geth_trace_at_depth(
+        &self,
+        main_trace_node: &CallTraceNode,
+        opts: &GethDefaultTracingOptions,
+        storage: &mut AddressMap<BTreeMap<B256, B256>>,
+        struct_logs: &mut Vec<StructLog>,
+        json_len: &mut u64,
+        mut stacks: Option<&mut [StackSnapshots]>,
+    ) {
         // Suspend only the parent iterator when entering a child. Scratch space scales with
         // call depth rather than step count, and a trace without subcalls needs no allocation.
         let mut steps = main_trace_node.steps_with_children();
         let mut parents = Vec::new();
-        let mut json_len = 0u64;
+        let depth_offset = u64::from(!self.nodes[0].trace.frame_transaction_root);
 
         loop {
             // geth stops logging once the JSON written so far is over the limit.
-            if opts.limit.is_some_and(|limit| json_len > limit) {
+            if opts.limit.is_some_and(|limit| *json_len > limit) {
                 break;
             }
             let Some(CallTraceStepStackItem { trace_node, step, call_child_id }) = steps.next()
@@ -173,8 +210,11 @@ impl<'a> GethTraceBuilder<'a> {
             } else {
                 step.stack.as_deref().map(<[U256]>::to_vec)
             };
-            let mut log =
-                step.convert_to_geth_struct_log(opts, trace_node.trace.depth as u64 + 1, stack);
+            let mut log = step.convert_to_geth_struct_log(
+                opts,
+                trace_node.trace.depth as u64 + depth_offset,
+                stack,
+            );
 
             // geth snapshots the storage of the contract, with the slots of all its earlier
             // SLOADs and SSTOREs, unless the opcode fails before it runs.
@@ -194,7 +234,7 @@ impl<'a> GethTraceBuilder<'a> {
 
             // Add step to geth trace
             if opts.limit.is_some() {
-                json_len = json_len.saturating_add(struct_log_json_len(&log) as u64);
+                *json_len = json_len.saturating_add(struct_log_json_len(&log) as u64);
             }
             struct_logs.push(log);
 
@@ -263,7 +303,7 @@ impl<'a> GethTraceBuilder<'a> {
             },
         );
         let mut struct_logs = Vec::with_capacity(capacity);
-        let mut storage = HashMap::default();
+        let mut storage = AddressMap::default();
         self.fill_geth_trace(main_trace_node, &opts, &mut storage, &mut struct_logs, stacks);
 
         let gas = gas.filter(|_| self.is_eip8037_enabled());
@@ -315,8 +355,8 @@ impl<'a> GethTraceBuilder<'a> {
         let include_logs = opts.with_log.unwrap_or_default();
         // first fill up the root
         let main_trace_node = &self.nodes[0];
-        // Like any other failed call, a failed root drops its own logs.
-        let root_logs_visible = include_logs && !main_trace_node.trace.is_error();
+        let root_logs_visible = include_logs
+            && (main_trace_node.trace.frame_transaction_root || !main_trace_node.trace.is_error());
         let mut root_call_frame = main_trace_node.geth_empty_call_frame(root_logs_visible);
         root_call_frame.gas_used = U256::from(gas_used);
         if let Some(gas) = gas.filter(|_| self.is_eip8037_enabled()) {
@@ -326,6 +366,21 @@ impl<'a> GethTraceBuilder<'a> {
         }
 
         if opts.only_top_call.unwrap_or_default() {
+            if main_trace_node.trace.frame_transaction_root {
+                root_call_frame.calls = main_trace_node
+                    .children
+                    .iter()
+                    .map(|child| {
+                        let node = &self.nodes[*child];
+                        let mut call =
+                            node.geth_empty_call_frame(include_logs && !node.trace.is_error());
+                        for log in &mut call.logs {
+                            log.position = Some(0);
+                        }
+                        call
+                    })
+                    .collect();
+            }
             // No subcall frames are collected, so logs have no position relative to them.
             for log in &mut root_call_frame.logs {
                 log.position = Some(0);
@@ -429,6 +484,9 @@ impl<'a> GethTraceBuilder<'a> {
             }
             let code = if code_enabled { load_account_code(db, &db_acc)? } else { None };
             let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
+            if self.features.contains(EvmFeatures::EIP8298) {
+                acc_state.code_hash = (!db_acc.is_empty_code_hash()).then_some(db_acc.code_hash);
+            }
 
             // insert the original value of all loaded storage slots
             if storage_enabled {
@@ -478,6 +536,16 @@ impl<'a> GethTraceBuilder<'a> {
 
             let mut pre_state =
                 AccountState::from_account_info(db_acc.nonce, db_acc.balance, pre_code);
+            if self.features.contains(EvmFeatures::EIP8298) {
+                pre_state.code_hash = (!db_acc.is_empty_code_hash()).then_some(db_acc.code_hash);
+                // Empty hashes are omitted in prestate, but signal code removal in poststate.
+                post_state.code_hash =
+                    if !info.is_empty_code_hash() || pre_state.code_hash.is_some() {
+                        Some(info.code_hash)
+                    } else {
+                        None
+                    };
+            }
 
             // Geth reports `"code":"0x"` when the transaction clears the code the account had.
             if pre_state.code.is_some() && post_state.code.is_none() {
@@ -545,6 +613,180 @@ impl<'a> GethTraceBuilder<'a> {
         }
 
         pre.retain(|addr, _pre_state| !empty_before.contains(addr));
+    }
+
+    /// Traces ERC-7562 calls using the call tracer.
+    pub fn geth_erc7562_traces(
+        &self,
+        opts: Erc7562Config,
+        gas_used: u64,
+        db: &mut dyn DynDatabase,
+    ) -> DbResult<Erc7562Frame> {
+        if self.nodes.is_empty() {
+            return Ok(Default::default());
+        }
+
+        let include_logs = opts.with_log.unwrap_or_default();
+        // only the root frame's own fields are needed, its children are assembled below
+        let mut top_call = {
+            let root_logs_visible = include_logs && !self.nodes[0].trace.is_error();
+            let mut root = self.nodes[0].geth_empty_call_frame(root_logs_visible);
+            root.gas_used = U256::from(gas_used);
+            Some(root)
+        };
+
+        let mut frames: Vec<PendingCallFrame<Erc7562Frame>> = Vec::with_capacity(self.nodes.len());
+
+        for (idx, node) in self.nodes.iter().enumerate() {
+            let trace = &node.trace;
+
+            let mut accessed_slots = AccessedSlots::default();
+            let mut used_opcodes = HashMap::default();
+            let mut contract_size = HashMap::default();
+            let mut ext_code_access_info = Vec::new();
+            let mut keccak = Vec::new();
+            let mut out_of_gas = trace.status.is_some_and(InstrStop::is_out_of_gas);
+
+            for step in &trace.steps {
+                let op = step.op.get();
+                out_of_gas |= step.status.is_some_and(InstrStop::is_out_of_gas);
+
+                // Skip if opcode is ignored
+                if opts.ignored_opcodes.contains(&op) {
+                    continue;
+                }
+
+                // Count used opcodes
+                *used_opcodes.entry(op).or_insert(0) += 1;
+
+                // Accessed storage slots
+                match op {
+                    op::SLOAD => {
+                        if let Some(stack) = &step.stack
+                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
+                        {
+                            let slot: B256 = (*slot).into();
+                            let already_read = accessed_slots.reads.contains_key(&slot);
+                            let already_written = accessed_slots.writes.contains_key(&slot);
+                            if !already_read
+                                && !already_written
+                                && let Some(change) = &step.storage_change
+                            {
+                                let value: B256 = change.value.into();
+                                accessed_slots.reads.entry(slot).or_default().push(value);
+                            }
+                        }
+                    }
+                    op::SSTORE => {
+                        if let Some(stack) = &step.stack
+                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
+                        {
+                            let slot: B256 = (*slot).into();
+                            *accessed_slots.writes.entry(slot).or_insert(0) += 1;
+                        }
+                    }
+                    op::TLOAD => {
+                        if let Some(stack) = &step.stack
+                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
+                        {
+                            let slot: B256 = (*slot).into();
+                            *accessed_slots.transient_reads.entry(slot).or_insert(0) += 1;
+                        }
+                    }
+                    op::TSTORE => {
+                        if let Some(stack) = &step.stack
+                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
+                        {
+                            let slot: B256 = (*slot).into();
+                            *accessed_slots.transient_writes.entry(slot).or_insert(0) += 1;
+                        }
+                    }
+                    _ => {}
+                }
+
+                if matches!(op, op::EXTCODESIZE | op::EXTCODECOPY | op::EXTCODEHASH)
+                    && let Some(stack) = &step.stack
+                    && let Some(item) = stack.get(stack.len().saturating_sub(1))
+                {
+                    let address = Address::from_word((*item).into());
+                    ext_code_access_info.push(format!("{address:?}"));
+                    if let Entry::Vacant(e) = contract_size.entry(address)
+                        && let Some(account) = db.get_account(&address)?
+                        && let Some(code) = load_account_code(db, &account)?
+                    {
+                        e.insert(ContractSize { contract_size: code.len() as u64, opcode: op });
+                    }
+                }
+
+                // KECCAK preimages from returndata
+                if op == op::KECCAK256
+                    && step.status.is_none()
+                    && let (Some(stack), Some(memory)) = (&step.stack, &step.memory)
+                    && stack.len() >= 2
+                {
+                    let offset = stack[stack.len() - 1];
+                    let len = stack[stack.len() - 2];
+                    if let (Ok(offset), Ok(len)) = (usize::try_from(offset), usize::try_from(len)) {
+                        let mut data = vec![0; len];
+                        if offset < memory.0.len() {
+                            let end = (offset + len).min(memory.0.len());
+                            let copy_len = end - offset;
+                            data[..copy_len].copy_from_slice(&memory.0[offset..end]);
+                        }
+                        keccak.push(Bytes::from(data));
+                    }
+                }
+            }
+
+            let include_logs = include_logs
+                && (trace.frame_transaction_root || !trace.is_error())
+                && node.parent.is_none_or(|parent| frames[parent].logs_visible);
+            let call_frame = if idx == 0 {
+                top_call.take().unwrap()
+            } else {
+                self.nodes[idx].geth_empty_call_frame(include_logs)
+            };
+
+            let call_frame_type = Self::convert_call_kind(node.kind());
+
+            frames.push(PendingCallFrame {
+                logs_visible: include_logs,
+                frame: Erc7562Frame {
+                    call_frame_type,
+                    from: call_frame.from,
+                    gas: call_frame.gas.to(),
+                    gas_used: call_frame.gas_used.to(),
+                    to: call_frame.to,
+                    input: call_frame.input,
+                    output: call_frame.output,
+                    error: call_frame.error,
+                    revert_reason: call_frame.revert_reason,
+                    logs: call_frame.logs,
+                    value: call_frame.value,
+                    accessed_slots,
+                    ext_code_access_info,
+                    used_opcodes,
+                    contract_size,
+                    out_of_gas,
+                    keccak,
+                    calls: vec![],
+                },
+            });
+        }
+
+        // Assemble tree, see `geth_call_traces_inner` for the ordering logic
+        loop {
+            let PendingCallFrame { mut frame, .. } = frames.pop().expect("call frames not empty");
+            let idx = frames.len();
+            frame.calls.reverse();
+            let node = &self.nodes[idx];
+            if let Some(parent) = node.parent {
+                frames[parent].frame.calls.push(frame);
+            } else {
+                debug_assert!(frames.is_empty(), "only one root node has no parent");
+                return Ok(frame);
+            }
+        }
     }
 
     /// Converts a CallKind to a CallFrameType.
@@ -806,6 +1048,45 @@ mod tests {
                     ),
                 ]))),
             );
+        }
+    }
+
+    #[test]
+    fn prestate_diff_retains_code_hash_changes_with_code_disabled() {
+        let address = Address::with_last_byte(1);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let original = AccountInfo::default().with_nonce(1).with_code(code.clone());
+        let builder = GethTraceBuilder::new(Vec::new()).with_features(EvmFeatures::EIP8298);
+
+        for code_enabled in [false, true] {
+            for next_code in [
+                code.clone(),
+                Bytecode::new_legacy(Bytes::from_static(&[op::PUSH0, op::STOP])),
+                Bytecode::default(),
+            ] {
+                let current = original.clone().with_code(next_code.clone());
+                let mut db = InMemoryDB::default();
+                db.insert_account_info(&address, original.clone());
+                let mut state = PendingState::default();
+                state.insert_account(address, Some(original.clone()), Some(current.clone()));
+                let PreStateFrame::Diff(diff) = builder
+                    .geth_prestate_diff_traces(&state, &mut db, code_enabled, false)
+                    .unwrap()
+                else {
+                    panic!("expected diff prestate frame")
+                };
+                if current.code_hash == original.code_hash {
+                    assert!(diff.pre.is_empty());
+                    assert!(diff.post.is_empty());
+                } else {
+                    assert_eq!(diff.pre[&address].code_hash, Some(original.code_hash));
+                    assert_eq!(diff.post[&address].code_hash, Some(current.code_hash));
+                    assert_eq!(
+                        diff.post[&address].code,
+                        code_enabled.then(|| next_code.original_bytes())
+                    );
+                }
+            }
         }
     }
 }

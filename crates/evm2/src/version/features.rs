@@ -253,6 +253,28 @@ evm_features! {
     ///
     /// Default: on since Amsterdam
     EIP2780,
+    /// Frame transactions and introspection.
+    ///
+    /// Default: on since Bogota
+    EIP8141,
+    /// Keyed transaction nonces.
+    ///
+    /// Default: on since Bogota
+    EIP8250,
+    /// Transaction assertion instructions.
+    ///
+    /// Default: on since Bogota
+    EIP7906,
+    /// Explicit simulation-only allowance for unsigned frame requests.
+    ///
+    /// Default: off
+    FRAME_SIGNATURE_PLACEHOLDERS,
+    /// Applies [EIP-8298](https://eips.ethereum.org/EIPS/eip-8298) code adoption.
+    EIP8298,
+    /// Applies [EIP-4758](https://eips.ethereum.org/EIPS/eip-4758) SENDALL semantics.
+    EIP4758,
+    /// Applies [EIP-8151](https://eips.ethereum.org/EIPS/eip-8151) recovery restrictions.
+    EIP8151,
 }
 
 #[cfg(test)]

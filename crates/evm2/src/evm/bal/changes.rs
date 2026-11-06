@@ -90,21 +90,22 @@ impl BalChange for StorageChange {
 
 /// A code change carrying the decoded [`Bytecode`] and its cached hash.
 ///
-/// The EIP-7928 [`AlloyCodeChange`] only stores raw bytes; keeping the decoded bytecode and
-/// hash lets BAL reads populate account info without re-decoding and re-hashing, and keeps
-/// bytecode validation at import time.
+/// Decoding and hashing ordinary code happens once at import. Adopted hashes can be resolved
+/// from earlier code changes or loaded from the pre-block database.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BalCodeChange {
     /// The [`BlockAccessIndex`] at which the code changed.
     pub block_access_index: BlockAccessIndex,
     /// The post-state code hash and decoded bytecode.
     pub code: (B256, Bytecode),
+    /// Whether this change carries an adopted hash instead of deployed bytecode.
+    pub adopted: bool,
 }
 
 impl BalCodeChange {
     /// Create a new code change.
     pub const fn new(block_access_index: BlockAccessIndex, code: (B256, Bytecode)) -> Self {
-        Self { block_access_index, code }
+        Self { block_access_index, code, adopted: false }
     }
 }
 
@@ -112,7 +113,7 @@ impl BalChange for BalCodeChange {
     type Value = (B256, Bytecode);
 
     fn new(index: BlockAccessIndex, value: Self::Value) -> Self {
-        Self { block_access_index: index, code: value }
+        Self::new(index, value)
     }
 
     fn block_access_index(&self) -> BlockAccessIndex {
@@ -125,6 +126,7 @@ impl BalChange for BalCodeChange {
 
     fn set_value(&mut self, value: Self::Value) {
         self.code = value;
+        self.adopted = false;
     }
 }
 
@@ -132,15 +134,26 @@ impl TryFrom<&AlloyCodeChange> for BalCodeChange {
     type Error = BytecodeDecodeError;
 
     fn try_from(change: &AlloyCodeChange) -> Result<Self, Self::Error> {
+        if let Some(hash) = change.new_code_hash() {
+            return Ok(Self {
+                block_access_index: change.block_access_index,
+                code: (hash, Bytecode::default()),
+                adopted: true,
+            });
+        }
         let bytecode = Bytecode::new_raw_checked(change.new_code().clone())?;
         let hash = bytecode.hash_slow();
-        Ok(Self { block_access_index: change.block_access_index(), code: (hash, bytecode) })
+        Ok(Self::new(change.block_access_index(), (hash, bytecode)))
     }
 }
 
 impl From<BalCodeChange> for AlloyCodeChange {
     fn from(change: BalCodeChange) -> Self {
-        Self::new(change.block_access_index, change.code.1.original_bytes())
+        if change.adopted {
+            Self::new_hash(change.block_access_index, change.code.0)
+        } else {
+            Self::new(change.block_access_index, change.code.1.original_bytes())
+        }
     }
 }
 

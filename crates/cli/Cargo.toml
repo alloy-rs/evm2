@@ -80,6 +80,7 @@ mimalloc = ["dep:mimalloc"]
 [dev-dependencies]
 criterion.workspace = true
 revm = { workspace = true, features = ["test-types"] }
+evm2-inspectors.workspace = true
 
 [[bench]]
 name = "evm"

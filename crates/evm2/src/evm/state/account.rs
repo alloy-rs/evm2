@@ -175,6 +175,10 @@ bitflags! {
         /// The present overlay account's creation discarded its old storage, so unloaded slots
         /// read as zero.
         const DISCARDS_STORAGE = 1 << 5;
+        /// The present overlay account's code has been modified.
+        const CODE_CHANGED = 1 << 6;
+        /// The last code write adopted an existing code hash.
+        const CODE_ADOPTED = 1 << 7;
     }
 }
 
@@ -216,7 +220,10 @@ impl Account {
     /// Marks the account as created during the transaction.
     #[inline]
     pub(crate) const fn mark_created(&mut self) {
-        self.flags = self.flags.union(AccountFlags::CREATED);
+        self.flags = self
+            .flags
+            .difference(AccountFlags::CODE_ADOPTED)
+            .union(AccountFlags::CREATED.union(AccountFlags::CODE_CHANGED));
     }
 
     /// Marks the account as created and discards its old storage.
@@ -277,6 +284,7 @@ impl Account {
             created: self.is_created(),
             selfdestructed: self.flags.contains(AccountFlags::DESTROYED),
             touched: self.flags.contains(AccountFlags::TOUCHED),
+            code_adopted: self.flags.contains(AccountFlags::CODE_ADOPTED),
             code: self.changed_code(),
             storage: &self.storage,
         }
@@ -380,6 +388,11 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub const fn get(&self) -> Option<&AccountInfo> {
         self.tracked.present.as_ref()
+    }
+
+    /// Returns the account at the start of this transaction, before any frame writes.
+    pub const fn original(&self) -> Option<&AccountInfo> {
+        self.tracked.original.as_ref()
     }
 
     /// Returns whether the account currently exists in the overlay.
@@ -596,6 +609,15 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         let account = self.present_mut();
         account.code_hash = code_hash;
         account.code = Some(code);
+        self.tracked.flags.insert(AccountFlags::CODE_CHANGED);
+        self.tracked.flags.remove(AccountFlags::CODE_ADOPTED);
+    }
+
+    /// Adopts existing code without recording another bytecode deployment in the BAL.
+    #[inline]
+    pub fn adopt_code(&mut self, code_hash: B256, code: Bytecode) {
+        self.set_code(code_hash, code);
+        self.tracked.flags.insert(AccountFlags::CODE_ADOPTED);
     }
 
     /// Sets the account code, computing its hash, touching the account and recording a revert

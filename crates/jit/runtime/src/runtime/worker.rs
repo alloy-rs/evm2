@@ -20,8 +20,6 @@ use crate::{
 use alloy_primitives::Bytes;
 use crossbeam_channel as chan;
 use rayon::{ThreadPool, ThreadPoolBuilder};
-#[cfg(feature = "llvm")]
-use std::{cell::RefCell, time::Instant};
 use std::{
     sync::{
         Arc,
@@ -37,6 +35,8 @@ use crate::{
     llvm::{JitDylibGuard, orc::ResourceTracker},
     runtime::config::JitMode,
 };
+#[cfg(feature = "llvm")]
+use std::{cell::RefCell, time::Instant};
 
 #[cfg(all(feature = "llvm", unix))]
 type OutOfProcessHelper = Option<Arc<super::out_of_process::HelperProcess>>;
@@ -871,6 +871,7 @@ mod lifecycle_tests {
             ["first-exit", "second-enter", "second-exit", "tls-enter", "tls-exit", "owner-exit"]
         );
     }
+
     #[test]
     fn shutdown_joins_remaining_workers_before_reporting_a_panic() {
         let mut pool = workers(0);
@@ -885,10 +886,44 @@ mod lifecycle_tests {
             let error = pool.shutdown().unwrap_err();
             assert!(pool.threads.is_empty());
             assert_eq!(exited_rx.try_recv(), Ok(()));
-            assert!(error.to_string().contains("1 compile worker thread(s) panicked"));
+            assert_eq!(error.to_string(), "1 compile worker thread(s) panicked");
             pool.shutdown().unwrap();
         });
         release.send(()).unwrap();
         owner.join().unwrap();
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn cancun_sstore_compiles_without_fallback() {
+        for target in [CompilerTarget::Jit, CompilerTarget::Aot] {
+            let bytecode = Bytes::from_static(&[0x60, 0x42, 0x5f, 0x55, 0x00]);
+            let config = RuntimeConfig::default();
+            let mut state = None;
+            let result = compile_with_state(
+                CompileJob {
+                    kind: if target == CompilerTarget::Aot {
+                        CompilationKind::Aot
+                    } else {
+                        CompilationKind::Jit
+                    },
+                    key: RuntimeCacheKey {
+                        code_hash: alloy_primitives::keccak256(&bytecode),
+                        spec_id: evm2::SpecId::CANCUN,
+                    },
+                    bytecode,
+                    symbol_name: "cancun_sstore_compiles_without_fallback".into(),
+                    opt_level: OptimizationLevel::None,
+                    sync_notifier: SyncNotifier::none(),
+                    generation: 0,
+                },
+                &config,
+                target,
+                &mut state,
+            );
+            if let Err(error) = result.outcome {
+                panic!("Cancun SSTORE {target:?} compilation failed: {error}");
+            }
+        }
     }
 }

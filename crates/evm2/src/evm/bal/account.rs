@@ -14,7 +14,7 @@ use alloy_eip7928::{
     NonceChange, SlotChanges as AlloySlotChanges, StorageChange,
 };
 use alloy_primitives::{
-    Address, B256, U256,
+    Address, B256, KECCAK256_EMPTY, U256,
     map::{U256Map, hash_map::Entry},
 };
 
@@ -188,6 +188,15 @@ pub struct AccountInfoBal {
 }
 
 impl AccountInfoBal {
+    /// Marks the final code write at this index as hash adoption.
+    pub(crate) fn mark_code_adopted(&mut self, index: BlockAccessIndex) {
+        if let Some(change) = self.code.changes.last_mut()
+            && change.block_access_index == index
+        {
+            change.adopted = true;
+        }
+    }
+
     /// Populate account info from BAL. Return true if account info got changed
     ///
     /// Account extensions are not represented in the BAL and are left unchanged.
@@ -207,7 +216,8 @@ impl AccountInfoBal {
         }
         if let Some((code_hash, code)) = self.code.get(bal_index) {
             account.code_hash = *code_hash;
-            account.code = Some(code.clone());
+            account.code =
+                (!code.is_empty() || *code_hash == KECCAK256_EMPTY).then(|| code.clone());
             changed = true;
         }
         changed

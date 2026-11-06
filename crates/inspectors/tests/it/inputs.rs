@@ -348,3 +348,73 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
         }
     }
 }
+
+mod frames {
+    use super::*;
+    use crate::utils::frames::*;
+    use alloy_eips::eip8141::{Frame, FrameMode};
+    use alloy_primitives::U256;
+
+    #[test]
+    fn synthetic_and_executed_frames_respect_input_recording() {
+        let sender = Address::with_last_byte(0xa0);
+        let body = Address::with_last_byte(0xb0);
+        let assertion = Address::with_last_byte(0xc0);
+        let input = Bytes::from_static(&[1, 2, 3]);
+        for config in [
+            TracingInspectorConfig::none(),
+            TracingInspectorConfig::parity_vm_trace(),
+            TracingInspectorConfig::default_parity(),
+        ] {
+            let mut evm = evm(&[(sender, APPROVE_BOTH), (body, &[0x00]), (assertion, REVERT)]);
+            let mut frames = [
+                (FrameMode::Verify, sender, 3),
+                (FrameMode::Sender, body, 0),
+                (FrameMode::Assert, assertion, 0),
+                (FrameMode::Assert, assertion, 0),
+            ]
+            .into_iter()
+            .map(|(mode, target, flags)| Frame {
+                data: input.clone(),
+                ..frame(mode, target, flags)
+            })
+            .collect::<Vec<_>>();
+            frames[1].value = U256::from(2_000_000_000u64);
+            evm.set_inspector(TracingInspector::new(config));
+            let result = evm.call_tx(&transaction(frames)).unwrap();
+            assert!(!result.status);
+            let inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+            let nodes = inspector.traces().nodes();
+            assert_eq!(nodes[0].children.len(), 4);
+            let expected = if config.record_inputs { input.clone() } else { Bytes::new() };
+            for (index, entered_evm) in [true, false, true, false].into_iter().enumerate() {
+                let trace = &nodes[nodes[0].children[index]].trace;
+                assert_eq!(trace.entered_evm, entered_evm, "frame {index}");
+                assert_eq!(trace.data, expected, "frame {index}, config={config:?}");
+            }
+            assert!(!nodes[nodes[0].children[1]].trace.success);
+            assert!(nodes[nodes[0].children[3]].trace.skipped);
+        }
+    }
+
+    #[test]
+    fn synthetic_default_verification_respects_input_recording() {
+        let input = Bytes::from_static(&[1, 2, 3]);
+        for config in [
+            TracingInspectorConfig::none(),
+            TracingInspectorConfig::parity_vm_trace(),
+            TracingInspectorConfig::default_parity(),
+        ] {
+            let (sender, tx) = default_verification_transaction(input.clone());
+            let mut evm = evm(&[(sender, &[])]);
+            evm.set_inspector(TracingInspector::new(config));
+            assert!(evm.call_tx(&tx).unwrap().status);
+            let inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+            let nodes = inspector.traces().nodes();
+            assert_eq!(nodes[0].children.len(), 1);
+            let trace = &nodes[nodes[0].children[0]].trace;
+            assert!(!trace.entered_evm);
+            assert_eq!(trace.data, if config.record_inputs { input.clone() } else { Bytes::new() });
+        }
+    }
+}

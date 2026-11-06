@@ -61,18 +61,18 @@ evm2-jit-context = { path = "crates/jit/context", version = "0.1.0", default-fea
 evm2-jit-llvm = { path = "crates/jit/llvm", version = "0.1.0", default-features = false }
 evm2-jit-runtime = { path = "crates/jit/runtime", version = "0.1.0", default-features = false }
 
-alloy-consensus = { version = "2.0.4", default-features = false }
+alloy-consensus = { version = "=2.5.0", default-features = false }
 alloy-chains = { version = "0.2.34", default-features = false }
 alloy-eip2930 = { version = "0.2.4", default-features = false }
 alloy-eip7928 = { version = "0.4.11", default-features = false }
-alloy-eips = { version = "2.0.4", default-features = false }
+alloy-eips = { version = "=2.5.0", default-features = false }
 alloy-hardforks = { version = "0.4", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
-alloy-provider = { version = "2.0.4", default-features = false }
+alloy-provider = { version = "=2.5.0", default-features = false }
 alloy-rlp = { version = "0.3", default-features = false }
-alloy-rpc-client = { version = "2.0.4", default-features = false }
-alloy-rpc-types-eth = { version = "2.0.4", default-features = false }
-alloy-rpc-types-trace = { version = "2.0.4", default-features = false }
+alloy-rpc-client = { version = "=2.5.0", default-features = false }
+alloy-rpc-types-eth = { version = "=2.5.0", default-features = false }
+alloy-rpc-types-trace = { version = "=2.5.0", default-features = false }
 alloy-sol-types = { version = "1.5.7", default-features = false }
 alloy-trie = { version = "0.9.6", default-features = false }
 
@@ -111,14 +111,13 @@ quanta = "0.13"
 postcard = { version = "1.1.3", default-features = false }
 rand = "0.10"
 rayon = "1.10"
-revm = { version = "43", default-features = true, features = ["asm-keccak"] }
-revm-bytecode = { version = "43", default-features = false }
 rmp-serde = "1.3"
 rstest = "0.27.0"
 ruint = { version = "1.21.1", default-features = false }
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
 snapbox = "1.2"
+stacker = { version = "0.1.25", default-features = false }
 thiserror = { version = "2.0", default-features = false }
 tikv-jemallocator = { version = "0.7", default-features = false }
 typeid = { version = "1.0.3", default-features = false }
@@ -130,7 +129,7 @@ triomphe = { version = "0.1.16", default-features = false }
 walkdir = { version = "2.5", default-features = false }
 wait-timeout = "0.2"
 wincode = { version = "0.6.0", default-features = false, features = ["derive"] }
-zstd = "0.14"
+zstd = "0.14.3"
 
 # Precompiles
 ark-bls12-381 = { version = "0.6.0", default-features = false }
@@ -157,6 +156,8 @@ quote = "1.0"
 syn = "3.0"
 
 # testing
+revm = { version = "43.0.3", default-features = true, features = ["asm-keccak"] }
+revm-bytecode = { version = "43", default-features = false }
 criterion = { package = "codspeed-criterion-compat", version = "4", default-features = false, features = [
     "cargo_bench_support",
 ] }
@@ -189,6 +190,27 @@ lto = "thin"
 codegen-units = 1
 
 [patch.crates-io]
+alloy-eip7928 = { git = "https://github.com/Rimeeeeee/eips", rev = "eb1b963d6386c618bdb10b4216c801466f22b4eb" }
+# Frame transaction dependencies from bogota-devnet-2.
+alloy-consensus = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-consensus-any = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-contract = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-eips = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-genesis = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-json-rpc = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-network = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-network-primitives = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-provider = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-pubsub = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-rpc-client = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-rpc-types-eth = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-rpc-types-trace = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-serde = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-signer = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-transport = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-transport-http = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+alloy-tx-macros = { git = "https://github.com/Rimeeeeee/alloy", rev = "2b70648f1d8e2e3d35fc92a16e3d7036b52e2e1f" }
+
 # faster compile times: https://github.com/arkworks-rs/algebra/issues/1104
 ark-ec = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
 ark-bls12-381 = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }

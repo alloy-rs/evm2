@@ -2,7 +2,7 @@ use crate::tracing::{
     DebugInspector, DebugInspectorError, FourByteInspector, TracingInspector,
     TracingInspectorConfig, TransactionContext, utils::transaction_info,
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256, map::HashMap};
 use alloy_rpc_types_trace::geth::{
@@ -13,6 +13,7 @@ use alloy_rpc_types_trace::geth::{
 use evm2::{
     DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, TxResultWithState,
     env::BlockEnv,
+    ethereum::eip8141::FrameGas,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -291,6 +292,39 @@ macro_rules! fan_out {
 }
 
 impl<T: EvmTypes> Inspector<T> for MuxInspector {
+    fn frame_transaction_start(
+        &mut self,
+        tx: &Arc<alloy_consensus::TxEip8141>,
+        gas: &FrameGas,
+        host: &mut T::Host<'_>,
+    ) {
+        fan_out!(self.frame_transaction_start(tx, gas, host));
+    }
+
+    fn frame_start(
+        &mut self,
+        index: usize,
+        frame: &alloy_eips::eip8141::Frame,
+        host: &mut T::Host<'_>,
+    ) {
+        fan_out!(self.frame_start(index, frame, host));
+    }
+
+    fn frame_end(
+        &mut self,
+        index: usize,
+        receipt: &alloy_eips::eip8141::FrameReceipt,
+        output: &alloy_primitives::Bytes,
+        stop: evm2::interpreter::InstrStop,
+        host: &mut T::Host<'_>,
+    ) {
+        fan_out!(self.frame_end(index, receipt, output, stop, host));
+    }
+
+    fn frame_transaction_end(&mut self, result: &evm2::TxResult<T>, host: &mut T::Host<'_>) {
+        fan_out!(self.frame_transaction_end(result, host));
+    }
+
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         fan_out!(self.initialize_interp(interp));

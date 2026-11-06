@@ -238,7 +238,7 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
 
     /// Returns the precompile data at `address`, if any.
     #[inline]
-    pub(super) fn get_data(&self, address: &Address) -> Option<&PrecompileData<T>> {
+    pub fn get_data(&self, address: &Address) -> Option<&PrecompileData<T>> {
         match short_address(address) {
             Some(index) if !self.short.get(index) => None,
             None if self.long_count == 0 => None,
@@ -468,9 +468,13 @@ macro_rules! define_precompiles {
 
 pub use crate::define_precompiles;
 
+/// secp256k1 public key recovery precompile.
+#[allow(non_snake_case)]
+pub const fn SECP256K1_ECRECOVER<T: EvmTypesHost>() -> Precompile<T> {
+    Precompile::new(Address::with_last_byte(1), PrecompileId::EcRec, secp256k1::run::<T>)
+}
+
 define_precompiles! {
-    /// secp256k1 public key recovery precompile.
-    pub const SECP256K1_ECRECOVER = (0x01, PrecompileId::EcRec) => secp256k1::run;
     /// SHA-256 precompile.
     pub const SHA256 = (0x02, PrecompileId::Sha256) => hash::run_sha256;
     /// RIPEMD-160 precompile.

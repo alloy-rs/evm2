@@ -49,6 +49,21 @@ pub struct DecodedCallTrace {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CallTrace {
+    /// Synthetic root collecting the ordered frames of an EIP-8141 transaction.
+    pub frame_transaction_root: bool,
+    /// Whether this call initialized an interpreter, rather than stopping at entry.
+    pub entered_evm: bool,
+    /// Ordered frame index for top-level frame transaction nodes.
+    pub frame_index: Option<usize>,
+    /// Protocol frame mode, encoded as 0..=3.
+    pub frame_mode: Option<u8>,
+    /// Final state gas attributed after cross-frame restoration and rollback.
+    pub state_gas_used: u64,
+    /// Whether the frame belongs to a rolled-back atomic group or assertion body.
+    pub rolled_back: bool,
+    /// Whether this frame was skipped by atomic/assertion control flow.
+    pub skipped: bool,
+
     /// The inspector-visible depth of the call.
     ///
     /// The root starts at [`evm2::Version::initial_call_depth`], normally zero.
@@ -129,9 +144,12 @@ pub struct CallTrace {
 }
 
 impl CallTrace {
-    /// Returns true if the status code is an error or revert, See [InstrStop::Revert].
+    /// Returns whether execution or the protocol frame failed.
     #[inline]
     pub const fn is_error(&self) -> bool {
+        if self.skipped || (self.frame_transaction_root && !self.success) {
+            return true;
+        }
         let Some(status) = self.status else {
             return false;
         };
@@ -162,6 +180,12 @@ impl CallTrace {
 
     /// Returns the error message if it is an erroneous result.
     pub(crate) fn as_error_msg(&self, kind: TraceStyle) -> Option<String> {
+        if self.frame_transaction_root && !self.success {
+            return Some("frame transaction failed".to_string());
+        }
+        if self.skipped {
+            return Some("frame skipped".to_string());
+        }
         self.status.and_then(|status| utils::fmt_error_msg(status, kind))
     }
 
@@ -305,7 +329,7 @@ impl CallTraceNode {
     /// Returns true if this is a call to a precompile
     #[inline]
     pub fn is_precompile(&self) -> bool {
-        self.trace.maybe_precompile.unwrap_or(false)
+        self.trace.maybe_precompile.unwrap_or(false) && self.trace.frame_index.is_none()
     }
 
     /// Returns the kind of call the trace belongs to
@@ -336,7 +360,10 @@ impl CallTraceNode {
     /// Converts this node into a parity `TransactionTrace`
     pub fn parity_transaction_trace(&self, trace_address: Vec<usize>) -> TransactionTrace {
         let action = self.parity_action();
-        let result = if self.trace.is_error() && !self.trace.is_revert() {
+        let result = if self.trace.is_error()
+            && !self.trace.is_revert()
+            && !self.trace.frame_transaction_root
+        {
             // if the trace is a selfdestruct or an error that is not a revert, the result is None
             None
         } else {
@@ -449,11 +476,22 @@ impl CallTraceNode {
             // STATICCALL frames don't have a value
             call_frame.value = None;
         }
+        if self.trace.frame_index.is_some() {
+            call_frame.execution_gas_used = Some(U256::from(self.trace.gas_used));
+            call_frame.state_gas_used = Some(U256::from(self.trace.state_gas_used));
+        }
 
         // we need to populate error and revert reason
         if !self.trace.success {
             if self.kind().is_any_create() {
                 call_frame.to = None;
+            }
+
+            if self.trace.frame_index.is_none()
+                && !self.status().is_some_and(InstrStop::is_frame_revert)
+            {
+                call_frame.gas_used = U256::from(self.trace.gas_limit);
+                call_frame.output = None;
             }
 
             call_frame.revert_reason = utils::maybe_revert_reason(self.trace.output.as_ref());

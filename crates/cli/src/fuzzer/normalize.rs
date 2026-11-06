@@ -185,6 +185,8 @@ impl From<HandlerError> for FuzzError {
             | HandlerError::Fatal(_)
             | HandlerError::External(_)
             | HandlerError::WrongTransactionType { .. }
+            | HandlerError::FrameFeeBudgetTooLow { .. }
+            | HandlerError::InvalidFrameTransaction(_)
             | HandlerError::InvalidChainId { .. }
             | HandlerError::GasLimitMoreThanBlock { .. }
             | HandlerError::CreateInitCodeSizeLimit { .. }
@@ -238,9 +240,7 @@ impl StateChangeSink for CanonicalState {
     }
 
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-        if !change.current.is_zero() {
-            self.storage.insert((change.address, change.key), change.current);
-        }
+        self.storage.insert((change.address, change.key), change.current);
         Ok(())
     }
 }
@@ -290,9 +290,7 @@ pub(crate) fn state_from_revm(
             );
         }
         for (key, slot) in changed_storage_slots {
-            if !slot.present_value().is_zero() {
-                canonical.storage.insert((address, *key), slot.present_value());
-            }
+            canonical.storage.insert((address, *key), slot.present_value());
         }
     }
     canonical

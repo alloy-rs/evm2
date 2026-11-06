@@ -154,6 +154,8 @@ pub struct GasTracker {
     /// parent frame so a later parent rollback can return it.
     state_gas_spilled: u64,
     refunded: i64,
+    /// State charges cannot spill into execution gas in a frame transaction.
+    isolated_state: bool,
 }
 
 impl GasTracker {
@@ -167,6 +169,26 @@ impl GasTracker {
     #[inline]
     pub const fn new_with_execution_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
         Self::from_parts(limit, limit, reservoir)
+    }
+
+    /// Creates independent execution and state budgets for a frame transaction.
+    #[inline]
+    pub const fn new_isolated(limit: u64, state: u64) -> Self {
+        let mut gas = Self::from_parts(limit, limit, state);
+        gas.isolated_state = true;
+        gas
+    }
+
+    /// Selects isolated state accounting without changing the gas counters.
+    #[inline]
+    pub const fn set_isolated_state(&mut self, isolated: bool) {
+        self.isolated_state = isolated;
+    }
+
+    /// Whether state costs are forbidden from spilling into execution gas.
+    #[inline]
+    pub const fn state_gas_isolated(&self) -> bool {
+        self.isolated_state
     }
 
     /// Creates spent gas with a state gas reservoir.
@@ -184,6 +206,7 @@ impl GasTracker {
             reservoir,
             state_gas_spent: 0,
             state_gas_spilled: 0,
+            isolated_state: false,
             refunded: 0,
         }
     }
@@ -348,6 +371,9 @@ impl GasTracker {
     #[doc(alias = "record_state_cost")]
     #[inline]
     pub fn spend_state(&mut self, cost: u64) -> Result {
+        if self.isolated_state && cost > self.reservoir {
+            return Err(InstrStop::OutOfGas);
+        }
         if self.reservoir >= cost {
             self.add_state_gas_spent(cost as i64);
             self.reservoir -= cost;
@@ -442,7 +468,8 @@ impl GasTracker {
     /// A failing frame rolls back its state changes, so its state gas is refilled
     /// in LIFO order ([`Self::rollback_state_gas`]) and the execution refund counter
     /// is dropped; an exceptional halt additionally consumes the frame's execution
-    /// gas. On success the gas is left as-is. Applied once when a frame returns, so
+    /// gas. On success the gas is left as-is. Applied when a frame returns and after inspector
+    /// overrides; settling the same failure again is idempotent, so
     /// every consumer — the parent [`Self::merge_child_gas`], top-level accounting,
     /// and inspectors — reads the same settled gas.
     #[inline]

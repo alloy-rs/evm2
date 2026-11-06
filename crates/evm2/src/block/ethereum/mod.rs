@@ -17,7 +17,9 @@ use alloy_consensus::{
     transaction::{TransactionEnvelope, TxHashRef},
 };
 use alloy_eip7928::BlockAccessIndex;
-use alloy_eips::{eip2718::Typed2718, eip4895::Withdrawal, eip7685::Requests};
+use alloy_eips::{
+    eip2718::Typed2718, eip4895::Withdrawal, eip7685::Requests, eip8141::FrameReceiptPayload,
+};
 use alloy_hardforks::{EthereumHardfork, EthereumHardforks};
 use alloy_primitives::{Address, B256};
 use core::borrow::Borrow;
@@ -99,12 +101,23 @@ impl ReceiptBuilder for EthReceiptBuilder {
         ctx: ReceiptBuilderCtx<TxType, TxResult<T>>,
     ) -> ReceiptEnvelope {
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
+        if let Some(frame) = result.frame {
+            return ReceiptEnvelope::Eip8141(
+                FrameReceiptPayload {
+                    cumulative_gas_used,
+                    payer: frame.payer,
+                    frame_receipts: frame.receipts,
+                }
+                .into(),
+            );
+        }
         let receipt = Receipt {
             status: Eip658Value::Eip658(result.is_success()),
             cumulative_gas_used,
             logs: result.logs,
         };
         ReceiptEnvelope::from_typed(tx_type, receipt.with_bloom())
+            .expect("non-frame transaction results produce ordinary receipts")
     }
 }
 
