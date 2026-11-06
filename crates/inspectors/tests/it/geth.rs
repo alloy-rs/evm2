@@ -1,6 +1,7 @@
 //! Geth tests
 
 mod consistency;
+mod refund_counter;
 mod runtime_oog;
 
 use crate::utils::{

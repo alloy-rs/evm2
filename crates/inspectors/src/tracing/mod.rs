@@ -478,6 +478,9 @@ impl TracingInspector {
             Bytes::new()
         };
 
+        let frame_refunded = interp.gas().refunded();
+        let refunded = interp.host().tx_refunded(frame_refunded).max(0) as u64;
+
         let mut immediate_bytes = None;
         if self.config.record_immediate_bytes {
             let size = usize::from(immediate_size(op.get()));
@@ -505,7 +508,7 @@ impl TracingInspector {
             memory,
             returndata,
             gas_remaining: interp.gas().remaining(),
-            gas_refund_counter: interp.gas().refunded() as u64,
+            gas_refund_counter: refunded,
             immediate_bytes,
 
             // These fields will be populated in `step_end`.
