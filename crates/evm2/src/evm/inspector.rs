@@ -462,6 +462,7 @@ mod tests {
         interpreter::{
             GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageInput,
             MessageKind, MessageResult, MessageResultExt, Word, instructions as instr, op,
+            private::Instruction,
         },
         registry::TxRegistry,
         test_utils::{
@@ -1160,6 +1161,40 @@ mod tests {
             let mut config =
                 OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
             config.set_instruction::<overwriting_call>(CUSTOM_CALL, 100);
+            config
+        };
+    }
+
+    /// `CALL`, which catches a panic out of the call and then overwrites and grows memory.
+    #[cfg(feature = "std")]
+    #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
+    fn catching_call(cx: _) -> Result {
+        let caught = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+            <instr::call<BaseEvmTypes> as Instruction<BaseEvmTypes>>::execute(
+                cx.pc,
+                stack.reborrow(),
+                cx.state,
+            )
+        }));
+        if caught.is_ok() {
+            return Ok(());
+        }
+        cx.state.memory().set(0, &[0xbb; 32]);
+        cx.state.memory().resize(0, 1 << 16).unwrap();
+        Err(InstrStop::Stop)
+    }
+
+    /// The base config with [`catching_call`] installed at [`CUSTOM_CALL`].
+    #[cfg(feature = "std")]
+    struct CatchingCallConfig;
+
+    #[cfg(feature = "std")]
+    impl EvmConfig<BaseEvmTypes> for CatchingCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<catching_call>(CUSTOM_CALL, 100);
             config
         };
     }
@@ -2061,6 +2096,48 @@ mod tests {
 
         assert_matches!(result.stop, InstrStop::Return);
         assert_eq!(result.output[..], [0xaa; 32]);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn caught_panic_in_call_keeps_kept_input() {
+        /// Keeps the child's input and panics.
+        #[derive(Default)]
+        struct KeepInputAndPanic {
+            kept: Option<MessageInput>,
+        }
+
+        impl Inspector<BaseEvmTypes> for KeepInputAndPanic {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    self.kept = Some(core::mem::take(&mut message.input));
+                    panic!("keeps the input");
+                }
+                None
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_config::<CatchingCallConfig>(),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            echo_db(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(KeepInputAndPanic::default());
+        let code = memory_input_call_code(ECHO, CUSTOM_CALL);
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
+
+        let _ = Host::execute_message(&mut evm, &mut message);
+
+        let inspector = evm.clear_inspector_as::<KeepInputAndPanic>().unwrap();
+        assert_eq!(inspector.kept.as_deref(), Some(&[0xaa; 32][..]));
     }
 
     #[test]

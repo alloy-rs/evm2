@@ -12,7 +12,10 @@ use crate::{
     version::GasId,
 };
 use alloy_primitives::{Address, B256, Bytes};
-use core::{cmp::min, ops::Range};
+use core::{
+    cmp::min,
+    ops::{Deref, DerefMut, Range},
+};
 use evm2_macros::instruction;
 
 #[inline]
@@ -319,22 +322,28 @@ unsafe fn call_impl<T: EvmTypesHost>(
         &MessageResult<T>,
     ) -> Result,
 ) -> Result {
+    // A hook can resume this frame after a failure or a caught panic, so the guard also reclaims
+    // the input then. It is dropped after the message.
+    let mut state = ReclaimCallInput { state };
     let mut message = Message::<T>::default();
     let mut return_memory_range = 0..0;
-    // SAFETY: Upheld by the caller for the hooks. The input is reclaimed below on every exit,
+    // SAFETY: Upheld by the caller for the hooks. The input is reclaimed below, or by the guard,
     // before this frame writes memory again.
     let new_account_state_gas = unsafe {
-        prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)
+        prepare_call(
+            stack.reborrow(),
+            gas,
+            &mut state,
+            kind,
+            &mut message,
+            &mut return_memory_range,
+        )
     }?;
-    // A hook can resume this frame after a stop, so the input is also reclaimed on failure, while
-    // the message may still hold it.
-    before(gas, state, &mut message).inspect_err(|_| state.0.reclaim_call_input())?;
-    let mut result = state.host().execute_message(&mut message).map_err(|error| {
-        state.0.reclaim_call_input();
-        state.fail(error)
-    })?;
+    before(gas, &mut state, &mut message)?;
+
+    let mut result =
+        state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
     if result.stop.is_fatal() {
-        state.0.reclaim_call_input();
         return Err(result.stop);
     }
     state.note_inspector_config_change();
@@ -346,7 +355,7 @@ unsafe fn call_impl<T: EvmTypesHost>(
     if new_account_state_gas != 0 && !result.is_success() {
         gas.refill_reservoir(new_account_state_gas);
     }
-    after(gas, state, &message, &result).inspect_err(|_| state.0.reclaim_call_input())?;
+    after(gas, &mut state, &message, &result)?;
     drop(message);
     state.0.reclaim_call_input();
     let copy_len = min(return_memory_range.len(), result.output.len());
@@ -358,6 +367,34 @@ unsafe fn call_impl<T: EvmTypesHost>(
     stack.push_u64(result.is_success() as u64)?;
     // A hook's stop or a config reload.
     state.result()
+}
+
+/// Reclaims the caller's memory from the input of [`call_impl`]'s message when dropped.
+struct ReclaimCallInput<'a, 'frame, 'host, T: EvmTypesHost> {
+    state: &'a mut InterpreterState<'frame, 'host, T>,
+}
+
+impl<'frame, 'host, T: EvmTypesHost> Deref for ReclaimCallInput<'_, 'frame, 'host, T> {
+    type Target = InterpreterState<'frame, 'host, T>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.state
+    }
+}
+
+impl<T: EvmTypesHost> DerefMut for ReclaimCallInput<'_, '_, '_, T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.state
+    }
+}
+
+impl<T: EvmTypesHost> Drop for ReclaimCallInput<'_, '_, '_, T> {
+    #[inline]
+    fn drop(&mut self) {
+        self.state.0.reclaim_call_input();
+    }
 }
 
 #[inline(never)]
