@@ -1,8 +1,7 @@
 use super::{Gas, InstrStop, MessageInput, Result, Word};
 use crate::{utils::num_words, version::GasParams};
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
-    cell::UnsafeCell,
     cmp::min,
     fmt,
     hint::cold_path,
@@ -314,10 +313,9 @@ impl Memory {
             data.extend_from_slice(&old);
             self.data = data;
         }
-        let cell = self.cell.take().unwrap();
-        // SAFETY: Only the memory owning a cell writes `retired`, once, right before it lets go of
-        // the cell, and inputs never access it. Moving the `Vec` does not move the bytes.
-        unsafe { *cell.retired.get() = old };
+        // Moving the `Vec` does not move the bytes.
+        let set = self.cell.take().unwrap().set(Box::new(old));
+        debug_assert!(set.is_ok());
     }
 }
 
@@ -325,16 +323,9 @@ impl Memory {
 ///
 /// Every lent input holds the cell of the memory it came from, so the cell's reference count tells
 /// memory whether one is still alive. Memory that must write, grow, clear or drop its bytes while
-/// one is moves them into `retired` instead, where they stay unchanged until the last input drops
+/// one is moves them into the cell instead, where they stay unchanged until the last input drops
 /// the cell. Memory then continues with a new cell.
-#[derive(Default)]
-pub(crate) struct BorrowCell {
-    retired: UnsafeCell<Vec<u8>>,
-}
-
-// SAFETY: `retired` is written once, by the memory owning the cell while it still holds a reference
-// to it, and is otherwise only dropped with the cell. Inputs never access it.
-unsafe impl Sync for BorrowCell {}
+pub(crate) type BorrowCell = once_cell::race::OnceBox<Vec<u8>>;
 
 unsafe fn set_data(dst: &mut [u8], src: &[u8], dst_offset: usize, src_offset: usize, len: usize) {
     if len == 0 {

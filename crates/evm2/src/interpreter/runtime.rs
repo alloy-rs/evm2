@@ -459,6 +459,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     #[doc(hidden)]
     pub fn prepare_run(&mut self, host: &mut T::Host<'host>) {
+        // A hook that holds this frame while its call is in progress can run it.
+        self.memory.reclaim();
         if self.bytecode_ref.is_none() {
             // SAFETY: The view borrows immutable allocations of the frame's `Bytecode`, which
             // outlives the interpreter's `'frame` borrow, so moving the interpreter does not
