@@ -7,16 +7,21 @@ use crate::{
 };
 use alloc::vec::Vec;
 
-#[cfg_attr(any(feature = "bn", feature = "bn254-mcl"), expect(dead_code))]
+#[cfg_attr(all(not(test), any(feature = "bn", feature = "bn254-mcl")), expect(dead_code))]
 pub(crate) mod arkworks;
+
+#[cfg(feature = "bn254-mcl")]
+pub(crate) mod mcl;
+
+#[cfg(feature = "bn")]
+#[cfg_attr(all(not(test), feature = "bn254-mcl"), expect(dead_code))]
+pub(crate) mod substrate;
 
 core::cfg_select! {
     feature = "bn254-mcl" => {
-        pub(crate) mod mcl;
         type Ops = mcl::MclOps;
     }
     feature = "bn" => {
-        pub(crate) mod substrate;
         type Ops = substrate::SubstrateOps;
     }
     _ => {
@@ -275,6 +280,9 @@ pub fn run_pair(
     let pairing_result = crate::precompiles::crypto().bn254_pairing_check(&points)?;
     Ok(PrecompileOutput::new(bool_to_bytes32(pairing_result)))
 }
+
+#[cfg(test)]
+mod differential;
 
 #[cfg(test)]
 mod tests {
