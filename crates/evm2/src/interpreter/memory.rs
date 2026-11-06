@@ -358,6 +358,9 @@ mod tests {
     use crate::{SpecId, Version};
     use core::assert_matches;
 
+    #[cfg(feature = "std")]
+    use std::thread;
+
     #[test]
     fn test_num_words() {
         assert_eq!(num_words(0), 0);
@@ -430,7 +433,10 @@ mod tests {
         let ptr = memory.as_slice().as_ptr();
         // SAFETY: Memory is reclaimed before it is written.
         let input = unsafe { memory.lend(0, 64) };
-        std::thread::spawn(move || assert_eq!(&*input, [1; 64])).join().unwrap();
+        #[cfg(feature = "std")]
+        thread::spawn(move || assert_eq!(&*input, [1; 64])).join().unwrap();
+        #[cfg(not(feature = "std"))]
+        drop(input);
 
         memory.reclaim();
         memory.set(0, &[2; 32]);
