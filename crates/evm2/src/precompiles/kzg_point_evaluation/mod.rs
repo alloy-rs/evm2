@@ -341,9 +341,10 @@ mod tests {
             // Single bit flips, and random compressed points, which are off the curve or outside
             // the subgroup.
             for _ in 0..16 {
-                let mut flipped = if rng.random() { commitment } else { proof };
+                let in_commitment = rng.random();
+                let mut flipped = if in_commitment { commitment } else { proof };
                 flipped[rng.random_range(0..48)] ^= 1 << rng.random_range(0..8);
-                inputs.push(if flipped[..] == commitment[..] {
+                inputs.push(if in_commitment {
                     (flipped, z, y, proof)
                 } else {
                     (commitment, z, y, flipped)
