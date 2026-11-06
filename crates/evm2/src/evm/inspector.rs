@@ -1135,6 +1135,35 @@ mod tests {
         };
     }
 
+    /// A call whose `before` hook overwrites the caller's memory.
+    #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
+    fn overwriting_call(cx: _) -> Result {
+        instr::call_with(
+            stack,
+            cx.gas,
+            cx.state,
+            MessageKind::Call,
+            |_, state, _| {
+                state.memory().set(0, &[0xbb; 32]);
+                Ok(())
+            },
+            |_, _, _, _| Ok(()),
+        )
+    }
+
+    /// The base config with [`overwriting_call`] installed at [`CUSTOM_CALL`].
+    struct OverwritingCallConfig;
+
+    impl EvmConfig<BaseEvmTypes> for OverwritingCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<overwriting_call>(CUSTOM_CALL, 100);
+            config
+        };
+    }
+
     /// Runs a call to a child through `message_op`, which `C` installs as a call, followed by
     /// `immediates`.
     fn run_custom_call<C: EvmConfig<BaseEvmTypes>>(
@@ -1788,6 +1817,50 @@ mod tests {
         assert_eq!(Word::from_be_slice(&result.output), Word::from(2));
     }
 
+    /// An account that returns its call data in [`echo_db`].
+    const ECHO: Address = Address::repeat_byte(0x22);
+
+    /// Returns a database with an account at [`ECHO`] that returns its call data.
+    fn echo_db() -> InMemoryDB {
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &ECHO,
+            AccountInfo::default().with_code(legacy_bytecode(vec![
+                op::CALLDATASIZE,
+                op::PUSH0,
+                op::PUSH0,
+                op::CALLDATACOPY,
+                op::CALLDATASIZE,
+                op::PUSH0,
+                op::RETURN,
+            ])),
+        );
+        db
+    }
+
+    /// Calls `target` through `call_op` with memory 0..32 as input and returns its 32-byte output.
+    fn memory_input_call_code(target: Address, call_op: u8) -> Vec<u8> {
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
+        code.push(op::MSTORE);
+        push_all(
+            &mut code,
+            [
+                Word::from(32),
+                Word::from(32),
+                Word::from(32),
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(&target),
+                Word::from(50_000),
+            ],
+        );
+        code.extend([call_op, op::POP]);
+        push_all(&mut code, [Word::from(32), Word::from(32)]);
+        code.push(op::RETURN);
+        code
+    }
+
     #[test]
     fn call_hook_overwriting_caller_memory_keeps_child_input() {
         struct OverwriteCallerMemory;
@@ -1805,45 +1878,10 @@ mod tests {
             }
         }
 
-        let echo = Address::repeat_byte(0x22);
-        let identity = Address::with_last_byte(4);
-        let mut db = InMemoryDB::default();
-        db.insert_account_info(
-            &echo,
-            AccountInfo::default().with_code(legacy_bytecode(vec![
-                op::CALLDATASIZE,
-                op::PUSH0,
-                op::PUSH0,
-                op::CALLDATACOPY,
-                op::CALLDATASIZE,
-                op::PUSH0,
-                op::RETURN,
-            ])),
-        );
-        for target in [echo, identity] {
-            // Calls `target` with memory 0..32 as input and returns its 32-byte output.
-            let mut code = Vec::new();
-            push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
-            code.push(op::MSTORE);
-            push_all(
-                &mut code,
-                [
-                    Word::from(32),
-                    Word::from(32),
-                    Word::from(32),
-                    Word::ZERO,
-                    Word::ZERO,
-                    address_to_word(&target),
-                    Word::from(50_000),
-                ],
-            );
-            code.extend([op::CALL, op::POP]);
-            push_all(&mut code, [Word::from(32), Word::from(32)]);
-            code.push(op::RETURN);
-
+        for target in [ECHO, Address::with_last_byte(4)] {
             let (result, _, _) = run_evm_with_inspector_db(
-                db.clone(),
-                code,
+                echo_db(),
+                memory_input_call_code(target, op::CALL),
                 &MessageExt::default(),
                 100_000,
                 OverwriteCallerMemory,
@@ -1854,78 +1892,17 @@ mod tests {
         }
     }
 
-    /// A call whose `before` hook overwrites the caller's memory.
-    #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
-    fn overwriting_call(cx: _) -> Result {
-        instr::call_with(
-            stack,
-            cx.gas,
-            cx.state,
-            MessageKind::Call,
-            |_, state, _| {
-                state.memory().set(0, &[0xbb; 32]);
-                Ok(())
-            },
-            |_, _, _, _| Ok(()),
-        )
-    }
-
-    /// The base config with [`overwriting_call`] installed at [`CUSTOM_CALL`].
-    struct OverwritingCallConfig;
-
-    impl EvmConfig<BaseEvmTypes> for OverwritingCallConfig {
-        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
-        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
-            let mut config =
-                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
-            config.set_instruction::<overwriting_call>(CUSTOM_CALL, 100);
-            config
-        };
-    }
-
     #[test]
     fn call_with_hook_overwriting_caller_memory_keeps_child_input() {
-        let echo = Address::repeat_byte(0x22);
-        let mut db = InMemoryDB::default();
-        db.insert_account_info(
-            &echo,
-            AccountInfo::default().with_code(legacy_bytecode(vec![
-                op::CALLDATASIZE,
-                op::PUSH0,
-                op::PUSH0,
-                op::CALLDATACOPY,
-                op::CALLDATASIZE,
-                op::PUSH0,
-                op::RETURN,
-            ])),
-        );
-        // Calls `echo` with memory 0..32 as input and returns its 32-byte output.
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
-        code.push(op::MSTORE);
-        push_all(
-            &mut code,
-            [
-                Word::from(32),
-                Word::from(32),
-                Word::from(32),
-                Word::ZERO,
-                Word::ZERO,
-                address_to_word(&echo),
-                Word::from(50_000),
-            ],
-        );
-        code.extend([CUSTOM_CALL, op::POP]);
-        push_all(&mut code, [Word::from(32), Word::from(32)]);
-        code.push(op::RETURN);
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_config::<OverwritingCallConfig>(),
             SpecId::OSAKA,
             BlockEnvExt::default(),
             TxRegistry::new(),
-            db,
+            echo_db(),
             Precompiles::base(SpecId::OSAKA),
         );
+        let code = memory_input_call_code(ECHO, CUSTOM_CALL);
         let mut message =
             MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
 

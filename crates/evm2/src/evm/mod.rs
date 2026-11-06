@@ -1355,7 +1355,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
 
 impl<'a, T: EvmTypes> Evm<'a, T> {
     /// The input of a call message may borrow the caller's memory (see
-    /// [`Interpreter::call_input`]), so this must never move it out of the message.
+    /// [`Interpreter::call_input`]), so this must not keep or clone out a borrowed input.
     #[inline]
     fn execute_message_impl(
         &mut self,

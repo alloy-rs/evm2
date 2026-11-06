@@ -287,9 +287,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[doc(hidden)]
     pub unsafe fn call_input(&self, offset: usize, len: usize) -> MessageInput {
         let bytes = self.memory.slice(offset, len);
-        if bytes.is_empty() {
-            return MessageInput::default();
-        }
         if !self.lends_memory {
             return Bytes::copy_from_slice(bytes).into();
         }
