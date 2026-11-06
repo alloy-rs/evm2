@@ -1863,7 +1863,11 @@ mod tests {
 
     #[test]
     fn call_hook_overwriting_caller_memory_keeps_child_input() {
-        struct OverwriteCallerMemory;
+        /// Overwrites the input through `memory_mut`, or runs the caller's `MSTORE` at `pc` to
+        /// overwrite the input and then grow memory.
+        struct OverwriteCallerMemory {
+            mstore_pc: Option<usize>,
+        }
 
         impl Inspector<BaseEvmTypes> for OverwriteCallerMemory {
             fn call(
@@ -1871,24 +1875,40 @@ mod tests {
                 interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
-                if message.depth > 0 {
+                if message.depth == 0 {
+                    return None;
+                }
+                let Some(pc) = self.mstore_pc else {
                     interp.memory_mut().set(0, &[0xbb; 32]);
+                    return None;
+                };
+                for offset in [0, 1 << 16] {
+                    let mut stack = interp.stack_mut();
+                    stack.push(Word::from_be_bytes([0xbb; 32])).unwrap();
+                    stack.push(Word::from(offset)).unwrap();
+                    let len = stack.len();
+                    // SAFETY: The top `len` stack words are initialized.
+                    unsafe { interp.run_external_instruction(pc, len) }.unwrap();
                 }
                 None
             }
         }
 
         for target in [ECHO, Address::with_last_byte(4)] {
-            let (result, _, _) = run_evm_with_inspector_db(
-                echo_db(),
-                memory_input_call_code(target, op::CALL),
-                &MessageExt::default(),
-                100_000,
-                OverwriteCallerMemory,
-            );
+            let code = memory_input_call_code(target, op::CALL);
+            let mstore_pc = code.iter().position(|&b| b == op::MSTORE).unwrap();
+            for mstore_pc in [None, Some(mstore_pc)] {
+                let (result, _, _) = run_evm_with_inspector_db(
+                    echo_db(),
+                    code.clone(),
+                    &MessageExt::default(),
+                    200_000,
+                    OverwriteCallerMemory { mstore_pc },
+                );
 
-            assert_matches!(result.stop, InstrStop::Return);
-            assert_eq!(result.output[..], [0xaa; 32], "{target}");
+                assert_matches!(result.stop, InstrStop::Return);
+                assert_eq!(result.output[..], [0xaa; 32], "{target} {mstore_pc:?}");
+            }
         }
     }
 

@@ -497,6 +497,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         pc: usize,
         stack_len: usize,
     ) -> core::result::Result<usize, InstrStop> {
+        // A hook that holds this frame while its call is in progress can run its instructions.
+        self.memory.reclaim();
         let bytecode = self.bytecode_ref.expect("`prepare_run` must precede external instructions");
         assert!(pc < self.bytecode.original_byte_slice().len(), "pc out of bounds");
         assert!(stack_len <= StackMut::CAPACITY, "stack length out of bounds");
