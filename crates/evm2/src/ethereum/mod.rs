@@ -1410,6 +1410,39 @@ mod tests {
     }
 
     #[test]
+    fn balance_top_up_needs_fee_charge() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(3)));
+        let mut version = Version::new(SpecId::CANCUN);
+        version.features.remove(EvmFeatures::BALANCE_CHECK);
+        version.features.remove(EvmFeatures::FEE_CHARGE);
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
+            SpecId::CANCUN,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 21_000,
+                gas_price: 10,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                value: U256::from(5),
+                ..TxLegacy::default()
+            }),
+            caller,
+        );
+
+        // As in revm, nothing is topped up without fee charging, so the value transfer fails.
+        let result = evm.transact(&tx).unwrap().commit();
+        assert_eq!(result.stop, InstrStop::OutOfFunds);
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(3));
+    }
+
+    #[test]
     fn insufficient_funds_reports_cost_and_balance() {
         let caller = Address::with_last_byte(0xaa);
         let mut database = InMemoryDB::default();
