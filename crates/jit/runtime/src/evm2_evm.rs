@@ -887,7 +887,7 @@ mod custom_host_tests {
             destination: Address::repeat_byte(0x11),
             caller: Address::repeat_byte(0x22),
             value: U256::from(0x33),
-            input: Bytes::from_static(&[0x44; 32]),
+            input: Bytes::from_static(&[0x44; 32]).into(),
             code: Bytecode::new_legacy(Bytes::from_static(&[
                 op::ADDRESS,
                 op::PUSH0,
