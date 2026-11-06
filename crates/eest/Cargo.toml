@@ -48,3 +48,7 @@ harness = false
 [features]
 default = []
 jit = ["dep:evm2-jit-runtime", "dep:evm2-jit-build"]
+# Precompile backends.
+gmp = ["evm2/gmp"]
+bn254-mcl = ["evm2/bn254-mcl"]
+p256-aws-lc-rs = ["evm2/p256-aws-lc-rs"]

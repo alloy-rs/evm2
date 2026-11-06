@@ -57,13 +57,13 @@ All features of the `evm2` crate are listed below. Use `default-features = false
 | `asm-keccak` | Yes | Uses the assembly Keccak implementation. |
 | `sha3-keccak` | No | Enables the RustCrypto SHA-3 Keccak implementation. |
 | `secp256k1` | Yes | Uses libsecp256k1 for the ECRECOVER precompile. |
-| `gmp` | Yes | Uses GMP for the modular exponentiation precompile. |
+| `gmp` | No | Uses GMP for the modular exponentiation precompile; built from source, requires `m4` and a C toolchain. |
 | `bn` | No | Uses substrate-bn for BN254 precompiles when `bn254-mcl` is disabled. |
 | `c-kzg` | No | Uses c-kzg for KZG point evaluation. |
 | `blst` | Yes | Uses blst for BLS12-381 precompiles and KZG verification when `c-kzg` is disabled. |
-| `bn254-mcl` | Yes | Uses MCL for BN254 precompiles; requires `std`. MCL is fastest on x86-64 CPUs with AVX, BMI2, and ADX. |
+| `bn254-mcl` | No | Uses MCL for BN254 precompiles instead of arkworks; requires `std`, CMake and a C++ compiler. MCL is fastest on x86-64 CPUs with AVX, BMI2, and ADX. |
 | `portable` | Yes | Enables portable builds of the enabled blst and c-kzg backends. |
-| `p256-aws-lc-rs` | Yes | Uses AWS-LC for the P256VERIFY precompile. |
+| `p256-aws-lc-rs` | No | Uses AWS-LC for the P256VERIFY precompile; requires CMake and a C compiler. |
 | `parse` | Yes | Enables parsing opcode names into `OpCode` values. |
 | `nightly` | No | Enables nightly Rust optimizations. |
 | `no-tco` | No | Disables automatic selection of the tail-call interpreter backend. |

@@ -116,12 +116,9 @@ default = [
     "parse",
     "asm-keccak",
     # Precompiles
-    "gmp",
     "secp256k1",
     "blst",
     "portable",
-    "bn254-mcl",
-    "p256-aws-lc-rs",
 ]
 std = [
     "alloy-consensus/std",

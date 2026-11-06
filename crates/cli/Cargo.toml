@@ -63,7 +63,7 @@ tikv-jemallocator = { workspace = true, optional = true }
 evm2-jit-build = { workspace = true, optional = true }
 
 [features]
-default = ["mimalloc"]
+default = ["mimalloc", "gmp", "bn254-mcl", "p256-aws-lc-rs"]
 jit = [
     "evm2-eest/jit",
     "dep:evm2-jit-context",
@@ -76,6 +76,10 @@ jit = [
 # Faster but possibly less portable allocators. `mimalloc` takes precedence over `jemalloc`.
 jemalloc = ["dep:tikv-jemallocator"]
 mimalloc = ["dep:mimalloc"]
+# Precompile backends.
+gmp = ["evm2/gmp"]
+bn254-mcl = ["evm2/bn254-mcl"]
+p256-aws-lc-rs = ["evm2/p256-aws-lc-rs"]
 
 [dev-dependencies]
 criterion.workspace = true
