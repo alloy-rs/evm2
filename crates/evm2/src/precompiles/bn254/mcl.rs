@@ -4,9 +4,23 @@
 //! arithmetic with `mulx`, `adcx`, and `adox`; this cuts pairing time by about 40%. Without
 //! these features, including under emulators that do not report ADX such as valgrind, mcl runs
 //! generic code that is slower but still faster than the arkworks backend.
+//!
+//! # Global state
+//!
+//! mcl keeps its curve parameters, and the JIT-compiled code that uses them, in process-wide
+//! state that `mcl_rust` exposes without synchronization, so this backend requires that nothing
+//! else in the process uses mcl for another curve:
+//!
+//! - The first BN254 operation initializes mcl for BN254 (unless the curve is already BN254) and
+//!   disables mcl's G2 order check for every mcl user in the process.
+//! - If another user changes the curve afterwards, BN254 operations fail with a fatal
+//!   [`PrecompileError`] instead of computing with the wrong curve.
+//! - A re-initialization concurrent with BN254 operations rewrites the JIT code in place, which is
+//!   a data race that evm2 cannot detect or prevent. Initialize any other mcl user before the first
+//!   BN254 operation, or build without the `bn254-mcl` feature.
 
 use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
-use crate::precompiles::PrecompileHalt;
+use crate::precompiles::{PrecompileError, PrecompileHalt};
 use alloy_primitives::hex;
 use mcl_rust::{CurveType, Fp, Fp2, Fr, G1, G2, GT};
 use std::sync::{Once, OnceLock};
@@ -31,19 +45,29 @@ impl Bn254Ops for MclOps {
     type Scalar = Fr;
 
     #[inline]
-    fn init() {
+    fn init() -> Result<(), PrecompileError> {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
+            // Skip the init if the curve is already set: it rewrites the JIT code in place, which
+            // would race with any other mcl user running on this thread-unsafe global state.
             // CurveType::SNARK (MCL_BN_SNARK1) is the Ethereum-compatible BN254 (alt_bn128).
             // CurveType::BN254 is a different, older BN254 parameterization.
-            assert!(mcl_rust::init(CurveType::SNARK), "mcl BN254 initialization failed");
-            // mcl checks the G2 order with a generic multiplication by r; `read_g2` uses the
-            // faster endomorphism check instead.
-            unsafe { mclBn_verifyOrderG2(0) };
+            if current_curve() == CurveType::SNARK as i32 || mcl_rust::init(CurveType::SNARK) {
+                // mcl checks the G2 order with a generic multiplication by r; `read_g2` uses the
+                // faster endomorphism check instead.
+                unsafe { mclBn_verifyOrderG2(0) };
+            }
         });
 
-        let curve = unsafe { mclBn_getCurveType() };
-        assert_eq!(curve, CurveType::SNARK as i32, "mcl curve changed after initialization");
+        // Another mcl user may have switched the global curve, before our init or since.
+        if current_curve() != CurveType::SNARK as i32 {
+            return Err(PrecompileError::Fatal(
+                "mcl is not initialized for BN254: another user of mcl in this process changed \
+                 its global curve"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     #[inline]
@@ -266,4 +290,37 @@ fn g2_in_subgroup(p: &G2) -> bool {
     lhs += &xp;
     lhs += p;
     lhs == rhs
+}
+
+fn current_curve() -> i32 {
+    unsafe { mclBn_getCurveType() }
+}
+
+/// These tests change mcl's process-wide curve, so they rely on nextest running each test in its
+/// own process.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{interpreter::GasTracker, precompiles::bn254::add};
+    use core::assert_matches;
+
+    fn run_add() -> Result<(), PrecompileError> {
+        add::run_istanbul(&[], &mut GasTracker::new(150)).map(|_| ())
+    }
+
+    #[test]
+    fn curve_changed_by_another_user_is_a_fatal_error() {
+        run_add().unwrap();
+
+        assert!(mcl_rust::init(CurveType::BLS12_381));
+        assert_matches!(run_add(), Err(PrecompileError::Fatal(_)));
+    }
+
+    #[test]
+    fn init_switches_a_curve_set_by_another_user() {
+        assert!(mcl_rust::init(CurveType::BLS12_381));
+
+        run_add().unwrap();
+        assert_eq!(current_curve(), CurveType::SNARK as i32);
+    }
 }
