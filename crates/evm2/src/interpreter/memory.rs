@@ -1,6 +1,6 @@
 use super::{Gas, InstrStop, MessageInput, Result, Word};
-use crate::{utils::num_words, version::GasParams};
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use crate::{once_lock::OnceLock, utils::num_words, version::GasParams};
+use alloc::{sync::Arc, vec::Vec};
 use core::{
     cmp::min,
     fmt,
@@ -314,7 +314,7 @@ impl Memory {
             self.data = data;
         }
         // Moving the `Vec` does not move the bytes.
-        let set = self.cell.take().unwrap().set(Box::new(old));
+        let set = self.cell.take().unwrap().set(old);
         debug_assert!(set.is_ok());
     }
 }
@@ -325,7 +325,7 @@ impl Memory {
 /// memory whether one is still alive. Memory that must write, grow, clear or drop its bytes while
 /// one is moves them into the cell instead, where they stay unchanged until the last input drops
 /// the cell. Memory then continues with a new cell.
-pub(crate) type BorrowCell = once_cell::race::OnceBox<Vec<u8>>;
+pub(crate) type BorrowCell = OnceLock<Vec<u8>>;
 
 unsafe fn set_data(dst: &mut [u8], src: &[u8], dst_offset: usize, src_offset: usize, len: usize) {
     if len == 0 {
