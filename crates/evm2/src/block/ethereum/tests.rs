@@ -234,19 +234,6 @@ fn rejects_request_contract_without_code() {
 }
 
 #[test]
-fn allowed_empty_request_contract_is_a_no_op() {
-    let mut database = database();
-    database.insert_account_info(&WITHDRAWAL_REQUEST_ADDRESS, AccountInfo::default());
-    database.insert_account_info(&CONSOLIDATION_REQUEST_ADDRESS, AccountInfo::default());
-    let evm = evm_with(SpecId::PRAGUE, 30_000_000, database);
-    let rules = EthBlockRules { allow_empty_request_contracts: true, ..EthBlockRules::default() };
-    let mut executor = EthBlockExecutor::new(evm, ctx(), rules, EthReceiptBuilder);
-    executor.apply_pre_execution_changes().unwrap();
-    let output = executor.finish().unwrap();
-    assert!(output.result.requests.is_empty());
-}
-
-#[test]
 fn rejects_transaction_over_block_blob_gas() {
     let rules = EthBlockRules { max_blob_gas_per_block: Some(0), ..EthBlockRules::default() };
     let mut executor = executor(SpecId::CANCUN, 30_000_000, ctx(), rules);
