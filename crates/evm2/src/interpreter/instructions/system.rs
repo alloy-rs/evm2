@@ -149,11 +149,12 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
 }
 
 #[inline(never)]
-fn prepare_call<T: EvmTypesHost>(
+unsafe fn prepare_call<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
+    lend: bool,
     message: &mut Message<T>,
     return_memory_range: &mut Range<usize>,
 ) -> Result<u64> {
@@ -189,7 +190,12 @@ fn prepare_call<T: EvmTypesHost>(
             kind == MessageKind::Call,
             local_gas_limit,
         )?;
-    let input = memory_range_bytes(state, input_range)?;
+    let input = if lend {
+        // SAFETY: Upheld by the caller.
+        unsafe { state.0.call_input(input_range.start, input_range.len()) }
+    } else {
+        memory_range_bytes(state, input_range)?.into()
+    };
 
     let current = state.message();
     let (destination, caller, call_value, code_address) = match kind {
@@ -234,8 +240,10 @@ fn call_inner<T: EvmTypesHost>(
 ) -> Result {
     let mut message = Message::<T>::default();
     let mut return_memory_range = 0..0;
-    let new_account_state_gas =
-        prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
+    // SAFETY: The child message goes straight to the host and is not read after it returns.
+    let new_account_state_gas = unsafe {
+        prepare_call(stack.reborrow(), gas, state, kind, true, &mut message, &mut return_memory_range)
+    }?;
 
     let tx_env = state.tx();
     let mut result =
@@ -384,7 +392,7 @@ fn create_inner<T: EvmTypesHost>(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(input.clone()),
-        input,
+        input: input.into(),
         value,
         code_address: caller,
         // CREATE is rejected in a static context (see `require_non_staticcall`).

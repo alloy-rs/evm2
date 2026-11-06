@@ -170,7 +170,7 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
 
     /// Returns calldata bytes.
     #[inline]
-    pub const fn input(&self) -> &Bytes {
+    pub fn input(&self) -> &[u8] {
         &self.message().input
     }
 

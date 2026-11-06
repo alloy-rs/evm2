@@ -1413,7 +1413,7 @@ tests! {
             bytecode: &asm(&binary_choice_chain(11)),
             inspect_stack: Some(false),
             modify_message: Some(|message| {
-                message.input = Bytes::from_static(&[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]);
+                message.input = Bytes::from_static(&[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]).into();
             }),
             expected_return: InstrStop::Return,
             expected_memory: &U256::from(606).to_be_bytes::<32>(),
@@ -3105,7 +3105,7 @@ tests! {
             ],
             spec_id: SpecId::CANCUN,
             modify_message: Some(|message| {
-                message.input = Bytes::copy_from_slice(&U256::from(0x68).to_be_bytes::<32>());
+                message.input = Bytes::copy_from_slice(&U256::from(0x68).to_be_bytes::<32>()).into();
                 message.value = U256::from(10);
             }),
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
@@ -3610,7 +3610,7 @@ tests! {
             spec_id: SpecId::ISTANBUL,
             modify_message: Some(|message| {
                 message.value = 1_U256;
-                message.input = Bytes::from(&hex!("c0406226"));
+                message.input = Bytes::from(&hex!("c0406226")).into();
             }),
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
@@ -3702,7 +3702,7 @@ tests! {
             modify_message: Some(|message| {
                 let mut input = [0; 96];
                 input[63] = 1;
-                message.input = Bytes::copy_from_slice(&input);
+                message.input = Bytes::copy_from_slice(&input).into();
             }),
             inspect_stack: Some(false),
             expected_return: InstrStop::Stop,

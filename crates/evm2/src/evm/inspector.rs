@@ -947,6 +947,72 @@ mod tests {
     }
 
     #[test]
+    fn call_hook_overwriting_caller_memory_keeps_child_input() {
+        struct OverwriteCallerMemory;
+
+        impl Inspector<BaseEvmTypes> for OverwriteCallerMemory {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    interp.memory_mut().set(0, &[0xbb; 32]);
+                }
+                None
+            }
+        }
+
+        let echo = Address::repeat_byte(0x22);
+        let identity = Address::with_last_byte(4);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &echo,
+            AccountInfo::default().with_code(legacy_bytecode(vec![
+                op::CALLDATASIZE,
+                op::PUSH0,
+                op::PUSH0,
+                op::CALLDATACOPY,
+                op::CALLDATASIZE,
+                op::PUSH0,
+                op::RETURN,
+            ])),
+        );
+        for target in [echo, identity] {
+            // Calls `target` with memory 0..32 as input and returns its 32-byte output.
+            let mut code = Vec::new();
+            push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
+            code.push(op::MSTORE);
+            push_all(
+                &mut code,
+                [
+                    Word::from(32),
+                    Word::from(32),
+                    Word::from(32),
+                    Word::ZERO,
+                    Word::ZERO,
+                    address_to_word(&target),
+                    Word::from(50_000),
+                ],
+            );
+            code.extend([op::CALL, op::POP]);
+            push_all(&mut code, [Word::from(32), Word::from(32)]);
+            code.push(op::RETURN);
+
+            let (result, _, _) = run_evm_with_inspector_db(
+                db.clone(),
+                code,
+                &MessageExt::default(),
+                100_000,
+                OverwriteCallerMemory,
+            );
+
+            assert_matches!(result.stop, InstrStop::Return);
+            assert_eq!(result.output[..], [0xaa; 32], "{target}");
+        }
+    }
+
+    #[test]
     fn create_too_deep_is_inspected_without_executing() {
         let mut code = create_code();
         code.extend([op::CREATE, op::STOP]);

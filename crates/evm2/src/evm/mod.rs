@@ -1303,6 +1303,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
         // replacement while the hooks are running.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
+        // The hooks can change the caller's memory and keep the message, so the input must not
+        // borrow that memory.
+        message.input.make_owned();
 
         // `destination` already holds the create's contract address (set when the message was
         // constructed), so the create hook observes it directly.
@@ -1682,6 +1685,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let mut interp: Box<Interpreter<'frame, 'a, T>> =
             guard.evm.interpreter_pool.pop(tx_env, message);
         let interp_ref = interp.as_mut();
+        interp_ref.lend_memory();
         guard.evm.inspect_initialize_interp(interp_ref);
         let inspector = guard.evm.active_inspector().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
@@ -2222,7 +2226,7 @@ mod tests {
             destination: address,
             call_target: address,
             caller: Address::ZERO,
-            input: Bytes::new(),
+            input: Default::default(),
             value: U256::ZERO,
             code: Bytecode::default(),
             code_address: address,
@@ -2312,7 +2316,7 @@ mod tests {
             evm.set_inspector(LogInspector::default());
             let mut message = precompile_message(TEST_PRECOMPILE);
             if revert {
-                message.input = Bytes::from_static(b"revert");
+                message.input = Bytes::from_static(b"revert").into();
             }
             let result =
                 Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -3107,7 +3111,7 @@ mod tests {
             assert_eq!(message.depth, 67);
             assert_eq!(message.destination, TEST_PRECOMPILE);
             assert_eq!(message.caller, Address::with_last_byte(0x7a));
-            assert_eq!(message.input, Bytes::from_static(b"message input"));
+            assert_eq!(&*message.input, b"message input");
             assert_eq!(message.value, U256::from(99));
             assert_eq!(message.code_address, TEST_PRECOMPILE);
             Ok(PrecompileOutput::new(Bytes::copy_from_slice(&evm.block.number.to_be_bytes::<32>())))
@@ -3127,7 +3131,7 @@ mod tests {
             destination: address,
             call_target: address,
             caller: Address::with_last_byte(0x7a),
-            input: Bytes::from_static(b"message input"),
+            input: Bytes::from_static(b"message input").into(),
             value: U256::from(99),
             code: Bytecode::default(),
             code_address: address,
