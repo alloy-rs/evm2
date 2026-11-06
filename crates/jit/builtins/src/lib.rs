@@ -242,7 +242,7 @@ pub unsafe fn __revmc_builtin_calldatacopy<T: EvmTypesHost>(
         let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
         let data_offset = data_offset.to_u256().saturating_to::<usize>();
-        let input = ecx.input().as_ref();
+        let input = ecx.input();
         let input = unsafe { core::slice::from_raw_parts(input.as_ptr(), input.len()) };
         ecx.memory_mut().set_data(memory_offset, data_offset, len, input);
     }
@@ -728,7 +728,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(code.clone()),
-        input: code,
+        input: code.into(),
         value,
         code_address: destination,
         caller_is_static: false,
@@ -795,12 +795,12 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
     pop!(sp; in_offset, in_len, out_offset, out_len);
 
     let in_len = word_to_usize(in_len.to_u256())?;
-    let input = if in_len != 0 {
+    let in_offset = if in_len != 0 {
         let in_offset = word_to_usize(in_offset.to_u256())?;
         ensure_memory(ecx, in_offset, in_len)?;
-        Bytes::copy_from_slice(ecx.memory().slice(in_offset, in_len))
+        in_offset
     } else {
-        Bytes::new()
+        0
     };
 
     let out_len = word_to_usize(out_len.to_u256())?;
@@ -820,6 +820,8 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
             call_kind == CallKind::Call,
             local_gas_limit,
         )?;
+    // SAFETY: The message goes straight to the host, and nothing reads it after the host returns.
+    let input = unsafe { ecx.interpreter().call_input(in_offset, in_len) };
 
     let current = ecx.message();
     let (destination, caller, call_value, code_address) = match call_kind {
