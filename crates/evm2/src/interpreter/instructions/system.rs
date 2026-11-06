@@ -242,7 +242,15 @@ fn call_inner<T: EvmTypesHost>(
     let mut return_memory_range = 0..0;
     // SAFETY: The child message goes straight to the host and is not read after it returns.
     let new_account_state_gas = unsafe {
-        prepare_call(stack.reborrow(), gas, state, kind, true, &mut message, &mut return_memory_range)
+        prepare_call(
+            stack.reborrow(),
+            gas,
+            state,
+            kind,
+            true,
+            &mut message,
+            &mut return_memory_range,
+        )
     }?;
 
     let tx_env = state.tx();
