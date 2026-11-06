@@ -347,6 +347,7 @@ unsafe fn set_data(dst: &mut [u8], src: &[u8], dst_offset: usize, src_offset: us
 mod tests {
     use super::*;
     use crate::{SpecId, Version};
+    use alloy_primitives::Bytes;
     use core::assert_matches;
 
     #[cfg(feature = "std")]
@@ -472,6 +473,8 @@ mod tests {
         // SAFETY: As above.
         let mut owned = unsafe { memory.lend(0, 3) };
         owned.make_owned();
+        // SAFETY: As above.
+        let into = Bytes::from(unsafe { memory.lend(0, 3) });
         drop(input);
 
         memory.reclaim();
@@ -479,5 +482,6 @@ mod tests {
         assert_eq!(&*clone, [1, 2, 3]);
         assert_eq!(bytes[..], [1, 2, 3]);
         assert_eq!(&*owned, [1, 2, 3]);
+        assert_eq!(into[..], [1, 2, 3]);
     }
 }

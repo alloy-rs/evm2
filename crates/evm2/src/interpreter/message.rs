@@ -286,6 +286,14 @@ impl From<Bytes> for MessageInput {
     }
 }
 
+impl From<MessageInput> for Bytes {
+    /// Returns owned bytes without copying, and copies lent ones.
+    #[inline]
+    fn from(input: MessageInput) -> Self {
+        if input.cell.is_some() { Self::copy_from_slice(&input.bytes) } else { input.bytes }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
