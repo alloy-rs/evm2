@@ -12,12 +12,14 @@
 //! else in the process uses mcl for another curve:
 //!
 //! - The first BN254 operation initializes mcl for BN254 (unless the curve is already BN254) and
-//!   disables mcl's G2 order check for every mcl user in the process.
+//!   disables mcl's G2 order check for every mcl user in the process. If another user initialized a
+//!   different curve first, that user's later operations run on BN254.
 //! - If another user changes the curve afterwards, BN254 operations fail with a fatal
 //!   [`PrecompileError`] instead of computing with the wrong curve.
 //! - A re-initialization concurrent with BN254 operations rewrites the JIT code in place, which is
-//!   a data race that evm2 cannot detect or prevent. Initialize any other mcl user before the first
-//!   BN254 operation, or build without the `bn254-mcl` feature.
+//!   a data race that evm2 cannot detect or prevent.
+//!
+//! Build without the `bn254-mcl` feature if the process needs mcl for anything else.
 
 use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
 use crate::precompiles::{PrecompileError, PrecompileHalt};
