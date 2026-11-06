@@ -132,7 +132,7 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called before each instruction executes.
     ///
     /// The hook may edit the interpreter's stack and pc. If it moves the pc, the instruction there
-    /// runs instead, after its own `step` hook.
+    /// runs instead, without a `step` call of its own.
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
@@ -3035,7 +3035,7 @@ mod tests {
     fn step_hooks_edit_pc_and_stack() {
         const PUSHES: [u8; 6] = [op::PUSH1, 1, op::PUSH1, 2, op::PUSH1, 3];
         let nop: Hook = |_| {};
-        let cases: [EditCase; 6] = [
+        let cases: [EditCase; 7] = [
             // A word pushed in `step` is an operand of the instruction.
             (
                 &[op::ADD, op::STOP],
@@ -3060,7 +3060,20 @@ mod tests {
                 nop,
                 &[3],
             ),
-            // The instruction at the pc that `step` sets runs instead of the stepped one.
+            // The instruction at the pc that `step` sets runs instead of the stepped one, without
+            // a `step` call of its own.
+            (
+                &[op::INVALID, op::ADD, op::STOP],
+                &[op::INVALID, op::ADD],
+                |interp| match interp.opcode() {
+                    op::INVALID => interp.set_pc(PUSHES.len() + 1),
+                    op::ADD => interp.stack_mut().push(Word::from(100)).unwrap(),
+                    _ => {}
+                },
+                nop,
+                &[1, 5],
+            ),
+            // A target that the inspector does not step runs too.
             (
                 &[op::INVALID, op::ADD, op::STOP],
                 &[op::INVALID],
@@ -3124,6 +3137,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn step_end_edits_apply_when_a_child_message_reloads_the_frame() {
         // The child message changes the steps, so the frame reloads after the `CALL`.

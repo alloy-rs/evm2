@@ -50,6 +50,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     steps: OpcodeSet,
     /// Whether the running instruction is `hooked`.
     hooked_running: bool,
+    /// Whether a `step` hook moved the pc to a stepped instruction, which runs without a `step`
+    /// hook of its own.
+    skip_step: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
     #[derive_where(skip)]
@@ -114,6 +117,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             inspector: None,
             steps: OpcodeSet::EMPTY,
             hooked_running: false,
+            skip_step: false,
             inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
@@ -875,13 +879,23 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     }
 
     /// Calls the inspector's `step` hook and returns the pc and stack length it leaves.
+    ///
+    /// Does nothing if the instruction was reached by a hook moving the pc, as in revm.
     #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) -> (Pc, usize) {
+        if self.0.skip_step {
+            cold_path();
+            self.0.skip_step = false;
+            return (pc, stack_len);
+        }
         self.set_pc_stack_len(pc.as_ptr(), stack_len);
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
         }
+        // SAFETY: `pc` is in bounds of the bytecode.
+        let moved = self.0.pc != pc.as_ptr() && self.0.result.is_ok();
+        self.0.skip_step = moved && self.0.steps.contains(unsafe { *self.0.pc });
         (Pc::new(self.0.pc), self.0.stack_len)
     }
 

@@ -229,7 +229,7 @@ fn run_stepped<T: EvmTypesHost, M: InspectMode<T>>(
     }
     if moved {
         cold_path();
-        // The hook moved the pc: the instruction there runs instead, after its own hook.
+        // The hook moved the pc: the instruction there runs instead.
         return Ok((cursor, loop_state));
     }
 

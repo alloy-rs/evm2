@@ -71,7 +71,7 @@ extern_table! {
             }
             if moved {
                 cold_path();
-                // The hook moved the pc: the instruction there runs instead, after its own hook.
+                // The hook moved the pc: the instruction there runs instead.
                 // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
                 let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
                 let instr = instructions_t[pc.op() as usize];
