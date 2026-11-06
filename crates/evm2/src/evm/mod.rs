@@ -1482,7 +1482,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             None => {
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
                 let frame_message = unsafe { trustme::decouple_lt(&*message) };
-                let frame = top_frame.insert(guard.evm.interpreter_pool.pop(frame_message));
+                let frame = top_frame.insert(guard.evm.pop_frame(frame_message));
                 top_code = message.code.clone();
                 // SAFETY: `top_code` owns a clone of the code, so the frame's pointers into it
                 // stay valid even if a hook replaces `message.code`. It is declared before
@@ -1841,7 +1841,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         message: &'frame Message<T>,
     ) -> Result<InstrStop, ExecutionError> {
         let guard = self.enter_execution();
-        let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
+        let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.pop_frame(message);
         let interp_ref = interp.as_mut();
         if let Some((range, frame)) = message.input.borrowed_range() {
             let memory = guard.evm.caller_memory(frame);
@@ -1879,6 +1879,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         guard.evm.current_frame = prev_frame;
         guard.evm.interpreter_pool.push(interp);
         stop
+    }
+
+    /// Takes an interpreter for `message` from the pool, first trimming the pool if no frame is
+    /// running.
+    #[inline]
+    fn pop_frame<'frame>(
+        &mut self,
+        message: &'frame Message<T>,
+    ) -> Box<Interpreter<'frame, 'a, T>> {
+        if self.current_frame.is_none() {
+            self.interpreter_pool.trim();
+        }
+        self.interpreter_pool.pop(message)
     }
 
     fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, 'a, T>) {
