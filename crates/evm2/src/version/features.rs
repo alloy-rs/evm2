@@ -159,6 +159,9 @@ evm_features! {
     BLOB_BASE_FEE_CHECK,
     /// Tops up the sender's native balance when [`Self::BALANCE_CHECK`] is disabled.
     ///
+    /// The sender keeps `max(balance - effective fee, value)` after the fee is charged, as in
+    /// revm. Nothing is topped up when [`Self::FEE_CHARGE`] is disabled.
+    ///
     /// This preserves Ethereum simulation behavior while allowing custom fee systems to disable
     /// native-balance validation without minting a synthetic native balance.
     ///

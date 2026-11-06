@@ -429,15 +429,22 @@ pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult
 /// Returns the sender's pre-bump state nonce.
 ///
 /// One account handle does all three, so the sender is looked up and journaled once.
+///
+/// With [`EvmFeatures::BALANCE_CHECK`] off, [`EvmFeatures::BALANCE_TOP_UP`] and
+/// [`EvmFeatures::FEE_CHARGE`] on, a sender holding less than `effective_upfront` (the effective
+/// fee plus the transaction value) is topped up to it, so that after the effective fee is charged
+/// it keeps `max(balance - fee, value)`, as revm does.
 pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     max_upfront: U256,
+    effective_upfront: U256,
 ) -> HandlerResult<u64> {
     let has_nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
-    let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
+    let has_balance_top_up =
+        host.feature(EvmFeatures::BALANCE_TOP_UP) && host.feature(EvmFeatures::FEE_CHARGE);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
 
     let mut sender = host.state.account(&caller)?;
@@ -456,8 +463,8 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
             balance: sender.balance(),
         });
     }
-    if !has_balance_check && has_balance_top_up && sender.balance() < max_upfront {
-        sender.add_balance(max_upfront - sender.balance());
+    if !has_balance_check && has_balance_top_up && sender.balance() < effective_upfront {
+        sender.set_balance(effective_upfront);
     }
     // The sender is warm from the start of the transaction (EIP-2929).
     sender.warm();
@@ -1297,6 +1304,44 @@ mod tests {
         assert_eq!(reward, U256::from(21_000 * beneficiary_gas_price));
     }
 
+    #[rstest::rstest]
+    #[case::top_up_to_value(100_000, 0)]
+    #[case::keeps_balance_minus_fee(1_000_000, 789_995)]
+    fn balance_top_up_matches_revm(#[case] balance: u64, #[case] expected: u64) {
+        let caller = Address::with_last_byte(0xaa);
+        let recipient = Address::with_last_byte(0xbb);
+        let mut database = InMemoryDB::default();
+        database
+            .insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(balance)));
+        let mut version = Version::new(SpecId::CANCUN);
+        version.features.remove(EvmFeatures::BALANCE_CHECK);
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
+            SpecId::CANCUN,
+            BlockEnvExt { basefee: U256::from(10), ..BlockEnvExt::default() },
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        // The effective fee is 21_000 * 10, far below the 21_000 * 100 maximum.
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Eip1559(TxEip1559 {
+                chain_id: evm.version().chain_id,
+                gas_limit: 21_000,
+                max_fee_per_gas: 100,
+                to: TxKind::Call(recipient),
+                value: U256::from(5),
+                ..TxEip1559::default()
+            }),
+            caller,
+        );
+
+        assert!(evm.transact(&tx).unwrap().commit().is_success());
+        // revm: max(balance - effective fee, value), minus the transferred value.
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(expected));
+        assert_eq!(evm.read_account_info(&recipient).unwrap().unwrap().balance, U256::from(5));
+    }
+
     #[test]
     fn insufficient_funds_reports_cost_and_balance() {
         let caller = Address::with_last_byte(0xaa);
@@ -1310,7 +1355,8 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let error = validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100));
+        let error =
+            validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100), U256::from(100));
         assert_eq!(
             error,
             Err(HandlerError::InsufficientFunds { fee: U256::from(100), balance: U256::from(10) })
@@ -1333,7 +1379,10 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(
+            validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100), U256::from(100))
+                .is_ok()
+        );
         let sender = evm.read_account_info(&caller).unwrap().unwrap();
         assert_eq!((sender.balance, sender.nonce), (U256::ZERO, 1));
     }
@@ -1362,7 +1411,10 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(
+            validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100), U256::from(100))
+                .is_ok()
+        );
         assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(100));
     }
 
@@ -1384,7 +1436,10 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(
+            validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100), U256::from(100))
+                .is_ok()
+        );
         charge_upfront(&mut evm, caller, U256::from(100)).unwrap();
         assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::ZERO);
     }

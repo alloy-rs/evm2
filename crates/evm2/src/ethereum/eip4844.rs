@@ -83,18 +83,19 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let blob_gas_cost = U256::from(DATA_GAS_PER_BLOB) * U256::from(tx.blob_versioned_hashes.len());
     let max_blob_gas_cost = blob_gas_cost * max_fee_per_blob_gas;
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
+    let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
+    let blob_basefee_cost = blob_gas_cost * req.host.block.blob_basefee;
     let sender_nonce = validate_sender_and_bump_nonce(
         req.host,
         caller,
         tx.nonce,
         max_gas_cost.saturating_add(max_blob_gas_cost).saturating_add(tx.value),
+        effective_gas_cost.saturating_add(blob_basefee_cost).saturating_add(tx.value),
     )?;
 
     warm_base_accounts(req.host, tx.to.into());
     warm_access_list(req.host, &tx.access_list);
 
-    let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    let blob_basefee_cost = blob_gas_cost * req.host.block.blob_basefee;
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost + blob_basefee_cost)?;
 
     Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas, sender_nonce })
