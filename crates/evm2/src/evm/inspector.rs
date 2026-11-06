@@ -460,8 +460,8 @@ mod tests {
         ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
-            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageKind,
-            MessageResult, MessageResultExt, Word, instructions as instr, op,
+            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageInput,
+            MessageKind, MessageResult, MessageResultExt, Word, instructions as instr, op,
         },
         registry::TxRegistry,
         test_utils::{
@@ -1890,6 +1890,72 @@ mod tests {
             assert_matches!(result.stop, InstrStop::Return);
             assert_eq!(result.output[..], [0xaa; 32], "{target}");
         }
+    }
+
+    #[test]
+    fn call_hook_keeping_input_keeps_its_bytes() {
+        #[derive(Default)]
+        struct KeepInput {
+            kept: Option<MessageInput>,
+        }
+
+        impl Inspector<BaseEvmTypes> for KeepInput {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    let copy = message.input.to_bytes().into();
+                    self.kept = Some(core::mem::replace(&mut message.input, copy));
+                }
+                None
+            }
+        }
+
+        // Returns 32 bytes of 0xcc.
+        let target = Address::repeat_byte(0x33);
+        let mut target_code = Vec::new();
+        push_all(&mut target_code, [Word::from_be_bytes([0xcc; 32]), Word::ZERO]);
+        target_code.push(op::MSTORE);
+        push_all(&mut target_code, [Word::from(32), Word::ZERO]);
+        target_code.push(op::RETURN);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &target,
+            AccountInfo::default().with_code(legacy_bytecode(target_code)),
+        );
+        // Calls `target` with memory 0..32 as input and output, then returns memory 0..32.
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
+        code.push(op::MSTORE);
+        push_all(
+            &mut code,
+            [
+                Word::from(32),
+                Word::ZERO,
+                Word::from(32),
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(&target),
+                Word::from(50_000),
+            ],
+        );
+        code.extend([op::CALL, op::POP]);
+        push_all(&mut code, [Word::from(32), Word::ZERO]);
+        code.push(op::RETURN);
+
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db,
+            code,
+            &MessageExt::default(),
+            100_000,
+            KeepInput::default(),
+        );
+
+        assert_matches!(result.stop, InstrStop::Return);
+        assert_eq!(result.output[..], [0xcc; 32]);
+        assert_eq!(inspector.kept.as_deref(), Some(&[0xaa; 32][..]));
     }
 
     #[test]

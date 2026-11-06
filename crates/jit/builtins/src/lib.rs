@@ -820,8 +820,9 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
             call_kind == CallKind::Call,
             local_gas_limit,
         )?;
-    // SAFETY: The message goes straight to the host, and nothing reads it after the host returns.
-    let input = unsafe { ecx.interpreter().call_input(in_offset, in_len) };
+    // SAFETY: Memory is reclaimed below, before this frame writes it again; a frame that stops
+    // early does not write it again.
+    let input = unsafe { ecx.interpreter_mut().call_input(in_offset, in_len) };
 
     let current = ecx.message();
     let (destination, caller, call_value, code_address) = match call_kind {
@@ -863,6 +864,9 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
     if new_account_state_gas != 0 && !result.is_success() {
         ecx.gas.refill_reservoir(new_account_state_gas);
     }
+    drop(message);
+    // Reclaims memory from the input, which can move it.
+    ecx.refresh_memory_cache();
 
     let copy_len = min(out_len, result.output.len());
     if copy_len != 0 {

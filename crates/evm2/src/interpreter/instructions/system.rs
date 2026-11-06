@@ -140,7 +140,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
 
 /// # Safety
 ///
-/// The message must be passed to the host as in
+/// Memory must not be written until the input is reclaimed, as in
 /// [`Interpreter::call_input`](crate::interpreter::Interpreter::call_input).
 #[inline(never)]
 unsafe fn prepare_call<T: EvmTypesHost>(
@@ -252,7 +252,7 @@ fn call_inner<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
 ) -> Result {
-    // SAFETY: The hooks do nothing.
+    // SAFETY: The hooks do not write memory.
     unsafe { call_impl(stack, gas, state, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(())) }
 }
 
@@ -296,16 +296,15 @@ pub fn call_with<T: EvmTypesHost>(
             message.input.make_owned();
             before(gas, state, message)
         };
-    // SAFETY: `before` copies the input before the hooks can reach it.
+    // SAFETY: `before` copies the input before the hooks can write memory.
     unsafe { call_impl(stack, gas, state, kind, before, after) }
 }
 
-/// Body of [`call_with`]. The child message may borrow its input from memory.
+/// Body of [`call_with`]. The child message borrows its input from memory.
 ///
 /// # Safety
 ///
-/// `before` and `after` must not read a borrowed input after changing memory, or let it outlive
-/// the call.
+/// `before` and `after` must not write memory while the input borrows it.
 #[inline]
 unsafe fn call_impl<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
@@ -322,8 +321,8 @@ unsafe fn call_impl<T: EvmTypesHost>(
 ) -> Result {
     let mut message = Message::<T>::default();
     let mut return_memory_range = 0..0;
-    // SAFETY: Upheld by the caller for the hooks. Nothing else reads the message after the host
-    // returns.
+    // SAFETY: Upheld by the caller for the hooks. The input is reclaimed below, before this frame
+    // writes memory again; a frame that stops early does not write it again.
     let new_account_state_gas = unsafe {
         prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)
     }?;
@@ -344,6 +343,8 @@ unsafe fn call_impl<T: EvmTypesHost>(
         gas.refill_reservoir(new_account_state_gas);
     }
     after(gas, state, &message, &result)?;
+    drop(message);
+    state.0.reclaim_call_input();
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
         let output = result.output.get_unchecked(..copy_len);

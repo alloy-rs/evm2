@@ -1,12 +1,32 @@
-use super::{Gas, InstrStop, Result, Word};
+use super::{Gas, InstrStop, MessageInput, Result, Word};
 use crate::{utils::num_words, version::GasParams};
-use alloc::vec::Vec;
-use core::{cmp::min, fmt, hint::cold_path, ops::Range};
+use alloc::{sync::Arc, vec::Vec};
+use core::{
+    cell::UnsafeCell,
+    cmp::min,
+    fmt,
+    hint::cold_path,
+    mem,
+    ops::Range,
+    sync::atomic::{Ordering, fence},
+};
 
 /// Linear EVM memory.
 pub struct Memory {
     data: Vec<u8>,
     memory_limit: u64,
+    /// The cell shared with the inputs lent out of `data`. Allocated by the first lend, and reused
+    /// until memory retires its bytes into it.
+    cell: Option<Arc<BorrowCell>>,
+    /// Whether an input lent out of `data` may still be alive.
+    lent: bool,
+}
+
+impl Drop for Memory {
+    #[inline]
+    fn drop(&mut self) {
+        self.reclaim_with(false);
+    }
 }
 
 impl Default for Memory {
@@ -32,7 +52,7 @@ impl Memory {
     /// Creates memory with the requested capacity.
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { data: Vec::with_capacity(capacity), memory_limit: u64::MAX }
+        Self { data: Vec::with_capacity(capacity), memory_limit: u64::MAX, cell: None, lent: false }
     }
 
     /// Returns the memory byte limit.
@@ -74,6 +94,7 @@ impl Memory {
     /// Clears memory while retaining the allocation.
     #[inline]
     pub fn clear(&mut self) {
+        self.reclaim_with(false);
         self.data.clear();
     }
 
@@ -238,7 +259,82 @@ impl Memory {
         }
         self.slice_range(offset..offset + len)
     }
+
+    /// Lends `offset..offset + len` out as a message input without copying it.
+    ///
+    /// # Safety
+    ///
+    /// Memory must not be written or resized until [`Self::reclaim`] runs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is out of bounds.
+    #[inline]
+    #[cfg_attr(debug_assertions, track_caller)]
+    pub(crate) unsafe fn lend(&mut self, offset: usize, len: usize) -> MessageInput {
+        let cell = Arc::clone(self.cell.get_or_insert_with(Default::default));
+        self.lent = true;
+        let bytes = self.slice(offset, len);
+        // SAFETY: The caller reclaims memory before it changes, which retires the bytes into
+        // `cell` if the input is still alive. Dropping memory does the same.
+        unsafe { MessageInput::lent(bytes, cell) }
+    }
+
+    /// Makes memory writable again after [`Self::lend`]. If a lent input is still alive, memory
+    /// hands its bytes over to the input and continues on a copy of them.
+    #[inline]
+    pub(crate) fn reclaim(&mut self) {
+        self.reclaim_with(true);
+    }
+
+    #[inline]
+    fn reclaim_with(&mut self, keep: bool) {
+        if !self.lent {
+            return;
+        }
+        self.lent = false;
+        let Some(cell) = &self.cell else { return };
+        if Arc::strong_count(cell) == 1 {
+            // Synchronizes with the release decrements of inputs dropped on other threads, before
+            // memory writes the bytes they read.
+            fence(Ordering::Acquire);
+            return;
+        }
+        self.retire(keep);
+    }
+
+    /// Hands the bytes over to the inputs lent out of them, and continues on a copy of them if
+    /// `keep`, or on empty memory otherwise.
+    #[cold]
+    #[inline(never)]
+    fn retire(&mut self, keep: bool) {
+        let old = mem::take(&mut self.data);
+        if keep {
+            let mut data = Vec::with_capacity(old.capacity());
+            data.extend_from_slice(&old);
+            self.data = data;
+        }
+        let cell = self.cell.take().unwrap();
+        // SAFETY: Only the memory owning a cell writes `retired`, once, right before it lets go of
+        // the cell, and inputs never access it. Moving the `Vec` does not move the bytes.
+        unsafe { *cell.retired.get() = old };
+    }
 }
+
+/// Keeps a [`Memory`]'s bytes alive for the inputs lent out of them after memory lets go of them.
+///
+/// Every lent input holds the cell of the memory it came from, so the cell's reference count tells
+/// memory whether one is still alive. Memory that must write, grow, clear or drop its bytes while
+/// one is moves them into `retired` instead, where they stay unchanged until the last input drops
+/// the cell. Memory then continues with a new cell.
+#[derive(Default)]
+pub(crate) struct BorrowCell {
+    retired: UnsafeCell<Vec<u8>>,
+}
+
+// SAFETY: `retired` is written once, by the memory owning the cell while it still holds a reference
+// to it, and is otherwise only dropped with the cell. Inputs never access it.
+unsafe impl Sync for BorrowCell {}
 
 unsafe fn set_data(dst: &mut [u8], src: &[u8], dst_offset: usize, src_offset: usize, len: usize) {
     if len == 0 {
@@ -319,5 +415,72 @@ mod tests {
         );
         assert_eq!(memory.len(), 64);
         assert_eq!(gas.memory().words_num, 2);
+    }
+
+    fn memory_with(bytes: &[u8]) -> Memory {
+        let mut memory = Memory::new();
+        memory.resize(0, bytes.len()).unwrap();
+        memory.set(0, bytes);
+        memory
+    }
+
+    #[test]
+    fn dropped_lent_input_leaves_memory_in_place() {
+        let mut memory = memory_with(&[1; 64]);
+        let ptr = memory.as_slice().as_ptr();
+        // SAFETY: Memory is reclaimed before it is written.
+        let input = unsafe { memory.lend(0, 64) };
+        std::thread::spawn(move || assert_eq!(&*input, [1; 64])).join().unwrap();
+
+        memory.reclaim();
+        memory.set(0, &[2; 32]);
+        assert_eq!(memory.as_slice().as_ptr(), ptr);
+        assert_eq!(memory.slice(31, 2), [2, 1]);
+    }
+
+    #[test]
+    fn kept_lent_input_keeps_its_bytes() {
+        let ops: [fn(&mut Memory); 3] = [
+            |memory| {
+                memory.reclaim();
+                memory.set(0, &[2; 32]);
+                memory.resize(0, 1 << 20).unwrap();
+            },
+            |memory| memory.clear(),
+            |memory| drop(core::mem::take(memory)),
+        ];
+        for op in ops {
+            let mut memory = memory_with(&[1; 64]);
+            // SAFETY: Memory is reclaimed, cleared or dropped before it is written.
+            let input = unsafe { memory.lend(16, 32) };
+            op(&mut memory);
+            assert_eq!(&*input, [1; 32]);
+            // Memory lends again from a new cell.
+            memory.resize(0, 64).unwrap();
+            // SAFETY: Memory is not written before it is dropped.
+            let again = unsafe { memory.lend(0, 64) };
+            drop(memory);
+            assert_eq!(&*input, [1; 32]);
+            assert_eq!(again.len(), 64);
+        }
+    }
+
+    #[test]
+    fn kept_copies_of_lent_input_own_their_bytes() {
+        let mut memory = memory_with(&[1, 2, 3]);
+        // SAFETY: Memory is reclaimed before it is written.
+        let input = unsafe { memory.lend(0, 3) };
+        let clone = input.clone();
+        let bytes = input.to_bytes();
+        // SAFETY: As above.
+        let mut owned = unsafe { memory.lend(0, 3) };
+        owned.make_owned();
+        drop(input);
+
+        memory.reclaim();
+        memory.set(0, &[0; 3]);
+        assert_eq!(&*clone, [1, 2, 3]);
+        assert_eq!(bytes[..], [1, 2, 3]);
+        assert_eq!(&*owned, [1, 2, 3]);
     }
 }
