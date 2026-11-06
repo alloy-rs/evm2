@@ -1490,6 +1490,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let sp = self.sp_after_inputs();
         let call_kind = self.bcx.iconst(self.i8_type, call_kind as i64);
         self.call_fallible_builtin(Builtin::Call, &[self.ecx, sp, call_kind]);
+        // Memory moves to a copy if the call's input outlives it.
+        self.cached_mem_base = None;
     }
 
     /// Loads the word at the given pointer.

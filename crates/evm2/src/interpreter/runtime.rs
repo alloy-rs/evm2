@@ -64,10 +64,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
-    /// Whether [`Self::call_input`] borrows memory. Set only for frames that [`Evm`](crate::Evm)
-    /// runs, whose host keeps a borrowed input from being read after the call or while the memory
-    /// changes.
-    lends_memory: bool,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
@@ -108,7 +104,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             output: 0..0,
             message: None,
             is_static: false,
-            lends_memory: false,
             return_data: Bytes::new(),
             host: None,
             inspector: None,
@@ -135,7 +130,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.output = 0..0;
         self.message = Some(message);
         self.is_static = is_static;
-        self.lends_memory = false;
         self.return_data = Bytes::new();
     }
 
@@ -265,42 +259,41 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     }
 
     /// Returns the current mutable linear memory.
+    ///
+    /// If an input lent out of memory by a call in progress is still alive, memory first moves to
+    /// a copy, so that the input keeps its bytes.
     #[inline]
-    pub const fn memory_mut(&mut self) -> &mut Memory {
+    pub fn memory_mut(&mut self) -> &mut Memory {
+        self.memory.reclaim();
         &mut self.memory
     }
 
-    /// Returns `len` bytes of memory at `offset` as the input of a call message, borrowed when
-    /// this frame is run by [`Evm`](crate::Evm) and copied otherwise.
+    /// Returns `len` bytes of memory at `offset` as the input of a call message, lent without
+    /// copying.
     ///
     /// # Safety
     ///
-    /// The input must only be read as the input of a message passed to this frame's
-    /// [`Host::execute_message`](crate::interpreter::Host::execute_message), and memory must not
-    /// change and no other code may access this frame in between. It must not be read after
-    /// `execute_message` returns.
+    /// Memory must not be written or resized until it is reclaimed from the input, which
+    /// [`Self::memory_mut`] does.
     ///
     /// # Panics
     ///
     /// Panics if the bytes are out of bounds of memory.
     #[inline]
     #[doc(hidden)]
-    pub unsafe fn call_input(&self, offset: usize, len: usize) -> MessageInput {
-        let bytes = self.memory.slice(offset, len);
-        if !self.lends_memory {
-            return Bytes::copy_from_slice(bytes).into();
+    pub unsafe fn call_input(&mut self, offset: usize, len: usize) -> MessageInput {
+        if len == 0 {
+            return MessageInput::default();
         }
-        // SAFETY: The caller keeps memory unchanged until the host returns, and the host is
-        // `Evm`, which copies the input before any inspector hook can reach this frame or the
-        // message. Otherwise it only reads the message through shared references, which cannot
-        // move the input out, and cloning copies it.
-        unsafe { MessageInput::borrowed(bytes) }
+        // SAFETY: Upheld by the caller.
+        unsafe { self.memory.lend(offset, len) }
     }
 
-    /// Lets [`Self::call_input`] borrow memory for the rest of this frame.
+    /// Makes memory writable after [`Self::call_input`]. If the input is still alive, memory moves
+    /// to a copy and the input keeps the old bytes.
     #[inline]
-    pub(crate) const fn lend_memory(&mut self) {
-        self.lends_memory = true;
+    pub(crate) fn reclaim_call_input(&mut self) {
+        self.memory.reclaim();
     }
 
     /// Returns the current interpreter result.
@@ -466,6 +459,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     #[doc(hidden)]
     pub fn prepare_run(&mut self, host: &mut T::Host<'host>) {
+        // A hook that holds this frame while its call is in progress can run it.
+        self.memory.reclaim();
         if self.bytecode_ref.is_none() {
             // SAFETY: The view borrows immutable allocations of the frame's `Bytecode`, which
             // outlives the interpreter's `'frame` borrow, so moving the interpreter does not
@@ -502,6 +497,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         pc: usize,
         stack_len: usize,
     ) -> core::result::Result<usize, InstrStop> {
+        // A hook that holds this frame while its call is in progress can run its instructions.
+        self.memory.reclaim();
         let bytecode = self.bytecode_ref.expect("`prepare_run` must precede external instructions");
         assert!(pc < self.bytecode.original_byte_slice().len(), "pc out of bounds");
         assert!(stack_len <= StackMut::CAPACITY, "stack length out of bounds");
