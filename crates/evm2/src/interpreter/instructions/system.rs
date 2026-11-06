@@ -394,7 +394,6 @@ pub fn create_with<T: EvmTypesHost>(
     require_non_staticcall(state)?;
 
     let [value, offset, len] = stack.popn::<3>()?;
-    let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
     let len = len.to_usize()?;
     if state.feature(EvmFeatures::EIP3860) {
@@ -405,6 +404,9 @@ pub fn create_with<T: EvmTypesHost>(
     }
     let code_range = resize_memory_range(gas, state, offset, Word::from(len))?;
     let input = memory_range_bytes(state, code_range)?;
+    // As in revm, CREATE2's salt is popped after the init-code charge and the memory expansion,
+    // so a missing salt underflows only once both are paid.
+    let salt = if is_create2 { Some(stack.pop()?) } else { None };
     let create_cost = if is_create2 {
         state.gas_params().create2_cost(len)
     } else {
@@ -1086,6 +1088,36 @@ mod tests {
         ])
         .spec(SpecId::BYZANTIUM));
         assert_matches!(interp.err, InstrStop::NotActivated);
+    }
+
+    #[test]
+    fn create2_pops_its_salt_after_the_init_code_and_memory_charges() {
+        // `CREATE2` with its salt missing: as in revm, the init-code charge and the memory
+        // expansion come before the salt is popped, so an unpayable expansion halts on gas and a
+        // payable one is spent when the stack underflows.
+        const LEN: usize = 0x8000;
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from(LEN), Word::ZERO, Word::ZERO]);
+        code.push(op::CREATE2);
+        let pushes = 3 * 3;
+        let words = (LEN / 32) as u64;
+        // EIP-3860's 2 gas per word, and the memory expansion from zero to `LEN`.
+        let init_code = 2 * words;
+        let memory = 3 * words + words * words / 512;
+
+        let mut host = TestHost::default();
+        let gas_limit = pushes + init_code + memory - 1;
+        let interp = run(RunConfig::new(code.clone()).host(&mut host).gas_limit(gas_limit));
+        assert_matches!(interp.err, InstrStop::MemoryOOG);
+        assert!(host.calls.is_empty());
+
+        let mut host = TestHost::default();
+        let gas_limit = pushes + init_code + memory + 1_000;
+        let interp = run(RunConfig::new(code).host(&mut host).gas_limit(gas_limit));
+        assert_matches!(interp.err, InstrStop::StackUnderflow);
+        assert_eq!(interp.memory.len(), LEN);
+        assert_eq!(interp.gas_remaining(), 1_000);
+        assert!(host.calls.is_empty());
     }
 
     #[test]
