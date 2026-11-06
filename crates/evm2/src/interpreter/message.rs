@@ -4,7 +4,7 @@ use crate::{
     interpreter::{InstrStop, Word, memory::BorrowCell},
     trustme,
 };
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use core::{fmt, ops::Deref};
 
@@ -283,6 +283,13 @@ impl From<Bytes> for MessageInput {
     #[inline]
     fn from(bytes: Bytes) -> Self {
         Self { bytes, cell: None }
+    }
+}
+
+impl From<Vec<u8>> for MessageInput {
+    #[inline]
+    fn from(bytes: Vec<u8>) -> Self {
+        Bytes::from(bytes).into()
     }
 }
 
