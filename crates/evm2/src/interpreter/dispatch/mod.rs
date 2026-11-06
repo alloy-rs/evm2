@@ -226,9 +226,11 @@ trait InspectMode<T: EvmTypesHost> {
     #[cfg(not(tco))]
     const ALL_STEPS: bool = false;
 
-    fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
+    /// Runs the step hook and returns the pc and stack length the hook leaves.
+    fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) -> (Pc, usize);
 
-    fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
+    /// Runs the step end hook and returns the pc and stack length the hook leaves.
+    fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) -> (Pc, usize);
 }
 
 struct NoInspector;
@@ -237,10 +239,14 @@ impl<T: EvmTypesHost> InspectMode<T> for NoInspector {
     const INSPECT: bool = false;
 
     #[inline(always)]
-    fn step(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
+    fn step(_state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) -> (Pc, usize) {
+        (pc, stack_len)
+    }
 
     #[inline(always)]
-    fn step_end(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
+    fn step_end(_state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) -> (Pc, usize) {
+        (pc, stack_len)
+    }
 }
 
 /// Mode of the inspect table's handlers. `ALL` is the loop mode of an inspector that steps every
@@ -253,12 +259,12 @@ impl<T: EvmTypesHost, const ALL: bool> InspectMode<T> for DynInspector<ALL> {
     const ALL_STEPS: bool = ALL;
 
     #[inline(always)]
-    fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {
-        state.inspect_step(pc, stack_len);
+    fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) -> (Pc, usize) {
+        state.inspect_step(pc, stack_len)
     }
 
     #[inline(always)]
-    fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {
-        state.inspect_step_end(pc, stack_len);
+    fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) -> (Pc, usize) {
+        state.inspect_step_end(pc, stack_len)
     }
 }

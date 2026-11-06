@@ -130,12 +130,18 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     }
 
     /// Called before each instruction executes.
+    ///
+    /// The hook may edit the interpreter's stack and pc. If it moves the pc, the instruction there
+    /// runs instead, after its own `step` hook.
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
     }
 
     /// Called after each instruction executes.
+    ///
+    /// The interpreter's pc is at the next instruction. The hook may edit the stack and the pc,
+    /// which decides the instruction that runs next.
     ///
     /// If the instruction ran out of gas, the interpreter's remaining gas reads 0.
     #[inline]
@@ -2973,5 +2979,168 @@ mod tests {
         );
         assert_eq!(result, expected);
         assert!(inspector.is_none());
+    }
+
+    type Hook = fn(&mut Interpreter<'_, '_, BaseEvmTypes>);
+
+    /// Code after the pushes, the opcodes to step, the hooks, and the stack at `STOP`.
+    type EditCase = (&'static [u8], &'static [u8], Hook, Hook, &'static [u64]);
+
+    /// Edits the pc or the stack in its hooks and records the stack when `STOP` is stepped.
+    ///
+    /// Steps `steps`, or `after_call` once a child message ran, if set.
+    struct EditInspector {
+        steps: OpcodeSet,
+        after_call: Option<OpcodeSet>,
+        step: Hook,
+        step_end: Hook,
+        stack: Vec<Word>,
+        called: bool,
+    }
+
+    impl EditInspector {
+        fn new(steps: OpcodeSet, step: Hook, step_end: Hook) -> Self {
+            Self { steps, after_call: None, step, step_end, stack: Vec::new(), called: false }
+        }
+    }
+
+    impl Inspector<BaseEvmTypes> for EditInspector {
+        fn inspector_config(&self) -> InspectorConfig {
+            let steps = self.after_call.filter(|_| self.called).unwrap_or(self.steps);
+            InspectorConfig::new().with_steps(steps)
+        }
+
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            self.called |= message.depth > 0;
+            None
+        }
+
+        fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            (self.step)(interp);
+            if interp.opcode() == op::STOP {
+                self.stack = interp.stack().to_vec();
+            }
+        }
+
+        fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            (self.step_end)(interp);
+        }
+    }
+
+    #[test]
+    fn step_hooks_edit_pc_and_stack() {
+        const PUSHES: [u8; 6] = [op::PUSH1, 1, op::PUSH1, 2, op::PUSH1, 3];
+        let nop: Hook = |_| {};
+        let cases: [EditCase; 6] = [
+            // A word pushed in `step` is an operand of the instruction.
+            (
+                &[op::ADD, op::STOP],
+                &[op::ADD],
+                |interp| {
+                    if interp.opcode() == op::ADD {
+                        interp.stack_mut().push(Word::from(100)).unwrap();
+                    }
+                },
+                nop,
+                &[1, 2, 103],
+            ),
+            // A word popped in `step` is no longer an operand.
+            (
+                &[op::ADD, op::STOP],
+                &[op::ADD],
+                |interp| {
+                    if interp.opcode() == op::ADD {
+                        interp.stack_mut().pop().unwrap();
+                    }
+                },
+                nop,
+                &[3],
+            ),
+            // The instruction at the pc that `step` sets runs instead of the stepped one.
+            (
+                &[op::INVALID, op::ADD, op::STOP],
+                &[op::INVALID],
+                |interp| {
+                    if interp.opcode() == op::INVALID {
+                        interp.set_pc(PUSHES.len() + 1);
+                    }
+                },
+                nop,
+                &[1, 5],
+            ),
+            // The same edits in `step_end` apply to the instructions that follow.
+            (
+                &[op::ADD, op::STOP],
+                &[op::ADD],
+                nop,
+                |interp| {
+                    if interp.opcode() == op::STOP {
+                        interp.stack_mut().push(Word::from(100)).unwrap();
+                    }
+                },
+                &[1, 5, 100],
+            ),
+            (
+                &[op::ADD, op::STOP],
+                &[op::ADD],
+                nop,
+                |interp| {
+                    if interp.opcode() == op::STOP {
+                        interp.stack_mut().pop().unwrap();
+                    }
+                },
+                &[1],
+            ),
+            (
+                &[op::ADD, op::INVALID, op::STOP],
+                &[op::ADD],
+                nop,
+                |interp| {
+                    if interp.opcode() == op::INVALID {
+                        interp.set_pc(PUSHES.len() + 2);
+                    }
+                },
+                &[1, 5],
+            ),
+        ];
+        for (tail, stepped, step, step_end, expected) in cases {
+            let code = [&PUSHES[..], tail].concat();
+            let expected = expected.iter().copied().map(Word::from).collect::<Vec<_>>();
+            // The inspector steps the opcodes it edits at, or all of them.
+            for steps in [opcode_set(stepped.iter().copied().chain([op::STOP])), OpcodeSet::ALL] {
+                let inspector = EditInspector::new(steps, step, step_end);
+                let (result, inspector, _) = run_evm_with_inspector(
+                    code.clone(),
+                    &MessageExt::default(),
+                    100_000,
+                    inspector,
+                );
+                assert_eq!(result.stop, InstrStop::Stop, "{code:?}");
+                assert_eq!(inspector.stack, expected, "{code:?}");
+            }
+        }
+    }
+    #[test]
+    fn step_end_edits_apply_when_a_child_message_reloads_the_frame() {
+        // The child message changes the steps, so the frame reloads after the `CALL`.
+        let mut code = call_code(Address::repeat_byte(0x11));
+        code.extend([op::CALL, op::INVALID, op::POP, op::STOP]);
+        let step_end: Hook = |interp| {
+            if interp.opcode() == op::INVALID {
+                interp.set_pc(interp.pc() + 1);
+                interp.stack_mut().push(Word::from(7)).unwrap();
+            }
+        };
+        let mut inspector = EditInspector::new(opcode_set([op::CALL]), |_| {}, step_end);
+        inspector.after_call = Some(opcode_set([op::CALL, op::STOP]));
+        let (result, inspector, _) =
+            run_evm_with_inspector(code, &MessageExt::default(), 100_000, inspector);
+        assert_eq!(result.stop, InstrStop::Stop);
+        // The `POP` removes the pushed word and leaves the success flag.
+        assert_eq!(inspector.stack, [Word::from(1)]);
     }
 }

@@ -220,10 +220,17 @@ fn run_stepped<T: EvmTypesHost, M: InspectMode<T>>(
     mut loop_state: imp::LoopState,
 ) -> core::result::Result<(imp::Cursor, imp::LoopState), InstrStop> {
     imp::sync_loop_state(state, loop_state);
-    M::step(state, cursor.pc(), cursor.stack_len());
+    let (pc, stack_len) = M::step(state, cursor.pc(), cursor.stack_len());
+    let moved = pc.as_ptr() != cursor.pc().as_ptr();
+    cursor = imp::Cursor::new(pc, stack_len);
     loop_state = imp::loop_state(state.gas_mut());
     if state.result().is_err() {
         return Err(finish_run(state, cursor, loop_state));
+    }
+    if moved {
+        cold_path();
+        // The hook moved the pc: the instruction there runs instead, after its own hook.
+        return Ok((cursor, loop_state));
     }
 
     cursor = {
@@ -233,7 +240,8 @@ fn run_stepped<T: EvmTypesHost, M: InspectMode<T>>(
     };
 
     imp::sync_loop_state(state, loop_state);
-    M::step_end(state, cursor.pc(), cursor.stack_len());
+    let (pc, stack_len) = M::step_end(state, cursor.pc(), cursor.stack_len());
+    cursor = imp::Cursor::new(pc, stack_len);
     loop_state = imp::loop_state(state.gas_mut());
     if state.result().is_err() {
         return Err(finish_run(state, cursor, loop_state));

@@ -60,11 +60,22 @@ extern_table! {
         if M::INSPECT {
             // Handlers that skip the hooks keep the gas in a register.
             state.gas_mut().set_remaining(remaining_gas.get());
-            M::step(state, pc, stack.len());
+            let (hook_pc, stack_len) = M::step(state, pc, stack.len());
             remaining_gas.set(state.gas_mut().remaining());
+            stack.set_len(stack_len);
+            let moved = hook_pc.as_ptr() != pc.as_ptr();
+            pc = hook_pc;
             if state.result().is_err() {
                 cold_path();
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+            }
+            if moved {
+                cold_path();
+                // The hook moved the pc: the instruction there runs instead, after its own hook.
+                // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
+                let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
+                let instr = instructions_t[pc.op() as usize];
+                tail_return!(instr(pc, stack, remaining_gas, state, instructions));
             }
         }
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, OP) {
@@ -72,8 +83,7 @@ extern_table! {
             state.set_result(Err(e));
             if M::INSPECT {
                 state.gas_mut().set_remaining(remaining_gas.get());
-                M::step_end(state, pc, stack.len());
-                remaining_gas.set(state.gas_mut().remaining());
+                step_end::<T, M>(state, &mut pc, &mut stack, &mut remaining_gas);
             }
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
@@ -101,15 +111,13 @@ extern_table! {
             cold_path();
             state.set_result(Err(e));
             if M::INSPECT {
-                M::step_end(state, pc, stack.len());
-                remaining_gas.set(state.gas_mut().remaining());
+                step_end::<T, M>(state, &mut pc, &mut stack, &mut remaining_gas);
             }
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         super::inc_pc(&mut pc, OP);
         if M::INSPECT {
-            M::step_end(state, pc, stack.len());
-            remaining_gas.set(state.gas_mut().remaining());
+            step_end::<T, M>(state, &mut pc, &mut stack, &mut remaining_gas);
             if state.result().is_err() {
                 cold_path();
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
@@ -120,6 +128,20 @@ extern_table! {
         let instr = instructions_t[pc.op() as usize];
         tail_return!(instr(pc, stack, remaining_gas, state, instructions));
     }
+}
+
+/// Runs the step end hook, which may edit the pc, the stack length, and the gas.
+#[inline(always)]
+fn step_end<T: EvmTypesHost, M: InspectMode<T>>(
+    state: &mut InterpreterState<'_, '_, T>,
+    pc: &mut Pc,
+    stack: &mut RawStack<'_>,
+    remaining_gas: &mut RemainingGas,
+) {
+    let (hook_pc, stack_len) = M::step_end(state, *pc, stack.len());
+    *pc = hook_pc;
+    stack.set_len(stack_len);
+    remaining_gas.set(state.gas_mut().remaining());
 }
 
 extern_table! {
@@ -133,7 +155,9 @@ extern_table! {
         _instructions: *const (),
     ) {
         state.gas_mut().set_remaining(remaining_gas.get());
-        state.set_pc_stack_len(pc.as_ptr(), stack.len());
+        // A reload stop holds the pc it resumes at.
+        let pc = if state.result() == Err(InstrStop::Reload) { state.0.pc } else { pc.as_ptr() };
+        state.set_pc_stack_len(pc, stack.len());
         debug_assert!(state.result().is_err());
         // Exits by returning normally.
     }

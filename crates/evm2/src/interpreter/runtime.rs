@@ -605,8 +605,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             }
             cold_path();
             self.result = Ok(());
-            // SAFETY: The stop left the pc at the message instruction, which a next one follows.
-            self.pc = unsafe { self.pc.add(dispatch::instruction_len(*self.pc)) };
         }
     }
 
@@ -744,6 +742,9 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             // SAFETY: The inspector pointer is valid while the frame executes.
             && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
         {
+            // The frame resumes after the message instruction.
+            // SAFETY: A next instruction follows the instruction at `pc`.
+            self.0.pc = unsafe { self.0.pc.add(dispatch::instruction_len(*self.0.pc)) };
             self.set_result(Err(InstrStop::Reload));
         }
     }
@@ -873,17 +874,20 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.output = output;
     }
 
+    /// Calls the inspector's `step` hook and returns the pc and stack length it leaves.
     #[inline]
-    pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
+    pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) -> (Pc, usize) {
         self.set_pc_stack_len(pc.as_ptr(), stack_len);
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
         }
+        (Pc::new(self.0.pc), self.0.stack_len)
     }
 
+    /// Calls the inspector's `step_end` hook and returns the pc and stack length it leaves.
     #[inline]
-    pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
+    pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) -> (Pc, usize) {
         self.set_pc_stack_len(pc.as_ptr(), stack_len);
         let reload = self.0.result == Err(InstrStop::Reload);
         if reload {
@@ -904,12 +908,10 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             inspector.as_mut().step_end(&mut self.0);
         }
         // A stop the hook set wins over the reload.
-        if reload {
-            self.0.pc = pc.as_ptr();
-            if self.0.result.is_ok() {
-                self.set_result(Err(InstrStop::Reload));
-            }
+        if reload && self.0.result.is_ok() {
+            self.set_result(Err(InstrStop::Reload));
         }
+        (Pc::new(self.0.pc), self.0.stack_len)
     }
 
     #[inline]
