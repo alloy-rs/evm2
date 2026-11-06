@@ -218,29 +218,13 @@ fn reads_rules_from_hardforks() {
 }
 
 #[test]
-fn rejects_request_contract_without_code() {
-    let mut database = database();
-    database.insert_account_info(&WITHDRAWAL_REQUEST_ADDRESS, AccountInfo::default());
-    let evm = evm_with(SpecId::PRAGUE, 30_000_000, database);
-    let mut executor =
-        EthBlockExecutor::new(evm, ctx(), EthBlockRules::default(), EthReceiptBuilder);
-    executor.apply_pre_execution_changes().unwrap();
-    let error = executor.finish().unwrap_err();
-    assert!(matches!(
-        error,
-        BlockExecutionError::Validation(BlockValidationError::SystemContractEmpty { address })
-            if address == WITHDRAWAL_REQUEST_ADDRESS
-    ));
-}
-
-#[test]
-fn allowed_empty_request_contract_is_a_no_op() {
+fn request_contract_without_code_produces_no_requests() {
     let mut database = database();
     database.insert_account_info(&WITHDRAWAL_REQUEST_ADDRESS, AccountInfo::default());
     database.insert_account_info(&CONSOLIDATION_REQUEST_ADDRESS, AccountInfo::default());
     let evm = evm_with(SpecId::PRAGUE, 30_000_000, database);
-    let rules = EthBlockRules { allow_empty_request_contracts: true, ..EthBlockRules::default() };
-    let mut executor = EthBlockExecutor::new(evm, ctx(), rules, EthReceiptBuilder);
+    let mut executor =
+        EthBlockExecutor::new(evm, ctx(), EthBlockRules::default(), EthReceiptBuilder);
     executor.apply_pre_execution_changes().unwrap();
     let output = executor.finish().unwrap();
     assert!(output.result.requests.is_empty());

@@ -62,10 +62,6 @@ pub struct EthBlockRules {
     pub deposit_contract_address: Option<Address>,
     /// Blob gas the block's transactions may use in total (EIP-4844). `None` leaves it unchecked.
     pub max_blob_gas_per_block: Option<u64>,
-    /// Whether a request system call to a contract without code runs as a no-op instead of making
-    /// the block invalid. Ethereum requires the EIP-7002 and EIP-7251 contracts; set this for a
-    /// chain that enables Prague without deploying them.
-    pub allow_empty_request_contracts: bool,
 }
 
 impl EthBlockRules {
@@ -82,7 +78,6 @@ impl EthBlockRules {
                 .transitions_at_block(block_number),
             deposit_contract_address,
             max_blob_gas_per_block: None,
-            allow_empty_request_contracts: false,
         }
     }
 }
@@ -239,7 +234,6 @@ where
             ommers: Some(ommers),
             withdrawals,
             deposit_contract_address: rules.deposit_contract_address,
-            allow_empty_request_contracts: rules.allow_empty_request_contracts,
         }
     }
 
@@ -255,11 +249,6 @@ where
     /// Returns the chain rules of the block.
     pub const fn rules(&self) -> &EthBlockRules {
         &self.rules
-    }
-
-    /// Returns a mutable reference to the chain rules of the block.
-    pub const fn rules_mut(&mut self) -> &mut EthBlockRules {
-        &mut self.rules
     }
 
     /// Returns the accumulated block state.

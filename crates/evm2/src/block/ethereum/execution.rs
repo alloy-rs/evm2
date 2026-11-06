@@ -138,9 +138,6 @@ pub struct BlockExecutionContext<'a> {
     pub withdrawals: Option<&'a [Withdrawal]>,
     /// Deposit contract address used to derive EIP-6110 deposit requests from receipts.
     pub deposit_contract_address: Option<Address>,
-    /// Whether a request system call to a contract without code runs as a no-op instead of making
-    /// the block invalid.
-    pub allow_empty_request_contracts: bool,
 }
 
 /// Inputs required by Ethereum pre-block system calls.
@@ -396,26 +393,26 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
         return Ok(());
     }
 
-    let withdrawal_requests = execute_request_system_call(
+    let withdrawal_requests = execute_system_call(
         evm,
         block_state,
         stream_state,
         on_state_update,
         WITHDRAWAL_REQUEST_ADDRESS,
-        context.allow_empty_request_contracts,
+        Bytes::new(),
     )?;
     requests.push_request_with_type(
         WITHDRAWAL_REQUEST_TYPE,
         withdrawal_requests.output.iter().copied(),
     );
 
-    let consolidation_requests = execute_request_system_call(
+    let consolidation_requests = execute_system_call(
         evm,
         block_state,
         stream_state,
         on_state_update,
         CONSOLIDATION_REQUEST_ADDRESS,
-        context.allow_empty_request_contracts,
+        Bytes::new(),
     )?;
     requests.push_request_with_type(
         CONSOLIDATION_REQUEST_TYPE,
@@ -423,26 +420,26 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     );
 
     if spec_id.enables(SpecId::AMSTERDAM) {
-        let builder_deposit_requests = execute_request_system_call(
+        let builder_deposit_requests = execute_system_call(
             evm,
             block_state,
             stream_state,
             on_state_update,
             BUILDER_DEPOSIT_REQUEST_ADDRESS,
-            context.allow_empty_request_contracts,
+            Bytes::new(),
         )?;
         requests.push_request_with_type(
             BUILDER_DEPOSIT_REQUEST_TYPE,
             builder_deposit_requests.output.iter().copied(),
         );
 
-        let builder_exit_requests = execute_request_system_call(
+        let builder_exit_requests = execute_system_call(
             evm,
             block_state,
             stream_state,
             on_state_update,
             BUILDER_EXIT_REQUEST_ADDRESS,
-            context.allow_empty_request_contracts,
+            Bytes::new(),
         )?;
         requests.push_request_with_type(
             BUILDER_EXIT_REQUEST_TYPE,
@@ -451,25 +448,6 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     }
 
     Ok(())
-}
-
-/// Runs a request system call. Unless `allow_empty` is set, a target without code makes the block
-/// invalid: the EVM itself treats a call to it as a successful no-op.
-fn execute_request_system_call<T: EvmTypes>(
-    evm: &mut Evm<'_, T>,
-    block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
-    address: Address,
-    allow_empty: bool,
-) -> Result<TxResult<T>, BlockExecutionError> {
-    if !allow_empty {
-        let info = evm.read_account_info(&address).map_err(map_database_error)?;
-        if info.is_none_or(|info| info.is_empty_code_hash()) {
-            return Err(BlockValidationError::SystemContractEmpty { address }.into());
-        }
-    }
-    execute_system_call(evm, block_state, stream_state, on_state_update, address, Bytes::new())
 }
 
 fn execute_system_call<T: EvmTypes>(
