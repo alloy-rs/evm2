@@ -321,16 +321,20 @@ unsafe fn call_impl<T: EvmTypesHost>(
 ) -> Result {
     let mut message = Message::<T>::default();
     let mut return_memory_range = 0..0;
-    // SAFETY: Upheld by the caller for the hooks. The input is reclaimed below, before this frame
-    // writes memory again; a frame that stops early does not write it again.
+    // SAFETY: Upheld by the caller for the hooks. The input is reclaimed below on every exit,
+    // before this frame writes memory again.
     let new_account_state_gas = unsafe {
         prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)
     }?;
-    before(gas, state, &mut message)?;
-
-    let mut result =
-        state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
+    // A hook can resume this frame after a stop, so the input is also reclaimed on failure, while
+    // the message may still hold it.
+    before(gas, state, &mut message).inspect_err(|_| state.0.reclaim_call_input())?;
+    let mut result = state.host().execute_message(&mut message).map_err(|error| {
+        state.0.reclaim_call_input();
+        state.fail(error)
+    })?;
     if result.stop.is_fatal() {
+        state.0.reclaim_call_input();
         return Err(result.stop);
     }
     state.note_inspector_config_change();
@@ -342,7 +346,7 @@ unsafe fn call_impl<T: EvmTypesHost>(
     if new_account_state_gas != 0 && !result.is_success() {
         gas.refill_reservoir(new_account_state_gas);
     }
-    after(gas, state, &message, &result)?;
+    after(gas, state, &message, &result).inspect_err(|_| state.0.reclaim_call_input())?;
     drop(message);
     state.0.reclaim_call_input();
     let copy_len = min(return_memory_range.len(), result.output.len());

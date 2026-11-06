@@ -1978,6 +1978,71 @@ mod tests {
         assert_eq!(inspector.kept.as_deref(), Some(&[0xaa; 32][..]));
     }
 
+    /// The tail-call backend does not resume a frame after a stop.
+    #[test]
+    #[cfg(not(tco))]
+    fn resumed_failed_call_keeps_kept_input() {
+        /// Keeps the first call's input and fails it, then resumes the caller, which retries the
+        /// call with an output range that grows memory.
+        #[derive(Default)]
+        struct ResumeFailedCall {
+            kept: Option<MessageInput>,
+        }
+
+        impl Inspector<BaseEvmTypes> for ResumeFailedCall {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 0 || self.kept.is_some() {
+                    return None;
+                }
+                self.kept = Some(core::mem::take(&mut message.input));
+                Some(MessageResultExt {
+                    stop: InstrStop::FatalExternalError,
+                    gas: GasTracker::new(message.gas_limit),
+                    ..Default::default()
+                })
+            }
+
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.result() == Err(InstrStop::FatalExternalError) {
+                    interp.set_result(Ok(()));
+                }
+            }
+        }
+
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
+        code.push(op::MSTORE);
+        for return_offset in [1 << 16, 32] {
+            push_all(
+                &mut code,
+                [
+                    Word::from(32),
+                    Word::from(return_offset),
+                    Word::from(32),
+                    Word::ZERO,
+                    Word::ZERO,
+                    address_to_word(&ECHO),
+                    Word::from(50_000),
+                ],
+            );
+        }
+        code.extend([op::CALL, op::STOP]);
+
+        let (_, inspector, _) = run_evm_with_inspector_db(
+            echo_db(),
+            code,
+            &MessageExt::default(),
+            200_000,
+            ResumeFailedCall::default(),
+        );
+
+        assert_eq!(inspector.kept.as_deref(), Some(&[0xaa; 32][..]));
+    }
+
     #[test]
     fn call_with_hook_overwriting_caller_memory_keeps_child_input() {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
