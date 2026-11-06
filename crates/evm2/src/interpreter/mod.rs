@@ -104,6 +104,8 @@ pub enum InstrStop {
     OutOfOffset,
     /// Address collision during contract creation.
     CreateCollision,
+    /// Balance overflow while transferring value.
+    OverflowPayment,
     /// Error in precompiled contract execution.
     PrecompileError,
     /// Exceeded contract size limit during creation.

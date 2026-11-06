@@ -714,37 +714,46 @@ impl<'a> State<'a> {
     }
 
     /// Transfers value between accounts.
-    pub fn transfer(&mut self, from: &Address, to: &Address, value: &Word) -> DbResult<bool> {
+    ///
+    /// Fails with [`InstrStop::OutOfFunds`] when `from` cannot pay and with
+    /// [`InstrStop::OverflowPayment`] when `to` cannot hold the value. Both checks run before
+    /// either balance changes, so a failed transfer leaves the balances untouched.
+    pub fn transfer(
+        &mut self,
+        from: &Address,
+        to: &Address,
+        value: &Word,
+    ) -> DbResult<Result<(), InstrStop>> {
         if value.is_zero() {
             self.account(to)?.touch();
-            return Ok(true);
+            return Ok(Ok(()));
         }
 
         if from == to {
             let mut account = self.account(from)?;
             if account.balance() < *value {
-                return Ok(false);
+                return Ok(Err(InstrStop::OutOfFunds));
             }
             account.touch();
-            return Ok(true);
+            return Ok(Ok(()));
         }
 
-        {
-            let mut from_account = self.account(from)?;
-            let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
-                return Ok(false);
-            };
-            // `set_balance` touches the account, matching the touch the prior `transfer` performed.
-            from_account.set_balance(new_from_balance);
-            from_account.touch();
-        }
+        let Some(new_from_balance) = self.account(from)?.balance().checked_sub(*value) else {
+            return Ok(Err(InstrStop::OutOfFunds));
+        };
         {
             let mut to_account = self.account(to)?;
-            let new_to_balance = to_account.balance().saturating_add(*value);
+            let Some(new_to_balance) = to_account.balance().checked_add(*value) else {
+                return Ok(Err(InstrStop::OverflowPayment));
+            };
             to_account.set_balance(new_to_balance);
             to_account.touch();
         }
-        Ok(true)
+        let mut from_account = self.account(from)?;
+        // `set_balance` touches the account, matching the touch the prior `transfer` performed.
+        from_account.set_balance(new_from_balance);
+        from_account.touch();
+        Ok(Ok(()))
     }
 
     /// Creates a contract account and transfers endowment from the caller.
@@ -758,13 +767,21 @@ impl<'a> State<'a> {
     ) -> DbResult<Result<(), InstrStop>> {
         // TODO check order of operations, we could potentially simplify it and do a lot more with
         // only one hashmap lookup.
-        if self
-            .account(address)?
-            .get()
-            .is_some_and(|account| account.nonce != 0 || !account.is_empty_code_hash())
-        {
-            return Ok(Err(InstrStop::CreateCollision));
-        }
+        // Preserve any balance the address already held (e.g. funds sent before creation) and add
+        // the endowment. This runs before the caller pays, so an overflow leaves both unchanged.
+        let balance = {
+            let target = self.account(address)?;
+            if target
+                .get()
+                .is_some_and(|account| account.nonce != 0 || !account.is_empty_code_hash())
+            {
+                return Ok(Err(InstrStop::CreateCollision));
+            }
+            let Some(balance) = target.balance().checked_add(*value) else {
+                return Ok(Err(InstrStop::OverflowPayment));
+            };
+            balance
+        };
 
         // Deduct the endowment from the caller. A zero endowment moves nothing and leaves the
         // caller untouched, matching the prior `transfer` behaviour.
@@ -777,9 +794,6 @@ impl<'a> State<'a> {
         }
 
         let mut target = self.account(address)?;
-        // Preserve any balance the address already held (e.g. funds sent before creation) and add
-        // the endowment.
-        let balance = target.balance().wrapping_add(*value);
         #[cfg(feature = "account-ext")]
         let extension = target.get().map(|info| info.extension.clone()).unwrap_or_default();
         *target.get_or_insert() = AccountInfo {

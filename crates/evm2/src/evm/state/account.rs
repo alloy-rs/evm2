@@ -553,17 +553,21 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.present_mut().balance = balance;
     }
 
-    /// Adds a signed balance delta by wrapping two's-complement values, touching the account.
+    /// Adds `delta` to the balance, touching the account.
     ///
-    /// A zero delta only touches the account, matching the EVM's value-bearing-call semantics.
+    /// Like revm's `incr_balance`, the balance is left unchanged and `false` is returned when the
+    /// sum overflows. A zero delta only touches the account, matching the EVM's value-bearing-call
+    /// semantics.
     #[inline]
-    pub fn add_balance(&mut self, delta: Word) {
-        if delta.is_zero() {
-            self.touch();
-            return;
+    pub fn add_balance(&mut self, delta: Word) -> bool {
+        self.touch();
+        let Some(balance) = self.balance().checked_add(delta) else {
+            return false;
+        };
+        if !delta.is_zero() {
+            self.set_balance(balance);
         }
-        let balance = self.balance().wrapping_add(delta);
-        self.set_balance(balance);
+        true
     }
 
     /// Sets the account nonce, touching the account and recording a revert snapshot.
@@ -726,6 +730,7 @@ mod tests {
     use crate::{
         LoadError, SpecId, Version,
         evm::{CacheDB, state::State},
+        interpreter::InstrStop,
     };
     use alloy_primitives::{Address, Bytes};
 
@@ -736,8 +741,11 @@ mod tests {
         database.insert_account_info(&address, empty_account().with_balance(Word::from(3)));
         let mut state = State::new(database);
 
-        assert!(!state.transfer(&address, &address, &Word::from(4)).unwrap());
-        assert!(state.transfer(&address, &address, &Word::from(3)).unwrap());
+        assert_eq!(
+            state.transfer(&address, &address, &Word::from(4)).unwrap(),
+            Err(InstrStop::OutOfFunds)
+        );
+        assert_eq!(state.transfer(&address, &address, &Word::from(3)).unwrap(), Ok(()));
     }
 
     #[test]

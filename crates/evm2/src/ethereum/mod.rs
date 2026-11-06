@@ -1305,6 +1305,73 @@ mod tests {
     }
 
     #[rstest::rstest]
+    fn top_level_value_overflow_halts_and_charges_all_gas(#[values(false, true)] create: bool) {
+        let caller = Address::with_last_byte(0xaa);
+        let recipient = Address::with_last_byte(0xbb);
+        let to = if create { TxKind::Create } else { TxKind::Call(recipient) };
+        let target = if create { caller.create(0) } else { recipient };
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(100)));
+        database.insert_account_info(&target, AccountInfo::default().with_balance(U256::MAX));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 100_000,
+                to,
+                value: U256::from(1),
+                ..TxLegacy::default()
+            }),
+            caller,
+        );
+
+        let result = evm.transact(&tx).unwrap().commit();
+
+        assert_eq!(result.stop, InstrStop::OverflowPayment);
+        assert!(result.is_halt());
+        assert_eq!(result.tx_gas_used(), 100_000);
+        let caller_info = evm.read_account_info(&caller).unwrap().unwrap();
+        assert_eq!((caller_info.balance, caller_info.nonce), (U256::from(100), 1));
+        assert_eq!(evm.read_account_info(&target).unwrap().unwrap().balance, U256::MAX);
+    }
+
+    #[test]
+    fn fee_settlement_skips_balance_overflow() {
+        let caller = Address::with_last_byte(0xaa);
+        let beneficiary = Address::with_last_byte(0xcc);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000)),
+        );
+        database.insert_account_info(&beneficiary, AccountInfo::default().with_balance(U256::MAX));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::BERLIN,
+            BlockEnvExt { beneficiary, ..BlockEnvExt::default() },
+            ethereum_tx_registry(SpecId::BERLIN),
+            database,
+            Precompiles::base(SpecId::BERLIN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_price: 15,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                ..TxLegacy::default()
+            }),
+            caller,
+        );
+
+        assert!(evm.transact(&tx).unwrap().commit().is_success());
+        assert_eq!(evm.read_account_info(&beneficiary).unwrap().unwrap().balance, U256::MAX);
+    }
+
+    #[rstest::rstest]
     #[case::top_up_to_value(100_000, 0)]
     #[case::keeps_balance_minus_fee(1_000_000, 789_995)]
     fn balance_top_up_matches_revm(#[case] balance: u64, #[case] expected: u64) {
