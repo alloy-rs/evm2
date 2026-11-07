@@ -126,6 +126,12 @@ pub struct CallTrace {
     pub step_deltas: Vec<StepDelta>,
     /// Optional complementary decoded call data.
     pub decoded: Option<Box<DecodedCallTrace>>,
+    /// Whether the parent's steps leave out the step that made this call.
+    ///
+    /// A step limit, an opcode filter or the trace budget can leave it out, and the call then
+    /// follows an unrelated step in the parent's ordering.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub parent_step_omitted: bool,
 }
 
 impl CallTrace {
@@ -742,6 +748,12 @@ impl CallTraceStep {
             self.op.get(),
             op::CALL | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CALLCODE | op::CREATE2
         )
+    }
+
+    /// Returns true if the step is a CREATE or CREATE2 operation
+    #[inline]
+    pub(crate) const fn is_create_op(&self) -> bool {
+        matches!(self.op.get(), op::CREATE | op::CREATE2)
     }
 
     // Reverts are control flow; only exceptional halts populate a step error.

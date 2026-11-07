@@ -8,12 +8,13 @@ use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex, map::Hash
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
     filter::TraceFilter,
+    geth::FlatCallConfig,
     parity::{
         Action, CallAction, CallType, CreationMethod, SelfdestructAction, TraceType,
         TransactionTrace, VmTrace,
     },
 };
-use evm2::{evm::InMemoryDB, utils::address_to_word};
+use evm2::{evm::InMemoryDB, interpreter::opcode::OpCode, utils::address_to_word};
 use evm2_inspectors::tracing::{
     TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
 };
@@ -1210,7 +1211,8 @@ fn precompile_exclusion_uses_original_callee_with_delegation() {
 const NEW_ACCOUNT_STATE_GAS: u64 = 183_600;
 
 /// The cost and used gas of the call or create step before the final `STOP`, as reported by
-/// parity `vmTrace` and geth struct logs under each config.
+/// parity `vmTrace` and geth struct logs under each config. The two costs differ only for a
+/// creation, whose parity cost includes the gas it forwards to the child.
 ///
 /// The expected costs in the tests below come from running the same bytecode on go-ethereum
 /// `a0cba163b1f17f6044df84502ff13036dffb5de1` (`evm 1.17.11-unstable-a0cba163`) with
@@ -1221,8 +1223,10 @@ struct CallStep {
     gas_remaining: u64,
     /// Gas limit of the child, if one started.
     child_gas_limit: Option<u64>,
-    /// Parity cost, which equals the geth cost.
+    /// Parity cost.
     cost: u64,
+    /// Geth struct log cost.
+    geth_cost: u64,
     /// Parity used gas, with and without step deltas.
     used: u64,
 }
@@ -1263,8 +1267,7 @@ fn call_step_funded(
     .geth_traces(0, Default::default(), Default::default());
     let log = geth.struct_logs.iter().rev().find(|log| log.gas == step.0).unwrap();
     assert_eq!(cost_without_deltas, cost);
-    assert_eq!(log.gas_cost, cost);
-    CallStep { gas_remaining: step.0, child_gas_limit: step.1, cost, used }
+    CallStep { gas_remaining: step.0, child_gas_limit: step.1, cost, geth_cost: log.gas_cost, used }
 }
 
 #[test]
@@ -1277,6 +1280,7 @@ fn call_cost_includes_forwarded_gas() {
                 let code = hex::decode(format!("{prefix}604361ffff{opcode}00")).unwrap();
                 let step = call_step(&code, child, spec);
                 assert_eq!(step.cost, cold + 65_535);
+                assert_eq!(step.geth_cost, step.cost);
                 assert_eq!(step.used, step.gas_remaining - step.cost + 65_535 - spent);
             }
         }
@@ -1293,6 +1297,7 @@ fn call_cost_excludes_stipend() {
             let code = hex::decode(format!("{prefix}6043610400{opcode}00")).unwrap();
             let step = call_step(&code, &hex!("00"), spec);
             assert_eq!(step.cost, cost);
+            assert_eq!(step.geth_cost, step.cost);
             assert_eq!(step.used, step.gas_remaining - step.cost + 1_024);
         }
     }
@@ -1303,6 +1308,7 @@ fn precompile_call_cost_includes_forwarded_gas() {
     for spec in [SpecId::PRAGUE, SpecId::AMSTERDAM] {
         let step = call_step(&hex!("5f5f5f5f5f600461fffff100"), &[], spec);
         assert_eq!(step.cost, 100 + 65_535);
+        assert_eq!(step.geth_cost, step.cost);
         assert_eq!(step.used, step.gas_remaining - step.cost + 65_535 - 15);
     }
 }
@@ -1322,20 +1328,23 @@ fn unfunded_call_cost_includes_forwarded_gas() {
         let step = call_step(&hex!("5f5f5f5f600160436103e8f100"), child, spec);
         assert_eq!(step.child_gas_limit, Some(1_000 + 2_300));
         assert_eq!(step.cost, cost);
+        assert_eq!(step.geth_cost, step.cost);
         assert_eq!(step.used, step.gas_remaining - cost + 3_300);
     }
 }
 
 #[test]
-fn create_cost_excludes_forwarded_gas() {
+fn create_cost_includes_forwarded_gas_in_parity_only() {
     for (spec, cost, state_gas) in
         [(SpecId::PRAGUE, 32_000, 0), (SpecId::AMSTERDAM, 12_000, NEW_ACCOUNT_STATE_GAS)]
     {
         for code in [&hex!("5f5f5ff000")[..], &hex!("5f5f5f5ff500")[..]] {
             let step = call_step(code, &[], spec);
             let available = step.gas_remaining - cost - state_gas;
-            assert_eq!(step.cost, cost);
-            assert_eq!(step.child_gas_limit, Some(available - available / 64));
+            let forwarded = available - available / 64;
+            assert_eq!(step.geth_cost, cost);
+            assert_eq!(step.cost, cost + forwarded);
+            assert_eq!(step.child_gas_limit, Some(forwarded));
             assert_eq!(step.used, available);
         }
     }
@@ -1349,7 +1358,7 @@ fn create_cost_counts_all_gas_charged_before_the_child_split() {
     for (spec, state_gas) in [(SpecId::PRAGUE, 0), (SpecId::AMSTERDAM, NEW_ACCOUNT_STATE_GAS)] {
         for code in [&hex!("5f5f5ff000")[..], &hex!("5f5f5f5ff500")[..]] {
             let step = call_step(code, &[], spec);
-            let remaining = step.gas_remaining - step.cost - state_gas;
+            let remaining = step.gas_remaining - step.geth_cost - state_gas;
             assert_eq!(step.child_gas_limit, Some(remaining - remaining / 64));
         }
     }
@@ -1367,22 +1376,125 @@ fn create_cost_counts_initcode_memory_and_hash_words() {
             (&hex!("6001600052600160ff5ff000")[..], base + 23),
         ] {
             let step = call_step(code, &[], spec);
-            assert_eq!(step.cost, cost);
+            assert_eq!(step.geth_cost, cost);
+            assert_eq!(step.cost, cost + step.child_gas_limit.unwrap());
         }
         let step = call_step(&hex!("645f5f5f5f005f526005601b5ff000"), &[], spec);
-        assert_eq!(step.used, step.gas_remaining - step.cost - state_gas - 8);
+        assert_eq!(step.used, step.gas_remaining - step.geth_cost - state_gas - 8);
     }
 }
 
 #[test]
-fn unfunded_create_cost_excludes_forwarded_gas() {
+fn unfunded_create_cost_includes_forwarded_gas_in_parity_only() {
+    // Before Amsterdam the creation splits off its child's gas, fails the balance precheck and
+    // gets the gas back at once. EIP-8037 checks the balance before the split, so the creation
+    // forwards nothing.
     let code = hex!("5f5f6001f000");
     assert!(trace_vm_code(&code, &[]).ops[3].sub.is_none());
     for (spec, cost) in [(SpecId::PRAGUE, 32_000), (SpecId::AMSTERDAM, 12_000)] {
         let step = call_step(&code, &[], spec);
-        assert_eq!(step.cost, cost);
+        let forwarded = (spec < SpecId::AMSTERDAM).then(|| {
+            let available = step.gas_remaining - cost;
+            available - available / 64
+        });
+        assert_eq!(step.child_gas_limit, forwarded);
+        assert_eq!(step.geth_cost, cost);
+        assert_eq!(step.cost, cost + forwarded.unwrap_or_default());
         assert_eq!(step.used, step.gas_remaining - cost);
     }
+}
+
+#[test]
+fn create_step_is_not_paired_with_a_later_call_child() {
+    // An Amsterdam CREATE that fails its balance precheck has no child. With the later CALL step
+    // left out by a step limit or an opcode filter, the child of the CALL follows the CREATE step.
+    let code = hex!("5f5f6001f0505f5f5f5f5f604361fffff100");
+    for config in [
+        TracingInspectorConfig {
+            step_limit: core::num::NonZeroU64::new(4),
+            ..TracingInspectorConfig::parity_vm_trace()
+        },
+        TracingInspectorConfig {
+            record_opcodes_filter: Some([OpCode::CREATE.get()].into_iter().collect()),
+            ..TracingInspectorConfig::parity_vm_trace()
+        },
+    ] {
+        let trace = inspect_code(&code, &hex!("00"), SpecId::AMSTERDAM, config)
+            .into_parity_builder()
+            .vm_trace();
+        let create = trace.ops.iter().find(|op| op.op.as_deref() == Some("CREATE")).unwrap();
+        assert_eq!(create.cost, 12_000);
+        assert!(create.sub.is_none());
+    }
+}
+
+#[test]
+fn create_step_without_a_child_leaves_precompile_subtraces_to_calls() {
+    // An Amsterdam CREATE that fails its balance precheck has no child, and the later CALL to the
+    // identity precompile has its subtrace recorded apart from the frame's children.
+    let trace = inspect_code(
+        &hex!("5f5f6001f0505f5f5f5f5f600461fffff100"),
+        &[],
+        SpecId::AMSTERDAM,
+        TracingInspectorConfig::parity_vm_trace(),
+    )
+    .into_parity_builder()
+    .vm_trace();
+    let sub =
+        |name| trace.ops.iter().find(|op| op.op.as_deref() == Some(name)).unwrap().sub.is_some();
+    assert!(!sub("CREATE"));
+    assert!(sub("CALL"));
+}
+
+#[test]
+fn call_like_step_is_not_paired_with_the_child_of_a_left_out_step() {
+    // The first step makes no child: an Amsterdam CREATE that fails its balance precheck, or a
+    // CALL to an excluded precompile. A step limit or an opcode filter leaves out the next call or
+    // create step, whose child then follows the first step.
+    let configs = |step_limit, op: OpCode| {
+        [
+            TracingInspectorConfig {
+                step_limit: core::num::NonZeroU64::new(step_limit),
+                ..TracingInspectorConfig::parity_vm_trace()
+            },
+            TracingInspectorConfig {
+                record_opcodes_filter: Some([op.get()].into_iter().collect()),
+                ..TracingInspectorConfig::parity_vm_trace()
+            },
+        ]
+    };
+    let first = |code: &[u8], config, name| {
+        let trace = inspect_code(code, &hex!("00"), SpecId::AMSTERDAM, config)
+            .into_parity_builder()
+            .vm_trace();
+        trace.ops.into_iter().find(|op| op.op.as_deref() == Some(name)).unwrap()
+    };
+
+    for config in configs(4, OpCode::CREATE) {
+        let create = first(&hex!("5f5f6001f0505f5f5f5ff500"), config, "CREATE");
+        assert_eq!(create.cost, 12_000);
+        assert_eq!(create.sub, None);
+    }
+    for config in configs(8, OpCode::CALL) {
+        let call = first(&hex!("5f5f5f5f5f600461fffff1505f5f5f5f604361fffffa00"), config, "CALL");
+        assert_eq!(call.sub, Some(VmTrace::default()));
+    }
+}
+
+#[test]
+fn call_step_is_not_paired_with_the_precompile_call_of_a_left_out_step() {
+    // The filter leaves out a STATICCALL to an excluded precompile. The recorded CALL after it,
+    // whose value transfer fails its balance precheck, has no child and gets none of its own.
+    let config = TracingInspectorConfig {
+        record_opcodes_filter: Some([op::CALL].into_iter().collect()),
+        ..TracingInspectorConfig::parity_vm_trace()
+    };
+    let code = hex!("5f5f5f5f600461fffffa505f5f5f5f6001600461fffff100");
+    let trace = inspect_code(&code, &[], SpecId::AMSTERDAM, config)
+        .into_flat_call_builder(&FlatCallConfig::default())
+        .vm_trace();
+    let call = trace.ops.into_iter().find(|op| op.op.as_deref() == Some("CALL")).unwrap();
+    assert_eq!(call.sub, None);
 }
 
 #[test]
