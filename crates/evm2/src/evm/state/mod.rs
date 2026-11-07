@@ -813,7 +813,7 @@ impl<'a> State<'a> {
                 self.inner.push_journal(|| JournalEntry::TransientStorageChange {
                     address: *address,
                     key: *key,
-                    previous: Some(previous),
+                    previous,
                 });
                 if value.is_zero() {
                     entry.remove();
@@ -828,7 +828,7 @@ impl<'a> State<'a> {
                 self.inner.push_journal(|| JournalEntry::TransientStorageChange {
                     address: *address,
                     key: *key,
-                    previous: None,
+                    previous: Word::ZERO,
                 });
                 entry.insert(*value);
             }
@@ -888,14 +888,14 @@ impl<'a> State<'a> {
                         slot.value.set_current(previous);
                     }
                 }
-                JournalEntry::TransientStorageChange { address, key, previous } => match previous {
-                    Some(previous) if !previous.is_zero() => {
-                        self.transient_storage.insert(StorageKey::new(address, key), previous);
+                JournalEntry::TransientStorageChange { address, key, previous } => {
+                    let key = StorageKey::new(address, key);
+                    if previous.is_zero() {
+                        self.transient_storage.remove(&key);
+                    } else {
+                        self.transient_storage.insert(key, previous);
                     }
-                    _ => {
-                        self.transient_storage.remove(&StorageKey::new(address, key));
-                    }
-                },
+                }
                 JournalEntry::StorageWarmed { address, key } => {
                     self.set_storage_warm(&address, key, false);
                 }
