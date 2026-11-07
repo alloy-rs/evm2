@@ -19,21 +19,28 @@ pub(super) struct Overlay {
 
 impl Overlay {
     pub(super) fn account_exists(&self, address: &Address) -> bool {
-        self.accounts.get(address).is_some_and(|account| account.exists && !account.deleted)
+        matches!(self.accounts.get(address), Some(OverlayAccount::Written(_)))
     }
 
     pub(super) fn account_field(&self, address: &Address, field: AccountField) -> bool {
-        self.accounts.get(address).is_some_and(|account| account.deleted || account.has(field))
+        self.accounts.get(address).is_some_and(|account| match account {
+            OverlayAccount::Deleted => true,
+            OverlayAccount::Written(account) => account.has(field),
+        })
     }
 
     pub(super) fn storage_slot(&self, address: &Address, slot: &B256) -> bool {
-        self.accounts
-            .get(address)
-            .is_some_and(|account| account.deleted || account.storage.contains(slot))
+        self.accounts.get(address).is_some_and(|account| match account {
+            OverlayAccount::Deleted => true,
+            OverlayAccount::Written(account) => account.storage.contains(slot),
+        })
     }
 
     pub(super) fn withdrawal_balance(&self, address: &Address) -> U256 {
-        self.accounts.get(address).map_or(U256::ZERO, |account| account.withdrawal_balance)
+        match self.accounts.get(address) {
+            Some(OverlayAccount::Written(account)) => account.withdrawal_balance,
+            Some(OverlayAccount::Deleted) | None => U256::ZERO,
+        }
     }
 
     pub(super) fn apply_post(&mut self, post: &Value) {
@@ -44,38 +51,25 @@ impl Overlay {
             let Ok(address) = parse_address(address) else {
                 continue;
             };
-            let account = self.accounts.entry(address).or_default();
             if value.is_null() {
-                account.deleted = true;
-                account.exists = false;
-                account.balance = false;
-                account.nonce = false;
-                account.code = false;
-                account.withdrawal_balance = U256::ZERO;
-                account.storage.clear();
+                self.accounts.insert(address, OverlayAccount::Deleted);
                 continue;
             }
             let Some(object) = value.as_object() else {
                 continue;
             };
-            if object.contains_key("balance") {
-                account.deleted = false;
-                account.exists = true;
-                account.balance = true;
+            let balance = object.contains_key("balance");
+            let nonce = object.contains_key("nonce");
+            let code = object.contains_key("code");
+            let storage = object.get("storage").and_then(Value::as_object);
+            if !(balance || nonce || code || storage.is_some()) {
+                continue;
             }
-            if object.contains_key("nonce") {
-                account.deleted = false;
-                account.exists = true;
-                account.nonce = true;
-            }
-            if object.contains_key("code") {
-                account.deleted = false;
-                account.exists = true;
-                account.code = true;
-            }
-            if let Some(storage) = object.get("storage").and_then(Value::as_object) {
-                account.deleted = false;
-                account.exists = true;
+            let account = self.written(address);
+            account.balance |= balance;
+            account.nonce |= nonce;
+            account.code |= code;
+            if let Some(storage) = storage {
                 account.storage.extend(storage.keys().filter_map(|slot| parse_b256(slot).ok()));
             }
         }
@@ -101,9 +95,7 @@ impl Overlay {
             let Ok(authority) = authorization.recover_authority() else {
                 continue;
             };
-            let account = self.accounts.entry(authority).or_default();
-            account.deleted = false;
-            account.exists = true;
+            let account = self.written(authority);
             account.nonce = true;
             account.code = true;
         }
@@ -122,17 +114,32 @@ impl Overlay {
     }
 
     pub(super) fn apply_withdrawal(&mut self, address: Address, amount: U256) {
-        let account = self.accounts.entry(address).or_default();
-        account.deleted = false;
-        account.exists = true;
+        let account = self.written(address);
         account.withdrawal_balance = account.withdrawal_balance.saturating_add(amount);
+    }
+
+    /// Returns the written fields of `address`, recreating it if it was deleted.
+    fn written(&mut self, address: Address) -> &mut WrittenAccount {
+        let account = self.accounts.entry(address).or_insert(OverlayAccount::Deleted);
+        if let OverlayAccount::Deleted = account {
+            *account = OverlayAccount::Written(WrittenAccount::default());
+        }
+        let OverlayAccount::Written(account) = account else { unreachable!("recreated above") };
+        account
     }
 }
 
+/// An account written inside the captured range.
+enum OverlayAccount {
+    /// Deleted: every field and storage slot is known to be empty.
+    Deleted,
+    /// Live: only the written fields and storage slots are known.
+    Written(WrittenAccount),
+}
+
+/// The fields and storage slots a live account had written inside the captured range.
 #[derive(Default)]
-struct OverlayAccount {
-    exists: bool,
-    deleted: bool,
+struct WrittenAccount {
     balance: bool,
     nonce: bool,
     code: bool,
@@ -140,12 +147,75 @@ struct OverlayAccount {
     storage: BTreeSet<B256>,
 }
 
-impl OverlayAccount {
+impl WrittenAccount {
     const fn has(&self, field: AccountField) -> bool {
         match field {
             AccountField::Balance => self.balance,
             AccountField::Nonce => self.nonce,
             AccountField::Code => self.code,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const ADDRESS: Address = Address::repeat_byte(0x11);
+
+    fn post(account: Value) -> Value {
+        json!({ ADDRESS.to_string(): account })
+    }
+
+    #[test]
+    fn written_fields_are_known_individually() {
+        let mut overlay = Overlay::default();
+        let slot = B256::with_last_byte(1);
+        overlay
+            .apply_post(&post(json!({ "balance": "0x1", "storage": { slot.to_string(): "0x2" } })));
+
+        assert!(overlay.account_exists(&ADDRESS));
+        assert!(overlay.account_field(&ADDRESS, AccountField::Balance));
+        assert!(!overlay.account_field(&ADDRESS, AccountField::Nonce));
+        assert!(!overlay.account_field(&ADDRESS, AccountField::Code));
+        assert!(overlay.storage_slot(&ADDRESS, &slot));
+        assert!(!overlay.storage_slot(&ADDRESS, &B256::with_last_byte(2)));
+    }
+
+    #[test]
+    fn deleted_account_knows_every_field_and_slot() {
+        let mut overlay = Overlay::default();
+        overlay.apply_withdrawal(ADDRESS, U256::from(7));
+        overlay.apply_post(&post(Value::Null));
+
+        assert!(!overlay.account_exists(&ADDRESS));
+        assert!(overlay.account_field(&ADDRESS, AccountField::Nonce));
+        assert!(overlay.storage_slot(&ADDRESS, &B256::with_last_byte(1)));
+        assert_eq!(overlay.withdrawal_balance(&ADDRESS), U256::ZERO);
+    }
+
+    #[test]
+    fn write_recreates_deleted_account() {
+        let mut overlay = Overlay::default();
+        overlay.apply_post(&post(Value::Null));
+        overlay.apply_withdrawal(ADDRESS, U256::from(7));
+
+        assert!(overlay.account_exists(&ADDRESS));
+        assert!(!overlay.account_field(&ADDRESS, AccountField::Balance));
+        assert!(!overlay.storage_slot(&ADDRESS, &B256::with_last_byte(1)));
+        assert_eq!(overlay.withdrawal_balance(&ADDRESS), U256::from(7));
+    }
+
+    #[test]
+    fn empty_post_entry_writes_nothing() {
+        let mut overlay = Overlay::default();
+        overlay.apply_post(&post(json!({})));
+        assert!(!overlay.account_exists(&ADDRESS));
+
+        overlay.apply_post(&post(Value::Null));
+        overlay.apply_post(&post(json!({})));
+        assert!(!overlay.account_exists(&ADDRESS));
+        assert!(overlay.account_field(&ADDRESS, AccountField::Code));
     }
 }
