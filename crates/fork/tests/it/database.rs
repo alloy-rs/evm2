@@ -182,6 +182,26 @@ fn reset_drops_snapshots_of_the_old_block() {
 }
 
 #[test]
+fn snapshots_of_a_clone_from_before_a_reset_are_never_restored() {
+    let node = mock_node();
+    let mut db = forked_db(&node);
+    write_storage(&mut db, 10, 99);
+    let stale = db.clone();
+    db.reset(SECOND_BLOCK).unwrap();
+    // A clone that missed the reset still snapshots its old overlay; it must not come back.
+    let id = stale.insert_state_snapshot();
+    assert!(!db.revert_state_snapshot(id, RevertStateSnapshotAction::RevertKeep));
+    assert_eq!(storage(&mut db), U256::from(50));
+
+    // Snapshots taken after the reset still work, from any clone.
+    let id = db.insert_state_snapshot();
+    let mut other = db.clone();
+    write_storage(&mut db, 50, 77);
+    assert!(other.revert_state_snapshot(id, RevertStateSnapshotAction::RevertRemove));
+    assert_eq!(storage(&mut other), U256::from(50));
+}
+
+#[test]
 fn reads_go_through_the_overlay_first() {
     let node = mock_node();
     let mut db = forked_db(&node);

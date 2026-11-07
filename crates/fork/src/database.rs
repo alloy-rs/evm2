@@ -19,7 +19,10 @@ use evm2::{
 use std::{
     convert::Infallible,
     fmt, io,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 /// State snapshots by ID, like Foundry's `StateSnapshots`.
@@ -114,11 +117,14 @@ pub struct ForkDbStateSnapshot<N: Network = Ethereum> {
     pub local: ForkDB<N>,
     /// The remote state cached when the snapshot was taken.
     pub remote: JsonBlockCacheData,
+    /// The [`ForkedDatabase::reset`] epoch the snapshot was taken in; snapshots of an earlier
+    /// epoch hold another block's state and are never restored.
+    pub epoch: u64,
 }
 
 impl<N: Network> Clone for ForkDbStateSnapshot<N> {
     fn clone(&self) -> Self {
-        Self { local: self.local.clone(), remote: self.remote.clone() }
+        Self { local: self.local.clone(), remote: self.remote.clone(), epoch: self.epoch }
     }
 }
 
@@ -175,6 +181,10 @@ pub struct ForkedDatabase<N: Network = Ethereum> {
     backend: SharedBackend<N>,
     cache_db: ForkDB<N>,
     state_snapshots: Arc<Mutex<StateSnapshots<ForkDbStateSnapshot<N>>>>,
+    /// Resets so far across every clone; changed only under the snapshot lock.
+    resets: Arc<AtomicU64>,
+    /// The reset epoch this clone's overlay belongs to.
+    epoch: u64,
 }
 
 impl<N: Network> Clone for ForkedDatabase<N> {
@@ -183,6 +193,8 @@ impl<N: Network> Clone for ForkedDatabase<N> {
             backend: self.backend.clone(),
             cache_db: self.cache_db.clone(),
             state_snapshots: Arc::clone(&self.state_snapshots),
+            resets: Arc::clone(&self.resets),
+            epoch: self.epoch,
         }
     }
 }
@@ -204,6 +216,8 @@ impl<N: Network> ForkedDatabase<N> {
             cache_db: CacheDB::new(DbRef::new(backend.clone())),
             backend,
             state_snapshots: Arc::default(),
+            resets: Arc::default(),
+            epoch: 0,
         }
     }
 
@@ -240,8 +254,9 @@ impl<N: Network> ForkedDatabase<N> {
     /// Resets the fork to fresh remote state at `block`.
     ///
     /// Pins the backend to `block`, clears the remote cache and replaces the overlay with an empty
-    /// one, dropping every committed change. Snapshots are dropped too: they hold the old block's
-    /// state, which reverting to would mix with the new pin.
+    /// one, dropping every committed change. Snapshots are dropped too, including any a clone takes
+    /// of its pre-reset overlay later: they hold the old block's state, which reverting to would
+    /// mix with the new pin.
     pub fn reset(&mut self, block: impl Into<BlockId>) -> ForkResult<()> {
         let mut block = block.into();
         // Name the state the cache will hold, so a later flush is not mistaken for the old
@@ -258,10 +273,16 @@ impl<N: Network> ForkedDatabase<N> {
             meta.block_hash = Some(header.hash());
             block = BlockId::hash(header.hash());
         }
+        // Hold the snapshot lock throughout, so no clone inserts or restores a snapshot of the old
+        // block in between.
+        let state_snapshots = Arc::clone(&self.state_snapshots);
+        let mut state_snapshots = state_snapshots.lock().unwrap_or_else(PoisonError::into_inner);
         self.backend.repin(block)?;
         self.inner().set_meta(meta);
         self.cache_db = CacheDB::new(DbRef::new(self.backend.clone()));
-        self.lock_state_snapshots().clear();
+        state_snapshots.clear();
+        self.epoch = self.resets.fetch_add(1, Ordering::Relaxed) + 1;
+        drop(state_snapshots);
         tracing::trace!(target: "evm2::fork", "reset forked database");
         Ok(())
     }
@@ -273,13 +294,18 @@ impl<N: Network> ForkedDatabase<N> {
 
     /// Returns a snapshot of the overlay and the remote cache.
     pub fn create_state_snapshot(&self) -> ForkDbStateSnapshot<N> {
-        ForkDbStateSnapshot { local: self.cache_db.clone(), remote: self.inner().snapshot() }
+        ForkDbStateSnapshot {
+            local: self.cache_db.clone(),
+            remote: self.inner().snapshot(),
+            epoch: self.epoch,
+        }
     }
 
     /// Takes a snapshot and returns its ID.
     pub fn insert_state_snapshot(&self) -> U256 {
-        let state_snapshot = self.create_state_snapshot();
-        let id = self.lock_state_snapshots().insert(state_snapshot);
+        let mut state_snapshots = self.lock_state_snapshots();
+        let id = state_snapshots.insert(self.create_state_snapshot());
+        drop(state_snapshots);
         tracing::trace!(target: "evm2::fork", %id, "created state snapshot");
         id
     }
@@ -289,22 +315,25 @@ impl<N: Network> ForkedDatabase<N> {
     /// Snapshots taken after `id` are removed; `id` itself is kept when `action` says so. Returns
     /// `false` when there is no snapshot `id`.
     pub fn revert_state_snapshot(&mut self, id: U256, action: RevertStateSnapshotAction) -> bool {
-        let state_snapshot = {
-            let mut state_snapshots = self.lock_state_snapshots();
-            let state_snapshot = state_snapshots.remove(id);
-            if let Some(state_snapshot) = &state_snapshot
-                && action.is_keep()
-            {
-                state_snapshots.insert_at(state_snapshot.clone(), id);
-            }
-            state_snapshot
-        };
-        let Some(ForkDbStateSnapshot { local, remote }) = state_snapshot else {
+        // Restore under the snapshot lock, so a concurrent reset cannot slip in between.
+        let state_snapshots = Arc::clone(&self.state_snapshots);
+        let mut state_snapshots = state_snapshots.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(state_snapshot) = state_snapshots.remove(id) else {
             tracing::warn!(target: "evm2::fork", %id, "no state snapshot to revert to");
             return false;
         };
+        if state_snapshot.epoch != self.resets.load(Ordering::Relaxed) {
+            tracing::warn!(target: "evm2::fork", %id, "state snapshot predates a reset");
+            return false;
+        }
+        if action.is_keep() {
+            state_snapshots.insert_at(state_snapshot.clone(), id);
+        }
+        let ForkDbStateSnapshot { local, remote, epoch } = state_snapshot;
         self.inner().restore(remote);
         self.cache_db = local;
+        self.epoch = epoch;
+        drop(state_snapshots);
         tracing::trace!(target: "evm2::fork", %id, "reverted state snapshot");
         true
     }
