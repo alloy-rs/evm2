@@ -47,6 +47,7 @@ dependencies = [
  "alloy-primitives",
  "num_enum",
  "phf",
+ "serde",
 ]
 
 [[package]]
@@ -2692,8 +2693,10 @@ dependencies = [
 name = "evm2-fork"
 version = "0.1.0"
 dependencies = [
+ "alloy-chains",
  "alloy-consensus",
  "alloy-eips",
+ "alloy-hardforks",
  "alloy-json-rpc",
  "alloy-primitives",
  "alloy-provider",

@@ -1,15 +1,29 @@
 use crate::mock::{MockAccount, MockNode};
 use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_eips::{
+    BlockId,
+    eip7928::{
+        AccountChanges, BalanceChange, BlockAccessIndex, CodeChange, NonceChange, SlotChanges,
+        StorageChange as BalStorageChange,
+    },
+};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256, map::HashMap};
+use alloy_provider::{Provider, network::TransactionResponse};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     env::BlockEnvExt,
     ethereum::{TxEnvelope, ethereum_tx_registry},
-    evm::{DatabaseRef, DbRef, DynDatabase},
+    evm::{
+        AccountChangeRef, AccountInfo, DatabaseRef, DbRef, DynDatabase, StateChangeSink,
+        StorageChange,
+    },
     interpreter::op,
 };
-use evm2_fork::{BlockchainDb, BlockchainDbMeta, ForkDB, ForkError, SharedBackend};
+use evm2_fork::{
+    AccountFetchPolicy, BlockchainDb, BlockchainDbMeta, BlockingMode, ForkDB, ForkError,
+    SharedBackend, bal, fork_env,
+};
 use std::{thread, time::Duration};
 
 const CONTRACT: Address = Address::repeat_byte(0xc0);
@@ -43,6 +57,7 @@ fn contract_code() -> Bytes {
 
 fn mock_node(delay: Duration) -> MockNode {
     let node = MockNode::with_delay(delay);
+    node.add_blocks(BLOCK + 10);
     node.insert_account(
         CONTRACT,
         MockAccount {
@@ -53,7 +68,6 @@ fn mock_node(delay: Duration) -> MockNode {
         },
     );
     node.insert_account(RICH, MockAccount { balance: U256::from(2), ..Default::default() });
-    node.insert_block_hash(BLOCK - 1, keccak256("parent"));
     node
 }
 
@@ -61,8 +75,26 @@ fn spawn(node: &MockNode, db: BlockchainDb) -> SharedBackend {
     SharedBackend::spawn_backend_thread(node.provider(), db, Some(BLOCK.into()))
 }
 
-const fn meta() -> BlockchainDbMeta {
+fn meta() -> BlockchainDbMeta {
     BlockchainDbMeta::new(1, BLOCK)
+}
+
+fn temp_path(name: &str) -> std::path::PathBuf {
+    let path =
+        std::env::temp_dir().join(format!("evm2-fork-{}-{name}/cache.json", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
+/// Waits for the backend thread to drop its cache handle, which writes the cache file.
+fn wait_for_file(path: &std::path::Path) {
+    for _ in 0..200 {
+        if path.exists() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("{} was not written", path.display());
 }
 
 #[test]
@@ -80,26 +112,63 @@ fn reads_remote_state_at_the_pinned_block_and_caches_it() {
     );
     assert_eq!(backend.get_storage(&CONTRACT, &U256::from(1)).unwrap(), U256::from(40));
     assert_eq!(backend.get_storage(&CONTRACT, &U256::from(2)).unwrap(), U256::ZERO);
-    assert_eq!(backend.get_block_hash(&U256::from(BLOCK - 1)).unwrap(), keccak256("parent"));
+    assert_eq!(
+        backend.get_block_hash(&U256::from(BLOCK - 1)).unwrap(),
+        MockNode::block_hash_of(BLOCK - 1)
+    );
     // Empty accounts read as absent.
     assert_eq!(backend.get_account(&CALLER).unwrap(), None);
 
     let calls = node.total_calls();
-    assert_eq!(calls, 3 * 2 + 2 + 1);
-    assert!(node.block_tags().iter().all(|tag| tag == "0x64"), "{:?}", node.block_tags());
+    // The first account fetch races eth_getAccountInfo; later ones only use separate requests.
+    assert_eq!(node.calls("eth_getAccountInfo"), 1);
+    assert_eq!(node.calls("eth_getCode"), 2);
+    assert!(node.state_blocks().iter().all(|&block| block == BLOCK), "{:?}", node.state_blocks());
 
     // Clones share the cache, so repeated reads make no RPC calls.
     assert_eq!(clone.get_account(&RICH).unwrap().unwrap().balance, U256::from(2));
     assert_eq!(clone.get_account(&CALLER).unwrap(), None);
     assert_eq!(clone.get_storage(&CONTRACT, &U256::from(1)).unwrap(), U256::from(40));
-    assert_eq!(clone.get_block_hash(&U256::from(BLOCK - 1)).unwrap(), keccak256("parent"));
+    assert_eq!(
+        clone.get_block_hash(&U256::from(BLOCK - 1)).unwrap(),
+        MockNode::block_hash_of(BLOCK - 1)
+    );
     assert_eq!(node.total_calls(), calls + 3);
+}
+
+#[test]
+fn uses_eth_get_account_info_when_supported() {
+    let node = mock_node(Duration::ZERO);
+    node.set_supports_account_info(true);
+    let db =
+        BlockchainDb::new(meta().with_account_fetch_policy(AccountFetchPolicy::AccountInfo), None);
+    let backend = spawn(&node, db);
+
+    assert_eq!(backend.get_account(&CONTRACT).unwrap().unwrap().nonce, 1);
+    assert_eq!(backend.get_account(&RICH).unwrap().unwrap().balance, U256::from(2));
+    assert_eq!(node.calls("eth_getAccountInfo"), 2);
+    assert_eq!(node.calls("eth_getBalance"), 0);
+
+    let separate = spawn(
+        &node,
+        BlockchainDb::new(
+            meta().with_account_fetch_policy(AccountFetchPolicy::SeparateRequests),
+            None,
+        ),
+    );
+    separate.get_account(&CONTRACT).unwrap();
+    assert_eq!(node.calls("eth_getAccountInfo"), 2);
+    assert_eq!(node.calls("eth_getBalance"), 1);
 }
 
 #[test]
 fn concurrent_reads_share_one_request() {
     let node = mock_node(Duration::from_millis(200));
-    let backend = spawn(&node, BlockchainDb::new(meta(), None));
+    let db = BlockchainDb::new(
+        meta().with_account_fetch_policy(AccountFetchPolicy::SeparateRequests),
+        None,
+    );
+    let backend = spawn(&node, db);
 
     let values = thread::scope(|scope| {
         let handles: Vec<_> = (0..8)
@@ -150,49 +219,57 @@ fn executes_against_the_fork_and_keeps_writes_local() {
 
 #[test]
 fn json_cache_round_trips_for_the_same_block_only() {
-    let path = std::env::temp_dir().join(format!("evm2-fork-{}/cache.json", std::process::id()));
-    let _ = std::fs::remove_file(&path);
+    let path = temp_path("roundtrip");
     let node = mock_node(Duration::ZERO);
     {
-        let backend = spawn(&node, BlockchainDb::new(meta(), Some(path.clone())));
+        let backend = spawn(
+            &node,
+            BlockchainDb::new(meta().with_url("http://a.example"), Some(path.clone())),
+        );
         backend.get_account(&CONTRACT).unwrap();
         backend.get_storage(&CONTRACT, &U256::from(1)).unwrap();
         backend.get_block_hash(&U256::from(BLOCK - 1)).unwrap();
         // Dropping the last handle flushes the cache.
     }
-    // Give the backend thread a moment to drop its copy of the cache.
-    for _ in 0..100 {
-        if path.exists() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
+    wait_for_file(&path);
 
     let offline = MockNode::default();
-    let backend = spawn(&offline, BlockchainDb::new(meta(), Some(path.clone())));
+    let db = BlockchainDb::new(meta().with_url("ws://b.example"), Some(path.clone()));
+    // Hosts are merged, not compared.
+    assert_eq!(db.meta().hosts.into_iter().collect::<Vec<_>>(), ["a.example", "b.example"]);
+    // Serve the offline fork from a copy without a cache path, so its backend thread never
+    // rewrites the file the checks below read.
+    let backend = spawn(&offline, BlockchainDb::from_data(db.snapshot(), None));
+    drop(db);
     let contract = backend.get_account(&CONTRACT).unwrap().unwrap();
     assert_eq!(
         backend.get_code_by_hash(&contract.code_hash).unwrap().original_bytes(),
         contract_code()
     );
     assert_eq!(backend.get_storage(&CONTRACT, &U256::from(1)).unwrap(), U256::from(40));
-    assert_eq!(backend.get_block_hash(&U256::from(BLOCK - 1)).unwrap(), keccak256("parent"));
+    assert_eq!(
+        backend.get_block_hash(&U256::from(BLOCK - 1)).unwrap(),
+        MockNode::block_hash_of(BLOCK - 1)
+    );
     assert_eq!(offline.total_calls(), 0);
+    drop(backend);
 
-    let other_block = BlockchainDb::new(BlockchainDbMeta::new(1, BLOCK + 1), Some(path.clone()));
-    assert_eq!(other_block.account(&CONTRACT), None);
-    drop(other_block);
+    let skip_check =
+        BlockchainDb::new_skip_check(BlockchainDbMeta::new(1, BLOCK + 1), Some(path.clone()));
+    assert!(skip_check.account(&CONTRACT).is_some());
+    drop(skip_check);
+    assert!(BlockchainDb::new(BlockchainDbMeta::new(1, BLOCK + 1), Some(path.clone())).is_empty());
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
-fn reports_missing_state_as_errors() {
+fn reports_errors_with_context() {
     let node = mock_node(Duration::ZERO);
     let backend = spawn(&node, BlockchainDb::new(meta(), None));
 
     assert!(matches!(
-        backend.get_block_hash(&U256::from(BLOCK + 5)),
-        Err(ForkError::BlockNotFound(105))
+        backend.get_block_hash(&U256::from(BLOCK + 50)),
+        Err(ForkError::BlockNotFound(id)) if id == BlockId::number(BLOCK + 50)
     ));
     assert!(matches!(
         backend.get_block_hash(&U256::MAX),
@@ -200,28 +277,158 @@ fn reports_missing_state_as_errors() {
     ));
     let hash = B256::repeat_byte(1);
     assert!(matches!(backend.get_code_by_hash(&hash), Err(ForkError::MissingCode(h)) if h == hash));
+    assert!(matches!(
+        backend.get_transaction(hash),
+        Err(ForkError::TransactionNotFound(h)) if h == hash
+    ));
 
-    let mut db = DbRef::new(backend);
-    let error = DynDatabase::get_block_hash(&mut db, &U256::from(BLOCK + 5)).unwrap_err();
+    let mut db = DbRef::new(backend.clone());
+    let error = DynDatabase::get_block_hash(&mut db, &U256::from(BLOCK + 50)).unwrap_err();
     assert!(error.is_fatal());
     assert!(error.downcast_ref::<ForkError>().is_some());
+
+    // A fork pinned past the chain head fails every state read with context.
+    backend.set_pinned_block(BLOCK + 50).unwrap();
+    let error = backend.get_storage(&RICH, &U256::from(3)).unwrap_err();
+    assert!(
+        matches!(error, ForkError::GetStorage(RICH, slot, _) if slot == U256::from(3)),
+        "{error}"
+    );
+    assert!(!error.is_possibly_non_archive_node_error());
 }
 
 #[test]
-fn cached_entries_shadow_the_remote() {
+fn fetches_full_blocks_transactions_and_any_request() {
+    let node = mock_node(Duration::ZERO);
+    let tx_hash = node.insert_transaction(CALLER, 3);
+    let backend = spawn(&node, BlockchainDb::new(meta(), None));
+
+    let block = backend.get_full_block(BLOCK).unwrap();
+    assert_eq!(block.header.number, BLOCK);
+    assert_eq!(block.header.hash, MockNode::block_hash_of(BLOCK));
+    assert!(matches!(
+        backend.get_full_block(BLOCK + 50),
+        Err(ForkError::BlockNotFound(id)) if id == BlockId::number(BLOCK + 50)
+    ));
+
+    let tx = backend.get_transaction(tx_hash).unwrap();
+    assert_eq!(tx.from(), CALLER);
+
+    let provider = node.provider();
+    let chain_id = backend.do_any_request(async move { provider.get_chain_id().await }).unwrap();
+    assert_eq!(chain_id, 1);
+    let error =
+        backend.do_any_request(async { Err::<(), _>(std::io::Error::other("boom")) }).unwrap_err();
+    assert_eq!(error.to_string(), "failed to process AnyRequest: boom");
+}
+
+#[test]
+fn updates_and_commits_shadow_the_remote() {
     let node = mock_node(Duration::ZERO);
     let backend = spawn(&node, BlockchainDb::new(meta(), None));
     let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-    backend.data().insert_account(
-        CALLER,
-        Some(evm2::evm::AccountInfo::default().with_balance(U256::from(7)).with_code(code.clone())),
-    );
-    backend.data().insert_storage(CONTRACT, U256::from(1), U256::from(5));
+    let info = AccountInfo::default().with_balance(U256::from(7)).with_code(code.clone());
+
+    backend.insert_or_update_address(HashMap::from_iter([(CALLER, Some(info))]));
+    backend.insert_or_update_storage(HashMap::from_iter([(
+        CONTRACT,
+        HashMap::from_iter([(U256::from(1), U256::from(5))]),
+    )]));
+    backend
+        .insert_or_update_block_hashes(HashMap::from_iter([(U256::from(1), B256::repeat_byte(9))]));
+    // Updates go through the handler; a request behind them sees them applied.
+    backend.get_full_block(BLOCK).unwrap();
 
     assert_eq!(backend.get_account(&CALLER).unwrap().unwrap().balance, U256::from(7));
     assert_eq!(backend.get_code_by_hash(&code.hash_slow()).unwrap(), code);
     assert_eq!(backend.get_storage(&CONTRACT, &U256::from(1)).unwrap(), U256::from(5));
-    assert_eq!(node.total_calls(), 0);
+    assert_eq!(backend.get_block_hash(&U256::from(1)).unwrap(), B256::repeat_byte(9));
+    assert_eq!(node.state_calls(), 0);
+
+    // Committing a self-destruct wipes the account: its missing slots read as zero offline.
+    let mut db = backend.data().clone();
+    let deleted = AccountChangeRef {
+        address: RICH,
+        original: None,
+        current: None,
+        created: false,
+        selfdestructed: true,
+    };
+    StateChangeSink::account(&mut db, deleted).unwrap();
+    StateChangeSink::storage(
+        &mut db,
+        StorageChange {
+            address: CONTRACT,
+            key: U256::from(8),
+            original: U256::ZERO,
+            current: U256::from(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(backend.get_account(&RICH).unwrap(), None);
+    assert_eq!(backend.get_storage(&RICH, &U256::from(4)).unwrap(), U256::ZERO);
+    assert_eq!(backend.get_storage(&CONTRACT, &U256::from(8)).unwrap(), U256::from(1));
+    assert_eq!(node.state_calls(), 0);
+}
+
+#[test]
+fn prefetched_entries_nothing_read_are_not_flushed() {
+    let path = temp_path("prefetch");
+    let node = mock_node(Duration::ZERO);
+    {
+        let backend = spawn(&node, BlockchainDb::new(meta(), Some(path.clone())))
+            .with_blocking_mode(BlockingMode::Block);
+        backend.prefetch_basic(CONTRACT).unwrap();
+        backend.prefetch_basic(RICH).unwrap();
+        backend.prefetch_storage(CONTRACT, U256::from(1)).unwrap();
+        backend.prefetch_storage(CONTRACT, U256::from(2)).unwrap();
+        let calls = node.state_calls();
+        // Reads are served from the cache and keep the entries they touch.
+        assert_eq!(backend.get_account(&RICH).unwrap().unwrap().balance, U256::from(2));
+        assert_eq!(backend.get_storage(&CONTRACT, &U256::from(1)).unwrap(), U256::from(40));
+        assert_eq!(node.state_calls(), calls);
+    }
+    wait_for_file(&path);
+
+    let cached = BlockchainDb::new(meta(), Some(path.clone()));
+    assert!(cached.account(&RICH).is_some());
+    assert!(cached.account(&CONTRACT).is_none());
+    assert_eq!(cached.storage(&CONTRACT, &U256::from(1)), Some(U256::from(40)));
+    assert_eq!(cached.storage(&CONTRACT, &U256::from(2)), None);
+    drop(cached);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn bal_post_state_prefills_the_cache() {
+    let target = Address::repeat_byte(0xbb);
+    let code = Bytes::from_static(&[op::STOP]);
+    let mut account = AccountChanges::new(target);
+    account.balance_changes.push(BalanceChange::new(BlockAccessIndex(1), U256::from(11)));
+    account.nonce_changes.push(NonceChange::new(BlockAccessIndex(1), 4));
+    account.code_changes.push(CodeChange::new(BlockAccessIndex(1), code.clone()));
+    account.storage_changes.push(SlotChanges::new(
+        U256::from(3),
+        vec![
+            BalStorageChange::new(BlockAccessIndex(1), U256::from(5)),
+            BalStorageChange::new(BlockAccessIndex(2), U256::from(6)),
+        ],
+    ));
+    let bal = vec![account];
+    bal::validate_bal(&bal, 2, None).unwrap();
+    assert!(matches!(
+        bal::validate_bal(&bal, 2, Some(B256::ZERO)),
+        Err(bal::BalError::HashMismatch { .. })
+    ));
+
+    let db = BlockchainDb::in_memory();
+    db.insert_storage(target, U256::from(3), U256::from(1));
+    assert_eq!(bal::cache_bal(&db, &bal), (1, 0));
+    let info = db.account(&target).unwrap().unwrap();
+    assert_eq!((info.balance, info.nonce), (U256::from(11), 4));
+    assert_eq!(db.code_by_hash(&keccak256(&code)).unwrap().original_bytes(), code);
+    // Entries already cached win.
+    assert_eq!(db.storage(&target, &U256::from(3)), Some(U256::from(1)));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -237,5 +444,12 @@ async fn reads_from_inside_a_multi_threaded_runtime() {
 
     backend.set_pinned_block(BLOCK + 1).unwrap();
     backend.get_account(&RICH).unwrap();
-    assert_eq!(node.block_tags().last().map(String::as_str), Some("0x65"));
+    assert_eq!(node.state_blocks().last(), Some(&(BLOCK + 1)));
+
+    let (env, block) = fork_env(&node.provider(), BLOCK.into()).await.unwrap();
+    assert_eq!((env.chain_id, env.block_number, env.block_hash), (1, BLOCK, block.header.hash));
+    assert_eq!(env.block.basefee, U256::from(7));
+    assert_eq!(env.block.timestamp, U256::from(1_700_000_000 + BLOCK * 12));
+    // The mock's timestamps fall in mainnet's Shanghai era.
+    assert_eq!(env.spec_id, SpecId::SHANGHAI);
 }
