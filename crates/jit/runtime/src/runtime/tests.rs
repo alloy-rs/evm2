@@ -589,7 +589,7 @@ fn compile_jit_never_blocks_when_startup_fails() {
 
     // Nothing was queued: the requests were dropped instead of filling the channel.
     assert_eq!(tb.stats().command_queue_len, 0);
-    assert!(!tb.inner.started.load(Ordering::Relaxed));
+    assert!(!tb.inner.is_started());
     assert!(tb.inner.lazy_spawn.lock().unwrap().is_some());
 }
 
@@ -654,7 +654,7 @@ fn prepare_aot_batch_never_blocks_when_startup_fails() {
 
     // Nothing was queued: the requests were dropped instead of filling the channel.
     assert_eq!(tb.stats().command_queue_len, 0);
-    assert!(!tb.inner.started.load(Ordering::Relaxed));
+    assert!(!tb.inner.is_started());
     assert!(tb.inner.lazy_spawn.lock().unwrap().is_some());
 }
 
@@ -850,7 +850,7 @@ fn clear_commands_after_failed_spawn_reach_store_and_allow_retry() {
     assert!(
         tb.ensure_started_with(std::thread::Builder::new().stack_size(usize::MAX / 2)).is_err()
     );
-    assert!(!tb.inner.started.load(Ordering::Relaxed));
+    assert!(!tb.inner.is_started());
     assert!(tb.inner.lazy_spawn.lock().unwrap().is_some());
 
     let backend = tb.backend.clone();
@@ -869,7 +869,7 @@ fn clear_commands_after_failed_spawn_reach_store_and_allow_retry() {
     assert_eq!(tb.stats().command_queue_len, 0);
 
     tb.set_enabled(true).unwrap();
-    assert!(tb.inner.started.load(Ordering::Relaxed));
+    assert!(tb.inner.is_started());
     assert!(tb.enabled());
 }
 
@@ -916,6 +916,67 @@ fn blocking_out_of_process_pause_resume_does_not_stop_helper() {
     let stats = shared.stats();
     assert_eq!(stats.jit_helper_pause_requests, 0);
     assert_eq!(stats.jit_helper_resume_requests, 0);
+}
+
+#[test]
+#[cfg(all(unix, feature = "llvm"))]
+fn pause_before_startup_reaches_out_of_process_helper() {
+    // A pause taken before the backend starts has no thread to deliver it to, but the helper the
+    // started backend spawns must still be stopped until the matching resume.
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        jit_mode: JitMode::OutOfProcess,
+        jit_helper_path: Some("/nonexistent/evm2-jit-helper".into()),
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+        ..Default::default()
+    });
+
+    tb.pause();
+    tb.set_enabled(true).unwrap();
+    let stats = tb.wait_stats(|s| s.jit_helper_pause_requests == 1);
+    assert_eq!(stats.jit_helper_resume_requests, 0);
+
+    tb.resume();
+    let stats = tb.wait_stats(|s| s.jit_helper_resume_requests == 1);
+    assert_eq!(stats.jit_helper_pause_requests, 1);
+}
+
+#[test]
+#[cfg(all(unix, feature = "llvm"))]
+fn dropped_resume_still_resumes_out_of_process_helper() {
+    // Pause and resume never block, so a full command channel drops them. A dropped resume must
+    // not leave the helper stopped, which would stall every later compilation.
+    let (entered_tx, entered_rx) = crossbeam_channel::bounded(1);
+    let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(1);
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        jit_mode: JitMode::OutOfProcess,
+        jit_helper_path: Some("/nonexistent/evm2-jit-helper".into()),
+        tuning: RuntimeTuning { jit_worker_count: 1, channel_capacity: 1, ..Default::default() },
+        // Holds the backend thread in its first compilation event, so commands back up.
+        on_compilation: Some(Arc::new(move |_| {
+            let _ = entered_tx.try_send(());
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+        })),
+        ..Default::default()
+    });
+
+    tb.compile_jit(TestBackend::req_cancun(BYTECODE_RET42));
+    entered_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    tb.pause();
+    tb.resume();
+    assert!(!tb.is_paused());
+    assert_eq!(tb.stats().commands_dropped, 1);
+    release_tx.send(()).unwrap();
+
+    // Once the backend catches up, the helper ends up running, as the pause depth says.
+    tb.wait_stats(|s| s.jit_helper_resume_requests >= s.jit_helper_pause_requests);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let stats = tb.stats();
+    assert!(
+        stats.jit_helper_resume_requests >= stats.jit_helper_pause_requests,
+        "helper left paused: {stats:?}"
+    );
 }
 
 // ===========================================================================
@@ -2090,16 +2151,18 @@ fn compiler_recycle_every_compilation() {
 
 #[test]
 fn shutdown_propagates_worker_error() {
-    let backend = JitBackend::disabled();
+    let mut backend = JitBackend::disabled();
+    let inner = Arc::get_mut(&mut backend.inner).unwrap();
     let (done_tx, done_rx) = chan::bounded(1);
-    *backend.inner.thread.lock().unwrap() = Some(BackendThread {
+    let thread = BackendThread {
         handle: std::thread::spawn(move || {
             let _ = done_tx.send(());
             eyre::bail!("controlled compile worker failure")
         }),
         done_rx,
-    });
-    let error = backend.inner.shutdown().unwrap_err();
+    };
+    assert!(inner.thread.set(thread).is_ok());
+    let error = inner.shutdown().unwrap_err();
     assert!(error.to_string().contains("controlled compile worker failure"));
-    assert!(backend.inner.thread.lock().unwrap().is_none());
+    assert!(!inner.is_started());
 }
