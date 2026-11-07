@@ -32,6 +32,11 @@ use execution::{
     post_execution_system_call_state_changes, pre_execution_system_call_state_changes,
 };
 
+#[cfg(feature = "std")]
+pub mod parallel;
+#[cfg(feature = "std")]
+pub use parallel::ParallelExecutionStats;
+
 #[cfg(test)]
 mod tests;
 

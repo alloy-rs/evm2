@@ -133,7 +133,7 @@ use crate::{
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log};
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use core::ptr::NonNull;
 #[cfg(feature = "async")]
 use core::{any::TypeId, future::Future};
@@ -235,6 +235,10 @@ pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     inspector: Option<InspectorSlot<'a, T>>,
     inspect_system_calls: bool,
+    /// Beneficiary reward withheld by [`default_settle_gas`](crate::ethereum::default_settle_gas):
+    /// `None` credits the beneficiary as usual, `Some` holds the last settled transaction's reward
+    /// instead of crediting it.
+    deferred_beneficiary_reward: Option<U256>,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// Whether `interpreter_runner` is set and supports `execution_config`.
@@ -374,6 +378,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
             inspect_system_calls: false,
+            deferred_beneficiary_reward: None,
             interpreter_runner: None,
             runner_supported: false,
             current_frame: None,
@@ -1048,6 +1053,41 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub const fn set_inspect_system_calls(&mut self, inspect: bool) {
         self.inspect_system_calls = inspect;
+    }
+
+    /// Sets whether the default gas settlement withholds the beneficiary reward instead of
+    /// crediting it to the block beneficiary.
+    ///
+    /// With deferral on, a transaction never loads the beneficiary unless it reads it itself, so
+    /// transactions that only pay fees do not conflict on the beneficiary balance. The caller then
+    /// credits [`Self::deferred_beneficiary_reward`] itself, as parallel block execution does at
+    /// commit. Custom [`TxHandlerHooks::settle_transaction`](crate::handler::TxHandlerHooks)
+    /// implementations ignore this setting.
+    ///
+    /// Defaults to `false`.
+    #[inline]
+    pub const fn set_defer_beneficiary_reward(&mut self, defer: bool) {
+        self.deferred_beneficiary_reward = if defer { Some(U256::ZERO) } else { None };
+    }
+
+    /// Returns the beneficiary reward the last settled transaction withheld, or `None` when
+    /// deferral is off. See [`Self::set_defer_beneficiary_reward`].
+    #[inline]
+    pub const fn deferred_beneficiary_reward(&self) -> Option<U256> {
+        self.deferred_beneficiary_reward
+    }
+
+    /// Records the beneficiary reward withheld by the default gas settlement. Returns `false` when
+    /// deferral is off and the caller must credit the beneficiary.
+    #[inline]
+    pub(crate) const fn defer_beneficiary_reward(&mut self, reward: U256) -> bool {
+        match &mut self.deferred_beneficiary_reward {
+            Some(deferred) => {
+                *deferred = reward;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Sets the optional external interpreter runner.

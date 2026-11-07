@@ -820,7 +820,9 @@ pub fn default_settle_gas<'a, T: EvmTypes>(
         };
         let beneficiary = host.block.beneficiary;
         let beneficiary_reward = U256::from(gas_used) * beneficiary_gas_price;
-        host.state.account(&beneficiary)?.add_balance(beneficiary_reward);
+        if !host.defer_beneficiary_reward(beneficiary_reward) {
+            host.state.account(&beneficiary)?.add_balance(beneficiary_reward);
+        }
     }
     Ok(result)
 }
