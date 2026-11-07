@@ -476,7 +476,7 @@ impl<W: Write> TraceWriter<W> {
         }
         let color = if self.config.color_cheatcodes && trace.address == CHEATCODE_ADDRESS {
             AnsiColor::Blue
-        } else if trace.success {
+        } else if trace.is_success() {
             AnsiColor::Green
         } else {
             AnsiColor::Red
