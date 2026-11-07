@@ -25,7 +25,7 @@ use std::{cell::RefCell, time::Instant};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     thread::JoinHandle,
     time::Duration,
@@ -197,7 +197,7 @@ impl Drop for JitCodeBacking {
 
 /// Handle to the worker pool.
 pub(crate) struct WorkerPool {
-    /// Rayon pool used to execute compilation jobs.
+    /// Rayon pool used to execute compilation jobs; `None` without workers or after shutdown.
     pool: Option<ThreadPool>,
     /// OS workers retained until their Rayon loop and TLS destructors have exited.
     threads: Vec<JoinHandle<()>>,
@@ -211,8 +211,6 @@ pub(crate) struct WorkerPool {
     queued: Arc<AtomicUsize>,
     /// Maximum queued jobs accepted by the pool.
     queue_capacity: usize,
-    /// Signals workers to stop accepting new work.
-    shutdown: Arc<AtomicBool>,
 }
 
 impl WorkerPool {
@@ -264,16 +262,13 @@ impl WorkerPool {
             config: Arc::new(config),
             queued: Arc::new(AtomicUsize::new(0)),
             queue_capacity,
-            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Tries to send a job to the worker pool.
     /// Returns the job back on failure (queue full or shut down).
     pub(crate) fn try_send(&mut self, job: CompileJob) -> Result<(), CompileJob> {
-        if self.pool.is_none() || self.shutdown.load(Ordering::Acquire) {
-            return Err(job);
-        }
+        let Some(pool) = &self.pool else { return Err(job) };
 
         let mut current = self.queued.load(Ordering::Acquire);
         loop {
@@ -291,7 +286,6 @@ impl WorkerPool {
             }
         }
 
-        let pool = self.pool.as_ref().unwrap();
         let queued = self.queued.clone();
         let result_tx = self.result_tx.clone();
         let config = self.config.clone();
@@ -306,7 +300,6 @@ impl WorkerPool {
 
     /// Shuts down all workers after draining queued jobs.
     pub(crate) fn shutdown(&mut self) -> eyre::Result<()> {
-        self.shutdown.store(true, Ordering::Release);
         self.cancel_in_flight();
         // Rayon Drop requests termination; it does not wait for OS threads. A broadcast
         // is insufficient too: it may run before jobs in the global injection queue.
