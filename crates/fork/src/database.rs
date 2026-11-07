@@ -240,7 +240,8 @@ impl<N: Network> ForkedDatabase<N> {
     /// Resets the fork to fresh remote state at `block`.
     ///
     /// Pins the backend to `block`, clears the remote cache and replaces the overlay with an empty
-    /// one, dropping every committed change. Snapshots are kept.
+    /// one, dropping every committed change. Snapshots are dropped too: they hold the old block's
+    /// state, which reverting to would mix with the new pin.
     pub fn reset(&mut self, block: impl Into<BlockId>) -> ForkResult<()> {
         let mut block = block.into();
         // Name the state the cache will hold, so a later flush is not mistaken for the old
@@ -260,6 +261,7 @@ impl<N: Network> ForkedDatabase<N> {
         self.backend.repin(block)?;
         self.inner().set_meta(meta);
         self.cache_db = CacheDB::new(DbRef::new(self.backend.clone()));
+        self.lock_state_snapshots().clear();
         tracing::trace!(target: "evm2::fork", "reset forked database");
         Ok(())
     }

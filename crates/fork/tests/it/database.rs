@@ -170,6 +170,18 @@ fn fetches_in_flight_across_a_reset_are_not_cached() {
 }
 
 #[test]
+fn reset_drops_snapshots_of_the_old_block() {
+    let node = mock_node();
+    let mut db = forked_db(&node);
+    write_storage(&mut db, 10, 99);
+    let id = db.insert_state_snapshot();
+    db.reset(SECOND_BLOCK).unwrap();
+    assert!(db.state_snapshots().lock().unwrap().is_empty());
+    assert!(!db.revert_state_snapshot(id, RevertStateSnapshotAction::RevertRemove));
+    assert_eq!(storage(&mut db), U256::from(50));
+}
+
+#[test]
 fn reads_go_through_the_overlay_first() {
     let node = mock_node();
     let mut db = forked_db(&node);
