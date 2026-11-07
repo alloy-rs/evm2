@@ -39,10 +39,13 @@ pub(crate) async fn predict<N: Network>(
     state_block: BlockId,
 ) -> ForkResult<Prediction> {
     // A prestate trace holds the state before `block`: usable only when the pin is its parent.
-    if !pinned_to_parent(provider, block, state_block).await {
+    // Resolve `block` once and trace that exact hash, so a tag or number cannot move between the
+    // check and the trace.
+    let Some(hash) = block_with_parent(provider, block, state_block).await else {
         tracing::debug!(target: "evm2::fork", "pinned block is not the parent, predicting with access lists");
         return access_lists(provider, block, state_block).await;
-    }
+    };
+    let block = BlockId::hash(hash);
     match trace_prestate(provider, block).await {
         Ok(prediction) => return Ok(prediction),
         Err(err) => {
@@ -52,32 +55,36 @@ pub(crate) async fn predict<N: Network>(
     access_lists(provider, block, state_block).await
 }
 
-/// Whether `state_block` is `block`'s parent. A tag cannot be checked and counts as not.
-async fn pinned_to_parent<N: Network>(
+/// Resolves `block` and returns its hash if `state_block` is its parent. A tag cannot be checked
+/// and counts as not.
+async fn block_with_parent<N: Network>(
     provider: &DynProvider<N>,
     block: BlockId,
     state_block: BlockId,
-) -> bool {
+) -> Option<B256> {
     let method = match block {
         BlockId::Hash(_) => "eth_getBlockByHash",
         BlockId::Number(_) => "eth_getBlockByNumber",
     };
-    let Ok(header) =
-        provider.raw_request::<_, Value>(Cow::Borrowed(method), (block_param(block), false)).await
-    else {
-        return false;
-    };
-    match state_block {
-        BlockId::Hash(hash) => header
-            .get("parentHash")
-            .and_then(Value::as_str)
-            .and_then(|parent| parent.parse::<B256>().ok())
-            .is_some_and(|parent| parent == hash.block_hash),
+    let header = provider
+        .raw_request::<_, Value>(Cow::Borrowed(method), (block_param(block), false))
+        .await
+        .ok()?;
+    let hash_field = |field: &str| header.get(field)?.as_str()?.parse::<B256>().ok();
+    let hash = hash_field("hash")?;
+    if let BlockId::Hash(pinned) = block
+        && pinned.block_hash != hash
+    {
+        return None;
+    }
+    let is_parent = match state_block {
+        BlockId::Hash(pinned) => hash_field("parentHash") == Some(pinned.block_hash),
         BlockId::Number(BlockNumberOrTag::Number(number)) => {
-            header.get("number").and_then(parse_u64).is_some_and(|n| n == number + 1)
+            header.get("number").and_then(parse_u64) == Some(number + 1)
         }
         BlockId::Number(_) => false,
-    }
+    };
+    is_parent.then_some(hash)
 }
 
 /// Reads the block's prestate trace, keeping each account's and slot's first value: the value
