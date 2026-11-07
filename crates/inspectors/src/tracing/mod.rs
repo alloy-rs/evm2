@@ -759,6 +759,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     }
 
     fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
+        if self.trace_stack.is_empty() {
+            return;
+        }
         if self.config.record_logs {
             let log_count = self.log_count;
             self.log_count += 1;
@@ -893,6 +896,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         value: &U256,
         _host: &mut T::Host<'_>,
     ) {
+        if self.trace_stack.is_empty() {
+            return;
+        }
         let node = self.last_trace();
         node.trace.selfdestruct_address = Some(*contract);
         node.trace.selfdestruct_refund_target = Some(*target);
@@ -983,4 +989,39 @@ const fn storage_write(op: u8, stack: &[U256]) -> Option<StorageDelta> {
 struct TraceStackEntry {
     trace_idx: usize,
     log_count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use evm2::{BaseEvmTypes, Evm, Precompiles, ethereum::ethereum_tx_registry, evm::InMemoryDB};
+
+    #[test]
+    fn log_and_selfdestruct_without_active_frame() {
+        let mut inspector = TracingInspector::new(TracingInspectorConfig::none().record_logs());
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            Default::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let traces = inspector.traces.clone();
+
+        Inspector::<BaseEvmTypes>::log(&mut inspector, &Log::default(), &mut host);
+
+        assert_eq!(inspector.log_count, 0);
+        assert!(inspector.traces.nodes().iter().all(|node| node.logs.is_empty()));
+        assert_eq!(inspector.traces, traces);
+
+        Inspector::<BaseEvmTypes>::selfdestruct(
+            &mut inspector,
+            &Address::ZERO,
+            &Address::ZERO,
+            &U256::ZERO,
+            &mut host,
+        );
+
+        assert_eq!(inspector.traces, traces);
+    }
 }
