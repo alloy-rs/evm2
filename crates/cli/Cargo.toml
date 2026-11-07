@@ -78,9 +78,14 @@ jemalloc = ["dep:tikv-jemallocator"]
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
+evm2 = { workspace = true, default-features = true, features = ["block"] }
 criterion.workspace = true
 revm = { workspace = true, features = ["test-types"] }
 
 [[bench]]
 name = "evm"
 harness = false
+
+[[example]]
+name = "parallel_bench"
+path = "examples/parallel_bench.rs"
