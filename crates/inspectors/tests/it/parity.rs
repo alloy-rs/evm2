@@ -15,7 +15,7 @@ use alloy_rpc_types_trace::{
 };
 use evm2::{evm::InMemoryDB, utils::address_to_word};
 use evm2_inspectors::tracing::{
-    TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
+    TracingInspector, TracingInspectorConfig, parity::populate_state_diff, types::CallSelfdestruct,
 };
 
 #[test]
@@ -73,9 +73,10 @@ fn test_parity_selfdestruct(spec_id: SpecId) {
     let node = &evm.inspector().traces().nodes()[0];
     assert!(node.is_selfdestruct(), "{node:#?}");
     assert_eq!(node.trace.address, addr);
-    assert_eq!(node.trace.selfdestruct_address, Some(addr));
-    assert_eq!(node.trace.selfdestruct_refund_target, Some(deployer));
-    assert_eq!(node.trace.selfdestruct_transferred_value, Some(value));
+    assert_eq!(
+        node.trace.selfdestruct,
+        Some(CallSelfdestruct { address: addr, refund_target: deployer, value })
+    );
 
     let traces = evm
         .into_inspector()
@@ -1158,7 +1159,7 @@ fn create_with_empty_initcode_runs_no_steps() {
         assert_eq!(nodes.len(), depth_nodes);
         let create = nodes.last().unwrap();
         assert!(create.kind().is_any_create());
-        assert!(create.trace.success && create.trace.steps.is_empty());
+        assert!(create.trace.is_success() && create.trace.steps.is_empty());
         assert_eq!(create.trace.gas_used, 0);
     }
 }
