@@ -20,6 +20,8 @@ mod otterscan;
 mod parity;
 #[cfg(feature = "std")]
 mod stack;
+#[cfg(feature = "std")]
+mod stopped_step;
 #[cfg(feature = "js-tracer")]
 mod test_native_bigint;
 #[cfg(feature = "std")]
