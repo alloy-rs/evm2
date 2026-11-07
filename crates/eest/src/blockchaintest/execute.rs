@@ -307,7 +307,6 @@ fn execute_case(
 ) -> Result<Option<B256>, TestError> {
     let schedule = case_schedule(path, name, test_case)?;
     let spec = schedule.initial.spec;
-    let mut parent_block_hash = Some(test_case.genesis_block_header.hash);
     let mut parent_header = &test_case.genesis_block_header;
     let mut block_env = block_env_from_header(parent_header, &schedule)
         .map_err(|err| TestError::case(path, name, err))?;
@@ -345,7 +344,6 @@ fn execute_case(
             spec,
             database,
             &mut block_env,
-            &mut parent_block_hash,
             &mut parent_header,
             captured,
             hook,
@@ -377,7 +375,7 @@ fn execute_case(
 
     resources.check_compilations().map_err(|err| TestError::case(path, name, err.into()))?;
 
-    let final_block_hash = parent_block_hash.expect("genesis block hash should be available");
+    let final_block_hash = parent_header.hash;
     if final_block_hash != test_case.lastblockhash {
         return Err(TestError::case(
             path,
@@ -416,9 +414,12 @@ fn seed_block_hashes(database: &mut InMemoryDB, test_case: &BlockchainTestCase) 
     );
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BlockResolution {
-    Commit(B256),
+/// How a block that did not fail the case resolves.
+#[derive(Clone, Copy, Debug)]
+enum BlockResolution<'a> {
+    /// The block is valid: its state is committed and its header becomes the chain tip.
+    Commit(&'a BlockHeader),
+    /// The block is invalid as the fixture expects: its state is dropped.
     Discard,
 }
 
@@ -435,7 +436,6 @@ fn execute_block<'a>(
     spec: SpecId,
     database: &mut InMemoryDB,
     block_env: &mut BlockEnv,
-    parent_block_hash: &mut Option<B256>,
     parent_header: &mut &'a BlockHeader,
     captured: bool,
     hook: &mut dyn Hook,
@@ -462,14 +462,12 @@ fn execute_block<'a>(
         ));
     }
 
-    let mut block_hash = None;
     let mut beacon_root = None;
     let mut expected_state_root = None;
     let mut blob_params = None;
 
     let mut next_block_env = *block_env;
     if let Some(header) = block_header(block) {
-        block_hash = Some(header.hash);
         beacon_root = header.parent_beacon_block_root;
         next_block_env = block_env_from_header(header, schedule)
             .map_err(|err| TestError::case(path, name, err))?;
@@ -539,7 +537,7 @@ fn execute_block<'a>(
 
     let ctx = EthBlockExecutionCtx {
         tx_count_hint: Some(block_transactions(block).len()),
-        parent_hash: parent_block_hash.unwrap_or_default(),
+        parent_hash: parent_header.hash,
         parent_beacon_block_root: beacon_root,
         ommers: Cow::Owned(ommers),
         withdrawals: Some(Cow::Owned(withdrawals)),
@@ -565,10 +563,9 @@ fn execute_block<'a>(
         executor.enable_block_access_list_builder();
     }
 
-    let result = (|| -> Result<BlockResolution, TestError> {
+    let result = (|| -> Result<BlockResolution<'a>, TestError> {
         if let Some(header) = block_header(block)
-            && let Some(expected) = *parent_block_hash
-            && header.parent_hash != expected
+            && header.parent_hash != parent_header.hash
         {
             if should_fail {
                 return Ok(BlockResolution::Discard);
@@ -576,7 +573,10 @@ fn execute_block<'a>(
             return Err(TestError::case(
                 path,
                 name,
-                TestErrorKind::ParentBlockHashMismatch { got: header.parent_hash, expected },
+                TestErrorKind::ParentBlockHashMismatch {
+                    got: header.parent_hash,
+                    expected: parent_header.hash,
+                },
             ));
         }
 
@@ -808,14 +808,14 @@ fn execute_block<'a>(
             return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
         }
 
-        let Some(block_hash) = block_hash else {
+        let Some(header) = block_header(block) else {
             return Err(TestError::case(
                 path,
                 name,
                 TestErrorKind::UnexpectedFailure("committed block has no header".into()),
             ));
         };
-        Ok(BlockResolution::Commit(block_hash))
+        Ok(BlockResolution::Commit(header))
     })();
 
     // The EVM was constructed with this concrete database above; recover it before returning so
@@ -843,17 +843,14 @@ fn execute_block<'a>(
     }
 
     match result {
-        Ok(BlockResolution::Commit(block_hash)) => {
+        Ok(BlockResolution::Commit(header)) => {
             // Only the plain state is applied, so the block's reverts are not built.
             let block_state = block_state.into_bundle_with_retention(BundleRetention::PlainState);
             restored_database.commit_source(&BundleSource(&block_state));
-            restored_database.insert_block_hash(&next_block_env.number, &block_hash);
+            restored_database.insert_block_hash(&next_block_env.number, &header.hash);
             *database = restored_database;
             *block_env = next_block_env;
-            *parent_block_hash = Some(block_hash);
-            if let Some(header) = block_header(block) {
-                *parent_header = header;
-            }
+            *parent_header = header;
             if trace || compare_state_root {
                 let got = state_root_from_database(database);
                 if trace {
@@ -1073,7 +1070,7 @@ fn reject_block(
     path: &Path,
     name: &str,
     reason: String,
-) -> Result<BlockResolution, TestError> {
+) -> Result<BlockResolution<'static>, TestError> {
     if should_fail {
         Ok(BlockResolution::Discard)
     } else {
