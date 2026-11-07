@@ -312,17 +312,32 @@ pub struct AccountHandle<'a, 'db> {
     /// Spare slot-map allocations reused between transactions.
     #[derive_where(skip)]
     storage_pool: &'a mut StoragePool,
-    /// Revert entry capturing the overlay as it was before the first mutation made through this
-    /// handle. `Some` once a change has been recorded; on drop it is pushed onto the journal as a
-    /// single [`JournalEntry::AccountChange`].
-    snapshot: Option<JournalEntry>,
+    /// The overlay as it was before the first mutation made through this handle. `Some` once a
+    /// change has been recorded; on drop it is pushed onto the journal as a single
+    /// [`JournalEntry::AccountChange`].
+    snapshot: Option<AccountSnapshot>,
+}
+
+/// The overlay state an [`AccountHandle`] restores on rollback: the present account value and
+/// all per-account flags as they were before the handle's first mutation.
+#[derive(Debug)]
+struct AccountSnapshot {
+    /// Previous present account value.
+    previous: Option<AccountInfo>,
+    /// Previous lifecycle flags.
+    previous_flags: AccountFlags,
 }
 
 impl Drop for AccountHandle<'_, '_> {
     #[inline]
     fn drop(&mut self) {
-        if let Some(entry) = self.snapshot.take() {
-            self.inner.journal.push(entry);
+        if let Some(AccountSnapshot { previous, previous_flags }) = self.snapshot.take() {
+            let address = self.address;
+            self.inner.push_journal(|| JournalEntry::AccountChange {
+                address,
+                previous,
+                previous_flags,
+            });
         }
     }
 }
@@ -362,8 +377,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     fn record_change(&mut self) {
         if self.snapshot.is_none() {
-            self.snapshot = Some(JournalEntry::AccountChange {
-                address: self.address,
+            self.snapshot = Some(AccountSnapshot {
                 previous: self.tracked.present.clone(),
                 previous_flags: self.tracked.flags,
             });
@@ -702,8 +716,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub fn override_balance(&mut self, balance: Word) {
         self.present_mut().balance = balance;
-        if let Some(JournalEntry::AccountChange { previous, .. }) = &mut self.snapshot {
-            previous.get_or_insert_with(empty_account).balance = balance;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.previous.get_or_insert_with(empty_account).balance = balance;
         }
     }
 
@@ -714,8 +728,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub fn override_nonce(&mut self, nonce: u64) {
         self.present_mut().nonce = nonce;
-        if let Some(JournalEntry::AccountChange { previous, .. }) = &mut self.snapshot {
-            previous.get_or_insert_with(empty_account).nonce = nonce;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.previous.get_or_insert_with(empty_account).nonce = nonce;
         }
     }
 }
