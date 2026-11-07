@@ -35,7 +35,7 @@ use execution::{
 #[cfg(feature = "std")]
 pub mod parallel;
 #[cfg(feature = "std")]
-pub use parallel::ParallelExecutionStats;
+pub use parallel::{AccessKey, ParallelExecutionOutput, ParallelExecutionStats, ParallelHints};
 
 #[cfg(test)]
 mod tests;
