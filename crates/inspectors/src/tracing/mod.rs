@@ -706,12 +706,14 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     }
 
     fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
-        if self.trace_stack.is_empty() {
-            return;
-        }
         if self.config.record_logs {
             let log_count = self.log_count;
             self.log_count += 1;
+            // Embedders can emit logs outside any call, before the first or after the last. They
+            // still take a log index but have no trace to attach to.
+            if self.trace_stack.is_empty() {
+                return;
+            }
             let trace = self.last_trace();
             trace.ordering.push(TraceMemberOrder::Log(trace.logs.len()));
             trace.logs.push(
@@ -976,7 +978,7 @@ mod tests {
 
         Inspector::<BaseEvmTypes>::log(&mut inspector, &Log::default(), &mut host);
 
-        assert_eq!(inspector.log_count, 0);
+        assert_eq!(inspector.log_count, 1);
         assert!(inspector.traces.nodes().iter().all(|node| node.logs.is_empty()));
         assert_eq!(inspector.traces, traces);
 
