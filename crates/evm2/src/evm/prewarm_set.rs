@@ -59,7 +59,7 @@ pub(crate) fn short_address(address: &Address) -> Option<usize> {
 /// Warm addresses without warm storage are split by shape for lookup speed: short addresses (see
 /// `SHORT_ADDRESS_CAP`) set a bit in `short_addresses`, the first few others fill `inline`, while
 /// everything else — and any address carrying warm storage slots — is held in `access_list`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct PrewarmSet {
     /// Warm addresses keyed by address, each holding its warm storage slots.
     ///
@@ -87,6 +87,19 @@ impl Default for PrewarmSet {
         Self::new()
     }
 }
+
+/// Compares the warm addresses and storage slots, not how they are stored: insertion order,
+/// inline-list or map placement, and entries or hints left behind by [`PrewarmSet::remove`] do not
+/// affect equality.
+impl PartialEq for PrewarmSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.short_addresses == other.short_addresses
+            && self.contains_all(other)
+            && other.contains_all(self)
+    }
+}
+
+impl Eq for PrewarmSet {}
 
 impl PrewarmSet {
     /// Creates a new, empty warm-address set.
@@ -219,6 +232,19 @@ impl PrewarmSet {
     #[inline]
     pub fn is_cold(&self, address: &Address) -> bool {
         !self.is_warm(address)
+    }
+
+    /// Returns whether every address `other` holds in its inline list or map is warm here with the
+    /// same warm storage slots.
+    fn contains_all(&self, other: &Self) -> bool {
+        other.inline().iter().chain(other.access_list.keys()).all(|address| {
+            self.is_warm(address) && self.warm_slots(address) == other.warm_slots(address)
+        })
+    }
+
+    /// Returns the address's warm storage slots, or `None` when it has none.
+    fn warm_slots(&self, address: &Address) -> Option<&U256Set> {
+        self.access_list.get(address).filter(|slots| !slots.is_empty())
     }
 }
 
@@ -371,5 +397,53 @@ mod tests {
         assert!(prewarm_set.is_warm(&addr));
         assert!(prewarm_set.is_storage_warm(&addr, &key));
         assert!(!prewarm_set.is_storage_warm(&addr, &Word::from(8)));
+    }
+
+    #[test]
+    fn equality_compares_warm_entries_not_layout() {
+        let [a, b, c, d] = [0x10, 0x11, 0x12, 0x13].map(Address::repeat_byte);
+        let key = Word::from(7);
+        let mut ab = PrewarmSet::new();
+        ab.warm(&a);
+        ab.warm(&b);
+
+        // Insertion order does not matter.
+        let mut ba = PrewarmSet::new();
+        ba.warm(&b);
+        ba.warm(&a);
+        assert_eq!(ab, ba);
+
+        // Neither do the stale entries and storage hint an address removal leaves behind.
+        let mut removed = ab.clone();
+        removed.warm(&c);
+        removed.warm_storage(&d, [key]);
+        removed.remove(&c);
+        removed.remove(&d);
+        assert_eq!(removed, ab);
+
+        // Nor whether an address landed in the inline list or the map.
+        let mut mapped = PrewarmSet::new();
+        [c, d, Address::repeat_byte(0x14), a, b].iter().for_each(|address| mapped.warm(address));
+        [c, d, Address::repeat_byte(0x14)].iter().for_each(|address| mapped.remove(address));
+        assert_eq!(mapped, ab);
+
+        // An address warmed with no slots equals one that is not in the map.
+        let mut empty_slots = PrewarmSet::new();
+        empty_slots.warm_storage(&a, []);
+        empty_slots.warm(&b);
+        assert_eq!(empty_slots, ab);
+
+        // Different addresses or warm slots are different sets.
+        let mut only_a = PrewarmSet::new();
+        only_a.warm(&a);
+        assert_ne!(only_a, ab);
+        assert_ne!(ab, only_a);
+        let mut with_slot = ab.clone();
+        with_slot.warm_storage(&a, [key]);
+        assert_ne!(with_slot, ab);
+        assert_ne!(ab, with_slot);
+        let mut short = ab.clone();
+        short.warm(&Address::with_last_byte(1));
+        assert_ne!(short, ab);
     }
 }
