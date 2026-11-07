@@ -110,6 +110,11 @@ pub struct TracingInspector {
     ///
     /// All `Vec<CallTraceStep>` are always empty but may have capacity.
     reusable_step_vecs: Vec<Vec<CallTraceStep>>,
+    /// The precompiles the host lists, read on the first call that records precompile calls.
+    ///
+    /// Addresses a provider only dispatches to on demand, such as Tempo's token precompiles,
+    /// trace like contracts, as with revm-inspectors' warm precompile set.
+    precompiles: Option<Vec<Address>>,
 }
 
 impl TracingInspector {
@@ -148,6 +153,7 @@ impl TracingInspector {
             recorded_steps,
             spec_id,
             features,
+            precompiles,
             // kept
             config,
             budget,
@@ -172,6 +178,7 @@ impl TracingInspector {
         *recorded_steps = 0;
         spec_id.take();
         *features = EvmFeatures::empty();
+        precompiles.take();
         budget.recorded = 0;
         budget.exceeded = false;
     }
@@ -744,8 +751,11 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         };
 
         // Builders decide whether to leave out calls to precompiles, so record which calls are.
-        let maybe_precompile =
-            self.config.record_precompile_calls.then(|| interp.host().precompiles().contains(&to));
+        let maybe_precompile = self.config.record_precompile_calls.then(|| {
+            self.precompiles
+                .get_or_insert_with(|| interp.host().precompiles().addresses())
+                .contains(&to)
+        });
 
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
