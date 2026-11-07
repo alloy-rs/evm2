@@ -790,6 +790,20 @@ pub struct SharedBackend<N: Network = Ethereum> {
     backend: UnboundedSender<BackendRequest<N>>,
     db: BlockchainDb,
     blocking_mode: BlockingMode,
+    /// Counts the handles, so the last one to drop writes the cache.
+    handles: Arc<()>,
+}
+
+impl<N: Network> Drop for SharedBackend<N> {
+    /// Writes the cache when the last handle drops. The handler's own copy of the cache is only
+    /// dropped after this, on its thread or task, which may never run if the process exits first.
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.handles) == 1
+            && let Err(err) = self.db.flush()
+        {
+            tracing::warn!(target: "evm2::fork", ?err, "failed to flush fork cache");
+        }
+    }
 }
 
 impl<N: Network> Clone for SharedBackend<N> {
@@ -798,6 +812,7 @@ impl<N: Network> Clone for SharedBackend<N> {
             backend: self.backend.clone(),
             db: self.db.clone(),
             blocking_mode: self.blocking_mode,
+            handles: Arc::clone(&self.handles),
         }
     }
 }
@@ -836,7 +851,10 @@ impl<N: Network> SharedBackend<N> {
             generation: 0,
             pending: FuturesUnordered::new(),
         };
-        (Self { backend, db, blocking_mode: BlockingMode::default() }, handler)
+        (
+            Self { backend, db, blocking_mode: BlockingMode::default(), handles: Arc::default() },
+            handler,
+        )
     }
 
     /// Spawns the handler on the current Tokio runtime and returns a handle to it.
@@ -882,7 +900,9 @@ impl<N: Network> SharedBackend<N> {
     /// Returns a handle to the same backend that blocks with `mode`.
     #[inline]
     pub fn with_blocking_mode(&self, mode: BlockingMode) -> Self {
-        Self { blocking_mode: mode, ..self.clone() }
+        let mut backend = self.clone();
+        backend.blocking_mode = mode;
+        backend
     }
 
     /// Returns the shared cache.

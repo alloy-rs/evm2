@@ -373,6 +373,24 @@ fn updates_and_commits_shadow_the_remote() {
 }
 
 #[test]
+fn dropping_the_last_handle_writes_the_cache() {
+    let path = temp_path("last-handle");
+    let node = mock_node(Duration::ZERO);
+    let backend = spawn(&node, BlockchainDb::new(meta(), Some(path.clone())));
+    let other = backend.clone();
+    backend.get_account(&RICH).unwrap();
+    drop(backend);
+    assert!(!path.exists(), "a remaining handle keeps the cache in memory");
+    // Written synchronously by the last handle, before the handler thread drops its copy.
+    drop(other);
+    assert!(path.exists());
+    let cached = BlockchainDb::new(meta(), Some(path.clone()));
+    assert!(cached.account(&RICH).is_some());
+    drop(cached);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn prefetched_entries_nothing_read_are_not_flushed() {
     let path = temp_path("prefetch");
     let node = mock_node(Duration::ZERO);
