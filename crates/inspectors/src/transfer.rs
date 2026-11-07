@@ -40,7 +40,7 @@ pub struct TransferInspector {
     ///
     /// Can be used for [eth_simulateV1](https://github.com/ethereum/execution-apis/pull/484) execution.
     collect_logs: bool,
-    /// Logs of the top-level frames that succeeded.
+    /// Logs of the top-level frames that succeeded, and logs emitted outside any frame.
     logs: Vec<Log>,
 }
 
@@ -78,12 +78,14 @@ impl TransferInspector {
         self
     }
 
-    /// Returns a reference to the logs of the succeeded top-level frames, in emission order.
+    /// Returns a reference to the logs of the succeeded top-level frames and the logs emitted
+    /// outside any frame, in emission order.
     pub fn logs(&self) -> &[Log] {
         &self.logs
     }
 
-    /// Takes the logs of the succeeded top-level frames, in emission order.
+    /// Takes the logs of the succeeded top-level frames and the logs emitted outside any frame,
+    /// in emission order.
     pub fn take_logs(&mut self) -> Vec<Log> {
         core::mem::take(&mut self.logs)
     }
@@ -166,10 +168,14 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
     }
 
     fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
-        if self.collect_logs
-            && let Some(frame) = self.frames.last_mut()
-        {
-            frame.logs.push(log.clone());
+        if !self.collect_logs {
+            return;
+        }
+        match self.frames.last_mut() {
+            Some(frame) => frame.logs.push(log.clone()),
+            // Embedders can emit logs before the first call or after the last; no frame failure
+            // reverts them.
+            None => self.logs.push(log.clone()),
         }
     }
 
