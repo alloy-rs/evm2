@@ -9,9 +9,10 @@ use crate::{
         map_handler_error,
     },
     evm::{
-        AccountChangeRef, AccountInfo, BEACON_ROOTS_ADDRESS, BUILDER_DEPOSIT_REQUEST_ADDRESS,
-        BUILDER_EXIT_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
-        StateChangeSink, SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
+        AccountChangeRef, AccountChanges, AccountInfo, BEACON_ROOTS_ADDRESS,
+        BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS,
+        CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, StateChangeSink, SystemTx,
+        WITHDRAWAL_REQUEST_ADDRESS,
     },
     interpreter::InstrStop,
     registry::HandlerError,
@@ -128,12 +129,12 @@ impl TryFrom<HandlerError> for EthInvalidTxError {
 }
 
 /// Additional block-level execution context.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct BlockExecutionContext<'a> {
-    /// Pre-block system calls to run before transaction execution.
-    pub system_calls: Option<BlockSystemCalls>,
+    /// Inputs of the block's system calls.
+    pub system_calls: BlockSystemCalls,
     /// Pre-merge ommer headers included in the block.
-    pub ommers: Option<&'a [Header]>,
+    pub ommers: &'a [Header],
     /// Post-block withdrawals to apply after transaction execution.
     pub withdrawals: Option<&'a [Withdrawal]>,
     /// Deposit contract address used to derive EIP-6110 deposit requests from receipts.
@@ -176,30 +177,22 @@ fn send_state_update(state: StateUpdate, on_state_update: &mut impl FnMut(StateU
 pub fn execute_transaction_with_condition<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     transaction: &Recovered<T::Tx>,
     commit: impl FnOnce(&TxResult<T>, TxStateChanges<'_>) -> CommitChanges,
 ) -> Result<Option<TxResult<T>>, HandlerError>
 where
     T::Tx: Typed2718,
 {
-    let mut update = StateUpdate::default();
-    let result = evm.transact(transaction).map(|executed| {
+    evm.transact(transaction).map(|executed| {
         if commit(executed.result(), executed.changes()).should_commit() {
-            for changes in executed.account_changes() {
-                block_state.commit_account_changes(changes, stream_state.then_some(&mut update));
-            }
+            accumulate_account_changes(block_state, on_state_update, executed.account_changes());
             Some(executed.commit())
         } else {
             let _ = executed.discard();
             None
         }
-    });
-    if stream_state {
-        send_state_update(update, on_state_update);
-    }
-    result
+    })
 }
 
 /// Executes a transaction and detaches its state changes.
@@ -217,12 +210,11 @@ where
 pub fn commit_detached_transaction<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     output: TxResultWithState<T>,
 ) -> TxResult<T> {
     let TxResultWithState { result, pending_state, .. } = output;
-    accumulate_pending_state(block_state, stream_state, on_state_update, &pending_state);
+    accumulate_pending_state(block_state, on_state_update, &pending_state);
     // Reattach the finalized transaction so evm2 retains its account capacity and recycles
     // storage maps for the next transaction instead of dropping the detached allocations.
     evm.state_mut().set_pending_state(pending_state);
@@ -234,43 +226,51 @@ pub fn commit_detached_transaction<T: EvmTypes>(
 pub fn commit_pending_state<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     pending_state: &evm2::evm::PendingState,
 ) {
-    accumulate_pending_state(block_state, stream_state, on_state_update, pending_state);
+    accumulate_pending_state(block_state, on_state_update, pending_state);
     evm.overlay_db_mut().commit_pending(pending_state);
 }
 
 fn accumulate_pending_state(
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     pending_state: &evm2::evm::PendingState,
 ) {
+    accumulate_account_changes(block_state, on_state_update, pending_state.account_changes());
+}
+
+/// Commits account changes into the block state and, when a hook is installed, streams them to it
+/// as one [`StateUpdate`].
+fn accumulate_account_changes<'c>(
+    block_state: &mut BlockState,
+    on_state_update: Option<&mut impl FnMut(StateUpdate)>,
+    account_changes: impl Iterator<Item = AccountChanges<'c>>,
+) {
+    let Some(on_state_update) = on_state_update else {
+        for changes in account_changes {
+            block_state.commit_account_changes(changes, None);
+        }
+        return;
+    };
     let mut update = StateUpdate::default();
-    for changes in pending_state.account_changes() {
-        block_state.commit_account_changes(changes, stream_state.then_some(&mut update));
+    for changes in account_changes {
+        block_state.commit_account_changes(changes, Some(&mut update));
     }
-    if stream_state {
-        send_state_update(update, on_state_update);
-    }
+    send_state_update(update, on_state_update);
 }
 
 /// Runs the EIP-2935 and EIP-4788 pre-block system calls.
 pub fn pre_execution_system_call_state_changes<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    mut on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     spec_id: SpecId,
     block_number: u64,
     context: BlockExecutionContext<'_>,
 ) -> Result<(), BlockExecutionError> {
-    let Some(system_calls) = context.system_calls else {
-        return Ok(());
-    };
-
+    let system_calls = context.system_calls;
     if spec_id.enables(SpecId::CANCUN) {
         let parent_beacon_block_root = system_calls
             .parent_beacon_block_root
@@ -287,8 +287,7 @@ pub fn pre_execution_system_call_state_changes<T: EvmTypes>(
             let _ = execute_system_call(
                 evm,
                 block_state,
-                stream_state,
-                on_state_update,
+                on_state_update.as_deref_mut(),
                 BEACON_ROOTS_ADDRESS,
                 parent_beacon_block_root.0.into(),
             )?;
@@ -299,7 +298,6 @@ pub fn pre_execution_system_call_state_changes<T: EvmTypes>(
         let _ = execute_system_call(
             evm,
             block_state,
-            stream_state,
             on_state_update,
             HISTORY_STORAGE_ADDRESS,
             system_calls.parent_hash.0.into(),
@@ -319,7 +317,7 @@ where
     R: TxReceipt<Log = Log>,
 {
     let mut requests = Requests::default();
-    if context.system_calls.is_none() || !spec_id.enables(SpecId::PRAGUE) {
+    if !spec_id.enables(SpecId::PRAGUE) {
         return Ok(requests);
     }
 
@@ -383,21 +381,18 @@ fn extract_deposit_data(data: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
 pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    mut on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     spec_id: SpecId,
-    context: BlockExecutionContext<'_>,
     requests: &mut Requests,
 ) -> Result<(), BlockExecutionError> {
-    if context.system_calls.is_none() || !spec_id.enables(SpecId::PRAGUE) {
+    if !spec_id.enables(SpecId::PRAGUE) {
         return Ok(());
     }
 
     let withdrawal_requests = execute_system_call(
         evm,
         block_state,
-        stream_state,
-        on_state_update,
+        on_state_update.as_deref_mut(),
         WITHDRAWAL_REQUEST_ADDRESS,
         Bytes::new(),
     )?;
@@ -409,8 +404,7 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     let consolidation_requests = execute_system_call(
         evm,
         block_state,
-        stream_state,
-        on_state_update,
+        on_state_update.as_deref_mut(),
         CONSOLIDATION_REQUEST_ADDRESS,
         Bytes::new(),
     )?;
@@ -423,8 +417,7 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
         let builder_deposit_requests = execute_system_call(
             evm,
             block_state,
-            stream_state,
-            on_state_update,
+            on_state_update.as_deref_mut(),
             BUILDER_DEPOSIT_REQUEST_ADDRESS,
             Bytes::new(),
         )?;
@@ -436,7 +429,6 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
         let builder_exit_requests = execute_system_call(
             evm,
             block_state,
-            stream_state,
             on_state_update,
             BUILDER_EXIT_REQUEST_ADDRESS,
             Bytes::new(),
@@ -453,8 +445,7 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
 fn execute_system_call<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     address: Address,
     data: Bytes,
 ) -> Result<TxResult<T>, BlockExecutionError> {
@@ -479,14 +470,13 @@ fn execute_system_call<T: EvmTypes>(
         .into());
     }
     let outcome = executed.detach();
-    Ok(commit_detached_transaction(evm, block_state, stream_state, on_state_update, outcome))
+    Ok(commit_detached_transaction(evm, block_state, on_state_update, outcome))
 }
 
 fn commit_state_changes<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     changes: &[(Address, Option<AccountInfo>, Option<AccountInfo>)],
 ) {
     let mut pending_state = evm2::evm::PendingState::default();
@@ -501,7 +491,7 @@ fn commit_state_changes<T: EvmTypes>(
         let Ok(()) = evm.overlay_db_mut().account(change);
         pending_state.insert_account(*address, original.clone(), current.clone());
     }
-    accumulate_pending_state(block_state, stream_state, on_state_update, &pending_state);
+    accumulate_pending_state(block_state, on_state_update, &pending_state);
 }
 
 /// Drains the DAO accounts into the refund beneficiary. Runs before the block's transactions.
@@ -510,8 +500,7 @@ fn commit_state_changes<T: EvmTypes>(
 pub fn dao_fork_state_changes<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    mut on_state_update: Option<&mut impl FnMut(StateUpdate)>,
 ) -> Result<(), BlockExecutionError> {
     let mut drained_balance = U256::ZERO;
     let mut changes = Vec::new();
@@ -524,19 +513,12 @@ pub fn dao_fork_state_changes<T: EvmTypes>(
             changes.push((address, original, Some(current)));
         }
     }
-    commit_state_changes(evm, block_state, stream_state, on_state_update, &changes);
+    commit_state_changes(evm, block_state, on_state_update.as_deref_mut(), &changes);
 
     // The beneficiary may also be drained, so read its balance after the drain.
     let mut balance_increments = AddressMap::default();
     balance_increments.insert(dao_fork::DAO_HARDFORK_BENEFICIARY, drained_balance);
-    apply_balance_increments(
-        evm,
-        block_state,
-        stream_state,
-        on_state_update,
-        false,
-        balance_increments,
-    )
+    apply_balance_increments(evm, block_state, on_state_update, false, balance_increments)
 }
 
 /// Applies block and ommer rewards and withdrawals.
@@ -544,19 +526,17 @@ pub fn dao_fork_state_changes<T: EvmTypes>(
 pub fn post_block_balance_state_changes<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     spec_id: SpecId,
     base_block_reward: Option<u128>,
     block_number: u64,
     block_beneficiary: Address,
-    ommers: Option<&[Header]>,
+    ommers: &[Header],
     withdrawals: Option<&[Withdrawal]>,
 ) -> Result<(), BlockExecutionError> {
     let mut balance_increments = AddressMap::<U256>::default();
 
     if let Some(base_block_reward) = base_block_reward {
-        let ommers = ommers.unwrap_or_default();
         for ommer in ommers {
             *balance_increments.entry(ommer.beneficiary()).or_default() +=
                 U256::from(ommer_reward(base_block_reward, block_number, ommer.number()));
@@ -572,7 +552,6 @@ pub fn post_block_balance_state_changes<T: EvmTypes>(
     apply_balance_increments(
         evm,
         block_state,
-        stream_state,
         on_state_update,
         spec_id.enables(SpecId::SPURIOUS_DRAGON),
         balance_increments,
@@ -584,8 +563,7 @@ pub fn post_block_balance_state_changes<T: EvmTypes>(
 fn apply_balance_increments<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
+    on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     eip161: bool,
     balance_increments: AddressMap<U256>,
 ) -> Result<(), BlockExecutionError> {
@@ -609,7 +587,7 @@ fn apply_balance_increments<T: EvmTypes>(
         }
         changes.push((address, original, current));
     }
-    commit_state_changes(evm, block_state, stream_state, on_state_update, &changes);
+    commit_state_changes(evm, block_state, on_state_update, &changes);
     Ok(())
 }
 
