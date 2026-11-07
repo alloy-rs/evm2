@@ -544,3 +544,165 @@ fn serial_hints_execute_sequentially() {
     let run = assert_matches_sequential_with(database(None), &txs, 4, Some(&chain));
     assert_eq!(run.stats.reexecuted, txs.len());
 }
+
+fn stream(
+    database: InMemoryDB,
+    txs: &[Tx],
+    threads: usize,
+    dependencies: Option<&ParallelHints>,
+) -> Run {
+    let snapshot = Snapshot(database.cache.clone());
+    let updates = Updates::default();
+    let mut executor = executor(database, &updates);
+    let streamed = txs.iter().enumerate().map(|(index, tx)| {
+        let dependencies = dependencies.map(|hints| hints.dependencies()[index].clone());
+        StreamedTx::with_dependencies(tx, dependencies.unwrap_or_default())
+    });
+    let ParallelExecutionOutput { stats, dependencies } = executor
+        .execute_transaction_stream(
+            streamed.collect::<Vec<_>>(),
+            &snapshot,
+            |database| evm(database),
+            NonZeroUsize::new(threads).unwrap(),
+            |_, _| {},
+        )
+        .unwrap();
+    let output = executor.finish().unwrap();
+    Run { output, updates: normalize(&updates), stats, dependencies }
+}
+
+#[test]
+fn streamed_blocks_match_sequential() {
+    for seed in 0..30 {
+        let txs = random_block(seed, 96);
+        let expected = sequential(database(None), &txs);
+        let exact = parallel(database(None), &txs, 4, None).dependencies;
+        for (threads, hints) in [(1, None), (4, None), (4, Some(&exact)), (7, Some(&exact))] {
+            let actual = stream(database(None), &txs, threads, hints);
+            assert_eq!(actual.output, expected.output, "seed {seed}, {threads} threads");
+            assert_eq!(actual.updates, expected.updates, "seed {seed}, {threads} threads");
+            assert_eq!(actual.stats.transactions, txs.len());
+            assert_eq!(actual.dependencies, exact);
+        }
+    }
+}
+
+#[test]
+fn streamed_exact_dependencies_execute_every_transaction_once() {
+    for seed in 0..20 {
+        let txs = random_block_with(seed, 96, false);
+        let exact = parallel(database(None), &txs, 4, None).dependencies;
+        let run = stream(database(None), &txs, 4, Some(&exact));
+        assert_eq!(run.stats.reexecuted, 0, "seed {seed}");
+    }
+}
+
+#[test]
+fn streamed_transactions_commit_before_the_block_arrives() {
+    let txs = random_block(11, 64);
+    let expected = sequential(database(None), &txs);
+    let database = database(None);
+    let snapshot = Snapshot(database.cache.clone());
+    let updates = Updates::default();
+    let mut executor = executor(database, &updates);
+    let before = updates.lock().unwrap().len();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let (first, second) = txs.split_at(txs.len() / 2);
+    let output = std::thread::scope(|scope| {
+        let producer = scope.spawn(|| {
+            for tx in first {
+                sender.send(StreamedTx::new(tx)).unwrap();
+            }
+            // Hold the rest of the block back until the first half has committed and streamed
+            // through the state hook. An executor that waited for the whole block would never
+            // get there.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let committed = loop {
+                let streamed = updates.lock().unwrap().len() - before;
+                if streamed >= first.len() / 2 || std::time::Instant::now() > deadline {
+                    break streamed;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            for tx in second {
+                sender.send(StreamedTx::new(tx)).unwrap();
+            }
+            drop(sender);
+            committed
+        });
+        let output = executor
+            .execute_transaction_stream(
+                receiver,
+                &snapshot,
+                |database| evm(database),
+                NonZeroUsize::new(4).unwrap(),
+                |_, _| {},
+            )
+            .unwrap();
+        let committed = producer.join().unwrap();
+        assert!(committed >= first.len() / 2, "only {committed} updates streamed mid-block");
+        output
+    });
+    assert_eq!(output.stats.transactions, txs.len());
+    assert_eq!(executor.finish().unwrap(), expected.output);
+}
+
+/// Feeds [`public_mix_block`] to the streaming executor at a steady rate and reports how long after
+/// the last transaction arrives the block is committed, against executing it once received:
+/// `cargo test -p evm2 --features block --lib streamed_public_mix_benchmark -- --ignored
+/// --nocapture`.
+#[test]
+#[ignore = "benchmark"]
+fn streamed_public_mix_benchmark() {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let txs = public_mix_block(4_300, 64);
+    let database = mix_database(false);
+    let exact = parallel(database.clone(), &txs, threads, None).dependencies;
+    let start = std::time::Instant::now();
+    sequential(database.clone(), &txs);
+    let sequential_time = start.elapsed();
+    // Transactions arrive over about as long as executing them sequentially takes.
+    let gap = sequential_time / txs.len() as u32;
+    std::println!("sequential after the block arrives: {sequential_time:?} tail");
+    for (name, hints) in [("no hints", None), ("exact dependencies", Some(&exact))] {
+        let snapshot = Snapshot(database.cache.clone());
+        let updates = Updates::default();
+        let mut executor = executor(database.clone(), &updates);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let last_arrival = std::thread::scope(|scope| {
+            let producer = scope.spawn(|| {
+                let begin = std::time::Instant::now();
+                for (index, tx) in txs.iter().enumerate() {
+                    while begin.elapsed() < gap * index as u32 {
+                        core::hint::spin_loop();
+                    }
+                    let dependencies =
+                        hints.map(|h: &ParallelHints| h.dependencies()[index].clone());
+                    sender
+                        .send(StreamedTx::with_dependencies(tx, dependencies.unwrap_or_default()))
+                        .unwrap();
+                }
+                drop(sender);
+                std::time::Instant::now()
+            });
+            let output = executor
+                .execute_transaction_stream(
+                    receiver,
+                    &snapshot,
+                    |database| evm(database),
+                    NonZeroUsize::new(threads - 1).unwrap(),
+                    |_, _| {},
+                )
+                .unwrap();
+            let done = std::time::Instant::now();
+            let last = producer.join().unwrap();
+            std::println!(
+                "  streamed, {name}: {:?} tail after the last transaction, {} re-executed",
+                done.saturating_duration_since(last),
+                output.stats.reexecuted
+            );
+            last
+        });
+        let _ = last_arrival;
+    }
+}

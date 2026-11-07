@@ -23,6 +23,11 @@
 //! speculative write-set as soon as a worker finishes it, before validation, for prefetching the
 //! trie nodes the commit will need.
 //!
+//! Transactions can also stream in: [`EthBlockExecutor::execute_transaction_stream`] starts each
+//! transaction as soon as it arrives, while later ones are still being received, and commits the
+//! block's prefix as it completes, so receiving, executing, committing and hashing the block
+//! overlap.
+//!
 //! The block beneficiary is the one key nearly every transaction writes. Workers therefore run with
 //! [`Evm::set_defer_beneficiary_reward`]: a transaction that does not read the beneficiary itself
 //! never loads it, and the reward is credited when the transaction commits. A transaction that
@@ -45,6 +50,8 @@ use crate::{
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet, BinaryHeap},
+    sync::Arc,
+    vec,
     vec::Vec,
 };
 use alloy_consensus::{
@@ -62,7 +69,7 @@ use core::{
     cmp::Reverse,
     hash::Hash,
     num::NonZeroUsize,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -200,7 +207,7 @@ impl<K> AccessKey<K> {
 
 impl<'a, T, R> EthBlockExecutor<'a, T, R>
 where
-    T: EvmTypes<Tx: Typed2718 + Sync>,
+    T: EvmTypes<Tx: Typed2718 + Send + Sync>,
     R: ReceiptBuilder<Transaction: Transaction + TxHashRef>,
     TxResultWithState<T>: Send,
 {
@@ -257,24 +264,117 @@ where
         }
 
         let weights: Vec<_> = txs.iter().map(|tx| tx.borrow().gas_limit()).collect();
-        let scheduler = Scheduler::new(&weights, hints);
+        let priorities = priorities(&weights, hints);
+        let scheduler = Scheduler::default();
+        let queue = TxQueue::default();
+        for (index, evm_tx) in evm_txs.into_iter().enumerate() {
+            queue.push(evm_tx);
+            let dependencies = hints.and_then(|hints| hints.dependencies.get(index));
+            scheduler.add(priorities[index], dependencies.map_or(&[][..], Vec::as_slice));
+        }
+        scheduler.close();
         let store = MvStore::new(self.evm.overlay_db().cache.clone(), base);
         let (sender, receiver) = mpsc::channel::<Speculative<T>>();
         let workers = threads.get().min(txs.len());
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 let sender = sender.clone();
-                let (store, scheduler, evm_txs) = (&store, &scheduler, &evm_txs);
+                let (store, scheduler, queue) = (&store, &scheduler, &queue);
                 let (make_evm, on_speculative) = (&make_evm, &on_speculative);
                 scope.spawn(move || {
-                    run_worker(store, scheduler, evm_txs, make_evm, on_speculative, &sender);
+                    run_worker(store, scheduler, queue, make_evm, on_speculative, &sender);
+                });
+            }
+            drop(sender);
+            let result =
+                self.commit_in_order(&store, &queue, txs, &receiver, &mut stats, &mut dependencies);
+            scheduler.abort();
+            result
+        })?;
+        Ok(ParallelExecutionOutput { stats, dependencies: dependencies.finish() })
+    }
+
+    /// Executes and commits transactions in parallel as they arrive from `transactions`, with
+    /// exactly the result of executing them one by one with
+    /// [`BlockExecutor::execute_transaction`].
+    ///
+    /// Works as [`Self::execute_transactions_parallel`], except that the block need not be known
+    /// up front: a worker can start a transaction as soon as it arrives, and the block's prefix
+    /// commits, and streams through the state hook, as soon as it completes, while later
+    /// transactions are still arriving. Iteration runs on its own thread, so `transactions` can
+    /// block waiting for the next transaction, for example on a channel fed by the network or a
+    /// payload builder; it ends the block by ending.
+    ///
+    /// Each [`StreamedTx`] can carry its dependencies on earlier transactions (see
+    /// [`ParallelHints`]). Workers start ready transactions in arrival order: priorities need the
+    /// whole block.
+    ///
+    /// When the block fails to execute, no new transaction starts, but the call returns only once
+    /// `transactions` yields its next item or ends.
+    pub fn execute_transaction_stream<'s, Tx, I, B, F, H>(
+        &mut self,
+        transactions: I,
+        base: &'s B,
+        make_evm: F,
+        threads: NonZeroUsize,
+        on_speculative: H,
+    ) -> Result<ParallelExecutionOutput, BlockExecutionError>
+    where
+        Tx: ExecutableTx<Self, Tx: Send>,
+        I: IntoIterator<Item = StreamedTx<Tx>, IntoIter: Send>,
+        B: DynDatabaseRef + Sync + ?Sized,
+        F: for<'x> Fn(Box<dyn DynDatabase + 'x>) -> Evm<'x, T> + Sync,
+        H: Fn(usize, TxStateChanges<'_>) + Sync,
+    {
+        let mut stats = ParallelExecutionStats::default();
+        let mut dependencies = DependencyTracker::new(self.evm.block_env().beneficiary);
+        if threads.get() == 1 {
+            for (index, streamed) in transactions.into_iter().enumerate() {
+                let output = self.execute_transaction_without_commit(streamed.tx)?;
+                dependencies.record(index, &output.result().pending_state);
+                self.commit_transaction(output)?;
+                stats.transactions += 1;
+                stats.reexecuted += 1;
+            }
+            return Ok(ParallelExecutionOutput { stats, dependencies: dependencies.finish() });
+        }
+
+        let scheduler = Scheduler::default();
+        let queue = TxQueue::default();
+        let store = MvStore::new(self.evm.overlay_db().cache.clone(), base);
+        let (sender, receiver) = mpsc::channel::<Speculative<T>>();
+        let (tx_sender, tx_receiver) = mpsc::channel();
+        let transactions = transactions.into_iter();
+        std::thread::scope(|scope| {
+            let (scheduler, queue) = (&scheduler, &queue);
+            scope.spawn(move || {
+                for StreamedTx { tx, dependencies } in transactions {
+                    if scheduler.is_stopped() {
+                        break;
+                    }
+                    let (evm_tx, tx) = tx.into_parts();
+                    // Publish the transaction before scheduling it, and to the committer last.
+                    queue.push(evm_tx);
+                    scheduler.add(0, &dependencies);
+                    if tx_sender.send(tx).is_err() {
+                        break;
+                    }
+                }
+                scheduler.close();
+            });
+            for _ in 0..threads.get() {
+                let sender = sender.clone();
+                let store = &store;
+                let (make_evm, on_speculative) = (&make_evm, &on_speculative);
+                scope.spawn(move || {
+                    run_worker(store, scheduler, queue, make_evm, on_speculative, &sender);
                 });
             }
             drop(sender);
             let result = self.commit_in_order(
                 &store,
-                &evm_txs,
-                &txs,
+                queue,
+                tx_receiver,
                 &receiver,
                 &mut stats,
                 &mut dependencies,
@@ -286,24 +386,32 @@ where
     }
 
     /// Validates and commits speculative executions in block order, executing invalid ones again.
+    ///
+    /// `txs` yields the consensus transactions in block order; the transaction at an index is in
+    /// `queue` before `txs` yields it.
     fn commit_in_order<X: Borrow<R::Transaction>>(
         &mut self,
         store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
-        evm_txs: &[Recovered<T::Tx>],
-        txs: &[X],
+        queue: &TxQueue<T::Tx>,
+        txs: impl IntoIterator<Item = X>,
         receiver: &mpsc::Receiver<Speculative<T>>,
         stats: &mut ParallelExecutionStats,
         dependencies: &mut DependencyTracker,
     ) -> Result<(), BlockExecutionError> {
-        let mut ready: Vec<Option<Speculative<T>>> = (0..txs.len()).map(|_| None).collect();
-        for (index, (evm_tx, tx)) in evm_txs.iter().zip(txs).enumerate() {
-            while ready[index].is_none() {
+        let mut ready = Vec::<Option<Speculative<T>>>::new();
+        for (index, tx) in txs.into_iter().enumerate() {
+            stats.transactions = index + 1;
+            while ready.get(index).is_none_or(Option::is_none) {
                 let speculative =
                     receiver.recv().expect("parallel execution workers exited without a result");
                 let slot = speculative.index;
+                if ready.len() <= slot {
+                    ready.resize_with(slot + 1, || None);
+                }
                 ready[slot] = Some(speculative);
             }
             let mut speculative = ready[index].take().expect("received above");
+            let evm_tx = queue.get(index);
             let tx = tx.borrow();
             let version = version(index);
 
@@ -320,7 +428,7 @@ where
                 }
                 None => {
                     stats.reexecuted += 1;
-                    execute_transaction_without_commit(&mut self.evm, evm_tx)
+                    execute_transaction_without_commit(&mut self.evm, &evm_tx)
                         .map_err(|error| map_transaction_error(error, *tx.tx_hash()))?
                 }
             };
@@ -398,7 +506,7 @@ fn version(index: usize) -> u32 {
 fn run_worker<T, F, H>(
     store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
     scheduler: &Scheduler,
-    evm_txs: &[Recovered<T::Tx>],
+    queue: &TxQueue<T::Tx>,
     make_evm: &F,
     on_speculative: &H,
     sender: &mpsc::Sender<Speculative<T>>,
@@ -410,7 +518,7 @@ fn run_worker<T, F, H>(
     let reads = RefCell::new(ReadSet::default());
     let mut evm = None;
     while let Some(index) = scheduler.next() {
-        let evm_tx = &evm_txs[index];
+        let evm_tx = queue.get(index);
         let version = version(index);
         let worker_evm = evm.get_or_insert_with(|| make_evm(Box::new(EmptyDB::default())));
         worker_evm.set_defer_beneficiary_reward(true);
@@ -419,7 +527,7 @@ fn run_worker<T, F, H>(
         // Speculative reads may mix versions into state no sequential execution could produce:
         // treat a panic like any other failed speculation and rebuild the EVM.
         let executed = catch_unwind(AssertUnwindSafe(|| {
-            worker_evm.transact(evm_tx).ok().map(|executed| executed.detach())
+            worker_evm.transact(&evm_tx).ok().map(|executed| executed.detach())
         }));
         let (outcome, reward) = match executed {
             Ok(outcome) => (outcome, worker_evm.deferred_beneficiary_reward().unwrap_or_default()),
@@ -444,100 +552,176 @@ fn run_worker<T, F, H>(
     }
 }
 
-/// Hands transactions to workers once their dependencies executed, critical path first.
+/// A transaction for [`EthBlockExecutor::execute_transaction_stream`], with its dependencies on
+/// earlier transactions of the block, by index.
+#[derive(Clone, Debug)]
+pub struct StreamedTx<Tx> {
+    /// The transaction.
+    pub tx: Tx,
+    /// Indices of earlier transactions whose writes it reads, as in [`ParallelHints`]. Empty when
+    /// unknown.
+    pub dependencies: Vec<u32>,
+}
+
+impl<Tx> StreamedTx<Tx> {
+    /// A transaction without known dependencies.
+    pub const fn new(tx: Tx) -> Self {
+        Self { tx, dependencies: Vec::new() }
+    }
+
+    /// A transaction that depends on the earlier transactions at `dependencies`.
+    pub const fn with_dependencies(tx: Tx, dependencies: Vec<u32>) -> Self {
+        Self { tx, dependencies }
+    }
+}
+
+/// Returns each transaction's priority: its gas plus the heaviest chain of dependents after it
+/// with hints, and the same for all without, so workers then take transactions in block order.
+fn priorities(weights: &[u64], hints: Option<&ParallelHints>) -> Vec<u64> {
+    let len = weights.len();
+    let Some(hints) = hints else { return vec![0; len] };
+    let mut dependents = vec![Vec::new(); len];
+    for (index, dependencies) in hints.dependencies.iter().enumerate().take(len) {
+        for &dependency in dependencies {
+            dependents[dependency as usize].push(index);
+        }
+    }
+    let mut priority = vec![0u64; len];
+    for index in (0..len).rev() {
+        let heaviest = dependents[index].iter().map(|&dependent| priority[dependent]).max();
+        priority[index] = weights[index].max(1).saturating_add(heaviest.unwrap_or_default());
+    }
+    priority
+}
+
+/// The block's transactions, appended as they arrive and shared with the workers.
+#[derive(Debug)]
+struct TxQueue<Tx> {
+    txs: RwLock<Vec<Arc<Recovered<Tx>>>>,
+}
+
+impl<Tx> Default for TxQueue<Tx> {
+    fn default() -> Self {
+        Self { txs: RwLock::default() }
+    }
+}
+
+impl<Tx> TxQueue<Tx> {
+    fn push(&self, tx: Recovered<Tx>) {
+        self.txs.write().expect("lock poisoned").push(Arc::new(tx));
+    }
+
+    /// Returns the transaction at `index`, which was pushed.
+    fn get(&self, index: usize) -> Arc<Recovered<Tx>> {
+        self.txs.read().expect("lock poisoned")[index].clone()
+    }
+}
+
+/// Hands transactions to workers once their dependencies executed, highest priority first, then
+/// in block order. Transactions can be added while workers run.
+#[derive(Debug, Default)]
 struct Scheduler {
-    /// Transactions ready to execute, by priority, then lowest index.
-    ready: Mutex<BinaryHeap<(u64, Reverse<u32>)>>,
-    /// Signalled when a transaction becomes ready or the scheduler stops.
+    state: Mutex<SchedulerState>,
+    /// Signalled when a transaction becomes ready, the block is closed or the scheduler stops.
     wake: Condvar,
-    /// Each transaction's dependencies not yet executed.
-    waiting_on: Box<[AtomicU32]>,
-    /// Each transaction's dependents.
-    dependents: Vec<Vec<u32>>,
-    /// Each transaction's gas plus the heaviest chain of dependents after it.
-    priority: Vec<u64>,
-    /// Transactions handed out.
-    dispatched: AtomicUsize,
     stopped: AtomicBool,
 }
 
+#[derive(Debug, Default)]
+struct SchedulerState {
+    /// Transactions ready to execute, by priority, then lowest index.
+    ready: BinaryHeap<(u64, Reverse<u32>)>,
+    /// Each transaction's priority.
+    priority: Vec<u64>,
+    /// Each transaction's dependencies not yet executed.
+    waiting_on: Vec<u32>,
+    /// Each unexecuted transaction's waiting dependents.
+    dependents: Vec<Vec<u32>>,
+    /// Whether each transaction executed.
+    finished: Vec<bool>,
+    /// Transactions handed out.
+    dispatched: usize,
+    /// Whether every transaction of the block was added.
+    closed: bool,
+}
+
 impl Scheduler {
-    fn new(weights: &[u64], hints: Option<&ParallelHints>) -> Self {
-        let len = weights.len();
-        let mut dependents = vec![Vec::new(); len];
-        let waiting_on: Box<[AtomicU32]> = (0..len).map(|_| AtomicU32::new(0)).collect();
-        if let Some(hints) = hints {
-            for (index, dependencies) in hints.dependencies.iter().enumerate().take(len) {
-                for &dependency in dependencies {
-                    dependents[dependency as usize].push(index as u32);
-                }
-                waiting_on[index].store(dependencies.len() as u32, Ordering::Relaxed);
+    /// Adds the block's next transaction. Dependencies on itself or later transactions are
+    /// ignored.
+    fn add(&self, priority: u64, dependencies: &[u32]) {
+        let mut state = self.state.lock().expect("lock poisoned");
+        let index = state.priority.len() as u32;
+        let mut waiting = 0;
+        for &dependency in dependencies {
+            if dependency < index && !state.finished[dependency as usize] {
+                state.dependents[dependency as usize].push(index);
+                waiting += 1;
             }
         }
-        // Without hints every transaction weighs the same and is ready, so workers take them in
-        // block order.
-        let mut priority = vec![0u64; len];
-        for index in (0..len).rev() {
-            let heaviest =
-                dependents[index].iter().map(|&dependent| priority[dependent as usize]).max();
-            let weight = if hints.is_some() { weights[index].max(1) } else { 1 };
-            priority[index] = weight.saturating_add(heaviest.unwrap_or_default());
-        }
-        let ready = (0..len)
-            .filter(|&index| waiting_on[index].load(Ordering::Relaxed) == 0)
-            .map(|index| (priority[index], Reverse(index as u32)))
-            .collect();
-        Self {
-            ready: Mutex::new(ready),
-            wake: Condvar::new(),
-            waiting_on,
-            dependents,
-            priority,
-            dispatched: AtomicUsize::new(0),
-            stopped: AtomicBool::new(false),
+        state.priority.push(priority);
+        state.waiting_on.push(waiting);
+        state.dependents.push(Vec::new());
+        state.finished.push(false);
+        if waiting == 0 {
+            state.ready.push((priority, Reverse(index)));
+            self.wake.notify_one();
         }
     }
 
+    /// Marks the block complete: workers stop once every transaction was handed out.
+    fn close(&self) {
+        self.state.lock().expect("lock poisoned").closed = true;
+        self.wake.notify_all();
+    }
+
     /// Returns the next transaction to execute, waiting for one to become ready, or `None` once
-    /// every transaction was handed out or the scheduler stopped.
+    /// the block is closed and every transaction was handed out, or the scheduler stopped.
     fn next(&self) -> Option<usize> {
-        let mut ready = self.ready.lock().expect("lock poisoned");
+        let mut state = self.state.lock().expect("lock poisoned");
         loop {
-            if self.stopped.load(Ordering::Relaxed)
-                || self.dispatched.load(Ordering::Relaxed) == self.priority.len()
-            {
+            if self.is_stopped() {
                 return None;
             }
-            if let Some((_, Reverse(index))) = ready.pop() {
-                self.dispatched.fetch_add(1, Ordering::Relaxed);
-                if self.dispatched.load(Ordering::Relaxed) == self.priority.len() {
-                    self.wake.notify_all();
-                }
+            if let Some((_, Reverse(index))) = state.ready.pop() {
+                state.dispatched += 1;
                 return Some(index as usize);
             }
-            ready = self.wake.wait(ready).expect("lock poisoned");
+            if state.closed && state.dispatched == state.priority.len() {
+                return None;
+            }
+            state = self.wake.wait(state).expect("lock poisoned");
         }
     }
 
     /// Marks a transaction executed, readying the dependents it was the last dependency of.
     fn finish(&self, index: usize) {
+        let mut state = self.state.lock().expect("lock poisoned");
+        state.finished[index] = true;
         let mut released = false;
-        for &dependent in &self.dependents[index] {
-            if self.waiting_on[dependent as usize].fetch_sub(1, Ordering::AcqRel) == 1 {
-                let mut ready = self.ready.lock().expect("lock poisoned");
-                ready.push((self.priority[dependent as usize], Reverse(dependent)));
+        for dependent in core::mem::take(&mut state.dependents[index]) {
+            let waiting = &mut state.waiting_on[dependent as usize];
+            *waiting -= 1;
+            if *waiting == 0 {
+                let priority = state.priority[dependent as usize];
+                state.ready.push((priority, Reverse(dependent)));
                 released = true;
             }
         }
-        if released {
+        let done = state.closed && state.dispatched == state.priority.len();
+        drop(state);
+        if released || done {
             self.wake.notify_all();
         }
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Relaxed)
     }
 
     /// Stops handing out transactions.
     fn abort(&self) {
         self.stopped.store(true, Ordering::Relaxed);
-        let _guard = self.ready.lock().expect("lock poisoned");
+        let _guard = self.state.lock().expect("lock poisoned");
         self.wake.notify_all();
     }
 }
