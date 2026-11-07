@@ -438,6 +438,13 @@ fn prefetch_block_uses_the_prestate_trace() {
             format!("{CALLER}"): { "balance": "0x0" },
         } },
     ]));
+    // A backend not pinned to the block's parent ignores the trace.
+    let other = spawn(&node, BlockchainDb::new(meta(), None));
+    other.prefetch_block(BLOCK + 2).unwrap();
+    assert_eq!(other.get_account(&CONTRACT).unwrap().unwrap().nonce, 1);
+    assert_eq!(node.calls("debug_traceBlockByNumber"), 0);
+
+    let calls = node.state_calls();
     let backend = spawn(&node, BlockchainDb::new(meta(), None));
     let stats = backend.prefetch_block(BLOCK + 1).unwrap();
     assert_eq!(stats, PrefetchStats { accounts: 2, slots: 1, failed: 0 });
@@ -445,7 +452,7 @@ fn prefetch_block_uses_the_prestate_trace() {
     assert_eq!((account.balance, account.nonce), (U256::from(5), 3));
     assert_eq!(backend.get_storage(&CONTRACT, &U256::from(1)).unwrap(), U256::from(7));
     assert!(backend.get_account(&CALLER).unwrap().is_none());
-    assert_eq!(node.state_calls(), 0);
+    assert_eq!(node.state_calls(), calls);
 }
 
 #[test]

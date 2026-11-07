@@ -6,7 +6,7 @@
 //! state names the accounts and slots it touches; those keys are then fetched in batches.
 
 use crate::{ForkError, ForkResult, backend::account_from_parts};
-use alloy_eips::BlockId;
+use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{
     Address, B256, Bytes, U256,
     map::{AddressMap, AddressSet, HashSet},
@@ -38,6 +38,11 @@ pub(crate) async fn predict<N: Network>(
     block: BlockId,
     state_block: BlockId,
 ) -> ForkResult<Prediction> {
+    // A prestate trace holds the state before `block`: usable only when the pin is its parent.
+    if !pinned_to_parent(provider, block, state_block).await {
+        tracing::debug!(target: "evm2::fork", "pinned block is not the parent, predicting with access lists");
+        return access_lists(provider, block, state_block).await;
+    }
     match trace_prestate(provider, block).await {
         Ok(prediction) => return Ok(prediction),
         Err(err) => {
@@ -45,6 +50,34 @@ pub(crate) async fn predict<N: Network>(
         }
     }
     access_lists(provider, block, state_block).await
+}
+
+/// Whether `state_block` is `block`'s parent. A tag cannot be checked and counts as not.
+async fn pinned_to_parent<N: Network>(
+    provider: &DynProvider<N>,
+    block: BlockId,
+    state_block: BlockId,
+) -> bool {
+    let method = match block {
+        BlockId::Hash(_) => "eth_getBlockByHash",
+        BlockId::Number(_) => "eth_getBlockByNumber",
+    };
+    let Ok(header) =
+        provider.raw_request::<_, Value>(Cow::Borrowed(method), (block_param(block), false)).await
+    else {
+        return false;
+    };
+    match state_block {
+        BlockId::Hash(hash) => header
+            .get("parentHash")
+            .and_then(Value::as_str)
+            .and_then(|parent| parent.parse::<B256>().ok())
+            .is_some_and(|parent| parent == hash.block_hash),
+        BlockId::Number(BlockNumberOrTag::Number(number)) => {
+            header.get("number").and_then(parse_u64).is_some_and(|n| n == number + 1)
+        }
+        BlockId::Number(_) => false,
+    }
 }
 
 /// Reads the block's prestate trace, keeping each account's and slot's first value: the value
