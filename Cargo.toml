@@ -4,6 +4,7 @@ members = [
     "crates/evm2",
     "crates/macros",
     "crates/eest",
+    "crates/fork",
     "crates/inspectors",
     "crates/jit",
     "crates/jit/backend",
@@ -51,6 +52,7 @@ all = "warn"
 [workspace.dependencies]
 evm2 = { path = "crates/evm2", version = "0.1.0", default-features = false }
 evm2-macros = { path = "crates/macros", version = "0.1.0" }
+evm2-fork = { path = "crates/fork", version = "0.1.0" }
 evm2-inspectors = { path = "crates/inspectors", version = "0.1.0" }
 evm2-jit = { path = "crates/jit", version = "0.1.0", default-features = false }
 evm2-jit-backend = { path = "crates/jit/backend", version = "0.1.0", default-features = false }
@@ -67,6 +69,7 @@ alloy-eip2930 = { version = "0.2.4", default-features = false }
 alloy-eip7928 = { version = "0.4.11", default-features = false }
 alloy-eips = { version = "2.0.4", default-features = false }
 alloy-hardforks = { version = "0.4", default-features = false }
+alloy-json-rpc = { version = "2.0.4", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
 alloy-provider = { version = "2.0.4", default-features = false }
 alloy-rlp = { version = "0.3", default-features = false }
@@ -74,6 +77,7 @@ alloy-rpc-client = { version = "2.0.4", default-features = false }
 alloy-rpc-types-eth = { version = "2.0.4", default-features = false }
 alloy-rpc-types-trace = { version = "2.0.4", default-features = false }
 alloy-sol-types = { version = "1.5.7", default-features = false }
+alloy-transport = { version = "2.0.4", default-features = false }
 alloy-trie = { version = "0.9.6", default-features = false }
 
 anstyle = { version = "1.0", default-features = false }
@@ -123,6 +127,7 @@ thiserror = { version = "2.0", default-features = false }
 tikv-jemallocator = { version = "0.7", default-features = false }
 typeid = { version = "1.0.3", default-features = false }
 tokio = { version = "1", default-features = false }
+tower = { version = "0.5", default-features = false }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tracing-tracy = "0.11"
