@@ -10,11 +10,14 @@ use alloy_primitives::Address;
 pub struct CallTraceArena {
     /// The arena of recorded trace nodes
     pub(crate) arena: Vec<CallTraceNode>,
+    /// Whether the root is synthetic, holding the top-level calls of a batch.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) nested: bool,
 }
 
 impl Default for CallTraceArena {
     fn default() -> Self {
-        let mut this = Self { arena: Vec::with_capacity(8) };
+        let mut this = Self { arena: Vec::with_capacity(8), nested: false };
         this.clear();
         this
     }
@@ -45,6 +48,7 @@ impl CallTraceArena {
     pub fn clear(&mut self) {
         self.arena.clear();
         self.arena.push(Default::default());
+        self.nested = false;
     }
 
     /// Returns __all__ addresses in the recorded traces, that is addresses of the trace and the
@@ -56,21 +60,25 @@ impl CallTraceArena {
     /// Pushes a new trace into the arena as a child of `parent`, returning the trace ID
     ///
     /// This appends a new trace to the arena, and also inserts a new entry in the node's parent
-    /// node children set.
+    /// node children set, one level below the parent.
     ///
-    /// If there is no parent, the trace replaces the root node, regardless of its visible depth.
-    pub(crate) fn push_trace(&mut self, parent: Option<usize>, new_trace: CallTrace) -> usize {
-        // The entry node, just update it.
-        let Some(parent) = parent else {
-            self.arena[0].trace = new_trace;
-            return 0;
+    /// Without a parent the trace fills the root, or joins the earlier top-level calls under a
+    /// synthetic root when the transaction runs several top-level calls ([`Self::nest_root`]).
+    pub(crate) fn push_trace(&mut self, parent: Option<usize>, mut new_trace: CallTrace) -> usize {
+        let parent = match parent {
+            Some(parent) => parent,
+            None if self.nested => 0,
+            // The placeholder root, just fill it in.
+            None if self.arena[0].trace.status.is_none() => {
+                self.arena[0].trace = new_trace;
+                return 0;
+            }
+            None => {
+                self.nest_root();
+                0
+            }
         };
-
-        debug_assert_eq!(
-            self.arena[parent].trace.depth + 1,
-            new_trace.depth,
-            "parent must be exactly one level above the new trace"
-        );
+        new_trace.depth = self.arena[parent].trace.depth + 1;
 
         let idx = self.arena.len();
         self.arena.push(CallTraceNode {
@@ -87,5 +95,47 @@ impl CallTraceArena {
         parent.children.push(idx);
 
         idx
+    }
+
+    /// Moves the recorded root and its subtree down a level under a synthetic root at index 0.
+    fn nest_root(&mut self) {
+        let depth = self.arena[0].trace.depth;
+        // Shift every node by one so parents still precede their children.
+        for node in &mut self.arena {
+            node.idx += 1;
+            node.trace.depth += 1;
+            node.parent = Some(node.parent.map_or(0, |parent| parent + 1));
+            for child in &mut node.children {
+                *child += 1;
+            }
+        }
+        let root = &self.arena[0].trace;
+        self.arena.insert(
+            0,
+            CallTraceNode {
+                children: alloc::vec![1],
+                ordering: alloc::vec![TraceMemberOrder::Call(0)],
+                trace: CallTrace {
+                    depth,
+                    caller: root.caller,
+                    gas_limit: root.gas_limit,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        self.settle_batch_call(1);
+        self.nested = true;
+    }
+
+    /// Folds a finished top-level call into the synthetic root: the gas of every call, the
+    /// outcome of the last one.
+    pub(crate) fn settle_batch_call(&mut self, idx: usize) {
+        let (root, calls) = self.arena.split_at_mut(1);
+        let (root, call) = (&mut root[0].trace, &calls[idx - 1].trace);
+        root.gas_used += call.gas_used;
+        root.success = call.success;
+        root.status = call.status;
+        root.output = call.output.clone();
     }
 }
