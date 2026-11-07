@@ -133,6 +133,16 @@ fn forks_with_other_cache_options_get_their_own_backend() {
 }
 
 #[test]
+fn zero_flush_interval_turns_periodic_flushing_off() {
+    let node = mock_node(Duration::ZERO);
+    let multi = multi_fork(&node);
+    multi.set_flush_cache_interval(Duration::ZERO);
+    // The handler keeps serving.
+    let fork = multi.create_fork(CreateFork::new(URL).with_block(Some(5))).unwrap();
+    assert_eq!(balance(&fork.backend, ALICE), U256::from(6));
+}
+
+#[test]
 fn concurrent_identical_creations_resolve_once() {
     let node = mock_node(Duration::from_millis(50));
     let multi = multi_fork(&node);

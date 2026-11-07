@@ -329,7 +329,8 @@ impl<N: Network> MultiFork<N> {
 
     /// Flushes every fork's cache to disk each `period`, starting one `period` from now.
     ///
-    /// Defaults to every 60 seconds.
+    /// Defaults to every 60 seconds. A zero `period` turns periodic flushing off; caches are
+    /// still flushed when their forks are dropped.
     pub fn set_flush_cache_interval(&self, period: Duration) {
         let _ = self.requests.send(Request::SetFlushCacheInterval(period));
     }
@@ -622,7 +623,8 @@ impl<N: Network> MultiForkHandler<N> {
     }
 
     fn set_flush_cache_interval(&mut self, period: Duration) {
-        self.flush_cache_interval = Some(tokio::time::interval_at(Instant::now() + period, period));
+        self.flush_cache_interval =
+            (!period.is_zero()).then(|| tokio::time::interval_at(Instant::now() + period, period));
     }
 
     /// Flushes every cache on a blocking thread, so the handler keeps serving.
