@@ -255,10 +255,8 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         Err(err) => return err.to_compile_error(),
     };
 
-    let mut has_cx = false;
     let mut cx_arg = None;
-    let mut inputs = Vec::new();
-    let mut has_stack_inputs = false;
+    let mut stack_inputs = None;
     for arg in sig.inputs {
         let FnArg::Typed(arg) = arg else {
             return syn::Error::new_spanned(arg, "`self` is not supported in #[instruction]")
@@ -269,11 +267,10 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
                 return syn::Error::new_spanned(arg.pat, "expected an identifier for `cx: _`")
                     .to_compile_error();
             };
-            if has_cx {
+            if cx_arg.is_some() {
                 return syn::Error::new_spanned(ident, "duplicate `cx: _` argument")
                     .to_compile_error();
             }
-            has_cx = true;
             cx_arg = Some(ident);
         } else if is_word_slice(&arg.ty) {
             let Pat::Slice(PatSlice { elems, .. }) = *arg.pat else {
@@ -287,14 +284,14 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
                 return syn::Error::new_spanned(rest, "`..` is not supported in stack inputs")
                     .to_compile_error();
             }
-            if std::mem::replace(&mut has_stack_inputs, true) {
+            if stack_inputs.is_some() {
                 return syn::Error::new_spanned(
                     elems,
                     "duplicate `[..]: [Word]` stack inputs argument",
                 )
                 .to_compile_error();
             }
-            inputs.extend(elems);
+            stack_inputs = Some(elems.into_iter().collect::<Vec<_>>());
         } else {
             return syn::Error::new_spanned(
                 arg,
@@ -304,6 +301,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         }
     }
 
+    let inputs = stack_inputs.unwrap_or_default();
     if instruction_attrs.no_stack_preamble && (!inputs.is_empty() || !outputs.is_empty()) {
         return syn::Error::new(
             ident.span(),
@@ -318,8 +316,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
     } else {
         Some(stack_setup(&inputs, &outputs))
     };
-    let cx_setup = has_cx.then(|| {
-        let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
+    let cx_setup = cx_arg.map(|cx| {
         if instruction_attrs.dynamic_gas {
             quote! {
                 let (__evm2_gas, __evm2_state) = unsafe {
