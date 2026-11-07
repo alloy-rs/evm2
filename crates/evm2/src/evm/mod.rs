@@ -236,12 +236,7 @@ pub struct Evm<'a, T: EvmTypesHost> {
     inspector: Option<InspectorSlot<'a, T>>,
     inspect_system_calls: bool,
     #[derive_where(skip)]
-    interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
-    /// Whether `interpreter_runner` is set and supports `execution_config`.
-    ///
-    /// Refreshed whenever either changes.
-    #[derive_where(skip)]
-    runner_supported: bool,
+    interpreter_runner: RunnerSlot<T>,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
@@ -374,8 +369,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
             inspect_system_calls: false,
-            interpreter_runner: None,
-            runner_supported: false,
+            interpreter_runner: RunnerSlot::Empty,
             current_frame: None,
             frame_checkpoint: None,
             running: false,
@@ -438,10 +432,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn refresh_runner_support(&mut self) {
-        self.runner_supported = self
-            .interpreter_runner
-            .as_ref()
-            .is_some_and(|runner| runner.supports(&self.execution_config));
+        self.interpreter_runner.refresh(&self.execution_config);
     }
 
     #[inline]
@@ -449,6 +440,30 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let was_running = self.running;
         self.running = true;
         ExecutionGuard { evm: self, was_running }
+    }
+
+    /// Enters an interpreter frame that rolls back to `checkpoint` if it fails.
+    ///
+    /// The returned guard restores the parent frame, its checkpoint and the running flag when it
+    /// drops, including when the frame unwinds.
+    #[inline]
+    const fn enter_frame(&mut self, checkpoint: StateCheckpoint) -> FrameGuard<'_, 'a, T> {
+        let was_running = self.running;
+        self.running = true;
+        let parent_frame = self.current_frame;
+        let parent_checkpoint = self.frame_checkpoint.replace(checkpoint);
+        FrameGuard { evm: self, was_running, parent_frame, parent_checkpoint }
+    }
+
+    /// Runs `f` on the transaction state, which is discarded if `f` fails or unwinds.
+    #[inline]
+    fn run_tx<R>(&mut self, f: impl FnOnce(&mut Self) -> HandlerResult<R>) -> HandlerResult<R> {
+        let guard = DiscardTxState(self);
+        let result = f(&mut *guard.0);
+        if result.is_ok() {
+            core::mem::forget(guard);
+        }
+        result
     }
 
     /// Returns the transaction handler registry.
@@ -985,7 +1000,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Err(error.into());
         }
         result.logs = self.state.take_logs();
-        Ok(ExecutedTx::from_result(self, result, true))
+        Ok(ExecutedTx::from_result(self, result))
     }
 
     #[inline(never)]
@@ -1060,7 +1075,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_shared_interpreter_runner(&mut self, runner: Arc<dyn InterpreterRunner<T>>) {
         self.assert_interpreter_runner_mutable();
-        self.interpreter_runner = Some(runner);
+        self.interpreter_runner = RunnerSlot::Unsupported(runner);
         self.refresh_runner_support();
     }
 
@@ -1068,9 +1083,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn clear_interpreter_runner(&mut self) -> Option<Arc<dyn InterpreterRunner<T>>> {
         self.assert_interpreter_runner_mutable();
-        let runner = self.interpreter_runner.take();
-        self.refresh_runner_support();
-        runner
+        self.interpreter_runner.take()
     }
 
     /// Returns the active EVM version.
@@ -1120,14 +1133,15 @@ impl<'a, T: EvmTypesHost> InspectorSlot<'a, T> {
     }
 }
 
-/// Installs a borrowed inspector in an [`Evm`] and restores the previous slot on drop.
+/// Replaces the inspector slot of an [`Evm`] and restores the previous slot on drop, including
+/// when the scope unwinds.
 struct ScopedInspector<'scope, 'a, T: EvmTypesHost> {
     evm: &'scope mut Evm<'a, T>,
     previous: Option<InspectorSlot<'a, T>>,
-    completed: bool,
 }
 
 impl<'scope, 'a, T: EvmTypesHost> ScopedInspector<'scope, 'a, T> {
+    /// Installs a borrowed inspector.
     #[inline]
     fn install(evm: &'scope mut Evm<'a, T>, inspector: &mut (dyn Inspector<T> + '_)) -> Self {
         // SAFETY: Only the object lifetime bound is erased. The slot cannot be replaced or read
@@ -1142,7 +1156,14 @@ impl<'scope, 'a, T: EvmTypesHost> ScopedInspector<'scope, 'a, T> {
             )
         };
         let previous = evm.inspector.replace(InspectorSlot::Borrowed(inspector));
-        Self { evm, previous, completed: false }
+        Self { evm, previous }
+    }
+
+    /// Removes the inspector.
+    #[inline]
+    const fn hide(evm: &'scope mut Evm<'a, T>) -> Self {
+        let previous = evm.inspector.take();
+        Self { evm, previous }
     }
 }
 
@@ -1150,12 +1171,16 @@ impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
     #[inline]
     fn drop(&mut self) {
         self.evm.inspector = self.previous.take();
-        // A panic unwinding out of a frame skips its cleanup, which would leave this pointing at
-        // a dropped interpreter.
-        self.evm.current_frame = None;
-        if !self.completed {
-            self.evm.state.clear_transaction_state();
-        }
+    }
+}
+
+/// Discards the transaction state when dropped; see [`Evm::run_tx`].
+struct DiscardTxState<'guard, 'evm, T: EvmTypesHost>(&'guard mut Evm<'evm, T>);
+
+impl<T: EvmTypesHost> Drop for DiscardTxState<'_, '_, T> {
+    #[inline]
+    fn drop(&mut self) {
+        self.0.state.clear_transaction_state();
     }
 }
 
@@ -1168,6 +1193,70 @@ impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     #[inline]
     fn drop(&mut self) {
         self.evm.running = self.was_running;
+    }
+}
+
+/// A running interpreter frame; see [`Evm::enter_frame`].
+struct FrameGuard<'guard, 'evm, T: EvmTypesHost> {
+    evm: &'guard mut Evm<'evm, T>,
+    was_running: bool,
+    parent_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
+    parent_checkpoint: Option<StateCheckpoint>,
+}
+
+impl<'guard, 'evm, T: EvmTypesHost> Drop for FrameGuard<'guard, 'evm, T> {
+    #[inline]
+    fn drop(&mut self) {
+        // An unwinding frame drops its interpreter before this guard, so `current_frame` must not
+        // keep pointing at it.
+        self.evm.current_frame = self.parent_frame;
+        self.evm.frame_checkpoint = self.parent_checkpoint.take();
+        self.evm.running = self.was_running;
+    }
+}
+
+/// The external interpreter runner, classified by whether it supports the active execution
+/// config.
+enum RunnerSlot<T: EvmTypesHost> {
+    Empty,
+    /// Set, but [`InterpreterRunner::supports`] rejected the active execution config.
+    Unsupported(Arc<dyn InterpreterRunner<T>>),
+    /// Set and supports the active execution config.
+    Active(Arc<dyn InterpreterRunner<T>>),
+}
+
+impl<T: EvmTypesHost> RunnerSlot<T> {
+    /// Returns the runner if it supports the active execution config.
+    #[inline]
+    fn active(&self) -> Option<&dyn InterpreterRunner<T>> {
+        match self {
+            Self::Active(runner) => Some(&**runner),
+            Self::Empty | Self::Unsupported(_) => None,
+        }
+    }
+
+    /// Reclassifies the runner for `config`.
+    #[inline]
+    fn refresh(&mut self, config: &ExecutionConfig<T>) {
+        let supported = match self {
+            Self::Empty => return,
+            Self::Unsupported(runner) | Self::Active(runner) => runner.supports(config),
+        };
+        // `supports` ran above, so an unwinding runner leaves the slot untouched.
+        *self = match core::mem::replace(self, Self::Empty) {
+            Self::Unsupported(runner) | Self::Active(runner) if supported => Self::Active(runner),
+            Self::Unsupported(runner) | Self::Active(runner) => Self::Unsupported(runner),
+            Self::Empty => Self::Empty,
+        };
+    }
+
+    /// Removes the runner.
+    #[inline]
+    fn take(&mut self) -> Option<Arc<dyn InterpreterRunner<T>>> {
+        match core::mem::replace(self, Self::Empty) {
+            Self::Empty => None,
+            Self::Unsupported(runner) | Self::Active(runner) => Some(runner),
+        }
     }
 }
 
@@ -1214,7 +1303,8 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// [`ExecutedTx::discard`].
     ///
     /// Transaction handlers cannot modify the inspector, precompile provider, interpreter runner,
-    /// or execution configuration while the transaction is being executed.
+    /// or execution configuration while the transaction is being executed. If the call unwinds,
+    /// the transaction state is discarded.
     pub fn transact(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         let result = self.execute_tx(tx)?;
         self.finish_executed_tx(result)
@@ -1228,16 +1318,15 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// the borrow of `inspector` ends with the call even while the returned [`ExecutedTx`] is
     /// alive. During the call, [`Self::inspector`] and [`Self::inspector_mut`] return `None`, and
     /// the inspector setters panic like they do during any execution. If the call unwinds, the
-    /// transaction state is discarded. System calls are not inspected.
+    /// transaction state is discarded, as for [`Self::transact`]. System calls are not inspected.
     pub fn transact_with_inspector(
         &mut self,
         tx: &Recovered<T::Tx>,
         inspector: &mut (dyn Inspector<T> + '_),
     ) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         self.assert_inspector_mutable();
-        let mut scope = ScopedInspector::install(self, inspector);
+        let scope = ScopedInspector::install(self, inspector);
         let result = scope.evm.execute_tx(tx);
-        scope.completed = true;
         drop(scope);
         self.finish_executed_tx(result?)
     }
@@ -1245,13 +1334,10 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[inline]
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let guard = self.enter_execution();
-        let result = handler.execute(tx.as_recovered_ref(), guard.evm);
-        drop(guard);
-        if result.is_err() {
-            self.state.clear_transaction_state();
-        }
-        result
+        self.run_tx(|evm| {
+            let guard = evm.enter_execution();
+            handler.execute(tx.as_recovered_ref(), guard.evm)
+        })
     }
 
     /// Executes a transaction for its outcome and discards its state changes.
@@ -1275,7 +1361,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
         let result = self
             .registry
             .try_get_by_type(tx.ty())
-            .and_then(|handler| handler.validate(tx.as_recovered_ref(), self));
+            .and_then(|handler| self.run_tx(|evm| handler.validate(tx.as_recovered_ref(), evm)));
         self.state.clear_transaction_state();
         result
     }
@@ -1757,24 +1843,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Runs `message`'s interpreter frame, which rolls back to `checkpoint` if it fails.
-    #[inline]
-    fn run_frame(
-        &mut self,
-        message: &Message<T>,
-        checkpoint: StateCheckpoint,
-    ) -> Result<InstrStop, ExecutionError> {
-        let previous = self.frame_checkpoint.replace(checkpoint);
-        let stop = self.run_interpreter(message);
-        self.frame_checkpoint = previous;
-        stop
-    }
-
     #[inline(never)]
-    fn run_interpreter<'frame>(
+    fn run_frame<'frame>(
         &mut self,
         message: &'frame Message<T>,
+        checkpoint: StateCheckpoint,
     ) -> Result<InstrStop, ExecutionError> {
-        let guard = self.enter_execution();
+        let guard = self.enter_frame(checkpoint);
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
         interp_ref.lend_memory();
@@ -1784,12 +1859,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             // interpreter run.
             unsafe { trustme::decouple_lt_mut(inspector) }
         });
-        let prev_frame = guard
-            .evm
-            .current_frame
-            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
-        let runner =
-            guard.evm.interpreter_runner.as_ref().filter(|_| guard.evm.runner_supported).cloned();
+        guard.evm.current_frame =
+            Some(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
+        let runner = guard.evm.interpreter_runner.active().map(|runner| {
+            // SAFETY: The runner is stored in `self`; the frame guard sets `running`, which
+            // prevents replacing the runner or the execution config while the frame runs.
+            unsafe { trustme::decouple_lt(runner) }
+        });
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(guard.evm, inspector)
         } else if let Some(runner) = runner
@@ -1799,7 +1875,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             interp_ref.run(guard.evm)
         };
-        guard.evm.current_frame = prev_frame;
         guard.evm.interpreter_pool.push(interp);
         stop
     }
@@ -2237,7 +2312,7 @@ mod tests {
             ..Default::default()
         };
 
-        let stop = evm.run_interpreter(&message).unwrap();
+        let stop = evm.run_frame(&message, evm.state.checkpoint()).unwrap();
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         stop
@@ -2969,7 +3044,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let _ = evm.run_interpreter(&message);
+        let _ = evm.run_frame(&message, evm.state.checkpoint());
     }
 
     #[test]
@@ -2995,7 +3070,7 @@ mod tests {
             ..MessageExt::default()
         };
 
-        let _ = evm.run_interpreter(&message);
+        let _ = evm.run_frame(&message, evm.state.checkpoint());
     }
 
     #[test]
@@ -3051,7 +3126,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let _ = evm.run_interpreter(&message);
+        let _ = evm.run_frame(&message, evm.state.checkpoint());
         assert_eq!(evm.block().number, Word::from(123));
         assert_eq!(evm.block().timestamp, Word::from(124));
     }
@@ -3144,7 +3219,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let _ = evm.run_interpreter(&message);
+        let _ = evm.run_frame(&message, evm.state.checkpoint());
     }
 
     #[derive(Clone, Copy)]
@@ -3386,7 +3461,7 @@ mod tests {
             ..Default::default()
         };
         let run = |evm: &mut Evm<'_, BaseEvmTypes>| {
-            let stop = evm.run_interpreter(&message).unwrap();
+            let stop = evm.run_frame(&message, evm.state.checkpoint()).unwrap();
             (stop, calls.load(Ordering::Relaxed))
         };
         let set_spec = |evm: &mut Evm<'_, BaseEvmTypes>, spec_id: SpecId| {
@@ -5055,5 +5130,86 @@ mod tests {
         );
 
         let _ = evm.transact_with_inspector(&test_tx(0), &mut CallCounter::default());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn frame_state_is_restored_after_panic_inside_frame() {
+        for scoped in [false, true] {
+            let mut evm = scoped_inspector_evm();
+            let mut panicking = CallCounter { panic_on_step: true, ..CallCounter::default() };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if scoped {
+                    let _ = evm.transact_with_inspector(&test_tx(0), &mut panicking);
+                } else {
+                    evm.set_inspector(core::mem::take(&mut panicking));
+                    let _ = evm.transact(&test_tx(0));
+                }
+            }));
+
+            assert!(result.is_err());
+            assert!(evm.current_frame.is_none(), "scoped: {scoped}");
+            assert!(evm.frame_checkpoint().is_none(), "scoped: {scoped}");
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn transact_discards_transaction_state_after_panic() {
+        let mut evm = scoped_inspector_evm();
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    req.host.log(Log { address: TEST_PRECOMPILE, data: LogData::default() });
+                    let mut message = MessageExt {
+                        code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+                        ..MessageExt::default()
+                    };
+                    Host::execute_message(req.host, &mut message)?;
+                    Ok(TxResultExt::default())
+                },
+            ),
+        );
+        evm.set_inspector(CallCounter { panic_on_step: true, ..CallCounter::default() });
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact(&test_tx(0));
+        }));
+
+        assert!(result.is_err());
+        assert!(evm.logs().is_empty());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn system_call_restores_inspector_and_discards_state_after_panic() {
+        fn log_and_panic(
+            evm: &mut Evm<'_, BaseEvmTypes>,
+            _: &Message,
+            _: &mut GasTracker,
+        ) -> crate::precompiles::PrecompileResult {
+            evm.log(Log { address: TEST_PRECOMPILE, data: LogData::default() });
+            panic!("precompile panicked");
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles_with([test_precompile(TEST_PRECOMPILE, log_and_panic)]),
+        );
+        evm.set_inspector(NoopInspector::default());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.system_call(SystemTx::new(TEST_PRECOMPILE, Bytes::new()));
+        }));
+
+        assert!(result.is_err());
+        assert!(evm.inspector().is_some());
+        assert!(evm.logs().is_empty());
     }
 }
