@@ -22,8 +22,9 @@ use evm2::{
 };
 use evm2_fork::{
     AccountFetchPolicy, BlockchainDb, BlockchainDbMeta, BlockingMode, ForkDB, ForkError,
-    SharedBackend, bal, fork_env,
+    PrefetchStats, SharedBackend, bal, fork_env,
 };
+use serde_json::json;
 use std::{thread, time::Duration};
 
 const CONTRACT: Address = Address::repeat_byte(0xc0);
@@ -397,6 +398,80 @@ fn prefetched_entries_nothing_read_are_not_flushed() {
     assert_eq!(cached.storage(&CONTRACT, &U256::from(2)), None);
     drop(cached);
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn batched_prefetch_serves_later_reads() {
+    for account_info in [true, false] {
+        let node = mock_node(Duration::from_millis(5));
+        node.set_supports_account_info(account_info);
+        let backend = spawn(&node, BlockchainDb::new(meta(), None));
+        let slots = (0..250).map(|slot| (CONTRACT, U256::from(slot)));
+        let stats = backend.prefetch([CONTRACT, RICH], slots).unwrap();
+        assert_eq!(stats, PrefetchStats { accounts: 2, slots: 250, failed: 0 });
+        // Already cached keys are skipped.
+        assert_eq!(
+            backend.prefetch([RICH], [(CONTRACT, U256::from(1))]).unwrap(),
+            PrefetchStats::default()
+        );
+
+        let calls = node.state_calls();
+        assert_eq!(backend.get_account(&RICH).unwrap().unwrap().balance, U256::from(2));
+        assert_eq!(backend.get_account(&CONTRACT).unwrap().unwrap().nonce, 1);
+        assert_eq!(backend.get_storage(&CONTRACT, &U256::from(1)).unwrap(), U256::from(40));
+        assert_eq!(backend.get_storage(&CONTRACT, &U256::from(249)).unwrap(), U256::ZERO);
+        assert_eq!(node.state_calls(), calls);
+        assert_eq!(node.calls("eth_getStorageAt"), 250);
+    }
+}
+
+#[test]
+fn prefetch_block_uses_the_prestate_trace() {
+    let node = mock_node(Duration::ZERO);
+    // The first value of each key is the one before the block; later ones are ignored.
+    node.set_prestate(json!([
+        { "txHash": B256::ZERO, "result": {
+            format!("{CONTRACT}"): { "balance": "0x5", "nonce": 3, "code": contract_code(), "storage": { format!("{}", B256::with_last_byte(1)): format!("{}", B256::with_last_byte(7)) } },
+        } },
+        { "txHash": B256::ZERO, "result": {
+            format!("{CONTRACT}"): { "balance": "0x6", "nonce": 4, "storage": { format!("{}", B256::with_last_byte(1)): format!("{}", B256::with_last_byte(8)) } },
+            format!("{CALLER}"): { "balance": "0x0" },
+        } },
+    ]));
+    let backend = spawn(&node, BlockchainDb::new(meta(), None));
+    let stats = backend.prefetch_block(BLOCK + 1).unwrap();
+    assert_eq!(stats, PrefetchStats { accounts: 2, slots: 1, failed: 0 });
+    let account = backend.get_account(&CONTRACT).unwrap().unwrap();
+    assert_eq!((account.balance, account.nonce), (U256::from(5), 3));
+    assert_eq!(backend.get_storage(&CONTRACT, &U256::from(1)).unwrap(), U256::from(7));
+    assert!(backend.get_account(&CALLER).unwrap().is_none());
+    assert_eq!(node.state_calls(), 0);
+}
+
+#[test]
+fn prefetch_block_falls_back_to_access_lists() {
+    let node = mock_node(Duration::ZERO);
+    let tx = node.insert_transaction(CALLER, 0);
+    node.add_block_transaction(tx);
+    node.set_access_list(json!([
+        { "address": CONTRACT, "storageKeys": [B256::with_last_byte(1)] },
+        { "address": RICH, "storageKeys": [] },
+    ]));
+    let backend = spawn(&node, BlockchainDb::new(meta(), None));
+    let stats = backend.prefetch_block(BLOCK + 1).unwrap();
+    assert_eq!(node.calls("eth_createAccessList"), 1);
+    // CONTRACT, RICH, the sender and the block's miner.
+    assert_eq!(stats.accounts, 4);
+    assert_eq!(stats.slots, 1);
+
+    let calls = node.state_calls();
+    assert_eq!(backend.get_account(&RICH).unwrap().unwrap().balance, U256::from(2));
+    assert_eq!(backend.get_storage(&CONTRACT, &U256::from(1)).unwrap(), U256::from(40));
+    assert!(backend.get_account(&CALLER).unwrap().is_none());
+    assert_eq!(node.state_calls(), calls);
+
+    // Neither prediction works for an unknown block.
+    assert!(matches!(backend.prefetch_block(BLOCK + 1000), Err(ForkError::BlockNotFound(_))));
 }
 
 #[test]

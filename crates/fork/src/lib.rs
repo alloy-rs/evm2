@@ -12,7 +12,7 @@ use alloy_provider::network::Ethereum;
 use evm2::evm::{CacheDB, DbRef};
 
 mod backend;
-pub use backend::{AccountFetchPolicy, BackendHandler, BlockingMode, SharedBackend};
+pub use backend::{AccountFetchPolicy, BackendHandler, BlockingMode, PrefetchStats, SharedBackend};
 
 pub mod bal;
 
@@ -32,6 +32,8 @@ mod multi;
 pub use multi::*;
 
 mod prefetch;
+
+mod prestate;
 
 /// A forked database: a local [`CacheDB`] overlay over a [`SharedBackend`].
 ///

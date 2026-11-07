@@ -39,6 +39,12 @@ struct MockState {
     bals: HashMap<B256, BlockAccessList>,
     transactions: HashMap<B256, Transaction>,
     supports_account_info: bool,
+    /// `debug_traceBlockByNumber` prestate traces, if served.
+    prestate: Option<Value>,
+    /// Transactions of every served block.
+    block_transactions: Vec<Transaction>,
+    /// The access list `eth_createAccessList` answers, if served.
+    access_list: Option<Value>,
     /// Calls per method.
     calls: HashMap<String, usize>,
     /// Resolved block number of every state call, in arrival order.
@@ -49,19 +55,26 @@ struct MockState {
 #[derive(Clone, Debug)]
 pub(crate) struct MockNode {
     state: Arc<Mutex<MockState>>,
-    delay: Duration,
+    delay: Arc<Mutex<Duration>>,
 }
 
 impl Default for MockNode {
     fn default() -> Self {
         let state = MockState { chain_id: 1, ..Default::default() };
-        Self { state: Arc::new(Mutex::new(state)), delay: Duration::ZERO }
+        Self { state: Arc::new(Mutex::new(state)), delay: Default::default() }
     }
 }
 
 impl MockNode {
     pub(crate) fn with_delay(delay: Duration) -> Self {
-        Self { delay, ..Default::default() }
+        let node = Self::default();
+        node.set_delay(delay);
+        node
+    }
+
+    /// Delays every later response by \`delay\`.
+    pub(crate) fn set_delay(&self, delay: Duration) {
+        *self.delay.lock().unwrap_or_else(PoisonError::into_inner) = delay;
     }
 
     /// Hash of mock block `number`.
@@ -110,6 +123,23 @@ impl MockNode {
         };
         self.lock().transactions.insert(hash, tx);
         hash
+    }
+
+    /// Serves `debug_traceBlockByNumber` and `debug_traceBlockByHash` with these traces.
+    pub(crate) fn set_prestate(&self, traces: Value) {
+        self.lock().prestate = Some(traces);
+    }
+
+    /// Includes the transaction `hash` in every served block.
+    pub(crate) fn add_block_transaction(&self, hash: B256) {
+        let mut state = self.lock();
+        let tx = state.transactions[&hash].clone();
+        state.block_transactions.push(tx);
+    }
+
+    /// Serves `eth_createAccessList` with this access list for every call.
+    pub(crate) fn set_access_list(&self, access_list: Value) {
+        self.lock().access_list = Some(access_list);
     }
 
     pub(crate) fn set_supports_account_info(&self, supported: bool) {
@@ -204,7 +234,7 @@ impl MockNode {
                         ..Default::default()
                     };
                     json!(Block::<Transaction>::empty(header)
-                        .with_transactions(BlockTransactions::Full(Vec::new())))
+                        .with_transactions(BlockTransactions::Full(state.block_transactions.clone())))
                 }))
             }
             "eth_getTransactionByHash" => {
@@ -217,6 +247,13 @@ impl MockNode {
                     .and_then(|number| state.bals.get(&Self::block_hash_of(number)))
                     .map_or(Value::Null, |bal| json!(bal)))
             }
+            "debug_traceBlockByNumber" | "debug_traceBlockByHash" if state.prestate.is_some() => {
+                Ok(state.prestate.clone().unwrap())
+            }
+            "eth_createAccessList" if state.access_list.is_some() => Ok(json!({
+                "accessList": state.access_list.clone().unwrap(),
+                "gasUsed": "0x0",
+            })),
             _ => Err(ErrorPayload {
                 code: -32601,
                 message: Cow::Owned(format!("the method {} does not exist", request.method())),
@@ -288,8 +325,9 @@ impl Service<RequestPacket> for MockNode {
     fn call(&mut self, request: RequestPacket) -> Self::Future {
         let node = self.clone();
         Box::pin(async move {
-            if !node.delay.is_zero() {
-                tokio::time::sleep(node.delay).await;
+            let delay = *node.delay.lock().unwrap_or_else(PoisonError::into_inner);
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
             }
             Ok(match request {
                 RequestPacket::Single(request) => ResponsePacket::Single(node.answer(&request)),

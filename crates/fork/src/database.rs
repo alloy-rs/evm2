@@ -1,9 +1,13 @@
 //! A forked database with state snapshots, modeled on Foundry's `ForkedDatabase`.
 
 use crate::{BlockchainDb, ForkDB, ForkError, ForkResult, JsonBlockCacheData, SharedBackend};
+use alloy_consensus::BlockHeader;
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256, map::HashMap};
-use alloy_provider::{Network, network::Ethereum};
+use alloy_provider::{
+    Network,
+    network::{BlockResponse, Ethereum, primitives::HeaderResponse},
+};
 use evm2::{
     bytecode::Bytecode,
     evm::{
@@ -238,20 +242,22 @@ impl<N: Network> ForkedDatabase<N> {
     /// Pins the backend to `block`, clears the remote cache and replaces the overlay with an empty
     /// one, dropping every committed change. Snapshots are kept.
     pub fn reset(&mut self, block: impl Into<BlockId>) -> ForkResult<()> {
-        let block = block.into();
-        self.backend.set_pinned_block(block)?;
-        self.inner().clear();
-        // Keep the metadata naming the state the cache now holds, so a later flush is not
-        // mistaken for the old block's cache.
+        let mut block = block.into();
+        // Name the state the cache will hold, so a later flush is not mistaken for the old
+        // block's cache. A tag or hash is resolved to its block, and a tag pinned to that block's
+        // hash so the state cannot move under the cache.
         let mut meta = self.inner().meta();
-        match block {
-            BlockId::Number(BlockNumberOrTag::Number(number)) => {
-                meta.block_number = number;
-                meta.block_hash = None;
-            }
-            BlockId::Hash(hash) => meta.block_hash = Some(hash.block_hash),
-            BlockId::Number(_) => meta.block_hash = None,
+        if let BlockId::Number(BlockNumberOrTag::Number(number)) = block {
+            meta.block_number = number;
+            meta.block_hash = None;
+        } else {
+            let resolved = self.backend.get_full_block(block)?;
+            let header = resolved.header();
+            meta.block_number = header.number();
+            meta.block_hash = Some(header.hash());
+            block = BlockId::hash(header.hash());
         }
+        self.backend.repin(block)?;
         self.inner().set_meta(meta);
         self.cache_db = CacheDB::new(DbRef::new(self.backend.clone()));
         tracing::trace!(target: "evm2::fork", "reset forked database");

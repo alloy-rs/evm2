@@ -34,6 +34,9 @@ pub enum ForkError {
     /// Fetching the chain ID failed.
     #[error("failed to get chain id: {0}")]
     GetChainId(Arc<TransportError>),
+    /// Predicting a block's state with `eth_createAccessList` failed.
+    #[error("failed to create access lists: {0}")]
+    CreateAccessList(Arc<TransportError>),
     /// Fetching a full block failed.
     #[error("failed to get full block for {0}: {1}")]
     GetFullBlock(BlockId, Arc<TransportError>),
@@ -73,6 +76,7 @@ impl ForkError {
             | Self::GetFullBlock(_, err)
             | Self::GetTransaction(_, err)
             | Self::GetChainId(err)
+            | Self::CreateAccessList(err)
             | Self::Connect(err) => Some(&**err),
             Self::AnyRequest(err) => Some(&**err),
             // Enumerate explicitly so new variants are classified.

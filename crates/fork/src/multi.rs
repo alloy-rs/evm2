@@ -133,6 +133,15 @@ pub struct CreateFork {
 }
 
 impl CreateFork {
+    /// Whether a fork created with `self` may share the backend of one created with `other`
+    /// at the same block: they must cache and fetch remote state the same way.
+    fn shares_backend_with(&self, other: &Self) -> bool {
+        self.enable_caching == other.enable_caching
+            && self.cache_root == other.cache_root
+            && self.prefetch == other.prefetch
+            && self.account_fetch_policy == other.account_fetch_policy
+    }
+
     /// Creates options for a fork of `url` at the latest block, without disk caching, with
     /// [`foundry_cache_root`] as the cache root.
     pub fn new(url: impl Into<String>) -> Self {
@@ -550,6 +559,15 @@ impl<N: Network> MultiForkHandler<N> {
         // The block was replaced since the existing fork was created: keep both apart.
         if self.forks.get(&id).is_some_and(|fork| fork.env.block_hash != env.block_hash) {
             id = ForkId(format!("{id}#{}", env.block_hash));
+        }
+        // A backend is shared only by forks with the same caching and fetching options.
+        if self.forks.get(&id).is_some_and(|fork| !fork.opts.shares_backend_with(&opts)) {
+            let mut variant = 1;
+            let base = id.clone();
+            while self.forks.get(&id).is_some_and(|fork| !fork.opts.shares_backend_with(&opts)) {
+                id = ForkId(format!("{base}~{variant}"));
+                variant += 1;
+            }
         }
         let entry = match self.forks.get(&id) {
             Some(fork) => fork.clone(),

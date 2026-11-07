@@ -492,14 +492,27 @@ fn write_json(path: &Path, data: &JsonBlockCacheData) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    // A fresh name per write, created exclusively, so a planted file or symlink is never followed
+    // and concurrent writers never share a temporary file.
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let tmp = PathBuf::from(tmp);
-    let mut writer = BufWriter::new(fs::File::create(&tmp)?);
+    let file = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let mut writer = BufWriter::new(file);
     serde_json::to_writer(&mut writer, data)?;
-    writer.flush()?;
-    drop(writer);
-    fs::rename(tmp, path)
+    let result = writer.flush().and_then(|()| {
+        drop(writer);
+        fs::rename(&tmp, path)
+    });
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]

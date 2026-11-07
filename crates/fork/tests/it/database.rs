@@ -1,10 +1,12 @@
 use crate::mock::{MockAccount, MockNode};
+use alloy_eips::BlockId;
 use alloy_primitives::{Address, U256, map::HashMap};
 use evm2::evm::{AccountInfo, DatabaseRef, DynDatabase, StateChangeSink, StorageChange};
 use evm2_fork::{
     BlockchainDb, BlockchainDbMeta, ForkedDatabase, RevertStateSnapshotAction, SharedBackend,
     StateSnapshots,
 };
+use std::time::Duration;
 
 const ACCOUNT: Address = Address::repeat_byte(0xa1);
 const OTHER: Address = Address::repeat_byte(0xb2);
@@ -136,6 +138,35 @@ fn reset_reads_the_new_block() {
     let blocks = node.state_blocks();
     assert!(blocks.len() > before);
     assert!(blocks[before..].iter().all(|&block| block == SECOND_BLOCK));
+}
+
+#[test]
+fn reset_to_a_tag_names_and_pins_the_resolved_block() {
+    let node = mock_node();
+    let mut db = forked_db(&node);
+    db.reset(BlockId::latest()).unwrap();
+    let meta = db.inner().meta();
+    assert_eq!((meta.block_number, meta.block_hash), (10, Some(MockNode::block_hash_of(10))));
+
+    db.reset(SECOND_BLOCK).unwrap();
+    let meta = db.inner().meta();
+    assert_eq!((meta.block_number, meta.block_hash), (SECOND_BLOCK, None));
+}
+
+#[test]
+fn fetches_in_flight_across_a_reset_are_not_cached() {
+    let node = mock_node();
+    node.set_delay(Duration::from_millis(200));
+    let mut db = forked_db(&node);
+    let backend = db.backend().clone();
+    let reader = std::thread::spawn(move || backend.get_account(&ACCOUNT).unwrap().unwrap());
+    std::thread::sleep(Duration::from_millis(50));
+    db.reset(SECOND_BLOCK).unwrap();
+    // The reader that joined before the reset is served at the new pin.
+    assert_eq!(reader.join().unwrap().balance, U256::from(500));
+    assert_eq!(db.inner().account(&ACCOUNT).unwrap().unwrap().balance, U256::from(500));
+    let info = DynDatabase::get_account(&mut db, &ACCOUNT).unwrap().unwrap();
+    assert_eq!(info.balance, U256::from(500));
 }
 
 #[test]

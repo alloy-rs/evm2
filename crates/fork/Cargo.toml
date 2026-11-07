@@ -31,11 +31,16 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync
 tracing.workspace = true
 
 [dev-dependencies]
+evm2 = { workspace = true, features = ["block"] }
 alloy-json-rpc.workspace = true
 alloy-sol-types = { workspace = true, features = ["std"] }
 alloy-transport.workspace = true
 tokio = { workspace = true, features = ["macros", "time"] }
 tower.workspace = true
+
+[[example]]
+name = "fork_block"
+path = "examples/fork_block.rs"
 
 [[example]]
 name = "fork_call"

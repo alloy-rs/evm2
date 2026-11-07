@@ -7,8 +7,8 @@ use alloy_primitives::{Address, Bytes, U256, map::HashMap};
 use alloy_provider::Provider;
 use evm2::evm::DatabaseRef;
 use evm2_fork::{
-    BlockchainDb, BlockchainDbMeta, CreateFork, ForkError, ForkId, JsonBlockCacheData, MultiFork,
-    SharedBackend,
+    AccountFetchPolicy, BlockchainDb, BlockchainDbMeta, CreateFork, ForkError, ForkId,
+    JsonBlockCacheData, MultiFork, SharedBackend,
 };
 use std::{
     fs,
@@ -104,6 +104,31 @@ fn same_block_shares_the_backend() {
     assert_eq!(balance(&second.backend, ALICE), U256::from(6));
     let shared = multi.get_fork(&second.id).unwrap();
     assert_eq!(balance(&shared, ALICE), U256::from(6));
+    assert_eq!(node.state_calls(), calls);
+}
+
+#[test]
+fn forks_with_other_cache_options_get_their_own_backend() {
+    let node = mock_node(Duration::ZERO);
+    let multi = multi_fork(&node);
+    let opts = CreateFork::new(URL).with_block(Some(5));
+    let first = multi.create_fork(opts.clone()).unwrap();
+    let separate = opts.with_account_fetch_policy(AccountFetchPolicy::SeparateRequests);
+    let second = multi.create_fork(separate.clone()).unwrap();
+    assert_ne!(first.id, second.id);
+    assert_eq!(
+        multi.get_fork_options(&second.id).unwrap().account_fetch_policy,
+        AccountFetchPolicy::SeparateRequests
+    );
+
+    balance(&first.backend, ALICE);
+    let calls = node.state_calls();
+    balance(&second.backend, ALICE);
+    assert!(node.state_calls() > calls, "the second fork must not share the first's cache");
+    // Identical options still share.
+    let third = multi.create_fork(separate).unwrap();
+    let calls = node.state_calls();
+    balance(&third.backend, ALICE);
     assert_eq!(node.state_calls(), calls);
 }
 

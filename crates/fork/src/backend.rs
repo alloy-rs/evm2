@@ -1,23 +1,33 @@
 //! Background RPC handler and the shared database handle that talks to it.
 
-use crate::{BlockchainDb, ForkError, ForkResult, NON_ARCHIVE_NODE_WARNING, cache::PrefetchKey};
+use crate::{
+    BlockchainDb, ForkError, ForkResult, NON_ARCHIVE_NODE_WARNING,
+    cache::PrefetchKey,
+    prestate::{self, Prediction},
+};
 use alloy_eips::BlockId;
 use alloy_primitives::{
-    Address, B256, Bytes, U256,
-    map::{AddressMap, HashMap, U256Map},
+    Address, B256, Bytes, U64, U256,
+    map::{AddressMap, Entry, HashMap, U256Map},
 };
 use alloy_provider::{
     DynProvider, Network, Provider,
     network::{BlockResponse, Ethereum, primitives::HeaderResponse},
-    transport::TransportError,
+    transport::{
+        TransportError,
+        layers::{RateLimitRetryPolicy, RetryPolicy},
+    },
 };
-use alloy_rpc_types_eth::BlockNumberOrTag;
+use alloy_rpc_types_eth::{AccountInfo as RpcAccountInfo, BlockNumberOrTag};
 use evm2::{
     bytecode::Bytecode,
     evm::{AccountInfo, DatabaseRef},
     interpreter::Word,
 };
-use futures_util::{StreamExt, stream::FuturesUnordered};
+use futures_util::{
+    StreamExt,
+    stream::{self, FuturesUnordered},
+};
 use std::{
     error::Error,
     fmt,
@@ -53,6 +63,29 @@ pub enum AccountFetchPolicy {
     /// Always use separate `eth_getBalance`, `eth_getTransactionCount` and `eth_getCode`
     /// requests.
     SeparateRequests,
+}
+
+/// Keys per JSON-RPC batch when prefetching.
+const PREFETCH_BATCH_SIZE: usize = 50;
+
+/// JSON-RPC batches in flight at once when prefetching.
+const PREFETCH_CONCURRENCY: usize = 4;
+
+/// Times a prefetched key is fetched again after a rate limit or another retryable error.
+const PREFETCH_RETRIES: u32 = 4;
+
+/// Wait before the first retry of a prefetch, doubled for each later one.
+const PREFETCH_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// What a prefetch fetched.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PrefetchStats {
+    /// Accounts inserted into the cache.
+    pub accounts: usize,
+    /// Storage slots inserted into the cache.
+    pub slots: usize,
+    /// Keys whose fetch failed; a later read fetches them again.
+    pub failed: usize,
 }
 
 const FETCH_UNCHECKED: u8 = 0;
@@ -108,11 +141,22 @@ enum BackendRequest<N: Network> {
     FullBlock(BlockId, ResultSender<N::BlockResponse>),
     Transaction(B256, ResultSender<N::TransactionResponse>),
     SetPinnedBlock(BlockId),
+    /// Pins to a block and clears the cache, in order with other requests.
+    Repin(BlockId, ResultSender<()>),
     UpdateAccounts(AddressMap<Option<AccountInfo>>),
     UpdateStorage(AddressMap<U256Map<Word>>),
     UpdateBlockHashes(U256Map<B256>),
     /// A future that answers its own sender.
     Any(BoxFuture<()>),
+    Prefetch(Vec<Address>, Vec<(Address, Word)>, ResultSender<PrefetchStats>),
+    PrefetchBlock(BlockId, ResultSender<PrefetchStats>),
+}
+
+/// A key fetched in a prefetch batch.
+#[derive(Clone, Copy, Debug)]
+enum FetchKey {
+    Account(Address),
+    Slot(Address, Word),
 }
 
 /// A finished RPC fetch whose result is cached and fanned out to waiters.
@@ -122,6 +166,18 @@ enum ProviderResponse {
     BlockHash(u64, RpcResult<Option<B256>>),
     /// A request that answered its sender itself.
     Done,
+    /// The results of a prefetch's batches.
+    Batch(Vec<Self>, ResultSender<PrefetchStats>),
+    /// Exact state predicted for a block.
+    Prestate(
+        Vec<(Address, Option<AccountInfo>)>,
+        Vec<(Address, Word, Word)>,
+        ResultSender<PrefetchStats>,
+    ),
+    /// Keys predicted for a block, still to be fetched.
+    PrefetchKeys(Vec<Address>, Vec<(Address, Word)>, ResultSender<PrefetchStats>),
+    /// A prediction that failed.
+    PrefetchFailed(ForkError, ResultSender<PrefetchStats>),
 }
 
 /// Serves [`SharedBackend`] requests by fetching remote state through a provider.
@@ -143,7 +199,9 @@ pub struct BackendHandler<N: Network = Ethereum> {
     account_requests: AddressMap<Vec<ResultSender<Option<AccountInfo>>>>,
     storage_requests: HashMap<(Address, Word), Vec<ResultSender<Word>>>,
     block_requests: HashMap<u64, Vec<ResultSender<B256>>>,
-    pending: FuturesUnordered<BoxFuture<ProviderResponse>>,
+    /// Bumped on every pin change; fetches started under an earlier one are not cached.
+    generation: u64,
+    pending: FuturesUnordered<BoxFuture<(u64, ProviderResponse)>>,
 }
 
 impl<N: Network> fmt::Debug for BackendHandler<N> {
@@ -165,8 +223,12 @@ impl<N: Network> BackendHandler<N> {
                     // Every handle is gone, so nobody waits on in-flight fetches.
                     None => break,
                 },
-                Some(response) = self.pending.next(), if !self.pending.is_empty() => {
-                    self.on_response(response);
+                Some((generation, response)) = self.pending.next(), if !self.pending.is_empty() => {
+                    if generation == self.generation {
+                        self.on_response(response);
+                    } else {
+                        self.on_stale(response);
+                    }
                 }
             }
         }
@@ -182,15 +244,7 @@ impl<N: Network> BackendHandler<N> {
                 let waiters = self.account_requests.entry(address).or_default();
                 waiters.push(sender);
                 if waiters.len() == 1 {
-                    let fetch = fetch_account(
-                        self.provider.clone(),
-                        address,
-                        self.block_id,
-                        Arc::clone(&self.account_fetch_mode),
-                    );
-                    self.pending.push(Box::pin(async move {
-                        ProviderResponse::Account(address, fetch.await.map_err(Arc::new))
-                    }));
+                    self.push_account_fetch(address);
                 }
             }
             BackendRequest::Storage(address, key, sender) => {
@@ -201,12 +255,7 @@ impl<N: Network> BackendHandler<N> {
                 let waiters = self.storage_requests.entry((address, key)).or_default();
                 waiters.push(sender);
                 if waiters.len() == 1 {
-                    let provider = self.provider.clone();
-                    let block_id = self.block_id;
-                    self.pending.push(Box::pin(async move {
-                        let value = provider.get_storage_at(address, key).block_id(block_id).await;
-                        ProviderResponse::Storage(address, key, value.map_err(Arc::new))
-                    }));
+                    self.push_storage_fetch(address, key);
                 }
             }
             BackendRequest::BlockHash(number, sender) => {
@@ -218,7 +267,7 @@ impl<N: Network> BackendHandler<N> {
                 waiters.push(sender);
                 if waiters.len() == 1 {
                     let provider = self.provider.clone();
-                    self.pending.push(Box::pin(async move {
+                    self.push_pending(Box::pin(async move {
                         let hash = provider
                             .get_block_by_number(BlockNumberOrTag::Number(number))
                             .await
@@ -229,7 +278,7 @@ impl<N: Network> BackendHandler<N> {
             }
             BackendRequest::FullBlock(block_id, sender) => {
                 let provider = self.provider.clone();
-                self.pending.push(Box::pin(async move {
+                self.push_pending(Box::pin(async move {
                     let block = match provider.get_block(block_id).full().await {
                         Ok(Some(block)) => Ok(block),
                         Ok(None) => Err(ForkError::BlockNotFound(block_id)),
@@ -241,7 +290,7 @@ impl<N: Network> BackendHandler<N> {
             }
             BackendRequest::Transaction(hash, sender) => {
                 let provider = self.provider.clone();
-                self.pending.push(Box::pin(async move {
+                self.push_pending(Box::pin(async move {
                     let tx = match provider.get_transaction_by_hash(hash).await {
                         Ok(Some(tx)) => Ok(tx),
                         Ok(None) => Err(ForkError::TransactionNotFound(hash)),
@@ -251,17 +300,257 @@ impl<N: Network> BackendHandler<N> {
                     ProviderResponse::Done
                 }));
             }
-            BackendRequest::SetPinnedBlock(block_id) => self.block_id = block_id,
+            BackendRequest::SetPinnedBlock(block_id) => {
+                self.block_id = block_id;
+                self.generation += 1;
+            }
+            BackendRequest::Repin(block_id, sender) => {
+                self.block_id = block_id;
+                self.generation += 1;
+                self.db.clear();
+                let _ = sender.send(Ok(()));
+            }
             BackendRequest::UpdateAccounts(accounts) => self.db.extend_accounts(accounts),
             BackendRequest::UpdateStorage(storage) => self.db.extend_storage(storage),
             BackendRequest::UpdateBlockHashes(hashes) => self.db.extend_block_hashes(hashes),
             BackendRequest::Any(future) => {
-                self.pending.push(Box::pin(async move {
+                self.push_pending(Box::pin(async move {
                     future.await;
                     ProviderResponse::Done
                 }));
             }
+            BackendRequest::Prefetch(accounts, slots, sender) => {
+                self.start_prefetch(accounts, slots, sender);
+            }
+            BackendRequest::PrefetchBlock(block, sender) => {
+                let provider = self.provider.clone();
+                let state_block = self.block_id;
+                self.push_pending(Box::pin(async move {
+                    match prestate::predict(&provider, block, state_block).await {
+                        Ok(Prediction::State { accounts, slots }) => {
+                            ProviderResponse::Prestate(accounts, slots, sender)
+                        }
+                        Ok(Prediction::Keys { accounts, slots }) => {
+                            ProviderResponse::PrefetchKeys(accounts, slots, sender)
+                        }
+                        Err(err) => ProviderResponse::PrefetchFailed(err, sender),
+                    }
+                }));
+            }
         }
+    }
+
+    /// Queues a fetch under the current pin.
+    fn push_pending(&mut self, future: BoxFuture<ProviderResponse>) {
+        let generation = self.generation;
+        self.pending.push(Box::pin(async move { (generation, future.await) }));
+    }
+
+    /// Handles a response fetched under an earlier pin: its state is not cached, and readers
+    /// waiting on it are served by a fetch at the current pin.
+    fn on_stale(&mut self, response: ProviderResponse) {
+        match response {
+            ProviderResponse::Account(address, _) => {
+                if self.account_requests.get(&address).is_some_and(|w| !w.is_empty()) {
+                    self.push_account_fetch(address);
+                } else {
+                    self.account_requests.remove(&address);
+                }
+            }
+            ProviderResponse::Storage(address, key, _) => {
+                if self.storage_requests.get(&(address, key)).is_some_and(|w| !w.is_empty()) {
+                    self.push_storage_fetch(address, key);
+                } else {
+                    self.storage_requests.remove(&(address, key));
+                }
+            }
+            // Block hashes do not depend on the pin, and other responses answered themselves.
+            ProviderResponse::BlockHash(..) | ProviderResponse::Done => self.on_response(response),
+            ProviderResponse::Batch(responses, sender) => {
+                for response in responses {
+                    self.on_stale(response);
+                }
+                let _ = sender.send(Ok(PrefetchStats::default()));
+            }
+            ProviderResponse::Prestate(.., sender) | ProviderResponse::PrefetchKeys(.., sender) => {
+                let _ = sender.send(Ok(PrefetchStats::default()));
+            }
+            ProviderResponse::PrefetchFailed(err, sender) => {
+                let _ = sender.send(Err(err));
+            }
+        }
+    }
+
+    fn push_account_fetch(&mut self, address: Address) {
+        let fetch = fetch_account(
+            self.provider.clone(),
+            address,
+            self.block_id,
+            Arc::clone(&self.account_fetch_mode),
+        );
+        self.push_pending(Box::pin(async move {
+            ProviderResponse::Account(address, fetch.await.map_err(Arc::new))
+        }));
+    }
+
+    fn push_storage_fetch(&mut self, address: Address, key: Word) {
+        let provider = self.provider.clone();
+        let block_id = self.block_id;
+        self.push_pending(Box::pin(async move {
+            let value = provider.get_storage_at(address, key).block_id(block_id).await;
+            ProviderResponse::Storage(address, key, value.map_err(Arc::new))
+        }));
+    }
+
+    /// Fetches every key not cached or in flight in concurrent JSON-RPC batches.
+    ///
+    /// Each key is registered as in flight without waiters, so a read that arrives meanwhile
+    /// waits on the batch instead of fetching it again.
+    fn start_prefetch(
+        &mut self,
+        accounts: Vec<Address>,
+        slots: Vec<(Address, Word)>,
+        sender: ResultSender<PrefetchStats>,
+    ) {
+        let mut keys = Vec::new();
+        for address in accounts {
+            if self.db.account(&address).is_none()
+                && let Entry::Vacant(entry) = self.account_requests.entry(address)
+            {
+                entry.insert(Vec::new());
+                keys.push(FetchKey::Account(address));
+            }
+        }
+        for (address, key) in slots {
+            if self.db.storage(&address, &key).is_none()
+                && let Entry::Vacant(entry) = self.storage_requests.entry((address, key))
+            {
+                entry.insert(Vec::new());
+                keys.push(FetchKey::Slot(address, key));
+            }
+        }
+        if keys.is_empty() {
+            let _ = sender.send(Ok(PrefetchStats::default()));
+            return;
+        }
+        let provider = self.provider.clone();
+        let block_id = self.block_id;
+        let mode = Arc::clone(&self.account_fetch_mode);
+        self.push_pending(Box::pin(async move {
+            let mut responses = Vec::with_capacity(keys.len());
+            let mut keys = keys;
+            for attempt in 0..=PREFETCH_RETRIES {
+                let chunks =
+                    keys.chunks(PREFETCH_BATCH_SIZE).map(<[FetchKey]>::to_vec).collect::<Vec<_>>();
+                let batch = stream::iter(chunks)
+                    .map(|chunk| fetch_batch(provider.clone(), chunk, block_id, Arc::clone(&mode)))
+                    .buffer_unordered(PREFETCH_CONCURRENCY)
+                    .flat_map(stream::iter)
+                    .collect::<Vec<_>>()
+                    .await;
+                keys = Vec::new();
+                for response in batch {
+                    match &response {
+                        ProviderResponse::Account(address, Err(err))
+                            if attempt < PREFETCH_RETRIES
+                                && RateLimitRetryPolicy::default().should_retry(err) =>
+                        {
+                            keys.push(FetchKey::Account(*address));
+                        }
+                        ProviderResponse::Storage(address, slot, Err(err))
+                            if attempt < PREFETCH_RETRIES
+                                && RateLimitRetryPolicy::default().should_retry(err) =>
+                        {
+                            keys.push(FetchKey::Slot(*address, *slot));
+                        }
+                        _ => responses.push(response),
+                    }
+                }
+                if keys.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(PREFETCH_BACKOFF * 2u32.pow(attempt)).await;
+            }
+            ProviderResponse::Batch(responses, sender)
+        }));
+    }
+
+    /// Caches the results of a prefetch. A failed key is fetched again on its own when a read
+    /// waits on it, and dropped otherwise.
+    fn on_batch(&mut self, responses: Vec<ProviderResponse>, sender: ResultSender<PrefetchStats>) {
+        let mut stats = PrefetchStats::default();
+        for response in responses {
+            match &response {
+                ProviderResponse::Account(address, result) => {
+                    let waiting = self.account_requests.get(address).is_some_and(|w| !w.is_empty());
+                    if result.is_err() {
+                        stats.failed += 1;
+                        if waiting {
+                            self.push_account_fetch(*address);
+                        } else {
+                            self.account_requests.remove(address);
+                        }
+                        continue;
+                    }
+                    stats.accounts += 1;
+                    if !waiting {
+                        self.db.mark_prefetched(PrefetchKey::Account(*address));
+                    }
+                }
+                ProviderResponse::Storage(address, key, result) => {
+                    let waiting =
+                        self.storage_requests.get(&(*address, *key)).is_some_and(|w| !w.is_empty());
+                    if result.is_err() {
+                        stats.failed += 1;
+                        if waiting {
+                            self.push_storage_fetch(*address, *key);
+                        } else {
+                            self.storage_requests.remove(&(*address, *key));
+                        }
+                        continue;
+                    }
+                    stats.slots += 1;
+                    if !waiting {
+                        self.db.mark_prefetched(PrefetchKey::Slot(*address, *key));
+                    }
+                }
+                _ => {}
+            }
+            self.on_response(response);
+        }
+        let _ = sender.send(Ok(stats));
+    }
+
+    /// Caches exact predicted state, keeping entries already cached and answering reads waiting
+    /// on the same keys.
+    fn on_prestate(
+        &mut self,
+        accounts: Vec<(Address, Option<AccountInfo>)>,
+        slots: Vec<(Address, Word, Word)>,
+        sender: ResultSender<PrefetchStats>,
+    ) {
+        let mut stats = PrefetchStats::default();
+        for (address, info) in accounts {
+            if self.db.account(&address).is_some() {
+                continue;
+            }
+            if !self.account_requests.get(&address).is_some_and(|w| !w.is_empty()) {
+                self.db.mark_prefetched(PrefetchKey::Account(address));
+            }
+            stats.accounts += 1;
+            self.on_response(ProviderResponse::Account(address, Ok(info)));
+        }
+        for (address, key, value) in slots {
+            if self.db.storage(&address, &key).is_some() {
+                continue;
+            }
+            if !self.storage_requests.get(&(address, key)).is_some_and(|w| !w.is_empty()) {
+                self.db.mark_prefetched(PrefetchKey::Slot(address, key));
+            }
+            stats.slots += 1;
+            self.on_response(ProviderResponse::Storage(address, key, Ok(value)));
+        }
+        let _ = sender.send(Ok(stats));
     }
 
     fn on_response(&mut self, response: ProviderResponse) {
@@ -305,8 +594,118 @@ impl<N: Network> BackendHandler<N> {
                 }
             }
             ProviderResponse::Done => {}
+            ProviderResponse::Batch(responses, sender) => self.on_batch(responses, sender),
+            ProviderResponse::Prestate(accounts, slots, sender) => {
+                self.on_prestate(accounts, slots, sender);
+            }
+            ProviderResponse::PrefetchKeys(accounts, slots, sender) => {
+                self.start_prefetch(accounts, slots, sender);
+            }
+            ProviderResponse::PrefetchFailed(err, sender) => {
+                let _ = sender.send(Err(err));
+            }
         }
     }
+}
+
+/// Fetches a batch of keys in one JSON-RPC batch request.
+///
+/// Accounts use `eth_getAccountInfo` unless the endpoint is known not to support it; if the
+/// endpoint rejects it, the batch's accounts are fetched again with separate requests.
+async fn fetch_batch<N: Network>(
+    provider: DynProvider<N>,
+    keys: Vec<FetchKey>,
+    block_id: BlockId,
+    mode: Arc<AtomicU8>,
+) -> Vec<ProviderResponse> {
+    enum Call<A, B, C, D> {
+        Info(Address, A),
+        Separate(Address, B, C, D),
+        Slot(Address, Word, B),
+    }
+
+    let account_info = mode.load(Ordering::Relaxed) != FETCH_SEPARATE;
+    let client = provider.client();
+    let mut batch = alloy_rpc_client::BatchRequest::new(client);
+    let mut calls = Vec::with_capacity(keys.len());
+    let mut responses = Vec::with_capacity(keys.len());
+    for key in keys {
+        let call = match key {
+            FetchKey::Account(address) if account_info => batch
+                .add_call::<_, RpcAccountInfo>("eth_getAccountInfo", &(address, block_id))
+                .map(|info| Call::Info(address, info)),
+            FetchKey::Account(address) => (|| {
+                let balance = batch.add_call::<_, U256>("eth_getBalance", &(address, block_id))?;
+                let nonce =
+                    batch.add_call::<_, U64>("eth_getTransactionCount", &(address, block_id))?;
+                let code = batch.add_call::<_, Bytes>("eth_getCode", &(address, block_id))?;
+                Ok(Call::Separate(address, balance, nonce, code))
+            })(),
+            FetchKey::Slot(address, slot) => batch
+                .add_call::<_, U256>("eth_getStorageAt", &(address, slot, block_id))
+                .map(|value| Call::Slot(address, slot, value)),
+        };
+        match call {
+            Ok(call) => calls.push(call),
+            Err(err) => responses.push(match key {
+                FetchKey::Account(address) => {
+                    ProviderResponse::Account(address, Err(Arc::new(err)))
+                }
+                FetchKey::Slot(address, slot) => {
+                    ProviderResponse::Storage(address, slot, Err(Arc::new(err)))
+                }
+            }),
+        }
+    }
+    if let Err(err) = batch.send().await {
+        tracing::debug!(target: "evm2::fork", %err, "prefetch batch failed");
+    }
+    let mut retry = Vec::new();
+    for call in calls {
+        match call {
+            Call::Info(address, info) => match info.await {
+                Ok(info) => {
+                    let _ = mode.compare_exchange(
+                        FETCH_UNCHECKED,
+                        FETCH_ACCOUNT_INFO,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    );
+                    responses.push(ProviderResponse::Account(
+                        address,
+                        Ok(account_from_parts(info.balance, info.nonce, info.code)),
+                    ));
+                }
+                Err(err) if err.as_error_resp().is_some_and(|resp| resp.code == -32601) => {
+                    mode.store(FETCH_SEPARATE, Ordering::Relaxed);
+                    retry.push(FetchKey::Account(address));
+                }
+                Err(err) => responses.push(ProviderResponse::Account(address, Err(Arc::new(err)))),
+            },
+            Call::Separate(address, balance, nonce, code) => {
+                let account = async { Ok((balance.await?, nonce.await?, code.await?)) }.await;
+                responses.push(ProviderResponse::Account(
+                    address,
+                    account
+                        .map(|(balance, nonce, code): (U256, U64, Bytes)| {
+                            account_from_parts(balance, nonce.to(), code)
+                        })
+                        .map_err(Arc::new),
+                ));
+            }
+            Call::Slot(address, slot, value) => {
+                responses.push(ProviderResponse::Storage(
+                    address,
+                    slot,
+                    value.await.map_err(Arc::new),
+                ));
+            }
+        }
+    }
+    if !retry.is_empty() {
+        responses.extend(Box::pin(fetch_batch(provider, retry, block_id, mode)).await);
+    }
+    responses
 }
 
 /// Fetches an account with the endpoint's supported method, recording it in `mode`.
@@ -367,7 +766,7 @@ async fn fetch_account<N: Network>(
     Ok(account_from_parts(balance, nonce, code))
 }
 
-fn account_from_parts(balance: U256, nonce: u64, code: Bytes) -> Option<AccountInfo> {
+pub(crate) fn account_from_parts(balance: U256, nonce: u64, code: Bytes) -> Option<AccountInfo> {
     if balance.is_zero() && nonce == 0 && code.is_empty() {
         return None;
     }
@@ -434,6 +833,7 @@ impl<N: Network> SharedBackend<N> {
             account_requests: Default::default(),
             storage_requests: Default::default(),
             block_requests: Default::default(),
+            generation: 0,
             pending: FuturesUnordered::new(),
         };
         (Self { backend, db, blocking_mode: BlockingMode::default() }, handler)
@@ -493,9 +893,16 @@ impl<N: Network> SharedBackend<N> {
 
     /// Pins later fetches to `block`.
     ///
-    /// Entries already cached are kept; clear [`Self::data`] to drop them.
+    /// Entries already cached are kept; clear [`Self::data`] to drop them. Fetches still in flight
+    /// at the old pin are not cached, and their readers get the state at `block`.
     pub fn set_pinned_block(&self, block: impl Into<BlockId>) -> ForkResult<()> {
         self.send(BackendRequest::SetPinnedBlock(block.into()))
+    }
+
+    /// Pins later fetches to `block` and clears the cache, after every request sent before it,
+    /// and waits until it is done.
+    pub(crate) fn repin(&self, block: BlockId) -> ForkResult<()> {
+        self.request(|sender| BackendRequest::Repin(block, sender))
     }
 
     /// Fetches a block with its full transactions. Blocks are not cached.
@@ -604,6 +1011,32 @@ impl<N: Network> SharedBackend<N> {
         self.request(|sender| BackendRequest::Storage(address, key, sender))?;
         self.db.mark_prefetched(PrefetchKey::Slot(address, key));
         Ok(())
+    }
+
+    /// Fetches accounts and storage slots into the cache in concurrent JSON-RPC batches, skipping
+    /// keys already cached or in flight.
+    ///
+    /// Like [`Self::prefetch_basic`], entries nothing reads are left out of the cache file.
+    pub fn prefetch(
+        &self,
+        accounts: impl IntoIterator<Item = Address>,
+        slots: impl IntoIterator<Item = (Address, Word)>,
+    ) -> ForkResult<PrefetchStats> {
+        let accounts = accounts.into_iter().collect();
+        let slots = slots.into_iter().collect();
+        self.request(|sender| BackendRequest::Prefetch(accounts, slots, sender))
+    }
+
+    /// Predicts the state `block` reads from the pinned state and fetches it before execution.
+    ///
+    /// Pin the backend to `block`'s parent. The prestate comes from `debug_traceBlockByNumber`
+    /// with the `prestateTracer` when the endpoint serves it; otherwise each transaction's
+    /// `eth_createAccessList` names the keys, which are then fetched with [`Self::prefetch`].
+    /// Replaying a block then makes a few batched requests instead of one blocking round trip
+    /// per cold read. Reads the prediction missed are fetched as usual.
+    pub fn prefetch_block(&self, block: impl Into<BlockId>) -> ForkResult<PrefetchStats> {
+        let block = block.into();
+        self.request(|sender| BackendRequest::PrefetchBlock(block, sender))
     }
 
     fn send(&self, request: BackendRequest<N>) -> ForkResult<()> {
