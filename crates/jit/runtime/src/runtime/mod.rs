@@ -6,9 +6,10 @@
 //! - Background JIT compilation for hot keys (threshold-based promotion).
 
 use crate::eyre::{self, WrapErr};
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 use backend::{
-    Command, CompileJitRequest, EventQueue, JitObjectLinker, PrepareAotRequest, ResidentMap,
+    Command, CompileJitRequest, EventQueue, JitObjectLinker, LookupEvent, PrepareAotRequest,
+    ResidentMap,
 };
 use crossbeam_channel as chan;
 use crossbeam_queue::ArrayQueue;
@@ -18,7 +19,7 @@ use std::{
     hint::cold_path,
     ops::ControlFlow,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -103,8 +104,6 @@ pub(crate) struct BackendInner {
     shared: Arc<BackendShared>,
     /// Global enable flag.
     enabled: AtomicBool,
-    /// Whether the backend thread has been spawned and is draining the command channel.
-    started: AtomicBool,
     /// Blocking mode: every lookup synchronously compiles and counts each fallback.
     blocking: bool,
     host: config::HostConfig,
@@ -116,9 +115,10 @@ pub(crate) struct BackendInner {
     /// [`BackendShared::events`].
     #[debug(skip)]
     tx: chan::Sender<Command>,
-    /// Backend thread + done signal. `None` after shutdown.
+    /// Backend thread + done signal, set once the thread is spawned and draining the command
+    /// channel. Set under the `lazy_spawn` lock, which it replaces as the startup state.
     #[debug(skip)]
-    thread: std::sync::Mutex<Option<BackendThread>>,
+    thread: OnceLock<BackendThread>,
     /// Shutdown timeout.
     shutdown_timeout: Duration,
     /// State for lazily spawning the backend thread.
@@ -203,12 +203,11 @@ impl JitBackend {
             inner: Arc::new(BackendInner {
                 shared,
                 enabled: AtomicBool::new(false),
-                started: AtomicBool::new(false),
                 blocking: config.blocking,
                 host: config.host.clone(),
                 gas_params: config.gas_params,
                 tx,
-                thread: std::sync::Mutex::new(None),
+                thread: OnceLock::new(),
                 shutdown_timeout: config.tuning.shutdown_timeout,
                 tuning,
                 lazy_spawn: std::sync::Mutex::new(Some(LazySpawnState { rx, config })),
@@ -291,7 +290,22 @@ impl JitBackend {
     ///
     /// In normal mode this never blocks. In [`blocking`](RuntimeConfig::blocking) mode,
     /// a miss triggers synchronous JIT compilation and the call blocks until it completes.
-    pub fn lookup(&self, mut req: LookupRequest) -> LookupDecision {
+    pub fn lookup(&self, req: LookupRequest) -> LookupDecision {
+        let LookupRequest { key, code } = req;
+        self.lookup_with(key, &code, || code.clone())
+    }
+
+    /// Like [`lookup`](Self::lookup), for a caller that holds `code` borrowed.
+    ///
+    /// `owned_code` returns the same bytes as `code`, owned; it is only called when the
+    /// lookup misses and the bytecode may be compiled, so a hit takes no reference to it.
+    #[inline]
+    pub fn lookup_with(
+        &self,
+        key: RuntimeCacheKey,
+        code: &[u8],
+        owned_code: impl FnOnce() -> Bytes,
+    ) -> LookupDecision {
         let inner = &*self.inner;
         let shared = &*inner.shared;
 
@@ -301,23 +315,24 @@ impl JitBackend {
         }
         if inner.blocking {
             cold_path();
-            return self.lookup_blocking(req);
+            return self.lookup_blocking(LookupRequest { key, code: owned_code() });
         }
-        if !inner.tuning.should_compile(&req.code) {
+        if !inner.tuning.should_compile(code) {
             cold_path();
             return LookupDecision::Unavailable(LookupMissReason::Ineligible);
         }
 
-        let decision = if let Some(program_ref) = shared.resident.try_get(&req.key).try_unwrap() {
-            let program = Arc::clone(&program_ref);
-            drop(program_ref);
-            req.code.clear();
-            LookupDecision::Compiled(program)
-        } else {
-            LookupDecision::Unavailable(LookupMissReason::NotReady)
-        };
+        let (decision, event) =
+            if let Some(program_ref) = shared.resident.try_get(&key).try_unwrap() {
+                let program = Arc::clone(&program_ref);
+                drop(program_ref);
+                (LookupDecision::Compiled(program), LookupEvent::Hit(key))
+            } else {
+                let req = LookupRequest { key, code: owned_code() };
+                (LookupDecision::Unavailable(LookupMissReason::NotReady), LookupEvent::Miss(req))
+            };
 
-        if let Err(_v) = shared.events.push(req) {
+        if let Err(_v) = shared.events.push(event) {
             cold_path();
             shared.stats.events_dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -535,18 +550,19 @@ impl JitBackend {
     /// [`blocking`](RuntimeConfig::blocking) mode the helper is never stopped, because the caller
     /// itself waits on compilation: pause only tracks pause depth there too.
     ///
-    /// Pause delivery is best-effort and never blocks: callers pause around block validation on
-    /// the engine's critical path. If the backend thread is not running or the command channel
-    /// is full, the command is skipped or dropped instead of blocking.
+    /// Pause delivery never blocks: callers pause around block validation on the engine's
+    /// critical path. The backend thread applies the pause depth when woken and on every tick
+    /// (at most [`event_drain_interval`](RuntimeTuning::event_drain_interval) apart), including
+    /// pauses taken before it started or whose wakeup was dropped.
     pub fn pause(&self) {
         if self.inner.shared.pause_depth.fetch_add(1, Ordering::Relaxed) == 0 {
-            self.try_send_control(Command::Pause);
+            self.wake_for_pause();
         }
     }
 
     /// Resumes out-of-process helper execution once all active pauses have been released.
     ///
-    /// Resume delivery is best-effort and never blocks, like [`pause`](Self::pause).
+    /// Resume delivery never blocks and is applied like [`pause`](Self::pause).
     pub fn resume(&self) {
         if self
             .inner
@@ -555,29 +571,30 @@ impl JitBackend {
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |depth| Some(depth.saturating_sub(1)))
             .is_ok_and(|depth| depth == 1)
         {
-            self.try_send_control(Command::Resume);
+            self.wake_for_pause();
         }
     }
 
-    /// Sends a best-effort control command without ever blocking the caller.
+    /// Wakes the backend thread to apply the pause depth, without ever blocking the caller.
     ///
     /// The command channel is bounded, so a plain `send` can block. Pause/resume are issued on
-    /// the caller's block-validation critical path and must never block there:
+    /// the caller's block-validation critical path and must never block there. The backend
+    /// applies [`BackendShared::pause_depth`] on every tick, so this wakeup only shortens the
+    /// delay and may be skipped or lost:
     ///
     /// - If the backend thread has not been started (the runtime was constructed but compilation
     ///   was never enabled), nothing drains the channel. Queued commands would only accumulate
     ///   until the channel fills and `send` blocks the caller forever, so the send is skipped
-    ///   entirely — there is no helper to pause anyway.
-    /// - In blocking mode the caller waits on the helper, so stopping it would hang lookups until
-    ///   resume; the command is skipped.
-    /// - If the channel is full, the command is dropped and recorded in
-    ///   [`commands_dropped`](RuntimeStatsSnapshot::commands_dropped). Pause/resume signals are
-    ///   idempotent and re-issued on the next pause cycle, so a dropped command self-heals.
-    fn try_send_control(&self, cmd: Command) {
-        if self.inner.blocking || !self.inner.started.load(Ordering::Relaxed) {
+    ///   entirely. A backend started later applies the depth on its first tick.
+    /// - In blocking mode the caller waits on the helper, which is never stopped; the wakeup is
+    ///   skipped.
+    /// - If the channel is full, the wakeup is dropped and recorded in
+    ///   [`commands_dropped`](RuntimeStatsSnapshot::commands_dropped).
+    fn wake_for_pause(&self) {
+        if self.inner.blocking || !self.inner.is_started() {
             return;
         }
-        if self.inner.tx.try_send(cmd).is_err() {
+        if self.inner.tx.try_send(Command::SyncPause).is_err() {
             self.inner.shared.stats.commands_dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -662,8 +679,9 @@ impl JitBackend {
             }
         };
 
-        *self.inner.thread.lock().unwrap() = Some(BackendThread { handle: thread, done_rx });
-        self.inner.started.store(true, Ordering::Relaxed);
+        if self.inner.thread.set(BackendThread { handle: thread, done_rx }).is_err() {
+            unreachable!("backend thread started twice");
+        }
         drop(guard);
         Ok(())
     }
@@ -783,9 +801,14 @@ impl BackendInner {
         snap
     }
 
-    fn shutdown(&self) -> eyre::Result<()> {
+    /// Returns whether the backend thread has been spawned and is draining the command channel.
+    fn is_started(&self) -> bool {
+        self.thread.get().is_some()
+    }
+
+    fn shutdown(&mut self) -> eyre::Result<()> {
         debug!("shutting down JIT backend");
-        if let Some(ct) = self.thread.lock().unwrap().take() {
+        if let Some(ct) = self.thread.take() {
             // Ignoring send error — backend may already be gone.
             let _ = self.tx.send(Command::Shutdown);
 
