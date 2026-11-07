@@ -230,8 +230,8 @@ where
         withdrawals: Option<&'ctx [Withdrawal]>,
     ) -> BlockExecutionContext<'ctx> {
         BlockExecutionContext {
-            system_calls: Some(BlockSystemCalls { parent_hash, parent_beacon_block_root }),
-            ommers: Some(ommers),
+            system_calls: BlockSystemCalls { parent_hash, parent_beacon_block_root },
+            ommers,
             withdrawals,
             deposit_contract_address: rules.deposit_contract_address,
         }
@@ -258,12 +258,10 @@ where
 
     /// Commits detached state without recording a transaction receipt or gas usage.
     pub fn commit_pending_state(&mut self, state: &PendingState) {
-        let stream_state = self.state_update_hook.is_some();
         commit_pending_state(
             &mut self.evm,
             &mut self.block_state,
-            stream_state,
-            &mut |state| emit_state(&mut self.state_update_hook, state),
+            self.state_update_hook.as_mut(),
             state,
         );
     }
@@ -322,7 +320,6 @@ where
         );
         let mut requests =
             block_requests_from_receipts(self.spec_id, context, &self.receipts[receipts_start..])?;
-        let stream_state = self.state_update_hook.is_some();
         let withdrawals =
             self.ctx.withdrawals.as_deref().filter(|_| self.spec_id.enables(SpecId::SHANGHAI));
         let context = Self::block_context(
@@ -337,8 +334,7 @@ where
         post_block_balance_state_changes(
             &mut self.evm,
             &mut self.block_state,
-            stream_state,
-            &mut |state| emit_state(&mut self.state_update_hook, state),
+            self.state_update_hook.as_mut(),
             self.spec_id,
             self.rules.base_block_reward,
             block_number,
@@ -350,10 +346,8 @@ where
         post_execution_system_call_state_changes(
             &mut self.evm,
             &mut self.block_state,
-            stream_state,
-            &mut |state| emit_state(&mut self.state_update_hook, state),
+            self.state_update_hook.as_mut(),
             self.spec_id,
-            context,
             &mut requests,
         )?;
 
@@ -467,21 +461,18 @@ where
             None,
         );
         let block_number = self.evm.block_env().number.to::<u64>();
-        let stream_state = self.state_update_hook.is_some();
         if self.rules.dao_fork_transition {
             core::hint::cold_path();
             dao_fork_state_changes(
                 &mut self.evm,
                 &mut self.block_state,
-                stream_state,
-                &mut |state| emit_state(&mut self.state_update_hook, state),
+                self.state_update_hook.as_mut(),
             )?;
         }
         pre_execution_system_call_state_changes(
             &mut self.evm,
             &mut self.block_state,
-            stream_state,
-            &mut |state| emit_state(&mut self.state_update_hook, state),
+            self.state_update_hook.as_mut(),
             self.spec_id,
             block_number,
             context,
@@ -537,8 +528,7 @@ where
         let Some(outcome) = execution::execute_transaction_with_condition(
             &mut self.evm,
             &mut self.block_state,
-            self.state_update_hook.is_some(),
-            &mut |state| emit_state(&mut self.state_update_hook, state),
+            self.state_update_hook.as_mut(),
             &transaction,
             commit,
         )
@@ -571,12 +561,10 @@ where
     ) -> Result<GasOutput, BlockExecutionError> {
         let EthTransactionResultWithState { result, tx_type, blob_gas_used } = output;
         self.set_transaction_block_access_index();
-        let stream_state = self.state_update_hook.is_some();
         let outcome = commit_detached_transaction(
             &mut self.evm,
             &mut self.block_state,
-            stream_state,
-            &mut |state| emit_state(&mut self.state_update_hook, state),
+            self.state_update_hook.as_mut(),
             result,
         );
         Ok(self.record_receipt(tx_type, blob_gas_used, outcome))
@@ -616,11 +604,5 @@ pub const fn final_block_gas_used(
         }
     } else {
         cumulative_gas_used
-    }
-}
-
-fn emit_state(hook: &mut StateUpdateHook, state: StateUpdate) {
-    if let Some(hook) = hook.as_mut() {
-        hook(state);
     }
 }
