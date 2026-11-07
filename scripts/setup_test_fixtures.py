@@ -206,6 +206,8 @@ async def pipe_to_tar(
     assert process.stdin is not None
     assert process.stderr is not None
 
+    stderr_task = asyncio.create_task(process.stderr.read())
+
     try:
         downloaded = 0
         async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
@@ -218,13 +220,16 @@ async def pipe_to_tar(
 
         process.stdin.close()
         await process.stdin.wait_closed()
-        stderr = await process.stderr.read()
+        stderr = await stderr_task
         return_code = await process.wait()
     except BaseException:
         if process.returncode is None:
             with suppress(ProcessLookupError):
                 process.kill()
             await process.wait()
+        stderr_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await stderr_task
         raise
 
     if return_code != 0:
