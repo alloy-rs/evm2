@@ -9,6 +9,7 @@ use crate::{
     interpreter::{
         dispatch::{self, InstrTable},
         opcode::OpCode,
+        private::InstructionImplFn,
     },
     trustme,
     version::{EvmFeatures, GasParams},
@@ -534,6 +535,48 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         Ok(self.stack_len)
     }
 
+    /// Like [`run_external_instruction`](Self::run_external_instruction), with the implementation
+    /// resolved ahead of time and without bounds checks, for backends that run many host
+    /// instructions per frame.
+    ///
+    /// # Safety
+    ///
+    /// [`prepare_run`](Self::prepare_run) must have run, `pc` must be in bounds of the active
+    /// bytecode, `instr` must come from the active opcode config for the opcode at `pc`, and the
+    /// first `stack_len` words of the stack must be initialized, with `stack_len` at most the
+    /// stack capacity.
+    #[doc(hidden)]
+    #[inline]
+    pub unsafe fn run_resolved_instruction(
+        &mut self,
+        instr: ExternalInstruction<T>,
+        pc: usize,
+        stack_len: usize,
+    ) -> core::result::Result<usize, InstrStop> {
+        // SAFETY: Upheld by the caller.
+        let bytecode = unsafe { self.bytecode_ref.unwrap_unchecked() };
+        let mut pc_ptr = Pc::new(unsafe { bytecode.as_ptr().add(pc) });
+        self.stack_len = stack_len;
+        let this: *mut Self = self;
+        // SAFETY: As in [`run_external_instruction`](Self::run_external_instruction).
+        let (state, mut stack) = unsafe {
+            (
+                InterpreterState::wrap_mut(&mut *this),
+                StackMut { stack: &mut (*this).stack, len: &mut (*this).stack_len },
+            )
+        };
+        let start = pc_ptr.as_ptr();
+        (instr.0)(&mut pc_ptr, stack.reborrow(), state)?;
+        if pc_ptr.as_ptr() != start {
+            cold_path();
+            return Err(self.fail_host_instruction(
+                pc,
+                format_args!("moved the program counter, which compiled code cannot follow"),
+            ));
+        }
+        Ok(self.stack_len)
+    }
+
     /// Records a fatal error for the host instruction at `pc` that compiled code cannot continue
     /// after.
     ///
@@ -661,6 +704,34 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Takes an owned error recorded by an instruction or inspector hook.
     pub(crate) const fn take_error(&mut self) -> Option<ExecutionError> {
         self.error.take()
+    }
+}
+
+/// A host instruction implementation resolved from an opcode config, for
+/// [`Interpreter::run_resolved_instruction`].
+#[doc(hidden)]
+pub struct ExternalInstruction<T: EvmTypesHost>(InstructionImplFn<T>);
+
+impl<T: EvmTypesHost> Clone for ExternalInstruction<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: EvmTypesHost> Copy for ExternalInstruction<T> {}
+
+impl<T: EvmTypesHost> fmt::Debug for ExternalInstruction<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExternalInstruction").finish_non_exhaustive()
+    }
+}
+
+impl<T: EvmTypesHost> crate::OpcodeConfig<T> {
+    /// Returns the implementation of `opcode`'s instruction, for
+    /// [`Interpreter::run_resolved_instruction`].
+    #[doc(hidden)]
+    pub const fn external_instruction(&self, opcode: u8) -> ExternalInstruction<T> {
+        ExternalInstruction(self.instruction(opcode).instr)
     }
 }
 
