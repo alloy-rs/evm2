@@ -2011,7 +2011,6 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
     }
 
     let cpu;
-    let width;
     let (key, value) = match attr {
         OurAttr::WillReturn => ("willreturn", AttrValue::Enum(0)),
         OurAttr::NoReturn => ("noreturn", AttrValue::Enum(0)),
@@ -2035,14 +2034,6 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::NoInline => ("noinline", AttrValue::Enum(0)),
         OurAttr::Speculatable => ("speculatable", AttrValue::Enum(0)),
         OurAttr::InlineStackProbes => ("probe-stack", AttrValue::String("inline-asm")),
-        OurAttr::PreferVectorWidth(bits) => {
-            width = bits.to_string();
-            ("prefer-vector-width", AttrValue::String(&width))
-        }
-        OurAttr::MinLegalVectorWidth(bits) => {
-            width = bits.to_string();
-            ("min-legal-vector-width", AttrValue::String(&width))
-        }
 
         OurAttr::NoAlias => ("noalias", AttrValue::Enum(0)),
         OurAttr::NoCapture => return cpp::create_no_captures_attr(bcx.cx()),
