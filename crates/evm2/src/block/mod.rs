@@ -112,11 +112,11 @@ pub trait ReceiptBuilder {
     /// Receipt produced by this builder.
     type Receipt: alloy_consensus::TxReceipt<Log = Log>;
 
-    /// Builds a receipt for the transaction execution result.
+    /// Builds a receipt for the transaction execution result, or rejects invalid receipt data.
     fn build_receipt<T: EvmTypes>(
         &self,
         ctx: ReceiptBuilderCtx<<Self::Transaction as TransactionEnvelope>::TxType, TxResult<T>>,
-    ) -> Self::Receipt;
+    ) -> Result<Self::Receipt, BlockExecutionError>;
 }
 
 /// A transaction a [`BlockExecutor`] can execute: the EVM transaction environment with its

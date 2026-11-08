@@ -100,25 +100,26 @@ impl ReceiptBuilder for EthReceiptBuilder {
     fn build_receipt<T: EvmTypes>(
         &self,
         ctx: ReceiptBuilderCtx<TxType, TxResult<T>>,
-    ) -> ReceiptEnvelope {
+    ) -> Result<ReceiptEnvelope, BlockExecutionError> {
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
         if let Some(frame) = result.frame {
-            return ReceiptEnvelope::Eip8141(
+            return Ok(ReceiptEnvelope::Eip8141(
                 FrameReceiptPayload {
                     cumulative_gas_used,
                     payer: frame.payer,
                     frame_receipts: frame.receipts,
                 }
                 .into(),
-            );
+            ));
         }
         let receipt = Receipt {
             status: Eip658Value::Eip658(result.is_success()),
             cumulative_gas_used,
             logs: result.logs,
         };
-        ReceiptEnvelope::from_typed(tx_type, receipt.with_bloom())
-            .expect("non-frame transaction results produce ordinary receipts")
+        ReceiptEnvelope::from_typed(tx_type, receipt.with_bloom()).map_err(|_| {
+            BlockExecutionError::msg("frame transaction result is missing receipt data")
+        })
     }
 }
 
@@ -413,20 +414,22 @@ where
         tx_type: <R::Transaction as TransactionEnvelope>::TxType,
         blob_gas_used: u64,
         outcome: TxResult<T>,
-    ) -> GasOutput {
+    ) -> Result<GasOutput, BlockExecutionError> {
         let tx_gas_used = outcome.tx_gas_used();
         let regular_gas_used = outcome.execution_gas_spent();
         let state_gas_used = outcome.state_gas_spent();
-        self.block_regular_gas_used = self.block_regular_gas_used.saturating_add(regular_gas_used);
-        self.block_state_gas_used = self.block_state_gas_used.saturating_add(state_gas_used);
-        self.cumulative_gas_used += tx_gas_used;
-        self.blob_gas_used += blob_gas_used;
-        self.receipts.push(self.receipt_builder.build_receipt::<T>(ReceiptBuilderCtx {
+        let cumulative_gas_used = self.cumulative_gas_used + tx_gas_used;
+        let receipt = self.receipt_builder.build_receipt::<T>(ReceiptBuilderCtx {
             tx_type,
             result: outcome,
-            cumulative_gas_used: self.cumulative_gas_used,
-        }));
-        GasOutput::new_with_regular(tx_gas_used, regular_gas_used, state_gas_used)
+            cumulative_gas_used,
+        })?;
+        self.block_regular_gas_used = self.block_regular_gas_used.saturating_add(regular_gas_used);
+        self.block_state_gas_used = self.block_state_gas_used.saturating_add(state_gas_used);
+        self.cumulative_gas_used = cumulative_gas_used;
+        self.blob_gas_used += blob_gas_used;
+        self.receipts.push(receipt);
+        Ok(GasOutput::new_with_regular(tx_gas_used, regular_gas_used, state_gas_used))
     }
 
     fn validate_transaction_gas(&mut self, tx: &R::Transaction) -> Result<(), BlockExecutionError> {
@@ -584,7 +587,7 @@ where
         else {
             return Ok(None);
         };
-        Ok(Some(self.record_receipt(tx_type, blob_gas_used, outcome)))
+        self.record_receipt(tx_type, blob_gas_used, outcome).map(Some)
     }
 
     fn execute_transaction_without_commit(
@@ -617,7 +620,7 @@ where
             &mut |state| emit_state(&mut self.state_update_hook, state),
             result,
         );
-        Ok(self.record_receipt(tx_type, blob_gas_used, outcome))
+        self.record_receipt(tx_type, blob_gas_used, outcome)
     }
 
     fn receipts(&self) -> &[Self::Receipt] {
