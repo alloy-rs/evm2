@@ -27,6 +27,10 @@ pub const TRANSFER_EVENT_TOPIC: B256 =
 /// Like `go-ethereum`'s `eth_simulateV1` tracer, the logs are kept by the inspector and are never
 /// added to the EVM's own logs, so receipts and log blooms do not include them.
 ///
+/// The inspector has no view of transaction errors: if a transaction stops on an error, the
+/// transfers and logs recorded so far are kept and its open frames are only dropped at the next
+/// top-level call. Discard the inspector after such an error instead of reusing it.
+///
 /// This can be used to construct an `eth_simulateV1` response. For `ots_getInternalOperations`,
 /// use [InternalOperationsInspector](crate::otterscan::InternalOperationsInspector).
 #[derive(Debug, Default, Clone)]
