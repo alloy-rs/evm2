@@ -87,6 +87,19 @@ impl super::DispatchGas for RemainingGas {
             self.set(state.gas_mut().remaining());
         }
     }
+
+    #[inline(always)]
+    fn try_spend<T: EvmTypesHost>(
+        &mut self,
+        _state: &mut InterpreterState<'_, '_, T>,
+        cost: u64,
+    ) -> bool {
+        let enough = self.get() >= cost;
+        if enough {
+            self.set(self.get() - cost);
+        }
+        enough
+    }
 }
 
 extern_table! {
