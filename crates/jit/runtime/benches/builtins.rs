@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-//! Cost of the copy builtins that compiled code calls, over loops of one opcode.
+//! Cost of the builtins that compiled code calls, over loops of one opcode.
 
 use alloy_primitives::{Address, Bytes};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
@@ -92,5 +92,25 @@ fn extcodecopy(c: &mut Criterion) {
     bench_loop(c, "builtins/extcodecopy", &body);
 }
 
-criterion_group!(benches, codecopy, extcodecopy);
+/// A full-width dividend for the arithmetic builtins.
+const DIVIDEND: [u8; 32] = [0xab; 32];
+
+/// Returns a loop body that applies `opcode` to [`DIVIDEND`] and the loop counter, so that the
+/// divisor is not a constant, and stores the result so that it stays live.
+fn counter_divisor_body(opcode: u8) -> Vec<u8> {
+    let mut body = vec![op::DUP1, op::PUSH32];
+    body.extend_from_slice(&DIVIDEND);
+    body.extend([opcode, op::PUSH0, op::MSTORE]);
+    body
+}
+
+fn div(c: &mut Criterion) {
+    bench_loop(c, "builtins/div", &counter_divisor_body(op::DIV));
+}
+
+fn mod_(c: &mut Criterion) {
+    bench_loop(c, "builtins/mod", &counter_divisor_body(op::MOD));
+}
+
+criterion_group!(benches, codecopy, extcodecopy, div, mod_);
 criterion_main!(benches);
