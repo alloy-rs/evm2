@@ -1106,6 +1106,10 @@ mod default_attrs {
             Attribute::NonLazyBind,       // Skip PLT indirection.
             Attribute::UWTable,           // Unwind tables for profilers/debuggers.
             Attribute::InlineStackProbes, // Overflow faults on the guard page, as in Rust code.
+            // No 512-bit copies of stack words: on Zen 4 the 8-byte loads that read them back
+            // can't take their data from a 512-bit store, so each one stalls.
+            Attribute::PreferVectorWidth(256),
+            Attribute::MinLegalVectorWidth(0),
         ]
         .into_iter()
     }
