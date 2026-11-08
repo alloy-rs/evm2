@@ -510,7 +510,7 @@ pub fn charge_upfront<'a, T: EvmTypes>(
 /// phase instead ([`prepare_initial_frame`]). The pre-EIP-2780 EIP-7702 state-gas refund is not an
 /// input here: per execution-specs it is credited directly back to the reservoir after the
 /// authorizations are applied, not applied to execution gas first.
-pub fn initial_gas_and_reservoir(
+pub const fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
@@ -522,7 +522,8 @@ pub fn initial_gas_and_reservoir(
 
     let cap = version.tx_gas_limit_cap;
     let execution_gas = tx_gas_limit - intrinsic;
-    let mut execution_gas_limit = core::cmp::min(tx_gas_limit, cap).saturating_sub(intrinsic);
+    let capped_gas_limit = if tx_gas_limit < cap { tx_gas_limit } else { cap };
+    let mut execution_gas_limit = capped_gas_limit.saturating_sub(intrinsic);
     let mut reservoir = execution_gas - execution_gas_limit;
 
     if reservoir >= initial_state_gas {
@@ -976,7 +977,7 @@ pub fn intrinsic_and_floor_gas(
 /// `to`- nor `value`-based charge — only the base. Precompile recipients are
 /// charged the same as any other account (the precompile carve-out from the
 /// draft is not implemented).
-fn eip2780_base_to_value_gas(
+const fn eip2780_base_to_value_gas(
     version: &Version,
     is_create: bool,
     is_self_transfer: bool,
@@ -989,7 +990,7 @@ fn eip2780_base_to_value_gas(
         gas += params.get(GasId::TxCreateAccessCost);
     } else if !is_self_transfer {
         gas += params.get(GasId::WarmStorageReadCost) + params.cold_account_additional_cost();
-        if !value.is_zero() {
+        if !value.const_is_zero() {
             gas += params.get(GasId::TxValueCost);
         }
     }
