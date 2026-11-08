@@ -137,11 +137,6 @@ pub enum Attribute {
     /// `"probe-stack"="inline-asm"` — touches every page of a frame larger than a page, so that
     /// a stack overflow faults on the guard page instead of skipping past it.
     InlineStackProbes,
-    /// `"prefer-vector-width"="N"` — the widest vectors the backend should prefer, in bits.
-    PreferVectorWidth(u32),
-    /// `"min-legal-vector-width"="N"` — the widest vector type in the function's interface, in
-    /// bits. Without it, X86 assumes the widest one and keeps 512-bit registers legal.
-    MinLegalVectorWidth(u32),
 
     // Parameter attributes.
     NoAlias,
