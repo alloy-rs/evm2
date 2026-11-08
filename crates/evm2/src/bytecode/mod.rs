@@ -1,12 +1,12 @@
 //! EVM bytecode.
 
 use crate::{
-    constants::{EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
+    constants::{EIP7702_BYTECODE_LEN, EIP7702_MAGIC, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
     interpreter::op,
     once_lock::OnceLock,
 };
 use alloc::sync::Arc;
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
 use analysis::pad_legacy;
 use core::{cmp::Ordering, fmt, hash};
 use thiserror::Error;
@@ -138,26 +138,18 @@ impl Bytecode {
     }
 
     #[inline]
-    fn empty_inner() -> &'static BytecodeInner {
-        static EMPTY: OnceLock<BytecodeInner> = OnceLock::new();
-        EMPTY.get_or_init(|| BytecodeInner {
+    fn inner(&self) -> &BytecodeInner {
+        /// The empty bytecode, built at compile time so reading it takes no initialization check.
+        static EMPTY: BytecodeInner = BytecodeInner {
             kind: BytecodeKind::Legacy,
             bytecode: Bytes::from_static(&[op::STOP]),
             original_len: 0,
             jump_table: OnceLock::new(),
-            hash: {
-                let hash = OnceLock::new();
-                let _ = hash.set(KECCAK256_EMPTY);
-                hash
-            },
-        })
-    }
-
-    #[inline]
-    fn inner(&self) -> &BytecodeInner {
+            hash: OnceLock::new(),
+        };
         match &self.0 {
             Some(inner) => inner,
-            None => Self::empty_inner(),
+            None => &EMPTY,
         }
     }
 
@@ -236,14 +228,17 @@ impl Bytecode {
     }
 
     /// Checks that `bytes` is a valid EIP-7702 delegation designator.
-    fn check_eip7702(bytes: &[u8]) -> Result<(), Eip7702DecodeError> {
+    const fn check_eip7702(bytes: &[u8]) -> Result<(), Eip7702DecodeError> {
+        let &[magic0, magic1, version, ..] = bytes else {
+            return Err(Eip7702DecodeError::InvalidLength);
+        };
         if bytes.len() != EIP7702_BYTECODE_LEN {
             return Err(Eip7702DecodeError::InvalidLength);
         }
-        if !bytes.starts_with(EIP7702_MAGIC_BYTES) {
+        if u16::from_be_bytes([magic0, magic1]) != EIP7702_MAGIC {
             return Err(Eip7702DecodeError::InvalidMagic);
         }
-        if bytes[2] != EIP7702_VERSION {
+        if version != EIP7702_VERSION {
             return Err(Eip7702DecodeError::UnsupportedVersion);
         }
         Ok(())
@@ -416,7 +411,7 @@ mod tests {
     use super::*;
     use crate::interpreter::op;
     use alloc::format;
-    use alloy_primitives::{Address, Bytes};
+    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY};
     use std::hash::{BuildHasher, RandomState};
 
     #[test]
