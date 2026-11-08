@@ -52,6 +52,10 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 name = "lookup"
 harness = false
 
+[[bench]]
+name = "builtins"
+harness = false
+
 [features]
 default = ["llvm"]
 llvm = ["evm2-jit-codegen/llvm", "dep:evm2-jit-llvm"]
