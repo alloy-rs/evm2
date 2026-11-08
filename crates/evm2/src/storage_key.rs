@@ -29,8 +29,8 @@ const _: () = assert!(mem::size_of::<StorageKey>() == mem::size_of::<FixedBytes<
 impl StorageKey {
     /// Creates a storage key from an account address and slot.
     #[inline]
-    pub fn new(address: Address, key: Word) -> Self {
-        Self { address, key: B256::from(key) }
+    pub const fn new(address: Address, key: Word) -> Self {
+        Self { address, key: B256::new(key.to_be_bytes()) }
     }
 
     /// Returns the account address.
