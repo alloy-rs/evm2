@@ -13,8 +13,10 @@ pub const fn num_words(len: usize) -> usize {
 
 /// Converts an address to an EVM word.
 #[inline]
-pub fn address_to_word(address: &Address) -> Word {
-    address.into_word().into()
+pub const fn address_to_word(address: &Address) -> Word {
+    let mut word = [0; 32];
+    word.split_at_mut(12).1.copy_from_slice(&address.0.0);
+    Word::from_be_bytes(word)
 }
 
 /// Converts a 256-bit hash to an EVM word.
@@ -222,12 +224,12 @@ pub const fn u64_to_address(x: u64) -> Address {
 ///
 /// Returns the first `LEN` bytes if it does not need padding.
 #[inline]
-pub fn right_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
+pub const fn right_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
     if let Some(data) = data.first_chunk() {
         Cow::Borrowed(data)
     } else {
         let mut padded = [0; LEN];
-        padded[..data.len()].copy_from_slice(data);
+        padded.split_at_mut(data.len()).0.copy_from_slice(data);
         Cow::Owned(padded)
     }
 }
@@ -250,12 +252,12 @@ pub fn right_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
 ///
 /// Returns the first `LEN` bytes if it does not need padding.
 #[inline]
-pub fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
+pub const fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
     if let Some(data) = data.first_chunk() {
         Cow::Borrowed(data)
     } else {
         let mut padded = [0; LEN];
-        padded[LEN - data.len()..].copy_from_slice(data);
+        padded.split_at_mut(LEN - data.len()).1.copy_from_slice(data);
         Cow::Owned(padded)
     }
 }
@@ -294,15 +296,15 @@ const fn bool_to_b256(value: bool) -> &'static B256 {
 
 /// Reads the 32 bytes of `data` starting at `offset`, zero-padding past the end.
 #[inline]
-pub fn read_word_padded(data: &[u8], offset: usize) -> B256 {
-    match data.get(offset..) {
+pub const fn read_word_padded(data: &[u8], offset: usize) -> B256 {
+    match data.split_at_checked(offset) {
         // A fixed-size read for the common in-bounds case avoids a `memcpy` call.
-        Some(rest) => match rest.first_chunk() {
+        Some((_, rest)) => match rest.first_chunk() {
             Some(chunk) => B256::new(*chunk),
             None => {
-                let mut word = B256::ZERO;
-                word[..rest.len()].copy_from_slice(rest);
-                word
+                let mut word = [0; 32];
+                word.split_at_mut(rest.len()).0.copy_from_slice(rest);
+                B256::new(word)
             }
         },
         None => B256::ZERO,
@@ -355,8 +357,8 @@ impl<const WORDS: usize> BitArray<WORDS> {
 
     /// Unsets every bit.
     #[inline]
-    pub(crate) fn clear(&mut self) {
-        self.0.fill(0);
+    pub(crate) const fn clear(&mut self) {
+        self.0 = [0; WORDS];
     }
 }
 
