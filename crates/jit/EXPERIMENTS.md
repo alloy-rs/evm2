@@ -41,6 +41,11 @@ ones here with the numbers that rejected them.
   can't forward from compiled code's 8-byte stores: ruint's `div_rem_by_ref` still copies its
   operands through 16-byte loads, so the stall moved into it. `builtins/div` medians
   54.5/61.0/53.9 us -> 56.2/54.0/54.4 us, `builtins/mod` 54.1/55.8/56.8 us -> 59.6/55.8/60.4 us.
+- Marking compiled functions `"prefer-vector-width"="256"` and `"min-legal-vector-width"="0"`,
+  so AVX-512 hosts copy stack words with 32-byte vectors instead of 64-byte loads that can't
+  forward from 8-byte stores: `curve_stableswap` jit/run 54.4 -> 50.6 us on Zen 4 (other runs
+  within noise), but `jit/compile` got 15-19% slower in CodSpeed and 12-18% slower locally
+  (`fibonacci-calldata` 5.4 -> 6.3 ms, `eip2935` 6.2 -> 7.1 ms).
 
 ## Optimization passes
 
