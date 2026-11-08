@@ -1069,12 +1069,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         runner
     }
 
-    /// Returns the active base specification ID.
-    #[inline]
-    pub fn spec_id(&self) -> SpecId {
-        self.spec_id.into()
-    }
-
     /// Returns the selector-specific runtime specification ID.
     #[inline]
     pub const fn config_spec_id(&self) -> T::SpecId {
@@ -1083,6 +1077,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 }
 
 impl<'a, T: EvmTypesHost> Evm<'a, T> {
+    /// Returns the active base specification ID.
+    #[inline]
+    pub fn spec_id(&self) -> SpecId {
+        self.spec_id.into()
+    }
+
     /// Returns the mutable EVM state.
     #[inline]
     pub const fn state(&self) -> &State<'a> {
@@ -1631,7 +1631,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         mut gas: Gas,
         mut output: Bytes,
     ) -> Result<MessageResult<T>, ExecutionError> {
-        let code_adoption = self.feature(EvmFeatures::EIP8298);
+        let code_adoption = self.spec_id().enables(SpecId::BOGOTA);
         let adopted = if stop.is_success() && code_adoption {
             let mut account = self.state.account(address)?;
             if account.is_empty_code_hash() {
@@ -2130,6 +2130,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         source: &Address,
         gas: &mut Gas,
     ) -> Result<bool, HostError> {
+        if !self.spec_id().enables(SpecId::BOGOTA) {
+            return Err(InstrStop::OpcodeNotFound.into());
+        }
         if matches!(
             *contract,
             BEACON_ROOTS_ADDRESS
@@ -2178,6 +2181,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, HostError> {
         let features = self.features;
+        let send_all = self.spec_id().enables(SpecId::BOGOTA);
         let (is_cold, target_is_empty_for_new_account_gas) =
             match self.state.account_with_skip(target, skip_cold_load) {
                 Ok(mut account) => (account.warm(), account.is_empty_for_new_account_gas(features)),
@@ -2186,8 +2190,8 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             };
         let (previously_destroyed, balance, should_destroy) = {
             let account = self.state.account(contract)?;
-            let should_destroy = !features.contains(EvmFeatures::EIP4758)
-                && (!features.contains(EvmFeatures::EIP6780) || account.is_created());
+            let should_destroy =
+                !send_all && (!features.contains(EvmFeatures::EIP6780) || account.is_created());
             (account.is_destructed(), account.balance(), should_destroy)
         };
 

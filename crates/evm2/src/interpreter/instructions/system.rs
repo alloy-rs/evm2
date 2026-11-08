@@ -2,7 +2,7 @@
 
 use super::require_non_staticcall;
 use crate::{
-    EvmFeatures, EvmTypesHost,
+    EvmFeatures, EvmTypesHost, SpecId,
     bytecode::Bytecode,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, MessageResult,
@@ -528,7 +528,7 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     if should_charge_topup && cx.state.feature(EvmFeatures::EIP8037) {
         cx.gas.spend_state(cx.state.gas_params().new_account_state_gas())?;
     }
-    if !res.previously_destroyed && !cx.state.feature(EvmFeatures::EIP4758) {
+    if !res.previously_destroyed && !cx.state.spec().enables(SpecId::BOGOTA) {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
     }
     cx.state.inspect_selfdestruct(destination, &target, &res.value);

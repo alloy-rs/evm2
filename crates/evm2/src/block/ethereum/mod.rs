@@ -7,6 +7,7 @@ use crate::{
         BlockTransactionResult, BlockValidationError, BundleState, CommitChanges, ExecutableTx,
         GasOutput, ReceiptBuilder, ReceiptBuilderCtx, StateUpdate,
     },
+    ethereum::eip8141::FrameGas,
     evm::{Bal, PendingState},
     interpreter::Host,
 };
@@ -423,6 +424,30 @@ where
         }));
         GasOutput::new_with_regular(tx_gas_used, regular_gas_used, state_gas_used)
     }
+
+    fn validate_transaction_gas(&mut self, tx: &R::Transaction) -> Result<(), BlockExecutionError> {
+        let Some(frame) =
+            tx.frame_transaction().filter(|_| self.evm.spec_id().enables(SpecId::BOGOTA))
+        else {
+            return self.validate_transaction_gas_limit(tx.gas_limit());
+        };
+        let gas = FrameGas::calculate(frame, self.evm.version())
+            .map_err(|error| map_transaction_error(error, *tx.tx_hash()))?;
+        let block_gas_limit = self.evm.block_env().gas_limit.to::<u64>();
+        for (reservation, used) in
+            [(gas.execution, self.block_regular_gas_used), (gas.state, self.block_state_gas_used)]
+        {
+            let available = block_gas_limit.saturating_sub(used);
+            if reservation > available {
+                return Err(BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                    transaction_gas_limit: reservation,
+                    block_available_gas: available,
+                }
+                .into());
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<'a, T, R> BlockExecutor for EthBlockExecutor<'a, T, R>
@@ -539,7 +564,7 @@ where
         let (transaction, tx) = tx.into_parts();
         let tx = tx.borrow();
         self.set_transaction_block_access_index();
-        self.validate_transaction_gas_limit(tx.gas_limit())?;
+        self.validate_transaction_gas(tx)?;
         let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
         self.validate_transaction_blob_gas(blob_gas_used)?;
         let tx_type = tx.tx_type();
@@ -565,7 +590,7 @@ where
         let (transaction, tx) = tx.into_parts();
         let tx = tx.borrow();
         self.set_transaction_block_access_index();
-        self.validate_transaction_gas_limit(tx.gas_limit())?;
+        self.validate_transaction_gas(tx)?;
         let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
         self.validate_transaction_blob_gas(blob_gas_used)?;
         let tx_type = tx.tx_type();

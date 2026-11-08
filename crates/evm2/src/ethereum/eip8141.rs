@@ -2,7 +2,7 @@
 
 use super::{validate_block_gas_limit, validate_chain_id};
 use crate::{
-    Evm, EvmFeatures, EvmTypes, HostError, TxResult, TxResultExt, Version,
+    Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
     env::{TxEnv, TxEnvExt},
     evm::{
@@ -119,6 +119,12 @@ impl FrameGas {
             )?,
         )?;
         let signatures = tx.signature_verification_gas();
+        let value_transfers = tx
+            .frames
+            .iter()
+            .filter(|frame| !frame.value.is_zero() && frame.resolved_target(tx.sender) != tx.sender)
+            .count() as u64;
+        let value_transfer_gas = mul(value_transfers, gp.get(GasId::TxValueCost))?;
         let base = sum(
             sum(
                 sum(
@@ -127,7 +133,7 @@ impl FrameGas {
                 )?,
                 signatures,
             )?,
-            sum(tx.value_transfer_gas(), access)?,
+            sum(value_transfer_gas, access)?,
         )?;
         let mut fields = core::iter::once(nonce_data.as_slice())
             .chain(tx.frames.iter().map(|frame| frame.data.as_ref()))
@@ -187,7 +193,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let host = &mut *req.host;
     let tx = *req.tx.inner();
     validate_chain_id(host.version(), Some(tx.chain_id), false)?;
-    if !host.feature(EvmFeatures::EIP8141) {
+    if !host.spec_id().enables(SpecId::BOGOTA) {
         return Err(HandlerError::UnsupportedTransactionType(6));
     }
     // Match Revm's environment validation before frame structure and signatures.
@@ -216,24 +222,18 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
             max: host.version().max_blobs_per_tx,
         });
     }
-    if tx.nonce == u64::MAX
-        && !(host.feature(EvmFeatures::EIP8250)
-            && tx.nonce_keys.as_ref().is_some_and(|keys| !keys.is_empty()))
-    {
+    if tx.nonce == u64::MAX && tx.nonce_keys.as_ref().is_none_or(|keys| keys.is_empty()) {
         return Err(HandlerError::NonceOverflow);
     }
-    if tx.nonce_keys.is_some() != host.feature(EvmFeatures::EIP8250) {
-        return Err(invalid(FrameTransactionError::NoncePayloadMismatch));
-    }
-    if let Some(keys) = &tx.nonce_keys {
-        validate_nonce_keys(keys).map_err(|_| {
-            invalid(if keys.len() > MAX_NONCE_KEYS {
-                FrameTransactionError::TooManyNonceKeys
-            } else {
-                FrameTransactionError::NonceKeysNotIncreasing
-            })
-        })?;
-    }
+    let keys =
+        tx.nonce_keys.as_deref().ok_or(invalid(FrameTransactionError::NoncePayloadMismatch))?;
+    validate_nonce_keys(keys).map_err(|_| {
+        invalid(if keys.len() > MAX_NONCE_KEYS {
+            FrameTransactionError::TooManyNonceKeys
+        } else {
+            FrameTransactionError::NonceKeysNotIncreasing
+        })
+    })?;
     if tx.frames.is_empty() || tx.frames.len() > MAX_FRAMES {
         return Err(invalid(FrameTransactionError::InvalidFrameCount));
     }
@@ -290,14 +290,12 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     req: TxRequest<'_, '_, T, TxEip8141>,
     prepared: PreparedFrameTx,
 ) -> HandlerResult<TxResult<T>> {
-    let host = req.host;
-    let result = execute_frames(host, &prepared, None).and_then(|result| {
+    req.host.with_frame_execution(|host| {
+        let result = execute_frames(host, &prepared, None)?;
         let result = H::settle_frame_transaction(host, req.envelope, &prepared, result)?;
         host.inspect_frame(|inspector, host| inspector.frame_transaction_end(&result, host));
         Ok(result)
-    });
-    host.frame_tx = None;
-    result
+    })
 }
 
 /// Native frame transaction handler with executable prefix validation.
@@ -338,21 +336,22 @@ fn validate_prefix_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         return Err(invalid(FrameTransactionError::PrefixOutOfBounds));
     }
     let prepared = prepare_with_hooks::<T, H>(&mut req)?;
-    let host = req.host;
-    let result = execute_frames(host, &prepared, Some(prefix_end))?;
-    host.inspect_frame(|inspector, host| inspector.frame_transaction_end(&result, host));
-    let frame = result.frame.as_ref().unwrap();
-    if frame.receipts.len() != prefix_end {
-        return Err(invalid(FrameTransactionError::PrefixBoundaryMismatch));
-    }
-    Ok(FrameValidationResult {
-        payer: frame.payer,
-        max_cost: prepared.max_cost,
-        prefix_end,
-        sender_approved: host.frame_tx.as_ref().unwrap().approval.sender_approved,
-        signature_gas: prepared.gas.signatures,
-        execution_gas: frame.receipts.iter().map(|receipt| receipt.gas_used.execution).sum(),
-        state_gas: result.state_gas_spent,
+    req.host.with_frame_execution(|host| {
+        let result = execute_frames(host, &prepared, Some(prefix_end))?;
+        host.inspect_frame(|inspector, host| inspector.frame_transaction_end(&result, host));
+        let frame = result.frame.as_ref().unwrap();
+        if frame.receipts.len() != prefix_end {
+            return Err(invalid(FrameTransactionError::PrefixBoundaryMismatch));
+        }
+        Ok(FrameValidationResult {
+            payer: frame.payer,
+            max_cost: prepared.max_cost,
+            prefix_end,
+            sender_approved: host.frame_tx.as_ref().unwrap().approval.sender_approved,
+            signature_gas: prepared.gas.signatures,
+            execution_gas: frame.receipts.iter().map(|receipt| receipt.gas_used.execution).sum(),
+            state_gas: result.state_gas_spent,
+        })
     })
 }
 
@@ -518,10 +517,8 @@ fn execute_frames<T: EvmTypes>(
     let mut rolled_back = alloc::vec![false; tx.frames.len()];
     let mut stops = alloc::vec![InstrStop::Stop; tx.frames.len()];
     let mut i = 0;
-    while i < tx.frames.len() {
-        if prefix == Some(i) {
-            break;
-        }
+    let end = prefix.unwrap_or(tx.frames.len());
+    while i < end {
         let frame = &tx.frames[i];
         if frame.mode == FrameMode::Sender
             && !host.frame_tx.as_ref().unwrap().approval.sender_approved
@@ -558,8 +555,13 @@ fn execute_frames<T: EvmTypes>(
         host.inspect_frame(|inspector, host| {
             inspector.frame_end(i, receipts.last().unwrap(), &output, stop, host)
         });
-        if frame.mode == FrameMode::Verify && !stop.is_success() {
-            return Err(invalid(FrameTransactionError::VerifyFrameFailed));
+        if !stop.is_success() {
+            if frame.mode == FrameMode::Verify {
+                return Err(invalid(FrameTransactionError::VerifyFrameFailed));
+            }
+            if prefix.is_some() {
+                return Err(invalid(FrameTransactionError::UnsuccessfulPrefixFrame));
+            }
         }
         outputs.push(output);
         refunds.push(refund);
@@ -600,9 +602,7 @@ fn execute_frames<T: EvmTypes>(
         if let Some(prefix_end) = prefix
             && host.frame_tx.as_ref().unwrap().approval.payer.is_some()
         {
-            if receipts.len() != prefix_end
-                || receipts.iter().any(|r| r.status != FrameStatus::Success)
-            {
+            if receipts.len() != prefix_end {
                 return Err(invalid(FrameTransactionError::UnsuccessfulPrefixFrame));
             }
             break;

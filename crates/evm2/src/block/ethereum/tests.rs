@@ -309,7 +309,7 @@ fn block_execution_preserves_frame_receipt_payload() {
         frames: vec![Frame {
             mode: FrameMode::Verify,
             flags: 3,
-            limits: FrameLimits { execution: 20_000, state: 0 },
+            limits: FrameLimits { execution: 20_000, state: 200_000 },
             ..Default::default()
         }],
         fees: TransactionFees { max_fee: U256::from(1_000_000), ..Default::default() },
@@ -317,12 +317,25 @@ fn block_execution_preserves_frame_receipt_payload() {
     };
     let tx = Recovered::new_unchecked(EthereumTxEnvelope::Eip8141(tx.seal_slow()), SENDER);
     let mut executor = EthBlockExecutor::new(
-        evm_with(SpecId::BOGOTA, 30_000_000, db),
+        evm_with(SpecId::BOGOTA, 300_000, db),
         ctx(),
         EthBlockRules::default(),
         EthReceiptBuilder,
     );
     executor.apply_pre_execution_changes().unwrap();
+    executor.block_regular_gas_used = 240_000;
+    executor.block_state_gas_used = 100_001;
+    assert!(matches!(
+        executor.execute_transaction_without_commit(&tx),
+        Err(BlockExecutionError::Validation(
+            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                transaction_gas_limit: 200_000,
+                block_available_gas: 199_999,
+            }
+        ))
+    ));
+    executor.block_state_gas_used = 50_000;
+    assert!(executor.execute_transaction_without_commit(&tx).is_ok());
     let gas = executor.execute_transaction(&tx).unwrap();
     let output = executor.finish().unwrap();
     let [ReceiptEnvelope::Eip8141(receipt)] = output.result.receipts.as_slice() else {

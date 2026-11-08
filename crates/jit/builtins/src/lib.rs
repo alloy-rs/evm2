@@ -1029,7 +1029,7 @@ pub unsafe fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
         ecx.gas.spend_state(ecx.gas_params().new_account_state_gas())?;
     }
 
-    if !res.previously_destroyed && !ecx.enables(EvmFeatures::EIP4758) {
+    if !res.previously_destroyed && !ecx.spec_id().enables(evm2::SpecId::BOGOTA) {
         ecx.gas.record_refund(ecx.gas_params().get(GasId::SelfdestructRefund) as i64);
     }
 

@@ -21,7 +21,7 @@ pub(crate) mod bitcoin_secp256k1;
 pub(crate) mod k256;
 
 use crate::{
-    Evm, EvmFeatures, EvmTypesHost,
+    Evm, EvmTypesHost, SpecId,
     constants::{EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
     interpreter::{GasTracker, Message},
     precompiles::{PrecompileOutput, PrecompileResult},
@@ -55,7 +55,7 @@ pub fn run<T: EvmTypesHost>(
     let Ok(recovered) = crate::precompiles::crypto().secp256k1_ecrecover(sig, recid, msg) else {
         return Ok(PrecompileOutput::new(Bytes::new()));
     };
-    if evm.feature(EvmFeatures::EIP8151) {
+    if evm.spec_id().enables(SpecId::BOGOTA) {
         let address = Address::from_word(recovered.into());
         let warm_cost = evm.version().gas_params.get(GasId::WarmStorageReadCost);
         let access_cost = if evm.state().is_account_warm(&address) {

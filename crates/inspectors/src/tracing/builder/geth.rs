@@ -15,7 +15,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
-    EvmFeatures, EvmTypesHost, TxResultExt, TxResultWithState,
+    EvmFeatures, EvmTypesHost, SpecId, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase, PendingState},
     interpreter::{InstrStop, op},
 };
@@ -102,24 +102,36 @@ pub struct GethTraceBuilder<'a> {
     nodes: Cow<'a, [CallTraceNode]>,
     /// EVM features used to produce the trace.
     features: EvmFeatures,
+    /// Base fork used to produce the trace.
+    spec_id: SpecId,
 }
 
 impl GethTraceBuilder<'static> {
     /// Returns a new instance of the builder from [`Cow::Owned`]
     pub const fn new(nodes: Vec<CallTraceNode>) -> Self {
-        Self { nodes: Cow::Owned(nodes), features: EvmFeatures::empty() }
+        Self { nodes: Cow::Owned(nodes), features: EvmFeatures::empty(), spec_id: SpecId::FRONTIER }
     }
 }
 
 impl<'a> GethTraceBuilder<'a> {
     /// Returns a new instance of the builder from [`Cow::Borrowed`]
     pub const fn new_borrowed(nodes: &'a [CallTraceNode]) -> Self {
-        Self { nodes: Cow::Borrowed(nodes), features: EvmFeatures::empty() }
+        Self {
+            nodes: Cow::Borrowed(nodes),
+            features: EvmFeatures::empty(),
+            spec_id: SpecId::FRONTIER,
+        }
     }
 
     /// Sets the EVM features used to produce the trace.
     pub const fn with_features(mut self, features: EvmFeatures) -> Self {
         self.features = features;
+        self
+    }
+
+    /// Sets the base fork used to produce the trace.
+    pub const fn with_spec_id(mut self, spec_id: SpecId) -> Self {
+        self.spec_id = spec_id;
         self
     }
 
@@ -484,7 +496,7 @@ impl<'a> GethTraceBuilder<'a> {
             }
             let code = if code_enabled { load_account_code(db, &db_acc)? } else { None };
             let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
-            if self.features.contains(EvmFeatures::EIP8298) {
+            if self.spec_id.enables(SpecId::BOGOTA) {
                 acc_state.code_hash = (!db_acc.is_empty_code_hash()).then_some(db_acc.code_hash);
             }
 
@@ -536,7 +548,7 @@ impl<'a> GethTraceBuilder<'a> {
 
             let mut pre_state =
                 AccountState::from_account_info(db_acc.nonce, db_acc.balance, pre_code);
-            if self.features.contains(EvmFeatures::EIP8298) {
+            if self.spec_id.enables(SpecId::BOGOTA) {
                 pre_state.code_hash = (!db_acc.is_empty_code_hash()).then_some(db_acc.code_hash);
                 // Empty hashes are omitted in prestate, but signal code removal in poststate.
                 post_state.code_hash =
@@ -1056,7 +1068,7 @@ mod tests {
         let address = Address::with_last_byte(1);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let original = AccountInfo::default().with_nonce(1).with_code(code.clone());
-        let builder = GethTraceBuilder::new(Vec::new()).with_features(EvmFeatures::EIP8298);
+        let builder = GethTraceBuilder::new(Vec::new()).with_spec_id(SpecId::BOGOTA);
 
         for code_enabled in [false, true] {
             for next_code in [

@@ -518,6 +518,19 @@ impl<T: EvmTypes> Evm<'_, T> {
         }
     }
 
+    /// Keeps the frame runtime alive through all lifecycle hooks, including direct handler calls.
+    pub(crate) fn with_frame_execution<R>(
+        &mut self,
+        execute: impl FnOnce(&mut Self) -> HandlerResult<R>,
+    ) -> HandlerResult<R> {
+        let mut guard = self.enter_execution();
+        guard.discard_on_drop = true;
+        let result = execute(guard.evm);
+        guard.evm.frame_tx = None;
+        guard.discard_on_drop = result.is_err();
+        result
+    }
+
     fn simulate_frames<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         assert!(!self.running, "prefix validation cannot interrupt active execution");
         let runner = self.interpreter_runner.take();

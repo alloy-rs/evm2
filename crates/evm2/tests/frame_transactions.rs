@@ -78,6 +78,23 @@ fn frame_floor_is_charged_in_addition_to_state() {
     assert!(mapped.frame.is_some());
 }
 
+#[test]
+fn frame_value_transfer_uses_the_active_gas_schedule() {
+    let tx = payload(vec![
+        Frame { value: U256::ONE, ..frame(FrameMode::Sender, BODY) },
+        Frame { value: U256::ONE, ..frame(FrameMode::Sender, SENDER) },
+        frame(FrameMode::Sender, BODY),
+    ]);
+    let mut version = Version::new(SpecId::BOGOTA);
+    let baseline = FrameGas::calculate(&tx, &version).unwrap();
+    version.gas_params.set(GasId::TxValueCost, 7_000);
+    let repriced = FrameGas::calculate(&tx, &version).unwrap();
+    assert_eq!(repriced.intrinsic, baseline.intrinsic + 1_000);
+    assert_eq!(repriced.floor, baseline.floor + 1_000);
+    assert_eq!(repriced.execution, baseline.execution + 1_000);
+    assert_eq!(repriced.state, baseline.state);
+}
+
 #[rstest::rstest]
 fn approval_executes_body_and_commits_explicit_sender_nonce(
     #[values(0, 7)] initial_call_depth: u16,
@@ -985,6 +1002,38 @@ fn unsuccessful_prefix_frames_report_the_revm_validation_error() {
         );
         assert_eq!(evm.state_mut().account(&SENDER).unwrap().nonce(), 0);
     }
+}
+
+#[test]
+fn failed_batch_does_not_execute_past_the_prefix_boundary() {
+    let mut evm = evm(&[0x5f, 0x5f, 0xfd], &[]);
+    let tx = recovered(payload(vec![
+        Frame { flags: 4, ..frame(FrameMode::Default, BODY) },
+        frame(FrameMode::Default, BODY),
+        frame(FrameMode::Verify, SENDER),
+    ]));
+    let mut inspector = EntryFailureInspector::default();
+    let error = evm.validate_frame_prefix_with_inspector(&tx, 1, &mut inspector).unwrap_err();
+    assert_eq!(
+        error,
+        HandlerError::InvalidFrameTransaction(FrameTransactionError::UnsuccessfulPrefixFrame)
+    );
+    assert_eq!(inspector.starts, vec![0]);
+    assert_eq!(evm.state_mut().account(&SENDER).unwrap().nonce(), 0);
+}
+
+#[test]
+fn frame_handler_supports_direct_execution_and_prefix_validation() {
+    let tx = recovered(payload(vec![frame(FrameMode::Verify, SENDER)]));
+    let mut execution_evm = evm(&[], &[]);
+    let handler = execution_evm.registry().try_get_by_type(tx.ty()).unwrap();
+    let result = handler.execute(tx.as_recovered_ref(), &mut execution_evm).unwrap();
+    assert_eq!(result.frame.unwrap().payer, SENDER);
+
+    let mut prefix_evm = evm(&[], &[]);
+    let prefix = handler.validate_frame_prefix(tx.as_recovered_ref(), &mut prefix_evm, 1).unwrap();
+    assert_eq!(prefix.payer, SENDER);
+    assert!(prefix.sender_approved);
 }
 
 mod handler_hooks {

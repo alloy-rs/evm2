@@ -424,16 +424,14 @@ mod tests {
     }
 
     #[test]
-    fn bogota_enables_code_adoption_sendall_and_restricted_recovery() {
+    fn bogota_activates_frame_and_code_adoption_opcodes() {
         let amsterdam = Version::base(SpecId::AMSTERDAM);
         let bogota = Version::base(SpecId::BOGOTA);
-        for feature in [EvmFeatures::EIP8298, EvmFeatures::EIP4758, EvmFeatures::EIP8151] {
-            assert!(!amsterdam.feature(feature));
-            assert!(bogota.feature(feature));
+        for opcode in [op::APPROVE, op::TXTRACE, op::EVENTDATACOPY, op::SETCODEFROM] {
+            assert!(opcode_config(SpecId::AMSTERDAM).is_unknown_opcode(opcode));
+            assert!(!opcode_config(SpecId::BOGOTA).is_unknown_opcode(opcode));
         }
         assert_eq!(op::SETCODEFROM, 0xa7);
-        assert!(opcode_config(SpecId::AMSTERDAM).is_unknown_opcode(op::SETCODEFROM));
-        assert!(!opcode_config(SpecId::BOGOTA).is_unknown_opcode(op::SETCODEFROM));
         assert_eq!(opcode_config(SpecId::BOGOTA).static_gas(op::SETCODEFROM), 0);
         assert_eq!(bogota.gas_params.get(GasId::SetCodeFromWrite), 9_000);
         assert_eq!(amsterdam.gas_params.get(GasId::SetCodeFromWrite), 0);
@@ -966,14 +964,6 @@ evm_versions! {
     }
 
     BOGOTA {
-        features: [
-            EIP8141,
-            EIP8250,
-            EIP7906,
-            EIP8298,
-            EIP4758,
-            EIP8151,
-        ],
         ops: [
             APPROVE: ZERO,
             TXPARAM: BASE,

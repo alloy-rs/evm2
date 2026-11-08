@@ -535,20 +535,17 @@ fn competing_errors_follow_static_preparation_order_and_valid_payload_reaches_db
 
 #[test]
 fn activation_and_signature_placeholder_controls_do_not_relax_static_shape() {
-    let mut version = Version::new(SpecId::BOGOTA);
-    version.features.remove(EvmFeatures::EIP8141);
-    let (mut inactive, reads) = evm(version, BlockEnvExt::default());
+    let reads = Arc::new(AtomicUsize::new(0));
+    let mut inactive = Evm::<BaseEvmTypes>::new(
+        SpecId::AMSTERDAM,
+        BlockEnvExt::default(),
+        ethereum_tx_registry(SpecId::BOGOTA),
+        Db::new(FailingDatabase(reads.clone(), "validation performed a database read")),
+        Precompiles::base(SpecId::AMSTERDAM),
+    );
     assert_eq!(
         inactive.validate_tx(&recovered(payload())).unwrap_err(),
         HandlerError::UnsupportedTransactionType(6)
-    );
-    assert_eq!(reads.load(Ordering::Relaxed), 0);
-    let mut version = Version::new(SpecId::BOGOTA);
-    version.features.remove(EvmFeatures::EIP8250);
-    let (mut inactive, reads) = evm(version, BlockEnvExt::default());
-    assert_eq!(
-        inactive.validate_tx(&recovered(payload())).unwrap_err(),
-        invalid(FrameTransactionError::NoncePayloadMismatch)
     );
     assert_eq!(reads.load(Ordering::Relaxed), 0);
     let mut version = Version::new(SpecId::BOGOTA);
@@ -581,10 +578,6 @@ fn valid_structure_boundaries_reach_database_validation() {
         ("single-use zero keyed domain", |tx, _| {
             tx.nonce_keys = Some(vec![U256::ZERO]);
             tx.nonce = u64::MAX;
-        }),
-        ("pre-keyed schema", |tx, version| {
-            tx.nonce_keys = None;
-            version.features.remove(EvmFeatures::EIP8250);
         }),
         ("implicit sender approval target", |tx, _| tx.frames[0].target = Default::default()),
         ("last incrementable sequence", |tx, _| tx.nonce = u64::MAX - 1),
