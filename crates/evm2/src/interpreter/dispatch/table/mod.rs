@@ -9,7 +9,7 @@ use crate::{
 use core::hint::cold_path;
 
 core::cfg_select! {
-    dispatch_packed => {
+    any(dispatch_packed, dispatch_match) => {
         mod packed;
         use packed as imp;
     }
@@ -19,7 +19,14 @@ core::cfg_select! {
     }
 }
 
+#[cfg(dispatch_match)]
+mod match_loop;
+
 pub(super) use imp::{RawInstrFn, dispatch};
+#[cfg(dispatch_match)]
+pub(crate) use match_loop::MatchLoop;
+#[cfg(dispatch_match)]
+pub(super) use match_loop::run_match;
 
 /// Table instruction dispatch table.
 pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];

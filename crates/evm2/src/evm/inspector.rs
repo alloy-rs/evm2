@@ -1190,6 +1190,43 @@ mod tests {
         (result, *evm.clear_inspector_as::<ConfigInspector>().unwrap())
     }
 
+    /// `OSAKA` with the opcodes of `SHANGHAI`, so `CLZ` is undefined.
+    struct ShanghaiOpcodesConfig;
+
+    impl EvmConfig<BaseEvmTypes> for ShanghaiOpcodesConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> =
+            <BaseEvmConfig<{ SpecId::SHANGHAI as u32 }> as EvmConfig<BaseEvmTypes>>::OPCODE_CONFIG;
+    }
+
+    #[test]
+    fn config_that_starts_from_another_spec_agrees_with_and_without_an_inspector() {
+        let run = |inspector: Option<ConfigInspector>| {
+            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                ExecutionConfig::for_config::<ShanghaiOpcodesConfig>(),
+                SpecId::OSAKA,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                InMemoryDB::default(),
+                Precompiles::base(SpecId::OSAKA),
+            );
+            if let Some(inspector) = inspector {
+                evm.set_inspector(inspector);
+            }
+            let code = vec![op::PUSH1, 1, op::CLZ, op::POP, op::STOP];
+            let mut message = MessageExt {
+                gas_limit: 100_000,
+                code: legacy_bytecode(code),
+                ..Default::default()
+            };
+            Host::execute_message(&mut evm, &mut message).unwrap()
+        };
+
+        let plain = run(None);
+        assert!(!plain.is_success());
+        assert_eq!(run(Some(ConfigInspector::new(OpcodeSet::ALL))), plain);
+    }
+
     #[test]
     fn custom_call_opcode_rereads_the_steps() {
         let (expected, full) = run_custom_call::<CustomCallConfig>(

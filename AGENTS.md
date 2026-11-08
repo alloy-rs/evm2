@@ -26,7 +26,7 @@ cargo st # include EEST fixtures with interpreter, JIT, and AOT suites
 ```
 
 Use `EVM2_DISPATCH_BACKEND` to force an interpreter dispatch backend for manual
-testing. Accepted values are `auto` (default), `tco`, `packed`, and `unpacked`,
+testing. Accepted values are `auto` (default), `tco`, `match`, `packed`, and `unpacked`,
 for example:
 
 ```bash

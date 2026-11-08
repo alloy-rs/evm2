@@ -2,6 +2,9 @@ use super::{Gas, InterpreterState, Pc, Result, StackMut, Word};
 use crate::EvmTypesHost;
 use bitflags::bitflags;
 
+#[cfg(dispatch_match)]
+pub use super::dispatch::base_match_loops;
+
 /// Function signature of an `#[instruction]`.
 pub(crate) type InstructionImplFn<T> =
     fn(pc: &mut Pc, stack: StackMut<'_>, state: &mut InterpreterState<'_, '_, T>) -> Result;
