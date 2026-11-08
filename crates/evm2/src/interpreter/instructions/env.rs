@@ -251,7 +251,7 @@ mod tests {
     fn calldataload_opcode() {
         let input = Bytes::from(Vec::from([1_u8, 2, 3]));
         let mut host = TestHost::default();
-        let message = MessageExt { input, ..test_message() };
+        let message = MessageExt { input: input.into(), ..test_message() };
 
         let interp = run(RunConfig::new([op::PUSH0, op::CALLDATALOAD, op::STOP])
             .host(&mut host)
@@ -272,7 +272,7 @@ mod tests {
     fn calldatasize_opcode() {
         let input = Bytes::from(Vec::from([1_u8, 2, 3, 4]));
         let mut host = TestHost::default();
-        let message = MessageExt { input, ..test_message() };
+        let message = MessageExt { input: input.into(), ..test_message() };
         let interp =
             run(RunConfig::new([op::CALLDATASIZE, op::STOP]).host(&mut host).message(message));
         assert_matches!(interp.err, InstrStop::Stop);
@@ -283,7 +283,7 @@ mod tests {
     fn calldatacopy_opcode() {
         let input = Bytes::from(Vec::from([0xaa_u8, 0xbb, 0xcc]));
         let mut host = TestHost::default();
-        let message = MessageExt { input, ..test_message() };
+        let message = MessageExt { input: input.into(), ..test_message() };
         let mut code = Vec::new();
         push(&mut code, 2);
         push(&mut code, 1);

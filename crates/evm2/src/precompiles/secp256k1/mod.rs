@@ -144,8 +144,10 @@ mod tests {
         input: &[u8; 128],
         gas: &mut GasTracker,
     ) -> PrecompileResult {
-        let message =
-            Message::<BaseEvmTypes> { input: Bytes::copy_from_slice(input), ..Default::default() };
+        let message = Message::<BaseEvmTypes> {
+            input: Bytes::copy_from_slice(input).into(),
+            ..Default::default()
+        };
         SECP256K1_ECRECOVER().run()(evm, &message, gas)
     }
 

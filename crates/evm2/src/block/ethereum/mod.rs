@@ -151,6 +151,10 @@ impl<T: EvmTypes, Ty> BlockTransactionResult<T> for EthTransactionResultWithStat
     fn result(&self) -> &TxResultWithState<T> {
         &self.result
     }
+
+    fn into_result(self) -> TxResultWithState<T> {
+        self.result
+    }
 }
 
 type StateUpdateHook = Option<Box<dyn FnMut(StateUpdate) + Send>>;

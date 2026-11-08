@@ -268,11 +268,8 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     }
 
     #[inline]
-    fn take_result(&mut self) -> TxResult<T> {
-        match self.result.take() {
-            Some(result) => result,
-            None => unreachable!("executed transaction result was already taken"),
-        }
+    const fn take_result(&mut self) -> TxResult<T> {
+        self.result.take().expect("executed transaction result was already taken")
     }
 
     #[inline]

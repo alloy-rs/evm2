@@ -787,7 +787,7 @@ fn execute_frame<T: EvmTypes>(
             depth: host.version().initial_call_depth,
             code,
             code_address,
-            input: frame.data.clone(),
+            input: frame.data.clone().into(),
             value: frame.value,
             ..Message::<T>::default()
         };

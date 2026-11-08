@@ -1,6 +1,6 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrStop, Memory, Message, Pc, Result, StackBacking, StackMut,
-    StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageInput, Pc, Result, StackBacking,
+    StackMut, StackRef, Word,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
@@ -64,6 +64,10 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
+    /// Whether [`Self::call_input`] borrows memory. Set only for frames that [`Evm`](crate::Evm)
+    /// runs, whose host keeps a borrowed input from being read after the call or while the memory
+    /// changes.
+    lends_memory: bool,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
@@ -104,6 +108,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             output: 0..0,
             message: None,
             is_static: false,
+            lends_memory: false,
             return_data: Bytes::new(),
             host: None,
             inspector: None,
@@ -130,6 +135,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.output = 0..0;
         self.message = Some(message);
         self.is_static = is_static;
+        self.lends_memory = false;
         self.return_data = Bytes::new();
     }
 
@@ -262,6 +268,39 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn memory_mut(&mut self) -> &mut Memory {
         &mut self.memory
+    }
+
+    /// Returns `len` bytes of memory at `offset` as the input of a call message, borrowed when
+    /// this frame is run by [`Evm`](crate::Evm) and copied otherwise.
+    ///
+    /// # Safety
+    ///
+    /// The input must only be read as the input of a message passed to this frame's
+    /// [`Host::execute_message`](crate::interpreter::Host::execute_message), and memory must not
+    /// change and no other code may access this frame in between. It must not be read after
+    /// `execute_message` returns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bytes are out of bounds of memory.
+    #[inline]
+    #[doc(hidden)]
+    pub unsafe fn call_input(&self, offset: usize, len: usize) -> MessageInput {
+        let bytes = self.memory.slice(offset, len);
+        if !self.lends_memory {
+            return Bytes::copy_from_slice(bytes).into();
+        }
+        // SAFETY: The caller keeps memory unchanged until the host returns, and the host is
+        // `Evm`, which copies the input before any inspector hook can reach this frame or the
+        // message. Otherwise it only reads the message through shared references, which cannot
+        // move the input out, and cloning copies it.
+        unsafe { MessageInput::borrowed(bytes) }
+    }
+
+    /// Lets [`Self::call_input`] borrow memory for the rest of this frame.
+    #[inline]
+    pub(crate) const fn lend_memory(&mut self) {
+        self.lends_memory = true;
     }
 
     /// Returns the current interpreter result.

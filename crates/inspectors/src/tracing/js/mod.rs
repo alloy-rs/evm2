@@ -966,7 +966,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             .map_or(message.gas_limit, |frame| frame.payload.frames[frame.active].limits.execution);
         self.push_call(
             message.depth,
-            Contract { caller, contract, value: message.value, input: message.input.clone() },
+            Contract { caller, contract, value: message.value, input: message.input.to_bytes() },
             message.kind.into(),
             gas_limit,
             interp.gas().refunded(),
@@ -1032,7 +1032,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 caller: message.caller,
                 contract: message.destination,
                 value: message.value,
-                input: message.input.clone(),
+                input: message.input.to_bytes(),
             },
             message.kind.into(),
             message.gas_limit,
