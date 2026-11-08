@@ -1,8 +1,9 @@
 use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
 use crate::{
-    EvmConfig, EvmTypesHost, OpcodeSet,
+    BaseEvmConfigSelector, EvmConfig, EvmTypesHost, OpcodeSet,
+    evm::config::SelectorOpcodeConfig,
     interpreter::{
-        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut,
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut, op,
         private::InstructionFlags,
     },
 };
@@ -68,6 +69,13 @@ trait DispatchGas: Copy {
         state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
     );
+
+    /// Spends `cost` if enough gas remains, and returns whether it did.
+    fn try_spend<T: EvmTypesHost>(
+        &mut self,
+        state: &mut InterpreterState<'_, '_, T>,
+        cost: u64,
+    ) -> bool;
 }
 
 impl DispatchGas for () {
@@ -95,6 +103,59 @@ impl DispatchGas for () {
         _dynamic_gas: bool,
     ) {
     }
+
+    #[inline(always)]
+    fn try_spend<T: EvmTypesHost>(
+        &mut self,
+        state: &mut InterpreterState<'_, '_, T>,
+        cost: u64,
+    ) -> bool {
+        let gas = state.gas_mut();
+        let enough = gas.remaining() >= cost;
+        if enough {
+            gas.set_remaining(gas.remaining() - cost);
+        }
+        enough
+    }
+}
+
+/// Returns whether the JUMP or JUMPI handler for `op` may run the JUMPDEST at `pc`, where it
+/// ended, in place of the JUMPDEST handler, which saves a trip through the dispatch loop per taken
+/// jump. The caller still charges the JUMPDEST's static gas, and leaves the JUMPDEST to its handler
+/// when it cannot.
+///
+/// The tail-call backend does not do this: its JUMPDEST handler costs fewer instructions than these
+/// checks.
+///
+/// It may for the config's unchanged JUMPDEST, which only charges that gas, and only when no
+/// inspector steps JUMPDEST: a sparse inspect table runs these plain handlers next to a stepped
+/// JUMPDEST handler.
+#[inline(always)]
+const fn runs_jumpdest<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>>(
+    op: u8,
+    pc: Pc,
+    state: &InterpreterState<'_, '_, T>,
+) -> bool {
+    !M::INSPECT
+        && JumpdestRun::<T, C>::ENABLED
+        && matches!(op, op::JUMP | op::JUMPI)
+        && pc.op() == op::JUMPDEST
+        && !state.steps().contains(op::JUMPDEST)
+}
+
+struct JumpdestRun<T, C>(core::marker::PhantomData<fn() -> (T, C)>);
+
+impl<T: EvmTypesHost, C: EvmConfig<T>> JumpdestRun<T, C> {
+    /// Whether the config runs the base JUMPDEST instruction.
+    const ENABLED: bool = {
+        let vt = C::OPCODE_CONFIG;
+        let base = SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
+            [C::BASE_SPEC_ID as usize];
+        !vt.is_unknown_opcode(op::JUMPDEST) && !vt.is_overridden(base, op::JUMPDEST)
+    };
+
+    /// The JUMPDEST's static gas.
+    const COST: u64 = C::OPCODE_CONFIG.static_gas(op::JUMPDEST) as u64;
 }
 
 #[cold] // Not cold, but avoids MIR inlining.
@@ -126,6 +187,14 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
                 inc_pc(&mut pc, op);
             }
             gas.sync_after_exec(state, dynamic_gas);
+            if r.is_ok()
+                && runs_jumpdest::<T, C, M>(op, pc, state)
+                && gas.try_spend(state, JumpdestRun::<T, C>::COST)
+            {
+                // SAFETY: The JUMPDEST at `pc` is a one-byte instruction, so the next one starts
+                // in the padded bytecode, as after the JUMPDEST handler.
+                unsafe { pc.advance_unchecked(1) };
+            }
         }
         Err(e) => {
             gas.sync_before_exec(state, false);
