@@ -43,15 +43,19 @@ pub(crate) type ShortAddresses = BitArray<{ SHORT_ADDRESS_CAP.div_ceil(64) }>;
 ///
 /// A short address has 18 leading zero bytes and a last-two-byte value below [`SHORT_ADDRESS_CAP`].
 #[inline]
-pub(crate) fn short_address(address: &Address) -> Option<usize> {
-    let (zeros, value) = address.split_at(18);
-    if zeros.iter().all(|b| *b == 0) {
-        let short_address = u16::from_be_bytes([value[0], value[1]]) as usize;
-        if short_address < SHORT_ADDRESS_CAP {
-            return Some(short_address);
-        }
+pub(crate) const fn short_address(address: &Address) -> Option<usize> {
+    let [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19] =
+        address.0.0;
+    // Test the 18 leading bytes as one 16-byte and one 2-byte word instead of byte by byte.
+    let high =
+        u128::from_ne_bytes([a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15]);
+    let middle = u16::from_ne_bytes([a16, a17]);
+    let short_address = u16::from_be_bytes([a18, a19]) as usize;
+    if high == 0 && middle == 0 && short_address < SHORT_ADDRESS_CAP {
+        Some(short_address)
+    } else {
+        None
     }
-    None
 }
 
 /// Stores addresses (and their storage slots) that are warm-loaded for the current transaction.
@@ -164,7 +168,7 @@ impl PrewarmSet {
     ///
     /// Returns whether the address was short.
     #[inline]
-    fn warm_short_address(&mut self, address: &Address) -> bool {
+    const fn warm_short_address(&mut self, address: &Address) -> bool {
         if let Some(short_address) = short_address(address) {
             self.short_addresses.set(short_address);
             true
@@ -301,15 +305,23 @@ mod tests {
         bytes[18] = 1u8;
         bytes[19] = 64u8; // 320
         let boundary_addr = Address::from(bytes);
+        // A nonzero byte just before the last two keeps a low-valued address out of the bit vector.
+        let mut bytes = [0u8; 20];
+        bytes[17] = 1u8;
+        bytes[19] = 1u8;
+        let prefixed_addr = Address::from(bytes);
 
         prewarm_set.warm(&regular_addr);
         prewarm_set.warm(&boundary_addr);
+        prewarm_set.warm(&prefixed_addr);
 
         // Non-short addresses are not tracked in the short-address bit vector.
         assert_eq!(prewarm_set.short_addresses, BitArray::new());
 
         assert!(prewarm_set.is_warm(&regular_addr));
         assert!(prewarm_set.is_warm(&boundary_addr));
+        assert!(prewarm_set.is_warm(&prefixed_addr));
+        assert!(prewarm_set.is_cold(&Address::with_last_byte(1)));
         assert!(prewarm_set.is_cold(&address!("0987654321098765432109876543210987654321")));
     }
 
