@@ -126,6 +126,59 @@ fn modexp_big(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
         }
     }
 
+    /// Computes `b^e mod m` for an even `m = odd * 2^k` and `e > 0` from `b^e mod odd` and
+    /// `b^e mod 2^k` by the Chinese remainder theorem.
+    ///
+    /// `mpz_powm` does the same split, but runs the whole exponent for the `2^k` part. The
+    /// multiplicative group modulo `2^k` has exponent dividing `2^(k - 1)`, so an odd `b` only
+    /// needs the low `k - 1` bits of `e`, and an even `b` gives 0 once `e >= k`.
+    ///
+    /// # Safety
+    ///
+    /// `b`, `e` and `m` must be initialized, `m` must be `odd * 2^k` with `k > 0`, and `e` must be
+    /// positive.
+    unsafe fn powm_even(
+        result: &mut Mpz,
+        b: *const gmp::mpz_t,
+        e: *const gmp::mpz_t,
+        m: *const gmp::mpz_t,
+        k: gmp::bitcnt_t,
+    ) {
+        let [mut odd, mut pow2, mut x, mut y, mut t] = core::array::from_fn(|_| Mpz::new());
+        unsafe {
+            gmp::mpz_tdiv_q_2exp(odd.as_mut_ptr(), m, k);
+            gmp::mpz_set_ui(pow2.as_mut_ptr(), 1);
+            gmp::mpz_mul_2exp(pow2.as_mut_ptr(), pow2.as_ptr(), k);
+
+            // `y = b^e mod 2^k`.
+            if gmp::mpz_tstbit(b, 0) == 0 {
+                if gmp::mpz_cmp_ui(e, k) < 0 {
+                    gmp::mpz_powm(y.as_mut_ptr(), b, e, pow2.as_ptr());
+                }
+            } else {
+                gmp::mpz_fdiv_r_2exp(t.as_mut_ptr(), e, k - 1);
+                gmp::mpz_powm(y.as_mut_ptr(), b, t.as_ptr(), pow2.as_ptr());
+            }
+
+            if gmp::mpz_cmp_ui(odd.as_ptr(), 1) == 0 {
+                gmp::mpz_set(result.as_mut_ptr(), y.as_ptr());
+                return;
+            }
+
+            // `x = b^e mod odd`.
+            gmp::mpz_powm(x.as_mut_ptr(), b, e, odd.as_ptr());
+
+            // `result = x + odd * (((y - x) / odd) mod 2^k)`.
+            gmp::mpz_fdiv_r_2exp(t.as_mut_ptr(), odd.as_ptr(), k);
+            gmp::mpz_invert(t.as_mut_ptr(), t.as_ptr(), pow2.as_ptr());
+            gmp::mpz_sub(y.as_mut_ptr(), y.as_ptr(), x.as_ptr());
+            gmp::mpz_mul(t.as_mut_ptr(), t.as_ptr(), y.as_ptr());
+            gmp::mpz_fdiv_r_2exp(t.as_mut_ptr(), t.as_ptr(), k);
+            gmp::mpz_mul(t.as_mut_ptr(), t.as_ptr(), odd.as_ptr());
+            gmp::mpz_add(result.as_mut_ptr(), t.as_ptr(), x.as_ptr());
+        }
+    }
+
     let mut base_int = Mpz::new();
     let mut exp_int = Mpz::new();
     let mut mod_int = Mpz::new();
@@ -136,11 +189,17 @@ fn modexp_big(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
     mod_int.set_from_be_bytes(modulus);
 
     unsafe {
-        if gmp::mpz_sgn(mod_int.as_ptr()) == 0 {
+        let (b, e, m) = (base_int.as_ptr(), exp_int.as_ptr(), mod_int.as_ptr());
+        if gmp::mpz_sgn(m) == 0 {
             return Vec::new();
         }
 
-        gmp::mpz_powm(result.as_mut_ptr(), base_int.as_ptr(), exp_int.as_ptr(), mod_int.as_ptr());
+        let k = gmp::mpz_scan1(m, 0);
+        if k == 0 || gmp::mpz_sgn(e) == 0 {
+            gmp::mpz_powm(result.as_mut_ptr(), b, e, m);
+        } else {
+            powm_even(&mut result, b, e, m, k);
+        }
     }
 
     result.to_be_bytes()
@@ -352,7 +411,7 @@ mod tests {
     use super::*;
     use crate::precompiles::PrecompileError;
     use alloc::{vec, vec::Vec};
-    use alloy_primitives::hex;
+    use alloy_primitives::{U512, hex};
     use core::assert_matches;
     use rand::{RngExt, SeedableRng, rngs::StdRng};
 
@@ -1016,6 +1075,27 @@ mod tests {
             let composite = p + U256::ONE;
             let exponent = (composite - U256::from(2)).to_be_bytes::<32>();
             assert_eq!(fermat_inverse(&[7], &exponent, &composite.to_be_bytes::<32>()), None);
+        }
+    }
+
+    #[cfg(feature = "gmp")]
+    #[test]
+    fn test_modexp_even_modulus() {
+        let mut rng = StdRng::seed_from_u64(0);
+        let mut random = |len: usize| (0..len).map(|_| rng.random::<u8>()).collect::<Vec<_>>();
+        for i in 0..2000 {
+            let base = random(i % 41);
+            let exponent = random(1 + i % 7 * i % 5);
+            let odd = if i % 9 == 0 { U256::ONE } else { U256::from_be_slice(&random(1 + i % 32)) };
+            let k = 1 + i * 7 % 200;
+            let modulus = (U512::from(odd) << k).to_be_bytes_trimmed_vec();
+            let mod_len = modulus.len();
+            let [expected, actual] = [
+                aurora_engine_modexp::modexp(&base, &exponent, &modulus),
+                modexp(&base, &exponent, &modulus),
+            ]
+            .map(|r| left_pad_vec_be(&r, mod_len).into_owned());
+            assert_eq!(actual, expected, "{base:x?} {exponent:x?} {modulus:x?}");
         }
     }
 }
