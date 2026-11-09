@@ -62,13 +62,8 @@ pub struct BalContext {
 impl BalContext {
     /// Creates an empty context with no attached BAL and no builder.
     #[inline]
-    pub const fn new() -> Self {
-        Self {
-            bal: None,
-            bal_builder: None,
-            bal_index: BlockAccessIndex::PRE_EXECUTION,
-            allow_db_fallback: false,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Attaches an EIP-7928 BAL consulted on reads, and returns `self`.

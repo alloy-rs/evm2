@@ -404,29 +404,20 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Returns the account balance, or zero when the account is absent.
     #[inline]
-    pub const fn balance(&self) -> Word {
-        match &self.tracked.present {
-            Some(account) => account.balance,
-            None => U256::ZERO,
-        }
+    pub fn balance(&self) -> Word {
+        self.tracked.present.as_ref().map_or(U256::ZERO, |account| account.balance)
     }
 
     /// Returns the account nonce, or zero when the account is absent.
     #[inline]
-    pub const fn nonce(&self) -> u64 {
-        match &self.tracked.present {
-            Some(account) => account.nonce,
-            None => 0,
-        }
+    pub fn nonce(&self) -> u64 {
+        self.tracked.present.as_ref().map_or(0, |account| account.nonce)
     }
 
     /// Returns the account code hash, or the empty code hash when the account is absent.
     #[inline]
-    pub const fn code_hash(&self) -> B256 {
-        match &self.tracked.present {
-            Some(account) => account.code_hash,
-            None => KECCAK256_EMPTY,
-        }
+    pub fn code_hash(&self) -> B256 {
+        self.tracked.present.as_ref().map_or(KECCAK256_EMPTY, |account| account.code_hash)
     }
 
     /// Returns whether the account code hash is the empty code hash, which includes an absent

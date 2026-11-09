@@ -67,8 +67,8 @@ impl StorageSlot {
     /// Creates a freshly loaded slot whose original and current values are `value`, with the given
     /// EIP-2929 warmth.
     #[inline]
-    const fn loaded(value: Word, is_warm: bool) -> Self {
-        Self { value: Tracked::from_parts(value, value), is_warm, _non_exhaustive: () }
+    fn loaded(value: Word, is_warm: bool) -> Self {
+        Self { value: Tracked::new(value), is_warm, _non_exhaustive: () }
     }
 }
 

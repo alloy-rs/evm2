@@ -45,15 +45,14 @@ macro_rules! precompile_ids_impl {
 
             /// Returns the name of the precompile as defined in EIP-7910.
             #[inline]
-            pub const fn name(&self) -> &str {
+            pub fn name(&self) -> &str {
                 match self {
                     Self::$first_variant => $first_name,
                     $(
                         Self::$variant => $name,
                     )*
                     Self::$last_variant => $last_name,
-                    Self::Custom(Cow::Borrowed(id)) => id,
-                    Self::Custom(Cow::Owned(id)) => id.as_str(),
+                    Self::Custom(id) => id.as_ref(),
                 }
             }
         }

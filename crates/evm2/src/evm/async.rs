@@ -255,18 +255,29 @@ impl<R, E> Future for OnFiber<'_, R, E> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        if let Self::Running(fiber) = this {
-            let Poll::Ready(result) = Pin::new(fiber).poll(cx) else { return Poll::Pending };
-            *this = Self::Done;
-            return Poll::Ready(match result {
-                Ok(Ok(value)) => Ok(value),
-                Ok(Err(error)) => Err(AsyncError::Inner(error)),
-                Err(error) => Err(error.with_inner_error()),
-            });
-        }
-        match core::mem::replace(this, Self::Done) {
-            Self::Failed(error) => Poll::Ready(Err(error.with_inner_error())),
-            _ => panic!("async EVM fiber polled after completion"),
+        match this {
+            Self::Running(fiber) => match Pin::new(fiber).poll(cx) {
+                Poll::Ready(Ok(Ok(value))) => {
+                    *this = Self::Done;
+                    Poll::Ready(Ok(value))
+                }
+                Poll::Ready(Ok(Err(error))) => {
+                    *this = Self::Done;
+                    Poll::Ready(Err(AsyncError::Inner(error)))
+                }
+                Poll::Ready(Err(error)) => {
+                    *this = Self::Done;
+                    Poll::Ready(Err(error.with_inner_error()))
+                }
+                Poll::Pending => Poll::Pending,
+            },
+            Self::Failed(_) => {
+                let Self::Failed(error) = core::mem::replace(this, Self::Done) else {
+                    unreachable!("matched above")
+                };
+                Poll::Ready(Err(error.with_inner_error()))
+            }
+            Self::Done => panic!("async EVM fiber polled after completion"),
         }
     }
 }

@@ -209,7 +209,7 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
     }
 
     /// Records a newly inserted address in the short-address index.
-    const fn track_inserted(&mut self, address: &Address) {
+    fn track_inserted(&mut self, address: &Address) {
         match short_address(address) {
             Some(index) => self.short.set(index),
             None => self.long_count += 1,
@@ -217,7 +217,7 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
     }
 
     /// Removes a removed address from the short-address index.
-    const fn track_removed(&mut self, address: &Address) {
+    fn track_removed(&mut self, address: &Address) {
         match short_address(address) {
             Some(index) => self.short.unset(index),
             None => self.long_count -= 1,

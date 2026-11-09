@@ -116,11 +116,8 @@ impl<T: EvmTypesHost> Precompiles<T> {
 
     /// Returns the underlying precompile map.
     #[inline]
-    pub const fn as_map(&self) -> &PrecompileMap<T> {
-        match &self.map {
-            Cow::Borrowed(map) => map,
-            Cow::Owned(map) => map,
-        }
+    pub fn as_map(&self) -> &PrecompileMap<T> {
+        self.map.as_ref()
     }
 
     /// Returns the underlying precompile map mutably.
