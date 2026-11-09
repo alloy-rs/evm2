@@ -1,10 +1,11 @@
+use crate::tracing::utils::step_cost;
 use alloc::{string::ToString, vec::Vec};
 use alloy_primitives::map::HashMap;
 use alloy_rpc_types_trace::opcode::OpcodeGas;
 use evm2::{
     EvmTypesHost, Inspector,
     interpreter::{
-        InstrStop, Interpreter, Message, MessageKind, MessageResult,
+        Interpreter, Message, MessageKind, MessageResult,
         opcode::{OpCode, op},
     },
 };
@@ -107,13 +108,11 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // update gas usage for the last opcode
         if let Some(pending) = self.pending_steps.pop() {
-            // An out-of-gas step consumes the whole remainder it started with, except the
-            // reentrancy sentry, which rejects SSTORE before charging gas.
-            let gas_cost = match interp.result() {
-                Err(InstrStop::ReentrancySentryOOG) => 0,
-                Err(stop) if stop.is_out_of_gas() => pending.gas_remaining,
-                _ => pending.gas_remaining.saturating_sub(interp.gas().remaining()),
-            }
+            let gas_cost = step_cost(
+                interp.result(),
+                pending.gas_remaining,
+                pending.gas_remaining.saturating_sub(interp.gas().remaining()),
+            )
             .saturating_sub(pending.child_gas_used);
             self.opcode_gas[usize::from(pending.opcode)] += gas_cost;
         }
