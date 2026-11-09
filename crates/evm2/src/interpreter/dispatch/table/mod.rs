@@ -173,6 +173,13 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
     let mut loop_state = imp::loop_state(state.gas_mut());
     let mut cursor = imp::Cursor::new(pc, stack.len());
     let steps = if M::INSPECT { state.steps() } else { OpcodeSet::EMPTY };
+    // Without this, the loop's offset in its 64-byte line depends on unrelated code size, and a
+    // loop that crosses a line costs about 20%.
+    #[cfg(all(not(miri), any(target_arch = "x86_64", target_arch = "aarch64")))]
+    // SAFETY: The directive only pads with nops. It reads and writes no memory or registers.
+    unsafe {
+        core::arch::asm!(".p2align 6", options(nomem, nostack, preserves_flags));
+    }
     loop {
         let op = cursor.pc().op();
         // A sparse set's table holds inspect handlers at the stepped opcodes and plain handlers
