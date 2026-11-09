@@ -194,7 +194,7 @@ pub fn create_preaccess_failure(
     depth: u16,
     initial_call_depth: u16,
 ) -> Option<InstrStop> {
-    if depth > initial_call_depth + CALL_DEPTH_LIMIT {
+    if depth.saturating_sub(initial_call_depth) > CALL_DEPTH_LIMIT {
         Some(InstrStop::CallTooDeep)
     } else if balance < value {
         Some(InstrStop::OutOfFunds)
@@ -309,6 +309,17 @@ mod tests {
         assert_eq!(check(1, u64::MAX, 1, max), Some(InstrStop::NonceOverflow));
         assert_eq!(check(1, u64::MAX, 1, initial_call_depth), None);
         assert_eq!(check(0, 0, 0, max), None);
+
+        // A host-supplied initial depth near `u16::MAX` must not overflow the limit.
+        let check_at = |initial_call_depth: u16, depth: u16| {
+            create_preaccess_failure(Word::ZERO, 0, Word::ZERO, depth, initial_call_depth)
+        };
+        assert_eq!(check_at(u16::MAX, u16::MAX), None);
+        assert_eq!(check_at(u16::MAX - CALL_DEPTH_LIMIT, u16::MAX), None);
+        assert_eq!(
+            check_at(u16::MAX - CALL_DEPTH_LIMIT - 1, u16::MAX),
+            Some(InstrStop::CallTooDeep)
+        );
     }
 
     #[test]

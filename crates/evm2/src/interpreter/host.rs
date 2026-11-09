@@ -136,7 +136,8 @@ pub trait Host<T: EvmTypesHost> {
     /// Returns the inspector-visible depth of top-level messages.
     ///
     /// The call depth limit and the nested-create nonce check are measured from this depth, and
-    /// inspectors compare against it to find the top-level message.
+    /// inspectors compare against it to find the top-level message. It should be at most
+    /// `u16::MAX - CALL_DEPTH_LIMIT - 1` so the deepest message stays representable.
     fn initial_call_depth(&self) -> u16;
 
     /// Loads account information.
