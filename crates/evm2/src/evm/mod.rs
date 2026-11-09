@@ -236,6 +236,10 @@ pub struct Evm<'a, T: EvmTypesHost> {
     inspector: Option<InspectorSlot<'a, T>>,
     inspect_system_calls: bool,
     initial_call_depth: u16,
+    /// How many messages are executing, counting nested ones. [`Evm::set_initial_call_depth`]
+    /// is rejected while any is, so a message keeps the depth base it started with.
+    #[derive_where(skip)]
+    active_messages: u32,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// Whether `interpreter_runner` is set and supports `execution_config`.
@@ -376,6 +380,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             inspector: None,
             inspect_system_calls: false,
             initial_call_depth: 0,
+            active_messages: 0,
             interpreter_runner: None,
             runner_supported: false,
             current_frame: None,
@@ -1072,14 +1077,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ///
     /// # Panics
     ///
-    /// Panics if called from inside a running interpreter frame, or if `depth` does not leave room
+    /// Panics if called while a message is executing (from an inspector hook, a precompile or an
+    /// interpreter frame), or if `depth` does not leave room
     /// in `u16` for the call depth budget and the rejected too-deep message: it must be at most
     /// `u16::MAX - CALL_DEPTH_LIMIT - 1` (64510).
     #[inline]
     pub fn set_initial_call_depth(&mut self, depth: u16) {
         assert!(
-            self.current_frame.is_none(),
-            "initial call depth cannot be modified while a frame is running"
+            self.active_messages == 0,
+            "initial call depth cannot be modified while a message is executing"
         );
         assert!(
             depth < u16::MAX - CALL_DEPTH_LIMIT,
@@ -1877,7 +1883,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         result: MessageResult<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         if self.inspector.is_some() {
-            return self.execute_message_inspected(message, Some(result));
+            self.active_messages += 1;
+            let result = self.execute_message_inspected(message, Some(result));
+            self.active_messages -= 1;
+            return result;
         }
         Ok(result)
     }
@@ -2021,11 +2030,13 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let checkpoint = self.state.checkpoint();
+        self.active_messages += 1;
         let result = if self.inspector.is_some() {
             self.execute_message_inspected(message, None)
         } else {
             self.execute_message_impl(message)
         };
+        self.active_messages -= 1;
         if result.is_err() {
             self.state.rollback(checkpoint, self.features);
         }
@@ -5205,13 +5216,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "initial call depth cannot be modified while a frame is running")]
-    fn set_initial_call_depth_panics_while_frame_is_running() {
+    #[should_panic(expected = "initial call depth cannot be modified while a message is executing")]
+    fn set_initial_call_depth_panics_while_message_is_executing() {
         struct DepthSettingInspector;
 
         impl Inspector<BaseEvmTypes> for DepthSettingInspector {
-            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            // The top-level call hook runs before any interpreter frame is installed.
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
                 interp.host().set_initial_call_depth(1);
+                None
             }
         }
 
@@ -5223,11 +5240,12 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(DepthSettingInspector);
-        let message = MessageExt {
+        let mut message = MessageExt {
+            gas_limit: 30_000,
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let _ = evm.run_interpreter(&message);
+        let _ = Host::execute_message(&mut evm, &mut message);
     }
 
     #[test]
