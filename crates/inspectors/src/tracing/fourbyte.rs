@@ -22,11 +22,12 @@
 //!
 //! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
 
-use alloc::{format, vec::Vec};
-use alloy_primitives::{Address, Selector, map::HashMap};
+use alloc::format;
+use alloy_primitives::{Selector, map::HashMap};
 use alloy_rpc_types_trace::geth::FourByteFrame;
 use evm2::{
     EvmTypes, Inspector, InspectorConfig,
+    evm::PrewarmSet,
     interpreter::{Interpreter, Message, MessageResult},
 };
 
@@ -35,11 +36,11 @@ use evm2::{
 pub struct FourByteInspector {
     /// The map of SELECTOR to number of occurrences entries
     inner: HashMap<(Selector, usize), u64>,
-    /// The precompiles the host lists, read on the first call.
+    /// The precompiles the host warms, read on the first call.
     ///
     /// Addresses a provider only dispatches to on demand, such as Tempo's token precompiles,
     /// count like contracts.
-    precompiles: Option<Vec<Address>>,
+    precompiles: Option<PrewarmSet>,
 }
 
 impl FourByteInspector {
@@ -63,8 +64,12 @@ impl<T: EvmTypes> Inspector<T> for FourByteInspector {
         if let Some((selector, calldata)) = message.input.split_first_chunk()
             && !self
                 .precompiles
-                .get_or_insert_with(|| interp.host().precompiles().addresses())
-                .contains(&message.call_target)
+                .get_or_insert_with(|| {
+                    let mut precompiles = PrewarmSet::new();
+                    interp.host().precompiles().warm_addresses(&mut precompiles);
+                    precompiles
+                })
+                .is_warm(&message.call_target)
         {
             let selector = Selector::from(*selector);
             let calldata_size = calldata.len();

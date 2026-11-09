@@ -13,6 +13,7 @@ use alloy_rpc_types_trace::{geth::FlatCallConfig, parity::StorageDelta};
 use core::{mem, ops::Range};
 use evm2::{
     EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId,
+    evm::PrewarmSet,
     interpreter::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
@@ -110,11 +111,11 @@ pub struct TracingInspector {
     ///
     /// All `Vec<CallTraceStep>` are always empty but may have capacity.
     reusable_step_vecs: Vec<Vec<CallTraceStep>>,
-    /// The precompiles the host lists, read on the first call that records precompile calls.
+    /// The precompiles the host warms, read on the first call that records precompile calls.
     ///
     /// Addresses a provider only dispatches to on demand, such as Tempo's token precompiles,
     /// trace like contracts, as with revm-inspectors' warm precompile set.
-    precompiles: Option<Vec<Address>>,
+    precompiles: Option<PrewarmSet>,
 }
 
 impl TracingInspector {
@@ -753,8 +754,12 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         // Builders decide whether to leave out calls to precompiles, so record which calls are.
         let maybe_precompile = self.config.record_precompile_calls.then(|| {
             self.precompiles
-                .get_or_insert_with(|| interp.host().precompiles().addresses())
-                .contains(&to)
+                .get_or_insert_with(|| {
+                    let mut precompiles = PrewarmSet::new();
+                    interp.host().precompiles().warm_addresses(&mut precompiles);
+                    precompiles
+                })
+                .is_warm(&to)
         });
 
         let input = if self.config.record_inputs
