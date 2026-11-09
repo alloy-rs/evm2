@@ -1857,7 +1857,8 @@ impl<T: EvmTypesHost> Evm<'_, T> {
     /// Panics if the input is a range of memory and no frame runs, the running frame is not the
     /// frame that made the input, or the range is out of bounds of its memory. Each means that the
     /// message did not come from a call instruction of the running frame: copy a borrowed input
-    /// with [`MessageInput::to_bytes`] before forwarding it.
+    /// with [`MessageInput::to_bytes`](crate::interpreter::MessageInput::to_bytes) before
+    /// forwarding it.
     #[inline]
     pub fn message_input<'m>(&'m self, message: &'m Message<T>) -> &'m [u8] {
         match message.input.borrowed_range() {
