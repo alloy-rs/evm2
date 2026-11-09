@@ -1846,9 +1846,10 @@ impl<T: EvmTypesHost> Evm<'_, T> {
     ///
     /// # Panics
     ///
-    /// Panics if the input is a range of memory and no frame runs or the range is out of bounds
-    /// of its memory, which means that the message did not come from a call instruction that this
-    /// EVM runs.
+    /// Panics if the input is a range of memory and no frame runs, the running frame is not at the
+    /// call depth of the frame that made the input, or the range is out of bounds of its memory.
+    /// Each means that the message did not come from a call instruction of the running frame:
+    /// copy a borrowed input with [`MessageInput::to_bytes`] before forwarding it.
     #[inline]
     pub fn message_input<'m>(&'m self, message: &'m Message<T>) -> &'m [u8] {
         if let Some(input) = message.input.as_owned() {
@@ -1856,7 +1857,13 @@ impl<T: EvmTypesHost> Evm<'_, T> {
         }
         let caller = self.current_frame.expect("a call input must come from a running frame");
         // SAFETY: The running frame is suspended on this call stack.
-        message.input.as_bytes(unsafe { caller.as_ref() }.memory())
+        let caller = unsafe { caller.as_ref() };
+        assert_eq!(
+            message.input.caller_depth(),
+            Some(caller.message().depth),
+            "a call input must be resolved against the frame that made it",
+        );
+        message.input.as_bytes(caller.memory())
     }
 }
 

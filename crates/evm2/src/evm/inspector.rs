@@ -1913,6 +1913,37 @@ mod tests {
     }
 
     #[test]
+    #[should_panic = "a call input must be resolved against the frame that made it"]
+    fn forwarding_a_borrowed_call_input_from_another_frame_panics() {
+        // Forwards the borrowed input of the child, a range of the caller's memory, from the
+        // child's own frame, where the range would name the child's memory.
+        struct ForwardInput;
+
+        impl Inspector<BaseEvmTypes> for ForwardInput {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.message().depth == 1 {
+                    let mut message = MessageExt {
+                        depth: 2,
+                        gas_limit: 1_000,
+                        input: interp.message().input.clone(),
+                        code: legacy_bytecode([op::STOP]),
+                        ..Default::default()
+                    };
+                    let _ = Host::execute_message(interp.host(), &mut message);
+                }
+            }
+        }
+
+        run_evm_with_inspector_db(
+            echo_db(),
+            memory_input_call_code(ECHO, op::CALL),
+            &MessageExt::default(),
+            100_000,
+            ForwardInput,
+        );
+    }
+
+    #[test]
     fn call_hook_replacing_input_keeps_caller_memory() {
         struct ReplaceInput;
 

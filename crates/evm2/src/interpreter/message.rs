@@ -223,8 +223,8 @@ pub struct MessageInput(Repr);
 enum Repr {
     /// The input's bytes.
     Owned(Bytes),
-    /// The input's range in the caller frame's memory.
-    Borrowed(Range<usize>),
+    /// The input's range in the memory of the caller frame, which runs at call depth `depth`.
+    Borrowed { range: Range<usize>, depth: u16 },
 }
 
 impl Default for Repr {
@@ -235,10 +235,19 @@ impl Default for Repr {
 }
 
 impl MessageInput {
-    /// Creates an input that is `range` of the caller frame's memory.
+    /// Creates an input that is `range` of the memory of the caller frame at call depth `depth`.
     #[inline]
-    pub(crate) const fn borrowed(range: Range<usize>) -> Self {
-        Self(Repr::Borrowed(range))
+    pub(crate) const fn borrowed(range: Range<usize>, depth: u16) -> Self {
+        Self(Repr::Borrowed { range, depth })
+    }
+
+    /// Returns the call depth of the caller frame whose memory a borrowed input is a range of.
+    #[inline]
+    pub(crate) const fn caller_depth(&self) -> Option<u16> {
+        match &self.0 {
+            Repr::Owned(_) => None,
+            Repr::Borrowed { depth, .. } => Some(*depth),
+        }
     }
 
     /// Returns the length of the input.
@@ -246,7 +255,7 @@ impl MessageInput {
     pub fn len(&self) -> usize {
         match &self.0 {
             Repr::Owned(bytes) => bytes.len(),
-            Repr::Borrowed(range) => range.len(),
+            Repr::Borrowed { range, .. } => range.len(),
         }
     }
 
@@ -262,7 +271,7 @@ impl MessageInput {
     pub const fn as_owned(&self) -> Option<&Bytes> {
         match &self.0 {
             Repr::Owned(bytes) => Some(bytes),
-            Repr::Borrowed(_) => None,
+            Repr::Borrowed { .. } => None,
         }
     }
 
@@ -276,7 +285,7 @@ impl MessageInput {
     pub fn as_bytes<'a>(&'a self, memory: &'a Memory) -> &'a [u8] {
         match &self.0 {
             Repr::Owned(bytes) => bytes,
-            Repr::Borrowed(range) => &memory.as_slice()[range.clone()],
+            Repr::Borrowed { range, .. } => &memory.as_slice()[range.clone()],
         }
     }
 
@@ -290,7 +299,7 @@ impl MessageInput {
     pub fn to_bytes(&self, memory: &Memory) -> Bytes {
         match &self.0 {
             Repr::Owned(bytes) => bytes.clone(),
-            Repr::Borrowed(_) => Bytes::copy_from_slice(self.as_bytes(memory)),
+            Repr::Borrowed { .. } => Bytes::copy_from_slice(self.as_bytes(memory)),
         }
     }
 }
@@ -367,7 +376,7 @@ mod tests {
         let mut memory = Memory::new();
         memory.resize(0, 3).unwrap();
         memory.set(0, &[1, 2, 3]);
-        let input = MessageInput::borrowed(1..3);
+        let input = MessageInput::borrowed(1..3, 0);
         let owned = MessageInput::from(Bytes::from_static(&[9]));
         let kept = input.clone();
         memory.set(1, &[7]);
@@ -389,6 +398,6 @@ mod tests {
         let mut memory = Memory::new();
         memory.resize(0, 2).unwrap();
 
-        MessageInput::borrowed(1..3).as_bytes(&memory);
+        MessageInput::borrowed(1..3, 0).as_bytes(&memory);
     }
 }

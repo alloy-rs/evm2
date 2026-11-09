@@ -292,7 +292,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         if !self.lends_memory {
             return Bytes::copy_from_slice(self.memory.slice(offset, len)).into();
         }
-        MessageInput::borrowed(offset..offset + len)
+        MessageInput::borrowed(offset..offset + len, self.message().depth)
     }
 
     /// Returns the bytes of the active message's input.
