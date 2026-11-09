@@ -40,8 +40,7 @@ pub struct Stack<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct RawStack<'a> {
     stack: *mut StackBacking,
-    /// Length in units of [`RAW_LEN_SCALE`] per word, so that the tail-call dispatch can address
-    /// the top of the stack without scaling the length.
+    /// Length in units of [`RAW_LEN_SCALE`] per word.
     len: usize,
     marker: PhantomData<&'a mut StackBacking>,
 }
