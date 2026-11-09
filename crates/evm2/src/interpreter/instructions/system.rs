@@ -450,7 +450,7 @@ pub fn create_with<T: EvmTypesHost>(
                 caller_info.nonce,
                 value,
                 depth,
-                state.version(),
+                state.host().initial_call_depth(),
             )
             .is_some()
         {
