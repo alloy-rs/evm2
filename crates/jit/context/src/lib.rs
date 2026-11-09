@@ -157,7 +157,7 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
 
     /// Returns the current linear memory.
     #[inline]
-    pub const fn memory_mut(&mut self) -> &mut Memory {
+    pub fn memory_mut(&mut self) -> &mut Memory {
         self.interpreter_mut().memory_mut()
     }
 

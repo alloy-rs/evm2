@@ -852,10 +852,10 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
         _non_exhaustive: (),
     };
 
-    let mut result = ecx
-        .host()
-        .execute_message(&mut message)
-        .map_err(|error| ecx.interpreter_mut().fail(error))?;
+    let result = ecx.host().execute_message(&mut message);
+    // An inspector hook may have given the frame a copy of the memory the input read.
+    ecx.refresh_memory_cache();
+    let mut result = result.map_err(|error| ecx.interpreter_mut().fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop.into());
     }
@@ -1169,7 +1169,9 @@ mod tests {
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.call_static_flags
                 .push(interp.is_static() || message.kind == MessageKind::StaticCall);
-            self.calls.push(message.clone());
+            let mut message = message.clone();
+            message.input = message.input.to_bytes(interp.memory()).into();
+            self.calls.push(message);
             Some(self.execute_result.clone())
         }
 

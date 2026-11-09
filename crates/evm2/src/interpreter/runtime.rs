@@ -69,6 +69,12 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     /// runs, whose host keeps a borrowed input from being read after the call or while the memory
     /// changes.
     lends_memory: bool,
+    /// Whether a running child message's input points into this frame's memory. While set,
+    /// [`Self::memory_mut`] gives the frame a copy of memory and keeps the original in
+    /// `lent_memory`.
+    memory_lent: bool,
+    /// The memory a child message's input points into, after a write gave this frame a copy.
+    lent_memory: Option<Memory>,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
@@ -110,6 +116,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             message: None,
             is_static: false,
             lends_memory: false,
+            memory_lent: false,
+            lent_memory: None,
             return_data: Bytes::new(),
             host: None,
             inspector: None,
@@ -137,6 +145,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.message = Some(message);
         self.is_static = is_static;
         self.lends_memory = false;
+        self.memory_lent = false;
+        self.lent_memory = None;
         self.return_data = Bytes::new();
     }
 
@@ -266,13 +276,19 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     }
 
     /// Returns the current mutable linear memory.
+    ///
+    /// While a running child message's input points into this memory, this first gives the frame a
+    /// copy of it, so that the input stays unchanged.
     #[inline]
-    pub const fn memory_mut(&mut self) -> &mut Memory {
+    pub fn memory_mut(&mut self) -> &mut Memory {
+        if self.memory_lent {
+            self.copy_lent_memory();
+        }
         &mut self.memory
     }
 
-    /// Returns `len` bytes of memory at `offset` as the input of a call message, borrowed when
-    /// this frame is run by [`Evm`](crate::Evm) and copied otherwise.
+    /// Returns `len` bytes of memory at `offset` as the input of a call message: a range of this
+    /// frame's memory when this frame is run by [`Evm`](crate::Evm), and a copy otherwise.
     ///
     /// # Safety
     ///
@@ -292,16 +308,48 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             return Bytes::copy_from_slice(bytes).into();
         }
         // SAFETY: The caller keeps memory unchanged until the host returns, and the host is
-        // `Evm`, which copies the input before any inspector hook can reach this frame or the
-        // message. Otherwise it only reads the message through shared references, which cannot
-        // move the input out, and cloning copies it.
-        unsafe { MessageInput::borrowed(bytes) }
+        // `Evm`, which detaches the input before any inspector hook can reach this frame or the
+        // message, and otherwise only reads the message through shared references, which cannot
+        // move the input out. Cloning an attached input copies it.
+        unsafe { MessageInput::borrowed(bytes, offset..offset + len) }
     }
 
     /// Lets [`Self::call_input`] borrow memory for the rest of this frame.
     #[inline]
     pub(crate) const fn lend_memory(&mut self) {
         self.lends_memory = true;
+    }
+
+    /// Marks this frame's memory as read by a running child message's input, until
+    /// [`Self::end_memory_lend`].
+    #[inline]
+    pub(crate) const fn start_memory_lend(&mut self) {
+        self.memory_lent = true;
+    }
+
+    /// Returns whether a running child message's input points into this frame's memory.
+    #[inline]
+    pub(crate) const fn is_memory_lent(&self) -> bool {
+        self.memory_lent
+    }
+
+    /// Ends [`Self::start_memory_lend`], dropping the memory the input read if a write replaced
+    /// it.
+    #[inline]
+    pub(crate) fn end_memory_lend(&mut self) {
+        self.memory_lent = false;
+        self.lent_memory = None;
+    }
+
+    /// Replaces memory that a running child message's input reads with a copy, keeping the
+    /// original in place and unchanged until the lend ends.
+    #[cold]
+    #[inline(never)]
+    fn copy_lent_memory(&mut self) {
+        if self.lent_memory.is_none() {
+            let copy = self.memory.clone();
+            self.lent_memory = Some(core::mem::replace(&mut self.memory, copy));
+        }
     }
 
     /// Returns the current interpreter result.

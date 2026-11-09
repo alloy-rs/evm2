@@ -275,6 +275,11 @@ fn call_inner<T: EvmTypesHost>(
 /// `after` runs.
 ///
 /// An `Err` from either hook stops the instruction with that error.
+///
+/// The hooks see the child message's input as a range of this frame's memory: read it with
+/// [`MessageInput::as_bytes`](crate::interpreter::MessageInput::as_bytes) and `state.memory()`,
+/// and to change it, assign an owned input. Writing this frame's memory in `before` changes what
+/// the child reads.
 #[inline]
 pub fn call_with<T: EvmTypesHost>(
     stack: StackMut<'_>,
@@ -291,10 +296,20 @@ pub fn call_with<T: EvmTypesHost>(
 ) -> Result {
     let before =
         |gas: &mut Gas, state: &mut InterpreterState<'_, '_, T>, message: &mut Message<T>| {
-            message.input.make_owned();
-            before(gas, state, message)
+            message.input.detach();
+            before(gas, state, message)?;
+            // SAFETY: Memory stays unchanged until the host returns, as `call_impl` requires.
+            unsafe { message.input.attach(state.memory()) };
+            Ok(())
         };
-    // SAFETY: `before` copies the input before the hooks can reach it.
+    let after = |gas: &mut Gas,
+                 state: &mut InterpreterState<'_, '_, T>,
+                 message: &mut Message<T>,
+                 result: &MessageResult<T>| {
+        message.input.detach();
+        after(gas, state, message, result)
+    };
+    // SAFETY: The hooks only see the input detached.
     unsafe { call_impl(stack, gas, state, kind, before, after) }
 }
 
@@ -302,8 +317,8 @@ pub fn call_with<T: EvmTypesHost>(
 ///
 /// # Safety
 ///
-/// `before` and `after` must not read a borrowed input after changing memory, or let it outlive
-/// the call.
+/// `before` must leave the input as it found it or owned, and `after` must not read an attached
+/// input after changing memory or let it outlive the call.
 #[inline]
 unsafe fn call_impl<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
@@ -314,7 +329,7 @@ unsafe fn call_impl<T: EvmTypesHost>(
     after: impl FnOnce(
         &mut Gas,
         &mut InterpreterState<'_, '_, T>,
-        &Message<T>,
+        &mut Message<T>,
         &MessageResult<T>,
     ) -> Result,
 ) -> Result {
@@ -340,7 +355,7 @@ unsafe fn call_impl<T: EvmTypesHost>(
     if new_account_state_gas != 0 && !result.is_success() {
         gas.refill_reservoir(new_account_state_gas);
     }
-    after(gas, state, &message, &result)?;
+    after(gas, state, &mut message, &result)?;
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
         let output = result.output.get_unchecked(..copy_len);

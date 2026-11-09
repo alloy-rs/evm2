@@ -2193,8 +2193,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     #[must_use]
     fn call_builtin(&mut self, builtin: Builtin, args: &[B::Value]) -> Option<B::Value> {
         let function = self.builtin_function(builtin);
-        let invalidate_mem_base =
-            !self.current_inst.is_some_and(|inst| self.can_skip_ensure_memory(inst));
+        // A call's inspector hooks can give the frame a copy of the memory its input read.
+        let invalidate_mem_base = builtin == Builtin::Call
+            || !self.current_inst.is_some_and(|inst| self.can_skip_ensure_memory(inst));
         let value = self.bcx.call(function, args);
         if invalidate_mem_base {
             self.cached_mem_base = None;

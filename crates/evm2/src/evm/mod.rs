@@ -1398,9 +1398,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
         // replacement while the hooks are running.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
-        // The hooks can change the caller's memory and keep the message, so the input must not
-        // borrow that memory.
-        message.input.make_owned();
+        // The hooks can change the caller's memory and keep the message, so they only see the
+        // range of an input in the caller's memory, which they read through the caller frame.
+        message.input.detach();
 
         // `destination` already holds the create's contract address (set when the message was
         // constructed), so the create hook observes it directly.
@@ -1446,7 +1446,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else if let Some(halted) = halted {
             Ok(halted)
         } else {
-            inspected.map(Ok).unwrap_or_else(|| guard.evm.execute_message_impl(message))
+            inspected.map(Ok).unwrap_or_else(|| guard.evm.execute_message_impl_lent(frame, message))
         };
 
         if let Ok(result) = &mut result {
@@ -1465,6 +1465,36 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             let _ = guard.evm.interpreter_pool.push(frame);
         }
 
+        result
+    }
+
+    /// Executes `message` for an inspected `frame`, the caller frame or a top-level frame, pointing
+    /// an input in the caller's memory at `frame`'s memory while no hook holds the message.
+    ///
+    /// Hooks that messages sent during the execution run (by a precompile, or by the EIP-7708
+    /// transfer log hook) get `frame` too, so its memory is lent: a write through
+    /// [`Interpreter::memory_mut`] gives the frame a copy and keeps the memory the input reads.
+    fn execute_message_impl_lent(
+        &mut self,
+        frame: &mut Interpreter<'_, 'a, T>,
+        message: &mut Message<T>,
+    ) -> Result<MessageResult<T>, ExecutionError> {
+        if message.input.caller_memory().is_none() {
+            return self.execute_message_impl(message);
+        }
+        if frame.is_memory_lent() {
+            // A hook sent a message whose input is a range of memory already lent to a running
+            // message. This is rare, so copy it rather than nest lends.
+            message.input = message.input.to_bytes(frame.memory()).into();
+            return self.execute_message_impl(message);
+        }
+        // SAFETY: The frame is suspended until the message returns, and lending its memory keeps
+        // the bytes the input points at in place and unchanged until the lend ends.
+        unsafe { message.input.attach(frame.memory()) };
+        frame.start_memory_lend();
+        let result = self.execute_message_impl(message);
+        message.input.detach();
+        frame.end_memory_lend();
         result
     }
 
@@ -5055,5 +5085,61 @@ mod tests {
         );
 
         let _ = evm.transact_with_inspector(&test_tx(0), &mut CallCounter::default());
+    }
+
+    #[test]
+    fn hook_writing_lent_memory_keeps_precompile_input() {
+        /// Grows and overwrites the caller's memory in the hook of a message that a precompile
+        /// sends while it reads its input from that memory.
+        struct OverwriteLentMemory;
+
+        impl Inspector<BaseEvmTypes> for OverwriteLentMemory {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.destination == INNER_TEST_PRECOMPILE {
+                    let memory = interp.memory_mut();
+                    memory.resize(0, 1 << 20).unwrap();
+                    memory.set(0, &[0xbb; 32]);
+                }
+                None
+            }
+        }
+
+        let precompiles = precompiles_with([
+            test_precompile(TEST_PRECOMPILE, |evm, message, _| {
+                let mut child = precompile_message(INNER_TEST_PRECOMPILE);
+                child.depth = message.depth + 1;
+                Host::execute_message(evm, &mut child)?;
+                Ok(PrecompileOutput::new(Bytes::copy_from_slice(&message.input)))
+            }),
+            test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
+                Ok(PrecompileOutput::new(Bytes::new()))
+            }),
+        ]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        evm.set_inspector(OverwriteLentMemory);
+        // Calls the precompile with memory 0..32 as input and returns its output.
+        let mut code = vec![op::PUSH32];
+        code.extend([0xaa; 32]);
+        code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH1, 32, op::PUSH1, 32]);
+        code.extend([op::PUSH0, op::PUSH0]);
+        push_address(&mut code, &TEST_PRECOMPILE);
+        code.extend([op::GAS, op::CALL, op::POP, op::PUSH1, 32, op::PUSH1, 32, op::RETURN]);
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
+
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
+
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(result.output[..], [0xaa; 32]);
     }
 }

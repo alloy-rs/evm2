@@ -1890,7 +1890,7 @@ mod tests {
     }
 
     #[test]
-    fn call_hook_overwriting_caller_memory_keeps_child_input() {
+    fn call_hook_overwriting_caller_memory_changes_child_input() {
         struct OverwriteCallerMemory;
 
         impl Inspector<BaseEvmTypes> for OverwriteCallerMemory {
@@ -1900,9 +1900,24 @@ mod tests {
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.depth > 0 {
+                    // The input is a range of the caller's memory, read through the caller.
+                    assert!(message.input.as_ref().is_empty());
+                    assert_eq!(message.input.len(), 32);
+                    assert_eq!(message.input.as_bytes(interp.memory()), [0xaa; 32]);
                     interp.memory_mut().set(0, &[0xbb; 32]);
                 }
                 None
+            }
+
+            fn call_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                _result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth > 0 {
+                    assert_eq!(message.input.to_bytes(interp.memory())[..], [0xbb; 32]);
+                }
             }
         }
 
@@ -1916,12 +1931,58 @@ mod tests {
             );
 
             assert_matches!(result.stop, InstrStop::Return);
-            assert_eq!(result.output[..], [0xaa; 32], "{target}");
+            assert_eq!(result.output[..], [0xbb; 32], "{target}");
         }
     }
 
     #[test]
-    fn call_with_hook_overwriting_caller_memory_keeps_child_input() {
+    fn call_hook_replacing_input_keeps_caller_memory() {
+        struct ReplaceInput;
+
+        impl Inspector<BaseEvmTypes> for ReplaceInput {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    let mut input = message.input.to_bytes(interp.memory()).to_vec();
+                    input[..16].fill(0xcc);
+                    message.input = Bytes::from(input).into();
+                }
+                None
+            }
+
+            fn call_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                _result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth > 0 {
+                    assert_eq!(interp.memory().slice(0, 32), [0xaa; 32]);
+                    assert_eq!(&message.input[..16], [0xcc; 16]);
+                }
+            }
+        }
+
+        for target in [ECHO, Address::with_last_byte(4)] {
+            let (result, _, _) = run_evm_with_inspector_db(
+                echo_db(),
+                memory_input_call_code(target, op::CALL),
+                &MessageExt::default(),
+                100_000,
+                ReplaceInput,
+            );
+
+            assert_matches!(result.stop, InstrStop::Return);
+            assert_eq!(result.output[..16], [0xcc; 16], "{target}");
+            assert_eq!(result.output[16..], [0xaa; 16], "{target}");
+        }
+    }
+
+    #[test]
+    fn call_with_hook_overwriting_caller_memory_changes_child_input() {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_config::<OverwritingCallConfig>(),
             SpecId::OSAKA,
@@ -1937,7 +1998,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_matches!(result.stop, InstrStop::Return);
-        assert_eq!(result.output[..], [0xaa; 32]);
+        assert_eq!(result.output[..], [0xbb; 32]);
     }
 
     #[test]
