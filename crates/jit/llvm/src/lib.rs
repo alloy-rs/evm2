@@ -936,17 +936,15 @@ impl Backend for EvmLlvmBackend {
 
         // Attach debug info subprogram if debug is active.
         self.ensure_di_state();
-        let debug_scope = if let Some(di) = &self.di_state {
+        let debug_scope = self.di_state.as_ref().map(|di| {
             let subprogram = di.dibuilder.create_subprogram(
                 di.compile_unit,
                 name,
                 self.backend_config.opt_level != OptimizationLevel::None,
             );
             function.set_subprogram(subprogram);
-            Some(subprogram)
-        } else {
-            None
-        };
+            subprogram
+        });
 
         let builder = EvmLlvmBuilder { backend: self, function, debug_scope };
         Ok((builder, id))
@@ -1198,13 +1196,10 @@ impl EvmLlvmBuilder<'_> {
         name: &str,
         mk_ty: impl FnOnce(&mut Self) -> Type,
     ) -> Function {
-        match self.module().get_function(name) {
-            Some(function) => function,
-            None => {
-                let ty = mk_ty(self);
-                self.module().add_function(name, ty, None)
-            }
-        }
+        self.module().get_function(name).unwrap_or_else(|| {
+            let ty = mk_ty(self);
+            self.module().add_function(name, ty, None)
+        })
     }
 
     fn set_branch_weights(&self, inst: Inst, weights: impl IntoIterator<Item = u32>) {
@@ -1943,6 +1938,10 @@ fn init_() -> Result<()> {
         // functions alias analysis lets EVM memory and builtin calls alias the stack, and LICM
         // cannot promote loop-carried stack slots to registers.
         c"-capture-tracking-max-uses-to-explore=1000000".as_ptr(),
+        // Emit a trap for `unreachable`, as rustc does, so that a builtin call that is expected
+        // to leave through `evm2_jit_exit` but returns faults instead of running into the next
+        // block.
+        c"-trap-unreachable".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe { LLVMParseCommandLineOptions(args.len() as i32, args.as_ptr(), std::ptr::null()) }
@@ -2034,6 +2033,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::AlwaysInline => ("alwaysinline", AttrValue::Enum(0)),
         OurAttr::NoInline => ("noinline", AttrValue::Enum(0)),
         OurAttr::Speculatable => ("speculatable", AttrValue::Enum(0)),
+        OurAttr::InlineStackProbes => ("probe-stack", AttrValue::String("inline-asm")),
 
         OurAttr::NoAlias => ("noalias", AttrValue::Enum(0)),
         OurAttr::NoCapture => return cpp::create_no_captures_attr(bcx.cx()),

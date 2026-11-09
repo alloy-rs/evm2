@@ -94,7 +94,7 @@ pub fn encode_pair(n: u8, m: u8) -> Option<u8> {
         try_k(n - 1, m - 1)
     } else {
         // Case 2: q >= r → n = r+1, m = 29-q.
-        if let Some(q) = 29u8.checked_sub(m) { try_k(q, n - 1) } else { None }
+        29u8.checked_sub(m).and_then(|q| try_k(q, n - 1))
     }
 }
 
