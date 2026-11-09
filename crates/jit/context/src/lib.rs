@@ -157,8 +157,9 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
 
     /// Returns the current linear memory.
     #[inline]
-    pub fn memory_mut(&mut self) -> &mut Memory {
-        self.interpreter_mut().memory_mut()
+    pub const fn memory_mut(&mut self) -> &mut Memory {
+        // SAFETY: Builtins run only while this frame runs, so no child message reads its memory.
+        unsafe { self.interpreter_mut().running_memory_mut() }
     }
 
     /// Resizes memory using EVM memory gas accounting.

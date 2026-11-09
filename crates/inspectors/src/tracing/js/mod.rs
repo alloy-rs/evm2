@@ -723,7 +723,12 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
 
         self.push_call(
             message.depth,
-            Contract { caller, contract, value: message.value, input: message.input.to_bytes() },
+            Contract {
+                caller,
+                contract,
+                value: message.value,
+                input: message.input.to_bytes(interp.memory()),
+            },
             message.kind.into(),
             message.gas_limit,
             interp.gas().refunded(),
@@ -785,7 +790,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 caller: message.caller,
                 contract: message.destination,
                 value: message.value,
-                input: message.input.to_bytes(),
+                input: message.input.to_bytes(interp.memory()),
             },
             message.kind.into(),
             message.gas_limit,

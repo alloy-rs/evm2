@@ -1398,6 +1398,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
         // replacement while the hooks are running.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
+        // The hooks can change the caller's memory and keep the message, so they only see the
+        // range of an input in the caller's memory, which they read through the caller frame.
+        message.input.detach();
+
         // `destination` already holds the create's contract address (set when the message was
         // constructed), so the create hook observes it directly.
         let is_create = message.kind.is_create();
@@ -1430,14 +1434,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         };
         // SAFETY: The frame outlives the hook invocations below.
         let frame = unsafe { trustme::decouple_lt_mut(frame) };
-        // A borrowed input points into the caller frame's memory, which the hooks can reach, and
-        // so can the hooks of messages that a precompile or a hook sends. Lend the memory until the
-        // message returns: a write gives the frame a copy and leaves the input unchanged. A frame
-        // already lends its memory to the message that sent this one.
-        let lend = message.input.is_borrowed() && !frame.is_memory_lent();
-        if lend {
-            frame.start_memory_lend();
-        }
 
         let inspected = if is_create {
             inspector.create(frame, message)
@@ -1450,7 +1446,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else if let Some(halted) = halted {
             Ok(halted)
         } else {
-            inspected.map(Ok).unwrap_or_else(|| guard.evm.execute_message_impl(message))
+            inspected.map(Ok).unwrap_or_else(|| guard.evm.execute_message_impl_lent(frame, message))
         };
 
         if let Ok(result) = &mut result {
@@ -1465,14 +1461,40 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             result = Err(error);
         }
 
-        if lend {
-            frame.end_memory_lend();
-        }
-
         if let Some(frame) = top_frame {
             let _ = guard.evm.interpreter_pool.push(frame);
         }
 
+        result
+    }
+
+    /// Executes `message` for an inspected `frame`, the caller frame or a top-level frame, pointing
+    /// an input in the caller's memory at `frame`'s memory while no hook holds the message.
+    ///
+    /// Hooks that messages sent during the execution run (by a precompile, or by the EIP-7708
+    /// transfer log hook) get `frame` too, so its memory is lent: a write through
+    /// [`Interpreter::memory_mut`] gives the frame a copy and keeps the memory the input reads.
+    fn execute_message_impl_lent(
+        &mut self,
+        frame: &mut Interpreter<'_, 'a, T>,
+        message: &mut Message<T>,
+    ) -> Result<MessageResult<T>, ExecutionError> {
+        if message.input.caller_memory().is_none() {
+            return self.execute_message_impl(message);
+        }
+        if frame.is_memory_lent() {
+            // A hook sent a message whose input is a range of memory already lent to a running
+            // message. This is rare, so copy it rather than nest lends.
+            message.input = message.input.to_bytes(frame.memory()).into();
+            return self.execute_message_impl(message);
+        }
+        // SAFETY: The frame is suspended until the message returns, and lending its memory keeps
+        // the bytes the input points at in place and unchanged until the lend ends.
+        unsafe { message.input.attach(frame.memory()) };
+        frame.start_memory_lend();
+        let result = self.execute_message_impl(message);
+        message.input.detach();
+        frame.end_memory_lend();
         result
     }
 
