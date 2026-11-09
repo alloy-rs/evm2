@@ -11,7 +11,9 @@ use evm2_inspectors::{
     access_list::AccessListInspector,
     opcode::OpcodeGasInspector,
     otterscan::InternalOperationsInspector,
-    tracing::{TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig},
+    tracing::{
+        TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig, types::CallTrace,
+    },
     transfer::TransferInspector,
 };
 
@@ -310,18 +312,31 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
             .with_limits(TraceLimits::default().set_max_recorded_bytes(Some(0)));
             run(&mut tracer);
             let nodes = tracer.traces().nodes();
-            assert_eq!(nodes.len(), 2);
-            assert_eq!(nodes[0].parent, None);
-            assert_eq!(nodes[0].trace.depth, usize::from(initial_call_depth));
-            assert_eq!(nodes[0].trace.data, data);
-            assert_eq!(nodes[0].children, [1]);
-            assert_eq!(nodes[1].parent, Some(0));
-            assert_eq!(nodes[1].trace.depth, usize::from(initial_call_depth) + 1);
+            // Like revm-inspectors, a top-level call above depth zero hangs under an empty root.
+            let root = usize::from(initial_call_depth > 0);
+            assert_eq!(nodes.len(), 2 + root);
+            if root == 1 {
+                assert_eq!(nodes[0].trace, CallTrace::default());
+                assert_eq!(nodes[0].children, [1]);
+            }
+            assert_eq!(nodes[root].parent, root.checked_sub(1));
+            assert_eq!(nodes[root].trace.depth, usize::from(initial_call_depth));
+            assert_eq!(nodes[root].trace.data, data);
+            assert_eq!(nodes[root].children, [root + 1]);
+            assert_eq!(nodes[root + 1].parent, Some(root));
+            assert_eq!(nodes[root + 1].trace.depth, usize::from(initial_call_depth) + 1);
             let geth = tracer.geth_builder().geth_traces(0, Bytes::new(), Default::default());
-            assert_eq!(geth.struct_logs[0].depth, u64::from(initial_call_depth) + 1);
-            assert!(
-                geth.struct_logs.iter().any(|log| log.depth == u64::from(initial_call_depth) + 2)
-            );
+            if root == 1 {
+                // As with revm-inspectors, struct logs only follow the root's own steps.
+                assert!(geth.struct_logs.is_empty());
+            } else {
+                assert_eq!(geth.struct_logs[0].depth, u64::from(initial_call_depth) + 1);
+                assert!(
+                    geth.struct_logs
+                        .iter()
+                        .any(|log| log.depth == u64::from(initial_call_depth) + 2)
+                );
+            }
 
             let mut access = AccessListInspector::default();
             run(&mut access);
