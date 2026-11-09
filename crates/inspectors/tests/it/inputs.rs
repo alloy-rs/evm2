@@ -260,7 +260,7 @@ fn byte_budget_halt_before_sstore_reports_no_store_delta() {
 }
 
 #[test]
-fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
+fn nested_roots_match_revm_inspectors() {
     let caller = Address::repeat_byte(0xaa);
     let child = Address::with_last_byte(0x43);
     // Send 1 wei to a child that executes STOP.
@@ -338,21 +338,24 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
                 );
             }
 
+            // Like revm-inspectors, only a call at depth zero counts as top-level.
             let mut access = AccessListInspector::default();
             run(&mut access);
-            assert!(access.excluded().contains(&caller));
-            assert!(access.excluded().contains(&target));
+            assert_eq!(access.excluded().contains(&caller), root == 0);
+            assert_eq!(access.excluded().contains(&target), root == 0);
             assert!(access.touched_slots().contains_key(&child));
             let mut operations = InternalOperationsInspector::default();
             run(&mut operations);
-            assert_eq!(operations.operations().len(), 1);
-            assert_eq!(operations.operations()[0].from, target);
-            assert_eq!(operations.operations()[0].to, child);
+            let operations = &operations.operations()[root..];
+            assert_eq!(operations.len(), 1);
+            assert_eq!(operations[0].from, target);
+            assert_eq!(operations[0].to, child);
             let mut transfers = TransferInspector::internal_only();
             run(&mut transfers);
-            assert_eq!(transfers.transfers().len(), 1);
-            assert_eq!(transfers.transfers()[0].from, target);
-            assert_eq!(transfers.transfers()[0].to, child);
+            let transfers = &transfers.transfers()[root..];
+            assert_eq!(transfers.len(), 1);
+            assert_eq!(transfers[0].from, target);
+            assert_eq!(transfers[0].to, child);
             let mut opcodes = OpcodeGasInspector::new();
             run(&mut opcodes);
             assert!(
