@@ -486,7 +486,11 @@ impl TracingInspector {
             let size = usize::from(immediate_size(op.get()));
             if size != 0 {
                 let pc = interp.pc() + 1;
-                let bytes = interp.original_bytecode_slice().get(pc..pc + size).unwrap_or_default();
+                let bytes = interp
+                    .original_bytecode()
+                    .original_byte_slice()
+                    .get(pc..pc + size)
+                    .unwrap_or_default();
                 if self.budget.reserve(bytes.len()) {
                     immediate_bytes = Some(Bytes::copy_from_slice(bytes));
                 }
@@ -673,7 +677,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
         self.features = interp.version().features;
         if self.config.record_bytecode {
-            self.last_trace().trace.bytecode = Some(interp.original_bytecode());
+            self.last_trace().trace.bytecode = Some(interp.original_bytecode().original_bytes());
         }
     }
 

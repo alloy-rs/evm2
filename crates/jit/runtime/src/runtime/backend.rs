@@ -45,7 +45,7 @@ pub(crate) type ResidentMap = DashMap<RuntimeCacheKey, Arc<CompiledProgram>, Def
 /// Producers (lookup hot path) push without blocking; on overflow the event
 /// is silently dropped (`stats.events_dropped` is bumped). The backend
 /// drains via `pop` on every loop iteration. Hotness signal is best-effort.
-pub(crate) type EventQueue = ArrayQueue<LookupRequest>;
+pub(crate) type EventQueue = ArrayQueue<LookupRequest<'static>>;
 
 /// Per-entry metadata tracked alongside the resident map for eviction decisions.
 struct ResidentMeta {
@@ -304,7 +304,7 @@ impl BackendState {
         }
     }
 
-    fn handle_lookup_observed(&mut self, event: LookupRequest) {
+    fn handle_lookup_observed(&mut self, event: LookupRequest<'static>) {
         let hit = event.code.is_empty();
         if hit {
             self.inner.stats.lookup_hits.fetch_add(1, Ordering::Relaxed);
@@ -314,7 +314,13 @@ impl BackendState {
         } else {
             self.inner.stats.lookup_misses.fetch_add(1, Ordering::Relaxed);
             let kind = if self.aot { CompilationKind::Aot } else { CompilationKind::Jit };
-            self.try_admit(kind, event.key, event.code, SyncNotifier::none(), AdmitMode::Observed);
+            self.try_admit(
+                kind,
+                event.key,
+                event.code.original_bytes(),
+                SyncNotifier::none(),
+                AdmitMode::Observed,
+            );
         }
     }
 
@@ -1028,8 +1034,8 @@ pub(crate) fn run(
 mod notifier_tests {
     use super::*;
     use crate::runtime::{BackendShared, stats::RuntimeStats};
-    use evm2::{SpecId, interpreter::op};
-    use std::{sync::atomic::AtomicUsize, time::Duration};
+    use evm2::{SpecId, bytecode::Bytecode, interpreter::op};
+    use std::{borrow::Cow, sync::atomic::AtomicUsize, time::Duration};
 
     /// Creates backend state without starting compiler workers.
     fn new_state(tuning: RuntimeTuning) -> BackendState {
@@ -1071,7 +1077,10 @@ mod notifier_tests {
         code.push(op::STOP);
         let bytecode = Bytes::from(code);
         let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
-        state.handle_lookup_observed(LookupRequest { key, code: bytecode });
+        state.handle_lookup_observed(LookupRequest {
+            key,
+            code: Cow::Owned(Bytecode::new_legacy(bytecode)),
+        });
         key
     }
 
@@ -1096,7 +1105,10 @@ mod notifier_tests {
         );
         state.pending_jobs = 1;
         for _ in 0..10_000 {
-            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+            state.handle_lookup_observed(LookupRequest {
+                key,
+                code: Cow::Owned(Bytecode::new_legacy(bytecode.clone())),
+            });
         }
         assert_eq!(state.entries[&key].pending_notifiers.len(), 0);
         assert_eq!(state.entries[&key].pending_notifiers.capacity(), 0);
@@ -1111,7 +1123,10 @@ mod notifier_tests {
             });
         }
         for _ in 0..10_000 {
-            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+            state.handle_lookup_observed(LookupRequest {
+                key,
+                code: Cow::Owned(Bytecode::new_legacy(bytecode.clone())),
+            });
         }
         assert_eq!(state.entries[&key].pending_notifiers.len(), 2);
         assert_eq!(first_rx.try_recv(), Err(chan::TryRecvError::Empty));
@@ -1361,7 +1376,10 @@ mod notifier_tests {
 
         let bytecode = state.entries[&key].bytecode.clone();
         for _ in 0..10 {
-            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+            state.handle_lookup_observed(LookupRequest {
+                key,
+                code: Cow::Owned(Bytecode::new_legacy(bytecode.clone())),
+            });
         }
         let (sender, receiver) = chan::bounded(1);
         state.handle_compile_jit(CompileJitRequest {

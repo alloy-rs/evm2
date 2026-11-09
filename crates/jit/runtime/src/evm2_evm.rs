@@ -1,11 +1,12 @@
 //! evm2 JIT interpreter dispatch helpers.
 
-use crate::runtime::{JitBackend, LookupDecision, RuntimeCacheKey};
+use crate::runtime::{JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
 use evm2::{
     EvmTypesHost, ExecutionConfig, InterpreterRunner,
     interpreter::{Host, InstrStop, Interpreter},
 };
 use evm2_jit_context::can_run_compiled;
+use std::borrow::Cow;
 
 /// External interpreter runner backed by [`JitBackend`].
 #[derive(Clone, Debug)]
@@ -92,10 +93,8 @@ fn run_supported<'frame, 'host, T: EvmTypesHost>(
         code_hash: interpreter.original_bytecode_hash(),
         spec_id: host.execution_config().base_spec_id(),
     };
-    // A hit, the common case, takes no reference to the bytecode.
-    let decision = backend.lookup_with(key, interpreter.original_bytecode_slice(), || {
-        interpreter.original_bytecode()
-    });
+    let decision =
+        backend.lookup(LookupRequest { key, code: Cow::Borrowed(interpreter.original_bytecode()) });
 
     let program = match decision {
         LookupDecision::Compiled(program) => program,
@@ -120,7 +119,7 @@ mod tests {
     };
 
     #[cfg(feature = "llvm")]
-    use crate::runtime::{LookupRequest, RuntimeConfig};
+    use crate::runtime::RuntimeConfig;
     #[cfg(feature = "llvm")]
     use alloy_primitives::{Address, hex};
     #[cfg(feature = "llvm")]
@@ -876,7 +875,7 @@ mod tests {
                 assert!(matches!(
                     backend.lookup(LookupRequest {
                         key: RuntimeCacheKey { code_hash: code.hash_slow(), spec_id: spec },
-                        code: code.original_bytes(),
+                        code: Cow::Borrowed(&code),
                     }),
                     LookupDecision::Compiled(_)
                 ));

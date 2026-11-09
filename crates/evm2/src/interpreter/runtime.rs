@@ -211,16 +211,10 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.bytecode_ref.unwrap_or_else(|| BytecodeRef::new(self.bytecode))
     }
 
-    /// Returns the original active bytecode bytes.
+    /// Returns the original active bytecode, which outlives the borrow of the interpreter.
     #[inline]
-    pub fn original_bytecode(&self) -> Bytes {
-        self.bytecode.original_bytes()
-    }
-
-    /// Returns the original active bytecode as a byte slice.
-    #[inline]
-    pub fn original_bytecode_slice(&self) -> &'frame [u8] {
-        self.bytecode.original_byte_slice()
+    pub const fn original_bytecode(&self) -> &'frame Bytecode {
+        self.bytecode
     }
 
     /// Calculates or returns the cached hash of the original active bytecode.
@@ -544,7 +538,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Panics if `pc` is out of bounds.
     #[doc(hidden)]
     pub fn fail_host_instruction(&mut self, pc: usize, detail: fmt::Arguments<'_>) -> InstrStop {
-        let opcode = OpCode::new_or_unknown(self.original_bytecode_slice()[pc]);
+        let opcode = OpCode::new_or_unknown(self.bytecode.original_byte_slice()[pc]);
         self.fail(ExecutionError::Fatal(
             format!(
                 "host instruction {} (0x{:02x}) at pc {pc} {detail}",
