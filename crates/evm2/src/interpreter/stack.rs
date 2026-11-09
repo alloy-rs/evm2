@@ -216,10 +216,13 @@ impl<'a> RawStack<'a> {
     #[inline(always)]
     pub(crate) const fn len(self) -> usize {
         let raw = self.len;
-        // SAFETY: Type invariant.
-        unsafe {
-            core::hint::assert_unchecked(raw.is_multiple_of(RAW_LEN_SCALE));
-            core::hint::assert_unchecked(raw <= Stack::CAPACITY * RAW_LEN_SCALE);
+        // Only the scaled length gets these facts, so that the table backends compile unchanged.
+        if RAW_LEN_SCALE > 1 {
+            // SAFETY: Type invariant.
+            unsafe {
+                core::hint::assert_unchecked(raw.is_multiple_of(RAW_LEN_SCALE));
+                core::hint::assert_unchecked(raw <= Stack::CAPACITY * RAW_LEN_SCALE);
+            }
         }
         raw / RAW_LEN_SCALE
     }
