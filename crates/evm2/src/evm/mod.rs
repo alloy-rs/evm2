@@ -1354,8 +1354,6 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
 }
 
 impl<'a, T: EvmTypes> Evm<'a, T> {
-    /// The input of a call message may borrow the caller's memory (see
-    /// [`Interpreter::call_input`]), so this must not keep or clone out a borrowed input.
     #[inline]
     fn execute_message_impl(
         &mut self,
@@ -1398,9 +1396,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
         // replacement while the hooks are running.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
-        // The hooks can change the caller's memory and keep the message, so the input must not
-        // borrow that memory.
-        message.input.make_owned();
 
         // `destination` already holds the create's contract address (set when the message was
         // constructed), so the create hook observes it directly.
@@ -1777,7 +1772,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
-        interp_ref.lend_memory();
         guard.evm.inspect_initialize_interp(interp_ref);
         let inspector = guard.evm.active_inspector().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the

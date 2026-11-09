@@ -1,9 +1,10 @@
 use crate::{
     BaseEvmTypes, EvmTypesHost, Version,
     bytecode::Bytecode,
-    interpreter::{InstrStop, Word},
+    interpreter::{InstrStop, Word, memory::BorrowCell},
     trustme,
 };
+use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use core::{fmt, ops::Deref};
 
@@ -205,41 +206,42 @@ pub fn create_preaccess_failure(
 
 /// The input of a message: call data, or initcode for create messages.
 ///
-/// It derefs to the input bytes. When [`Evm`](crate::Evm) runs without an inspector, the child of
-/// a call instruction reads its input from the caller's memory instead of a copy, since the caller
-/// waits for the call to return. [`Clone`] and [`to_bytes`](Self::to_bytes) copy borrowed bytes, so
-/// a kept input always owns them.
+/// It derefs to the input bytes. The child of a call instruction reads its input from the
+/// caller's memory instead of a copy. The input stays valid and unchanged wherever it is moved and
+/// for as long as it lives: if it outlives the call, or a hook writes the caller's memory while it
+/// is alive, the caller's memory moves to a copy and the input keeps the old bytes. [`Clone`] and
+/// [`to_bytes`](Self::to_bytes) copy lent bytes.
 #[derive(Default)]
 pub struct MessageInput {
-    /// The owned bytes, or the borrowed bytes with their lifetime erased.
+    /// The owned bytes, or the lent bytes with their lifetime erased.
     bytes: Bytes,
-    /// Whether `bytes` borrows. If set, `bytes` must never be cloned.
-    borrowed: bool,
+    /// For lent bytes, the cell that keeps them alive after the memory they came from lets go of
+    /// them. If set, `bytes` must never be cloned.
+    cell: Option<Arc<BorrowCell>>,
 }
 
 impl MessageInput {
-    /// Borrows `bytes` without copying.
+    /// Lends `bytes` without copying.
     ///
     /// # Safety
     ///
-    /// `bytes` must stay valid and unchanged for as long as the input is read.
+    /// `bytes` must stay valid and unchanged for as long as `cell` is shared, or retire into it.
     #[inline]
-    pub(crate) unsafe fn borrowed(bytes: &[u8]) -> Self {
-        // SAFETY: The caller keeps the bytes alive while they are read, and `borrowed` keeps
-        // them from being cloned out.
-        Self { bytes: Bytes::from_static(unsafe { trustme::decouple_lt(bytes) }), borrowed: true }
+    pub(crate) unsafe fn lent(bytes: &[u8], cell: Arc<BorrowCell>) -> Self {
+        // SAFETY: Upheld by the caller, and `cell` keeps `bytes` from being cloned out.
+        Self { bytes: Bytes::from_static(unsafe { trustme::decouple_lt(bytes) }), cell: Some(cell) }
     }
 
-    /// Returns the input as owned bytes, copying borrowed ones.
+    /// Returns the input as owned bytes, copying lent ones.
     #[inline]
     pub fn to_bytes(&self) -> Bytes {
-        if self.borrowed { Bytes::copy_from_slice(&self.bytes) } else { self.bytes.clone() }
+        if self.cell.is_some() { Bytes::copy_from_slice(&self.bytes) } else { self.bytes.clone() }
     }
 
-    /// Copies borrowed bytes into an owned buffer.
+    /// Copies lent bytes into an owned buffer.
     #[inline]
     pub(crate) fn make_owned(&mut self) {
-        if self.borrowed {
+        if self.cell.is_some() {
             *self = Self::from(Bytes::copy_from_slice(&self.bytes));
         }
     }
@@ -280,7 +282,22 @@ impl Deref for MessageInput {
 impl From<Bytes> for MessageInput {
     #[inline]
     fn from(bytes: Bytes) -> Self {
-        Self { bytes, borrowed: false }
+        Self { bytes, cell: None }
+    }
+}
+
+impl From<Vec<u8>> for MessageInput {
+    #[inline]
+    fn from(bytes: Vec<u8>) -> Self {
+        Bytes::from(bytes).into()
+    }
+}
+
+impl From<MessageInput> for Bytes {
+    /// Returns owned bytes without copying, and copies lent ones.
+    #[inline]
+    fn from(input: MessageInput) -> Self {
+        if input.cell.is_some() { Self::copy_from_slice(&input.bytes) } else { input.bytes }
     }
 }
 
@@ -342,23 +359,5 @@ mod tests {
         assert!(!delegated(MessageKind::CallCode, executing).is_direct_call());
         // Address-based: a delegate call to the executing account's own address is direct.
         assert!(delegated(MessageKind::DelegateCall, target).is_direct_call());
-    }
-
-    #[test]
-    fn kept_borrowed_input_owns_its_bytes() {
-        let mut memory = [1, 2, 3];
-        // SAFETY: `memory` is unchanged until `input` is dropped.
-        let input = unsafe { MessageInput::borrowed(&memory) };
-        let clone = input.clone();
-        let bytes = input.to_bytes();
-        // SAFETY: `memory` is unchanged until `owned` owns its bytes.
-        let mut owned = unsafe { MessageInput::borrowed(&memory) };
-        owned.make_owned();
-        drop(input);
-        memory.fill(0);
-
-        assert_eq!(&*clone, [1, 2, 3]);
-        assert_eq!(bytes[..], [1, 2, 3]);
-        assert_eq!(&*owned, [1, 2, 3]);
     }
 }

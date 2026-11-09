@@ -12,7 +12,10 @@ use crate::{
     version::GasId,
 };
 use alloy_primitives::{Address, B256, Bytes};
-use core::{cmp::min, ops::Range};
+use core::{
+    cmp::min,
+    ops::{Deref, DerefMut, Range},
+};
 use evm2_macros::instruction;
 
 #[inline]
@@ -140,7 +143,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
 
 /// # Safety
 ///
-/// The message must be passed to the host as in
+/// Memory must not be written until the input is reclaimed, as in
 /// [`Interpreter::call_input`](crate::interpreter::Interpreter::call_input).
 #[inline(never)]
 unsafe fn prepare_call<T: EvmTypesHost>(
@@ -252,7 +255,7 @@ fn call_inner<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
 ) -> Result {
-    // SAFETY: The hooks do nothing.
+    // SAFETY: The hooks do not write memory.
     unsafe { call_impl(stack, gas, state, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(())) }
 }
 
@@ -294,16 +297,15 @@ pub fn call_with<T: EvmTypesHost>(
             message.input.make_owned();
             before(gas, state, message)
         };
-    // SAFETY: `before` copies the input before the hooks can reach it.
+    // SAFETY: `before` copies the input before the hooks can write memory.
     unsafe { call_impl(stack, gas, state, kind, before, after) }
 }
 
-/// Body of [`call_with`]. The child message may borrow its input from memory.
+/// Body of [`call_with`]. The child message borrows its input from memory.
 ///
 /// # Safety
 ///
-/// `before` and `after` must not read a borrowed input after changing memory, or let it outlive
-/// the call.
+/// `before` and `after` must not write memory while the input borrows it.
 #[inline]
 unsafe fn call_impl<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
@@ -318,14 +320,24 @@ unsafe fn call_impl<T: EvmTypesHost>(
         &MessageResult<T>,
     ) -> Result,
 ) -> Result {
+    // A hook can resume this frame after a failure or a caught panic, so the guard also reclaims
+    // the input then. It is dropped after the message.
+    let mut state = ReclaimCallInput { state };
     let mut message = Message::<T>::default();
     let mut return_memory_range = 0..0;
-    // SAFETY: Upheld by the caller for the hooks. Nothing else reads the message after the host
-    // returns.
+    // SAFETY: Upheld by the caller for the hooks. The input is reclaimed below, or by the guard,
+    // before this frame writes memory again.
     let new_account_state_gas = unsafe {
-        prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)
+        prepare_call(
+            stack.reborrow(),
+            gas,
+            &mut state,
+            kind,
+            &mut message,
+            &mut return_memory_range,
+        )
     }?;
-    before(gas, state, &mut message)?;
+    before(gas, &mut state, &mut message)?;
 
     let mut result =
         state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
@@ -340,7 +352,9 @@ unsafe fn call_impl<T: EvmTypesHost>(
     if new_account_state_gas != 0 && !result.is_success() {
         gas.refill_reservoir(new_account_state_gas);
     }
-    after(gas, state, &message, &result)?;
+    after(gas, &mut state, &message, &result)?;
+    drop(message);
+    state.0.reclaim_call_input();
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
         let output = result.output.get_unchecked(..copy_len);
@@ -350,6 +364,34 @@ unsafe fn call_impl<T: EvmTypesHost>(
     stack.push_u64(result.is_success() as u64)?;
     // A stop a hook set.
     state.result()
+}
+
+/// Reclaims the caller's memory from the input of [`call_impl`]'s message when dropped.
+struct ReclaimCallInput<'a, 'frame, 'host, T: EvmTypesHost> {
+    state: &'a mut InterpreterState<'frame, 'host, T>,
+}
+
+impl<'frame, 'host, T: EvmTypesHost> Deref for ReclaimCallInput<'_, 'frame, 'host, T> {
+    type Target = InterpreterState<'frame, 'host, T>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.state
+    }
+}
+
+impl<T: EvmTypesHost> DerefMut for ReclaimCallInput<'_, '_, '_, T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.state
+    }
+}
+
+impl<T: EvmTypesHost> Drop for ReclaimCallInput<'_, '_, '_, T> {
+    #[inline]
+    fn drop(&mut self) {
+        self.state.0.reclaim_call_input();
+    }
 }
 
 #[inline(never)]

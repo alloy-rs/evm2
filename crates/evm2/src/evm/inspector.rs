@@ -455,8 +455,9 @@ mod tests {
         ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
-            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageKind,
-            MessageResult, MessageResultExt, Word, instructions as instr, op,
+            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageInput,
+            MessageKind, MessageResult, MessageResultExt, Word, instructions as instr, op,
+            private::Instruction,
         },
         registry::TxRegistry,
         test_utils::{
@@ -1195,6 +1196,40 @@ mod tests {
         };
     }
 
+    /// `CALL`, which catches a panic out of the call and then overwrites and grows memory.
+    #[cfg(feature = "std")]
+    #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
+    fn catching_call(cx: _) -> Result {
+        let caught = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+            <instr::call<BaseEvmTypes> as Instruction<BaseEvmTypes>>::execute(
+                cx.pc,
+                stack.reborrow(),
+                cx.state,
+            )
+        }));
+        if caught.is_ok() {
+            return Ok(());
+        }
+        cx.state.memory().set(0, &[0xbb; 32]);
+        cx.state.memory().resize(0, 1 << 16).unwrap();
+        Err(InstrStop::Stop)
+    }
+
+    /// The base config with [`catching_call`] installed at [`CUSTOM_CALL`].
+    #[cfg(feature = "std")]
+    struct CatchingCallConfig;
+
+    #[cfg(feature = "std")]
+    impl EvmConfig<BaseEvmTypes> for CatchingCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<catching_call>(CUSTOM_CALL, 100);
+            config
+        };
+    }
+
     /// Runs a call to a child through `message_op`, which `C` installs as a call, followed by
     /// `immediates`.
     fn run_custom_call<C: EvmConfig<BaseEvmTypes>>(
@@ -1891,7 +1926,11 @@ mod tests {
 
     #[test]
     fn call_hook_overwriting_caller_memory_keeps_child_input() {
-        struct OverwriteCallerMemory;
+        /// Overwrites the input through `memory_mut`, or runs the caller's `MSTORE` at `pc` to
+        /// overwrite the input and then grow memory.
+        struct OverwriteCallerMemory {
+            mstore_pc: Option<usize>,
+        }
 
         impl Inspector<BaseEvmTypes> for OverwriteCallerMemory {
             fn call(
@@ -1899,25 +1938,172 @@ mod tests {
                 interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
-                if message.depth > 0 {
+                if message.depth == 0 {
+                    return None;
+                }
+                let Some(pc) = self.mstore_pc else {
                     interp.memory_mut().set(0, &[0xbb; 32]);
+                    return None;
+                };
+                for offset in [0, 1 << 16] {
+                    let mut stack = interp.stack_mut();
+                    stack.push(Word::from_be_bytes([0xbb; 32])).unwrap();
+                    stack.push(Word::from(offset)).unwrap();
+                    let len = stack.len();
+                    // SAFETY: The top `len` stack words are initialized.
+                    unsafe { interp.run_external_instruction(pc, len) }.unwrap();
                 }
                 None
             }
         }
 
         for target in [ECHO, Address::with_last_byte(4)] {
-            let (result, _, _) = run_evm_with_inspector_db(
-                echo_db(),
-                memory_input_call_code(target, op::CALL),
-                &MessageExt::default(),
-                100_000,
-                OverwriteCallerMemory,
-            );
+            let code = memory_input_call_code(target, op::CALL);
+            let mstore_pc = code.iter().position(|&b| b == op::MSTORE).unwrap();
+            for mstore_pc in [None, Some(mstore_pc)] {
+                let (result, _, _) = run_evm_with_inspector_db(
+                    echo_db(),
+                    code.clone(),
+                    &MessageExt::default(),
+                    200_000,
+                    OverwriteCallerMemory { mstore_pc },
+                );
 
-            assert_matches!(result.stop, InstrStop::Return);
-            assert_eq!(result.output[..], [0xaa; 32], "{target}");
+                assert_matches!(result.stop, InstrStop::Return);
+                assert_eq!(result.output[..], [0xaa; 32], "{target} {mstore_pc:?}");
+            }
         }
+    }
+
+    #[test]
+    fn call_hook_keeping_input_keeps_its_bytes() {
+        #[derive(Default)]
+        struct KeepInput {
+            kept: Option<MessageInput>,
+        }
+
+        impl Inspector<BaseEvmTypes> for KeepInput {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    let copy = message.input.to_bytes().into();
+                    self.kept = Some(core::mem::replace(&mut message.input, copy));
+                }
+                None
+            }
+        }
+
+        // Returns 32 bytes of 0xcc.
+        let target = Address::repeat_byte(0x33);
+        let mut target_code = Vec::new();
+        push_all(&mut target_code, [Word::from_be_bytes([0xcc; 32]), Word::ZERO]);
+        target_code.push(op::MSTORE);
+        push_all(&mut target_code, [Word::from(32), Word::ZERO]);
+        target_code.push(op::RETURN);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &target,
+            AccountInfo::default().with_code(legacy_bytecode(target_code)),
+        );
+        // Calls `target` with memory 0..32 as input and output, then returns memory 0..32.
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
+        code.push(op::MSTORE);
+        push_all(
+            &mut code,
+            [
+                Word::from(32),
+                Word::ZERO,
+                Word::from(32),
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(&target),
+                Word::from(50_000),
+            ],
+        );
+        code.extend([op::CALL, op::POP]);
+        push_all(&mut code, [Word::from(32), Word::ZERO]);
+        code.push(op::RETURN);
+
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db,
+            code,
+            &MessageExt::default(),
+            100_000,
+            KeepInput::default(),
+        );
+
+        assert_matches!(result.stop, InstrStop::Return);
+        assert_eq!(result.output[..], [0xcc; 32]);
+        assert_eq!(inspector.kept.as_deref(), Some(&[0xaa; 32][..]));
+    }
+
+    /// The tail-call backend does not resume a frame after a stop.
+    #[test]
+    #[cfg(not(tco))]
+    fn resumed_failed_call_keeps_kept_input() {
+        /// Keeps the first call's input and fails it, then resumes the caller, which retries the
+        /// call with an output range that grows memory.
+        #[derive(Default)]
+        struct ResumeFailedCall {
+            kept: Option<MessageInput>,
+        }
+
+        impl Inspector<BaseEvmTypes> for ResumeFailedCall {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 0 || self.kept.is_some() {
+                    return None;
+                }
+                self.kept = Some(core::mem::take(&mut message.input));
+                Some(MessageResultExt {
+                    stop: InstrStop::FatalExternalError,
+                    gas: GasTracker::new(message.gas_limit),
+                    ..Default::default()
+                })
+            }
+
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.result() == Err(InstrStop::FatalExternalError) {
+                    interp.set_result(Ok(()));
+                }
+            }
+        }
+
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
+        code.push(op::MSTORE);
+        for return_offset in [1 << 16, 32] {
+            push_all(
+                &mut code,
+                [
+                    Word::from(32),
+                    Word::from(return_offset),
+                    Word::from(32),
+                    Word::ZERO,
+                    Word::ZERO,
+                    address_to_word(&ECHO),
+                    Word::from(50_000),
+                ],
+            );
+        }
+        code.extend([op::CALL, op::STOP]);
+
+        let (_, inspector, _) = run_evm_with_inspector_db(
+            echo_db(),
+            code,
+            &MessageExt::default(),
+            200_000,
+            ResumeFailedCall::default(),
+        );
+
+        assert_eq!(inspector.kept.as_deref(), Some(&[0xaa; 32][..]));
     }
 
     #[test]
@@ -1938,6 +2124,48 @@ mod tests {
 
         assert_matches!(result.stop, InstrStop::Return);
         assert_eq!(result.output[..], [0xaa; 32]);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn caught_panic_in_call_keeps_kept_input() {
+        /// Keeps the child's input and panics.
+        #[derive(Default)]
+        struct KeepInputAndPanic {
+            kept: Option<MessageInput>,
+        }
+
+        impl Inspector<BaseEvmTypes> for KeepInputAndPanic {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    self.kept = Some(core::mem::take(&mut message.input));
+                    panic!("keeps the input");
+                }
+                None
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_config::<CatchingCallConfig>(),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            echo_db(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(KeepInputAndPanic::default());
+        let code = memory_input_call_code(ECHO, CUSTOM_CALL);
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
+
+        let _ = Host::execute_message(&mut evm, &mut message);
+
+        let inspector = evm.clear_inspector_as::<KeepInputAndPanic>().unwrap();
+        assert_eq!(inspector.kept.as_deref(), Some(&[0xaa; 32][..]));
     }
 
     #[test]

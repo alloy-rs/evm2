@@ -18,7 +18,7 @@ pub use evm2::interpreter::{Gas, InstrStop, Memory};
 use evm2::{
     BaseEvmTypes, EvmTypesHost, SpecId,
     env::{BlockEnv, TxEnv},
-    interpreter::{Host, Interpreter, Message},
+    interpreter::{Host, Interpreter, Message, MessageInput},
     version::{EvmFeatures, GasParams},
 };
 
@@ -157,7 +157,7 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
 
     /// Returns the current linear memory.
     #[inline]
-    pub const fn memory_mut(&mut self) -> &mut Memory {
+    pub fn memory_mut(&mut self) -> &mut Memory {
         self.interpreter_mut().memory_mut()
     }
 
@@ -178,9 +178,9 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
         self.interpreter_mut().host()
     }
 
-    /// Returns calldata bytes.
+    /// Returns the call data.
     #[inline]
-    pub fn input(&self) -> &[u8] {
+    pub const fn input(&self) -> &MessageInput {
         &self.message().input
     }
 
