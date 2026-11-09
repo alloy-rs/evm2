@@ -11,6 +11,11 @@ use core::{
 /// EVM stack word.
 pub type Word = U256;
 
+/// Units of [`RawStack`]'s stored length per stack word: the word size in bytes on x86-64, where
+/// an address scale stops at 8 and a word index costs a shift, and 1 elsewhere, where the scale is
+/// free.
+const RAW_LEN_SCALE: usize = if cfg!(target_arch = "x86_64") { size_of::<Word>() } else { 1 };
+
 /// Operand stack storage.
 ///
 /// Aligned to the word size so that no word crosses a cache line. Loads and stores that cross a
@@ -35,6 +40,8 @@ pub struct Stack<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct RawStack<'a> {
     stack: *mut StackBacking,
+    /// Length in units of [`RAW_LEN_SCALE`] per word, so that the tail-call dispatch can address
+    /// the top of the stack without scaling the length.
     len: usize,
     marker: PhantomData<&'a mut StackBacking>,
 }
@@ -203,19 +210,28 @@ impl<'a> RawStack<'a> {
     #[inline(always)]
     pub(crate) const fn new(stack: *mut StackBacking, len: usize) -> Self {
         debug_assert!(len <= Stack::CAPACITY);
-        Self { stack, len, marker: PhantomData }
+        Self { stack, len: len * RAW_LEN_SCALE, marker: PhantomData }
     }
 
     #[inline(always)]
     pub(crate) const fn len(self) -> usize {
-        self.len
+        let raw = self.len;
+        // SAFETY: Type invariant.
+        unsafe {
+            core::hint::assert_unchecked(raw.is_multiple_of(RAW_LEN_SCALE));
+            core::hint::assert_unchecked(raw <= Stack::CAPACITY * RAW_LEN_SCALE);
+        }
+        raw / RAW_LEN_SCALE
     }
 
     #[inline(always)]
     #[cfg(tco)]
     pub(crate) const fn set_len(&mut self, len: usize) {
         debug_assert!(len <= Stack::CAPACITY);
-        self.len = len;
+        // Add the word delta to the stored length instead of scaling `len`, so that a push or pop
+        // compiles to `stored ± RAW_LEN_SCALE` rather than `(stored / RAW_LEN_SCALE ± 1) *
+        // RAW_LEN_SCALE`.
+        self.len = self.len.wrapping_add(len.wrapping_sub(self.len()).wrapping_mul(RAW_LEN_SCALE));
     }
 
     /// Borrows the stack backing.
@@ -226,7 +242,7 @@ impl<'a> RawStack<'a> {
     #[inline(always)]
     pub(crate) unsafe fn borrow(&mut self) -> Stack<'_> {
         // SAFETY: The caller upholds exclusive access to the stack backing.
-        Stack::new(unsafe { &mut *self.stack }, self.len)
+        Stack::new(unsafe { &mut *self.stack }, self.len())
     }
 }
 
