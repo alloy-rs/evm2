@@ -149,6 +149,11 @@ impl<'a> GethTraceBuilder<'a> {
         // call depth rather than step count, and a trace without subcalls needs no allocation.
         let mut steps = main_trace_node.steps_with_children();
         let mut parents = Vec::new();
+        // A batch root runs no opcodes itself; its top-level calls run one after another.
+        if main_trace_node.trace.steps.is_empty() {
+            let calls = main_trace_node.children.iter().rev();
+            parents.extend(calls.map(|&child| self.nodes[child].steps_with_children()));
+        }
         let mut json_len = 0u64;
 
         loop {

@@ -412,6 +412,10 @@ impl TracingInspector {
         if let Some(address) = result.created_address {
             trace.address = address;
         }
+
+        if self.trace_stack.is_empty() {
+            self.traces.settle_batch_call(trace_idx);
+        }
     }
 
     /// Starts tracking a step
