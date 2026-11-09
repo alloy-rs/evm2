@@ -455,8 +455,8 @@ mod tests {
         ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
-            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageKind,
-            MessageResult, MessageResultExt, Word, instructions as instr, op,
+            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageInput,
+            MessageKind, MessageResult, MessageResultExt, Word, instructions as instr, op,
         },
         registry::TxRegistry,
         test_utils::{
@@ -1940,6 +1940,61 @@ mod tests {
             &MessageExt::default(),
             100_000,
             ForwardInput,
+        );
+    }
+
+    #[test]
+    #[should_panic = "a call input must be resolved against the frame that made it"]
+    fn forwarding_a_borrowed_call_input_from_a_sibling_frame_panics() {
+        // Keeps the borrowed input of the first child and forwards it from the second child, a
+        // frame at the same depth whose memory the range would name.
+        #[derive(Default)]
+        struct ForwardSiblingInput(Option<MessageInput>);
+
+        impl Inspector<BaseEvmTypes> for ForwardSiblingInput {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.message().depth != 1 {
+                    return;
+                }
+                match self.0.take() {
+                    None => self.0 = Some(interp.message().input.clone()),
+                    Some(input) => {
+                        let mut message = MessageExt {
+                            depth: 2,
+                            gas_limit: 1_000,
+                            input,
+                            code: legacy_bytecode([op::STOP]),
+                            ..Default::default()
+                        };
+                        let _ = Host::execute_message(interp.host(), &mut message);
+                    }
+                }
+            }
+        }
+
+        // Calls `ECHO` twice with memory 0..32 as input.
+        let mut code = memory_input_call_code(ECHO, op::CALL);
+        code.truncate(code.len() - 5);
+        push_all(
+            &mut code,
+            [
+                Word::from(32),
+                Word::from(32),
+                Word::from(32),
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(&ECHO),
+                Word::from(50_000),
+            ],
+        );
+        code.extend([op::CALL, op::POP, op::STOP]);
+
+        run_evm_with_inspector_db(
+            echo_db(),
+            code,
+            &MessageExt::default(),
+            100_000,
+            ForwardSiblingInput::default(),
         );
     }
 

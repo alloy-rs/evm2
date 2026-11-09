@@ -247,6 +247,9 @@ pub struct Evm<'a, T: EvmTypesHost> {
     /// This is passed to the inspector call and create hooks as the parent frame.
     #[derive_where(skip)]
     current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
+    /// The number of frames this EVM has entered, which numbers the frame it enters next.
+    #[derive_where(skip)]
+    frames_entered: u64,
     /// The checkpoint the currently running interpreter frame rolls back to if it fails.
     #[derive_where(skip)]
     frame_checkpoint: Option<StateCheckpoint>,
@@ -377,6 +380,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_runner: None,
             runner_supported: false,
             current_frame: None,
+            frames_entered: 0,
             frame_checkpoint: None,
             running: false,
             #[cfg(feature = "async")]
@@ -1779,6 +1783,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interp_ref.set_input(unsafe { trustme::decouple_lt(guard.evm.message_input(message)) });
         }
         interp_ref.lend_memory();
+        guard.evm.frames_entered += 1;
+        interp_ref.set_frame(guard.evm.frames_entered);
         // The initialize hook can send messages, whose hooks must get this frame and not the
         // caller, whose memory the input slice points into.
         let prev_frame = guard
@@ -1846,10 +1852,10 @@ impl<T: EvmTypesHost> Evm<'_, T> {
     ///
     /// # Panics
     ///
-    /// Panics if the input is a range of memory and no frame runs, the running frame is not at the
-    /// call depth of the frame that made the input, or the range is out of bounds of its memory.
-    /// Each means that the message did not come from a call instruction of the running frame:
-    /// copy a borrowed input with [`MessageInput::to_bytes`] before forwarding it.
+    /// Panics if the input is a range of memory and no frame runs, the running frame is not the
+    /// frame that made the input, or the range is out of bounds of its memory. Each means that the
+    /// message did not come from a call instruction of the running frame: copy a borrowed input
+    /// with [`MessageInput::to_bytes`] before forwarding it.
     #[inline]
     pub fn message_input<'m>(&'m self, message: &'m Message<T>) -> &'m [u8] {
         if let Some(input) = message.input.as_owned() {
@@ -1859,8 +1865,8 @@ impl<T: EvmTypesHost> Evm<'_, T> {
         // SAFETY: The running frame is suspended on this call stack.
         let caller = unsafe { caller.as_ref() };
         assert_eq!(
-            message.input.caller_depth(),
-            Some(caller.message().depth),
+            message.input.caller_frame(),
+            Some(caller.frame()),
             "a call input must be resolved against the frame that made it",
         );
         message.input.as_bytes(caller.memory())

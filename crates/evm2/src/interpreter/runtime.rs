@@ -48,6 +48,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     /// input that is a range of it, with the lifetime erased. The suspended caller does not change
     /// its memory until this frame returns.
     pub(in crate::interpreter) input: &'frame [u8],
+    /// The number [`Evm`](crate::Evm) gave this frame when it entered it, which tells a range of
+    /// this frame's memory from one of another frame. Zero for a frame that `Evm` does not run.
+    frame: u64,
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
@@ -112,6 +115,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             output: 0..0,
             message: None,
             input: &[],
+            frame: 0,
             is_static: false,
             lends_memory: false,
             return_data: Bytes::new(),
@@ -142,6 +146,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.input = message.input.as_owned().map_or(&[][..], |input| &input[..]);
         self.is_static = is_static;
         self.lends_memory = false;
+        self.frame = 0;
         self.return_data = Bytes::new();
     }
 
@@ -292,13 +297,25 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         if !self.lends_memory {
             return Bytes::copy_from_slice(self.memory.slice(offset, len)).into();
         }
-        MessageInput::borrowed(offset..offset + len, self.message().depth)
+        MessageInput::borrowed(offset..offset + len, self.frame)
     }
 
     /// Returns the bytes of the active message's input.
     #[inline]
     pub const fn input(&self) -> &[u8] {
         self.input
+    }
+
+    /// Returns the number [`Evm`](crate::Evm) gave this frame when it entered it.
+    #[inline]
+    pub(crate) const fn frame(&self) -> u64 {
+        self.frame
+    }
+
+    /// Sets the number [`Evm`](crate::Evm) gave this frame when it entered it.
+    #[inline]
+    pub(crate) const fn set_frame(&mut self, frame: u64) {
+        self.frame = frame;
     }
 
     /// Sets the bytes of the active message's input.

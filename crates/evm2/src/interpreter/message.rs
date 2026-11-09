@@ -223,8 +223,8 @@ pub struct MessageInput(Repr);
 enum Repr {
     /// The input's bytes.
     Owned(Bytes),
-    /// The input's range in the memory of the caller frame, which runs at call depth `depth`.
-    Borrowed { range: Range<usize>, depth: u16 },
+    /// The input's range in the memory of the caller frame with the entry number `frame`.
+    Borrowed { range: Range<usize>, frame: u64 },
 }
 
 impl Default for Repr {
@@ -235,18 +235,19 @@ impl Default for Repr {
 }
 
 impl MessageInput {
-    /// Creates an input that is `range` of the memory of the caller frame at call depth `depth`.
+    /// Creates an input that is `range` of the memory of the caller frame with the entry number
+    /// `frame`.
     #[inline]
-    pub(crate) const fn borrowed(range: Range<usize>, depth: u16) -> Self {
-        Self(Repr::Borrowed { range, depth })
+    pub(crate) const fn borrowed(range: Range<usize>, frame: u64) -> Self {
+        Self(Repr::Borrowed { range, frame })
     }
 
-    /// Returns the call depth of the caller frame whose memory a borrowed input is a range of.
+    /// Returns the entry number of the caller frame whose memory a borrowed input is a range of.
     #[inline]
-    pub(crate) const fn caller_depth(&self) -> Option<u16> {
+    pub(crate) const fn caller_frame(&self) -> Option<u64> {
         match &self.0 {
             Repr::Owned(_) => None,
-            Repr::Borrowed { depth, .. } => Some(*depth),
+            Repr::Borrowed { frame, .. } => Some(*frame),
         }
     }
 
