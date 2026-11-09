@@ -109,7 +109,7 @@ async fn capture(
         for (tx_index, ((pre_trace, diff_trace), tx)) in pre_traces
             .iter()
             .zip(diff_traces.iter())
-            .zip(consensus_block.body.transactions.iter())
+            .zip(consensus_block.body.transactions())
             .enumerate()
         {
             let pre = parse::trace_result(pre_trace)?;
@@ -122,7 +122,7 @@ async fn capture(
         }
         overlay.apply_withdrawals(&consensus_block);
 
-        let spec = ethereum::mainnet_spec_for_header(&consensus_block.header);
+        let spec = ethereum::mainnet_spec_for_header(&consensus_block.header)?;
         let _version_index = builder.version_index(spec)?;
         let block_transaction_count = transactions.len();
         transaction_count += block_transaction_count;
@@ -214,8 +214,7 @@ async fn prepare_block(block: FetchedBlock) -> std::result::Result<PreparedBlock
 
         let transactions = consensus_block
             .body
-            .transactions
-            .iter()
+            .transactions()
             .map(|tx| {
                 let signer = tx.recover_signer().map_err(CaptureError::RecoverSigner)?;
                 Ok(model::CapturedTransaction { signer })

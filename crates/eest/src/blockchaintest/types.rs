@@ -1,8 +1,11 @@
-#![allow(dead_code)]
-
 use crate::tx::{AccessListItem, TestAuthorization};
 use alloy_eip7928::BlockAccessList;
+use alloy_eips::{
+    eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
+    eip7840::{BLOB_BASE_COST, BlobParams},
+};
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, TxKind, U256};
+use evm2::SpecId;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::collections::BTreeMap;
 
@@ -39,6 +42,9 @@ pub struct BlockchainTestCase {
     /// Seal engine type.
     #[serde(default)]
     pub seal_engine: SealEngine,
+    /// Chain configuration the test ran under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<ChainConfig>,
 }
 
 /// Historical block hash entry.
@@ -311,6 +317,12 @@ pub enum ForkSpec {
     PragueToOsakaAtTime15k,
     /// Osaka.
     Osaka,
+    /// BPO1 (Osaka with the first blob parameters only fork).
+    #[serde(rename = "BPO1")]
+    BPO1,
+    /// BPO2 (Osaka with the second blob parameters only fork).
+    #[serde(rename = "BPO2")]
+    BPO2,
     /// Osaka to BPO1 transition.
     OsakaToBPO1AtTime15k,
     /// BPO1 to BPO2 transition.
@@ -325,6 +337,91 @@ pub enum ForkSpec {
     Amsterdam,
 }
 
+impl ForkSpec {
+    /// Returns the spec ID a fork runs under, or `None` for a transition fork, which runs under
+    /// several specs, and for the forks no runner supports.
+    ///
+    /// evm2 has no `CONSTANTINOPLE` spec. Constantinople differs from Petersburg by EIP-1283 net
+    /// gas metering for `SSTORE`, so running it under Petersburg would charge the wrong gas. The
+    /// Merge feature forks enable single EIPs on top of Merge, which no spec ID expresses, and the
+    /// DAO fork applies an irregular state change.
+    pub const fn to_spec_id(self) -> Option<SpecId> {
+        Some(match self {
+            Self::Frontier => SpecId::FRONTIER,
+            Self::Homestead => SpecId::HOMESTEAD,
+            Self::EIP150 => SpecId::TANGERINE,
+            Self::EIP158 => SpecId::SPURIOUS_DRAGON,
+            Self::Byzantium => SpecId::BYZANTIUM,
+            Self::ConstantinopleFix => SpecId::PETERSBURG,
+            Self::Istanbul => SpecId::ISTANBUL,
+            Self::Berlin => SpecId::BERLIN,
+            Self::London => SpecId::LONDON,
+            Self::Paris => SpecId::MERGE,
+            Self::Shanghai => SpecId::SHANGHAI,
+            Self::Cancun => SpecId::CANCUN,
+            Self::Prague => SpecId::PRAGUE,
+            Self::Osaka | Self::BPO1 | Self::BPO2 => SpecId::OSAKA,
+            Self::Amsterdam => SpecId::AMSTERDAM,
+            Self::Constantinople
+            | Self::MergeEOF
+            | Self::MergeMeterInitCode
+            | Self::MergePush0
+            | Self::FrontierToHomesteadAt5
+            | Self::HomesteadToDaoAt5
+            | Self::HomesteadToEIP150At5
+            | Self::EIP158ToByzantiumAt5
+            | Self::ByzantiumToConstantinopleAt5
+            | Self::ByzantiumToConstantinopleFixAt5
+            | Self::BerlinToLondonAt5
+            | Self::ParisToShanghaiAtTime15k
+            | Self::ShanghaiToCancunAtTime15k
+            | Self::CancunToPragueAtTime15k
+            | Self::PragueToOsakaAtTime15k
+            | Self::OsakaToBPO1AtTime15k
+            | Self::BPO1ToBPO2AtTime15k
+            | Self::BPO2ToBPO3AtTime15k
+            | Self::BPO3ToBPO4AtTime15k
+            | Self::BPO2ToAmsterdamAtTime15k => return None,
+        })
+    }
+
+    /// Returns the spec ID a state test runs a fork under, or `None` for an unsupported fork.
+    ///
+    /// A state test runs one transaction under one spec, so a transition fork maps to the spec
+    /// after the transition. The blockchain runner instead runs both specs of a transition.
+    pub fn to_state_spec_id(self) -> Option<SpecId> {
+        super::execute::state_stage(self).map(|stage| stage.spec)
+    }
+
+    /// Returns the fork that runs under `spec`, or `None` if no fork does.
+    ///
+    /// Osaka maps to the BPO fork that sets `blob_fork`, which only changes the blob parameters.
+    pub const fn from_spec_id(spec: SpecId, blob_fork: Option<BlobFork>) -> Option<Self> {
+        Some(match spec {
+            SpecId::FRONTIER => Self::Frontier,
+            SpecId::HOMESTEAD => Self::Homestead,
+            SpecId::TANGERINE => Self::EIP150,
+            SpecId::SPURIOUS_DRAGON => Self::EIP158,
+            SpecId::BYZANTIUM => Self::Byzantium,
+            SpecId::PETERSBURG => Self::ConstantinopleFix,
+            SpecId::ISTANBUL => Self::Istanbul,
+            SpecId::BERLIN => Self::Berlin,
+            SpecId::LONDON => Self::London,
+            SpecId::MERGE => Self::Paris,
+            SpecId::SHANGHAI => Self::Shanghai,
+            SpecId::CANCUN => Self::Cancun,
+            SpecId::PRAGUE => Self::Prague,
+            SpecId::OSAKA => match blob_fork {
+                Some(BlobFork::Bpo1) => Self::BPO1,
+                Some(BlobFork::Bpo2) => Self::BPO2,
+                _ => Self::Osaka,
+            },
+            SpecId::AMSTERDAM => Self::Amsterdam,
+            _ => return None,
+        })
+    }
+}
+
 /// Possible seal engines.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub enum SealEngine {
@@ -333,6 +430,69 @@ pub enum SealEngine {
     NoProof,
     /// Proof of work.
     Ethash,
+}
+
+/// Chain configuration of a blockchain test case.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainConfig {
+    /// Chain ID.
+    pub chainid: U256,
+    /// Blob parameters of every fork up to the last fork the test runs.
+    #[serde(default)]
+    pub blob_schedule: BTreeMap<BlobFork, BlobScheduleEntry>,
+}
+
+/// A fork that sets the blob parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub enum BlobFork {
+    /// Cancun.
+    Cancun,
+    /// Prague.
+    Prague,
+    /// Osaka.
+    Osaka,
+    /// BPO1, a fork that only changes the blob parameters.
+    #[serde(rename = "BPO1")]
+    Bpo1,
+    /// BPO2, a fork that only changes the blob parameters.
+    #[serde(rename = "BPO2")]
+    Bpo2,
+    /// BPO3, a fork that only changes the blob parameters.
+    #[serde(rename = "BPO3")]
+    Bpo3,
+    /// BPO4, a fork that only changes the blob parameters.
+    #[serde(rename = "BPO4")]
+    Bpo4,
+    /// Amsterdam.
+    Amsterdam,
+}
+
+impl BlobFork {
+    /// Returns the mainnet blob parameters of this fork, or `None` for BPO3 and BPO4, which
+    /// mainnet has not scheduled.
+    pub const fn mainnet_params(self) -> Option<BlobParams> {
+        Some(match self {
+            Self::Cancun => BlobParams::cancun(),
+            Self::Prague => BlobParams::prague(),
+            Self::Osaka => BlobParams::osaka(),
+            Self::Bpo1 => BlobParams::bpo1(),
+            Self::Bpo2 | Self::Amsterdam => BlobParams::bpo2(),
+            Self::Bpo3 | Self::Bpo4 => return None,
+        })
+    }
+}
+
+/// Blob parameters of one fork.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobScheduleEntry {
+    /// Target blobs per block.
+    pub target: U256,
+    /// Maximum blobs per block.
+    pub max: U256,
+    /// Blob base fee update fraction.
+    pub base_fee_update_fraction: U256,
 }
 
 /// Converts an optional address field that may be encoded as an empty string.
@@ -357,6 +517,33 @@ fn is_empty_bytes(bytes: &Bytes) -> bool {
     bytes.as_ref().is_empty()
 }
 
+impl BlobScheduleEntry {
+    /// Returns the blob parameters of this entry under the spec that is active.
+    ///
+    /// The reserve price of EIP-7918 comes from the spec, not from the fixture's schedule.
+    pub fn params(&self, spec: SpecId) -> BlobParams {
+        let max_blob_count = self.max.saturating_to();
+        BlobParams {
+            target_blob_count: self.target.saturating_to(),
+            max_blob_count,
+            update_fraction: self.base_fee_update_fraction.saturating_to(),
+            min_blob_fee: BLOB_TX_MIN_BLOB_GASPRICE,
+            max_blobs_per_tx: max_blob_count,
+            blob_base_cost: if spec.enables(SpecId::OSAKA) { BLOB_BASE_COST } else { 0 },
+        }
+    }
+}
+
+impl From<BlobParams> for BlobScheduleEntry {
+    fn from(params: BlobParams) -> Self {
+        Self {
+            target: U256::from(params.target_blob_count),
+            max: U256::from(params.max_blob_count),
+            base_fee_update_fraction: U256::from(params.update_fraction),
+        }
+    }
+}
+
 impl Transaction {
     /// Returns this transaction's EIP-2718 type byte.
     pub(crate) fn tx_type(&self) -> u8 {
@@ -366,5 +553,29 @@ impl Transaction {
     /// Returns this transaction's target kind.
     pub(crate) fn kind(&self) -> TxKind {
         self.to.map_or(TxKind::Create, TxKind::Call)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_spec_id_maps_to_a_fork_that_runs_under_it() {
+        for value in 0..SpecId::COUNT as u32 {
+            let spec = SpecId::try_from_u32(value).unwrap();
+            let fork = ForkSpec::from_spec_id(spec, None).unwrap();
+            assert_eq!(fork.to_spec_id(), Some(spec));
+        }
+        assert_eq!(
+            ForkSpec::from_spec_id(SpecId::OSAKA, Some(BlobFork::Bpo2)),
+            Some(ForkSpec::BPO2)
+        );
+        assert_eq!(ForkSpec::BPO2ToAmsterdamAtTime15k.to_spec_id(), None);
+        assert_eq!(ForkSpec::Constantinople.to_spec_id(), None);
+        assert_eq!(ForkSpec::Constantinople.to_state_spec_id(), None);
+        assert_eq!(ForkSpec::MergePush0.to_state_spec_id(), None);
+        assert_eq!(ForkSpec::BPO1.to_state_spec_id(), Some(SpecId::OSAKA));
+        assert_eq!(ForkSpec::BerlinToLondonAt5.to_state_spec_id(), Some(SpecId::LONDON));
     }
 }

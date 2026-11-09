@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(tco, feature(explicit_tail_calls), allow(incomplete_features))]
+#![cfg_attr(tco, feature(fn_align))]
 #![cfg_attr(all(tco, not(cranelift)), feature(rust_preserve_none_cc))]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -11,6 +12,8 @@ extern crate alloc;
 #[cfg(feature = "nightly")]
 use ruint as _;
 
+#[cfg(feature = "block")]
+pub mod block;
 pub mod bytecode;
 pub mod constants;
 mod error;
@@ -31,7 +34,7 @@ pub use evm::{
     },
     env, handler, inspector, precompile, registry,
 };
-pub use inspector::{Inspector, NoopInspector};
+pub use inspector::{Inspector, InspectorConfig, NoopInspector, OpcodeSet};
 
 pub mod precompiles;
 pub use precompiles::{
@@ -47,7 +50,7 @@ pub mod version;
 pub use version::{EvmFeatures, OpcodeChange, OpcodeConfig, OpcodeView, Version};
 
 mod spec_id;
-pub use spec_id::SpecId;
+pub use spec_id::{ParseSpecIdError, SpecId};
 
 mod once_lock;
 mod storage_key;

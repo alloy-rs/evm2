@@ -12,7 +12,10 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::HashMap};
+use alloy_primitives::{
+    Address, B256, Bytes, TxKind, U256,
+    map::{IndexMap, U256IndexMap},
+};
 use evm2::{
     SpecId,
     env::{BlockEnv, BlockEnvExt},
@@ -24,15 +27,14 @@ use revm::{
     primitives::TxKind as RevmTxKind,
 };
 use secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::{fmt, sync::OnceLock};
 
-pub(crate) const CALLER: Address = Address::new([0x10; 20]);
-pub(crate) const TARGET: Address = Address::new([0x20; 20]);
-pub(crate) const BENEFICIARY: Address = Address::new([0x30; 20]);
+pub(crate) const CALLER: Address = Address::repeat_byte(0x10);
+pub(crate) const TARGET: Address = Address::repeat_byte(0x20);
+pub(crate) const BENEFICIARY: Address = Address::repeat_byte(0x30);
 const CALLER_BALANCE: U256 = U256::from_limbs([0, 0, 1, 0]);
-const EIP7702_DELEGATED_TARGET: Address =
-    Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
+const EIP7702_DELEGATED_TARGET: Address = Address::with_last_byte(6);
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct EvmCase {
@@ -69,7 +71,7 @@ impl Default for CaseGenerator {
             fixed_eip7702_authority(),
             EIP7702_DELEGATED_TARGET,
             Address::ZERO,
-            Address::new([0xff; 20]),
+            Address::repeat_byte(0xff),
         ];
         address_pool.extend((1..=10).map(Address::with_last_byte));
         let mut call_pool =
@@ -359,10 +361,10 @@ fn generate_access_list(rng: &mut Gen, accounts: &[CaseAccount], list: &mut Acce
         item.address = account.address;
         item.storage_keys.clear();
         for key in account.storage.keys().take(rng.range_inclusive(0, 3)) {
-            item.storage_keys.push(B256::from(key.to_be_bytes::<32>()));
+            item.storage_keys.push(B256::from(*key));
         }
         if item.storage_keys.is_empty() && rng.one_in(2) {
-            item.storage_keys.push(B256::from(rng.biased_word().to_be_bytes::<32>()));
+            item.storage_keys.push(B256::from(rng.biased_word()));
         }
     }
 }
@@ -391,12 +393,12 @@ fn generate_eip7702_authorization(rng: &mut Gen) -> SignedAuthorization {
             nonce: 1,
         }),
         3 => signed_eip7702_auth(Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             address: rng.pick(&[EIP7702_DELEGATED_TARGET, TARGET, Address::with_last_byte(8)]),
             nonce: 1,
         }),
         4 => signed_eip7702_auth(Authorization {
-            chain_id: rng.pick(&[U256::from(1), U256::from(2)]),
+            chain_id: rng.pick(&[U256::ONE, U256::from(2)]),
             address: EIP7702_DELEGATED_TARGET,
             nonce: rng.pick(&[0, 2, u64::MAX]),
         }),
@@ -431,7 +433,7 @@ fn add_eip7702_accounts<'a>(
             if auth.y_parity() > 1 {
                 features.insert(FuzzFeatures::EIP7702_AUTH_BAD_SIGNATURE);
             }
-            if auth.chain_id() != &U256::ZERO && auth.chain_id() != &U256::from(1) {
+            if auth.chain_id() != &U256::ZERO && auth.chain_id() != &U256::ONE {
                 features.insert(FuzzFeatures::EIP7702_AUTH_BAD_CHAIN);
             }
             if auth.nonce() != 1 {
@@ -449,7 +451,7 @@ fn add_eip7702_accounts<'a>(
             balance: U256::from(1_000),
             nonce: 0,
             code: tiny_callee_code(rng, SpecId::PRAGUE),
-            storage: HashMap::default(),
+            storage: IndexMap::default(),
         },
     );
 
@@ -492,7 +494,7 @@ fn upsert_account(accounts: &mut Vec<CaseAccount>, account: CaseAccount) {
 }
 
 fn eip7702_authority_account(address: Address, nonce: u64, code: Bytes) -> CaseAccount {
-    CaseAccount { address, balance: U256::ZERO, nonce, code, storage: HashMap::default() }
+    CaseAccount { address, balance: U256::ZERO, nonce, code, storage: IndexMap::default() }
 }
 
 fn eip7702_designation(address: Address) -> Bytes {
@@ -514,7 +516,7 @@ pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
     static AUTH: OnceLock<SignedAuthorization> = OnceLock::new();
     AUTH.get_or_init(|| {
         signed_eip7702_auth(Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             address: EIP7702_DELEGATED_TARGET,
             nonce: 1,
         })
@@ -650,21 +652,18 @@ impl CaseTx {
                 self.caller,
             ),
             FuzzTxKind::Eip7702 => Recovered::new_unchecked(
-                TxEnvelope::Eip7702(
-                    TxEip7702 {
-                        chain_id: 1,
-                        nonce: self.nonce,
-                        gas_limit: self.gas_limit,
-                        max_fee_per_gas: self.gas_price,
-                        max_priority_fee_per_gas: 0,
-                        to: self.target,
-                        value: self.value,
-                        access_list: self.access_list.clone(),
-                        authorization_list: self.eip7702_authorization_list(),
-                        input: self.input.clone(),
-                    }
-                    .into(),
-                ),
+                TxEnvelope::from(TxEip7702 {
+                    chain_id: 1,
+                    nonce: self.nonce,
+                    gas_limit: self.gas_limit,
+                    max_fee_per_gas: self.gas_price,
+                    max_priority_fee_per_gas: 0,
+                    to: self.target,
+                    value: self.value,
+                    access_list: self.access_list.clone(),
+                    authorization_list: self.eip7702_authorization_list(),
+                    input: self.input.clone(),
+                }),
                 self.caller,
             ),
         }
@@ -739,17 +738,7 @@ pub(crate) struct CaseAccount {
     pub(crate) balance: U256,
     pub(crate) nonce: u64,
     pub(crate) code: Bytes,
-    #[serde(serialize_with = "serialize_storage")]
-    pub(crate) storage: HashMap<U256, U256>,
-}
-
-fn serialize_storage<S: Serializer>(
-    storage: &HashMap<U256, U256>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    let mut entries = storage.iter().collect::<Vec<_>>();
-    entries.sort_unstable_by_key(|&(key, _)| key);
-    serializer.collect_map(entries)
+    pub(crate) storage: U256IndexMap<U256>,
 }
 
 mod spec_serde {
@@ -760,7 +749,7 @@ mod spec_serde {
     where
         S: Serializer,
     {
-        serializer.serialize_str(name(*spec))
+        serializer.serialize_str(spec.name())
     }
 
     pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<SpecId, D::Error>
@@ -768,49 +757,7 @@ mod spec_serde {
         D: Deserializer<'de>,
     {
         let name = String::deserialize(deserializer)?;
-        from_name(&name).ok_or_else(|| de::Error::custom(format!("unknown spec id {name:?}")))
-    }
-
-    const fn name(spec: SpecId) -> &'static str {
-        match spec {
-            SpecId::FRONTIER => "FRONTIER",
-            SpecId::HOMESTEAD => "HOMESTEAD",
-            SpecId::TANGERINE => "TANGERINE",
-            SpecId::SPURIOUS_DRAGON => "SPURIOUS_DRAGON",
-            SpecId::BYZANTIUM => "BYZANTIUM",
-            SpecId::PETERSBURG => "PETERSBURG",
-            SpecId::ISTANBUL => "ISTANBUL",
-            SpecId::BERLIN => "BERLIN",
-            SpecId::LONDON => "LONDON",
-            SpecId::MERGE => "MERGE",
-            SpecId::SHANGHAI => "SHANGHAI",
-            SpecId::CANCUN => "CANCUN",
-            SpecId::PRAGUE => "PRAGUE",
-            SpecId::OSAKA => "OSAKA",
-            SpecId::AMSTERDAM => "AMSTERDAM",
-            _ => "CANCUN",
-        }
-    }
-
-    fn from_name(name: &str) -> Option<SpecId> {
-        match name {
-            "FRONTIER" => Some(SpecId::FRONTIER),
-            "HOMESTEAD" => Some(SpecId::HOMESTEAD),
-            "TANGERINE" => Some(SpecId::TANGERINE),
-            "SPURIOUS_DRAGON" => Some(SpecId::SPURIOUS_DRAGON),
-            "BYZANTIUM" => Some(SpecId::BYZANTIUM),
-            "PETERSBURG" => Some(SpecId::PETERSBURG),
-            "ISTANBUL" => Some(SpecId::ISTANBUL),
-            "BERLIN" => Some(SpecId::BERLIN),
-            "LONDON" => Some(SpecId::LONDON),
-            "MERGE" => Some(SpecId::MERGE),
-            "SHANGHAI" => Some(SpecId::SHANGHAI),
-            "CANCUN" => Some(SpecId::CANCUN),
-            "PRAGUE" => Some(SpecId::PRAGUE),
-            "OSAKA" => Some(SpecId::OSAKA),
-            "AMSTERDAM" => Some(SpecId::AMSTERDAM),
-            _ => None,
-        }
+        name.parse().map_err(|_| de::Error::custom(format!("unknown spec id {name:?}")))
     }
 }
 
@@ -824,30 +771,23 @@ mod tests {
         for seed in 0..512 {
             let mut rng = Gen::new(seed);
             let mut fresh_rng = Gen::new(seed);
-            let mut reused = generator.generate(&mut rng).clone();
-            let mut fresh = CaseGenerator::default().generate(&mut fresh_rng).clone();
+            let reused = generator.generate(&mut rng).clone();
+            let fresh = CaseGenerator::default().generate(&mut fresh_rng).clone();
             assert_eq!(rng.bytes(32), fresh_rng.bytes(32), "RNG state at seed {seed}");
-            // HashMap iteration can select different storage keys, but not different counts.
-            for case in [&mut reused, &mut fresh] {
-                for tx in core::iter::once(&mut case.tx).chain(&mut case.extra_txs) {
-                    for item in &mut tx.access_list.0 {
-                        item.storage_keys.fill(B256::ZERO);
-                    }
-                }
-            }
             assert_eq!(reused, fresh, "seed {seed}");
         }
     }
 
     #[test]
-    fn storage_serialization_is_canonical() {
-        let mut case = CaseGenerator::default().generate(&mut Gen::new(1)).clone();
-        case.accounts[0].storage = (0..32).map(|key| (U256::from(key), U256::ONE)).collect();
-        let json = serde_json::to_vec(&case).unwrap();
-        case.accounts[0].storage = (0..32).rev().map(|key| (U256::from(key), U256::ONE)).collect();
-        assert_eq!(serde_json::to_vec(&case).unwrap(), json);
-        let decoded = serde_json::from_slice::<EvmCase>(&json).unwrap();
-        assert_eq!(decoded, case);
-        assert_eq!(serde_json::to_vec(&decoded).unwrap(), json);
+    fn serialized_case_is_reproducible_and_round_trips() {
+        for seed in 0..64 {
+            let case = CaseGenerator::default().generate(&mut Gen::new(seed)).clone();
+            let json = serde_json::to_vec(&case).unwrap();
+            let fresh = CaseGenerator::default().generate(&mut Gen::new(seed)).clone();
+            assert_eq!(serde_json::to_vec(&fresh).unwrap(), json, "seed {seed}");
+            let decoded = serde_json::from_slice::<EvmCase>(&json).unwrap();
+            assert_eq!(decoded, case, "seed {seed}");
+            assert_eq!(serde_json::to_vec(&decoded).unwrap(), json, "seed {seed}");
+        }
     }
 }

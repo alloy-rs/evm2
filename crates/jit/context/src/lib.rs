@@ -26,6 +26,16 @@ mod arch;
 use arch::evm2_jit_entry;
 pub use arch::evm2_jit_exit;
 
+/// Returns `true` if compiled code can run the interpreter's frame.
+///
+/// Compiled code keeps the remaining gas in a signed counter, so a frame with more than
+/// `i64::MAX` gas must run on the interpreter. Check this before calling
+/// [`EvmCompilerFn::call_with_interpreter`] or [`EvmCompilerFn::call`].
+#[inline]
+pub const fn can_run_compiled<T: EvmTypesHost>(interpreter: &Interpreter<'_, '_, T>) -> bool {
+    interpreter.gas().remaining() <= i64::MAX as u64
+}
+
 /// The EVM bytecode compiler runtime context.
 ///
 /// This is a simple wrapper around the interpreter's resources, allowing the compiled function to
@@ -170,7 +180,7 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
 
     /// Returns calldata bytes.
     #[inline]
-    pub const fn input(&self) -> &Bytes {
+    pub fn input(&self) -> &[u8] {
         &self.message().input
     }
 
@@ -342,7 +352,7 @@ impl EvmCompilerFn {
     /// # Safety
     ///
     /// The caller must ensure that the function is safe to call for this interpreter state, and
-    /// that the remaining gas is at most `i64::MAX`.
+    /// that [`can_run_compiled`] holds.
     #[inline]
     pub unsafe fn call_with_interpreter<'ctx, 'frame, 'host, T: EvmTypesHost>(
         self,
@@ -370,7 +380,7 @@ impl EvmCompilerFn {
     /// # Safety
     ///
     /// The caller must ensure that the arguments are valid, that the function is safe to call, and
-    /// that the remaining gas is at most `i64::MAX`.
+    /// that [`can_run_compiled`] holds.
     #[inline]
     pub unsafe fn call<T: EvmTypesHost>(
         self,
@@ -909,8 +919,8 @@ mod tests {
 
     #[test]
     fn extern_macro() {
-        let f1 = EvmCompilerFn::new(test_fn).0;
-        let f2 = EvmCompilerFn::new(__test_fn).0;
+        let f1 = EvmCompilerFn::new(test_fn).into_inner();
+        let f2 = EvmCompilerFn::new(__test_fn).into_inner();
         assert!(core::ptr::fn_addr_eq(f1, f2), "{f1:?} != {f2:?}");
     }
 }

@@ -301,16 +301,13 @@ mod tests {
         let key = SigningKey::from_slice(&[0x11; 32]).unwrap();
         let expected =
             Address::from_raw_public_key(&key.verifying_key().to_sec1_point(false).as_bytes()[1..]);
-        let inner = Authorization {
-            chain_id: U256::from(1),
-            address: Address::with_last_byte(0xbb),
-            nonce: 7,
-        };
+        let inner =
+            Authorization { chain_id: U256::ONE, address: Address::with_last_byte(0xbb), nonce: 7 };
         let (sig, recid) = key.sign_prehash_recoverable(inner.signature_hash().as_slice());
         let r = U256::from_be_slice(&sig.r().to_bytes());
         let s = U256::from_be_slice(&sig.s().to_bytes());
         let y = recid.to_byte();
-        let n = SECP256K1N_HALF * U256::from(2) + U256::from(1);
+        let n = SECP256K1N_HALF * U256::from(2) + U256::ONE;
         let signed = |y, r, s| SignedAuthorization::new_unchecked(inner.clone(), y, r, s);
 
         let valid = signed(y, r, s);

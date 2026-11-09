@@ -1,7 +1,7 @@
 use crate::fixture::Suites;
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::SpecId;
-use evm2_cli::evm_bench::BenchCase;
+use evm2_cli::{evm_bench::BenchCase, reference};
 use revm::{
     ExecuteEvm, MainBuilder, MainContext,
     context::{BlockEnv, CfgEnv, Context, TxEnv},
@@ -29,7 +29,7 @@ impl PreparedBench {
         let suite = suites.get(bench.fixture_path);
         let (unit, test) = revm_case(suite.input(), &bench.name, spec);
         let tx = test.tx_env(&unit).expect("revm benchmark transaction must build");
-        let (cfg, block) = envs(&unit, revm_spec_id(spec));
+        let (cfg, block) = envs(&unit, reference::spec_id(spec));
         let db = Arc::new(database(&unit));
         Self { name: bench.name.clone(), cfg, block, db, tx }
     }
@@ -104,7 +104,7 @@ fn revm_case(input: &str, name: &str, spec: SpecId) -> (TestUnit, Test) {
     let tests = unit
         .post
         .iter_mut()
-        .find(|(spec_name, _)| spec_name.to_spec_id() == revm_spec_id(spec))
+        .find(|(spec_name, _)| spec_name.to_spec_id() == reference::spec_id(spec))
         .map(|(_, tests)| tests)
         .expect("fixture suite must contain revm post test");
     let test = tests.remove(0);
@@ -144,25 +144,4 @@ fn database(unit: &TestUnit) -> InMemoryDB {
         }
     }
     db
-}
-
-fn revm_spec_id(spec: SpecId) -> RevmSpecId {
-    match spec {
-        SpecId::FRONTIER => RevmSpecId::FRONTIER,
-        SpecId::HOMESTEAD => RevmSpecId::HOMESTEAD,
-        SpecId::TANGERINE => RevmSpecId::TANGERINE,
-        SpecId::SPURIOUS_DRAGON => RevmSpecId::SPURIOUS_DRAGON,
-        SpecId::BYZANTIUM => RevmSpecId::BYZANTIUM,
-        SpecId::PETERSBURG => RevmSpecId::PETERSBURG,
-        SpecId::ISTANBUL => RevmSpecId::ISTANBUL,
-        SpecId::BERLIN => RevmSpecId::BERLIN,
-        SpecId::LONDON => RevmSpecId::LONDON,
-        SpecId::MERGE => RevmSpecId::MERGE,
-        SpecId::SHANGHAI => RevmSpecId::SHANGHAI,
-        SpecId::CANCUN => RevmSpecId::CANCUN,
-        SpecId::PRAGUE => RevmSpecId::PRAGUE,
-        SpecId::OSAKA => RevmSpecId::OSAKA,
-        SpecId::AMSTERDAM => RevmSpecId::AMSTERDAM,
-        _ => panic!("unsupported benchmark spec: {spec:?}"),
-    }
 }

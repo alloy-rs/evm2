@@ -67,7 +67,9 @@ pub struct CallTrace {
     pub address: Address,
     /// Whether this is a call to a precompile.
     ///
-    /// Note: This is optional because not all tracers make use of this.
+    /// Only recorded if
+    /// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls)
+    /// is set, otherwise `None`.
     pub maybe_precompile: Option<bool>,
     /// The address of the selfdestructed contract.
     pub selfdestruct_address: Option<Address>,
@@ -139,7 +141,7 @@ impl CallTrace {
     /// Returns true if the status code is a revert.
     #[inline]
     pub fn is_revert(&self) -> bool {
-        self.status.is_some_and(|status| status == InstrStop::Revert)
+        self.status.is_some_and(InstrStop::is_revert)
     }
 
     /// Returns `true` if this trace was a selfdestruct.
@@ -454,11 +456,6 @@ impl CallTraceNode {
                 call_frame.to = None;
             }
 
-            if !self.status().is_some_and(InstrStop::is_frame_revert) {
-                call_frame.gas_used = U256::from(self.trace.gas_limit);
-                call_frame.output = None;
-            }
-
             call_frame.revert_reason = utils::maybe_revert_reason(self.trace.output.as_ref());
 
             // Note: regular calltracer uses geth errors, only flatCallTracer uses parity errors: <https://github.com/ethereum/go-ethereum/blob/a9523b6428238a762e1a1e55e46ead47630c3a23/eth/tracers/native/call_flat.go#L226>
@@ -670,6 +667,8 @@ pub struct CallTraceStep {
     pub gas_remaining: u64,
     /// Gas refund counter before step execution
     pub gas_refund_counter: u64,
+    /// The storage access of an SLOAD/SSTORE. Only set if state diffs are recorded.
+    pub storage_change: Option<Box<StorageChange>>,
     // Fields filled in `step_end`
     /// Gas cost of step execution
     pub gas_cost: u64,
@@ -680,13 +679,6 @@ pub struct CallTraceStep {
     /// State-gas spent before this step, used to calculate `state_gas_cost`.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub state_gas_spent: i64,
-    /// Change of the contract state after step execution (effect of the SLOAD/SSTORE instructions)
-    pub storage_change: Option<Box<StorageChange>>,
-    /// The key and value a geth struct log snapshots for an SLOAD or SSTORE: the value the slot
-    /// holds before an SLOAD, or the value an SSTORE writes.
-    ///
-    /// Only set if state diffs are recorded.
-    pub storage_slot: Option<Box<(U256, U256)>>,
     /// Final status of the step
     ///
     /// This is set after the step was executed.
@@ -829,20 +821,18 @@ pub enum StorageChangeReason {
     SSTORE,
 }
 
-/// Represents a storage change during execution.
+/// Represents the storage access of an SLOAD or SSTORE step, read before the opcode runs.
 ///
-/// This maps to evm storage journal entries.
-///
-/// It is used to track both storage change and warm load of a storage slot. For warm load in regard
-/// to EIP-2929 AccessList had_value will be None.
+/// For an SLOAD, `value` is the value the slot holds and `had_value` is `None`. For an SSTORE,
+/// `value` is the value written and `had_value` is the value the slot held before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StorageChange {
     /// key of the storage slot
     pub key: U256,
-    /// Current value of the storage slot
+    /// The value read by an SLOAD, or written by an SSTORE
     pub value: U256,
-    /// The previous value of the storage slot, if any
+    /// The value an SSTORE overwrites, `None` for an SLOAD
     pub had_value: Option<U256>,
     /// How this storage was accessed
     pub reason: StorageChangeReason,

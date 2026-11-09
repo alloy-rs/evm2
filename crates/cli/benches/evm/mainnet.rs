@@ -1,3 +1,4 @@
+use crate::fixture::workspace_path;
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::evm::InMemoryDB;
 use evm2_cli::evm_bench::BenchCase;
@@ -6,11 +7,7 @@ use evm2_eest::{
     blockchaintest::BlockchainTest, execute_blockchain_test_case_on,
     execute_blockchain_tests_suite,
 };
-use std::{
-    borrow::Cow,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{borrow::Cow, path::PathBuf, sync::Arc};
 
 #[derive(Clone)]
 pub(crate) struct PreparedBench {
@@ -57,8 +54,7 @@ impl PreparedBench {
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
         let (case_name, case) =
             self.suite.0.first_key_value().expect("fixture must contain a case");
-        let config =
-            BlockchainTestExecuteConfig { validate_post_state: false, ..Default::default() };
+        let config = BlockchainTestExecuteConfig { validate: false, ..Default::default() };
         group.bench_function(format!("{}/replay", self.name), |b| {
             b.iter_batched_ref(
                 || self.pre_state.clone(),
@@ -79,8 +75,4 @@ impl PreparedBench {
             );
         });
     }
-}
-
-fn workspace_path(path: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
 }
