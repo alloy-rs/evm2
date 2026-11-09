@@ -1085,7 +1085,7 @@ mod tests {
         let mut random = |len: usize| (0..len).map(|_| rng.random::<u8>()).collect::<Vec<_>>();
         for i in 0..2000 {
             let base = random(i % 41);
-            let exponent = random(1 + i % 7 * i % 5);
+            let exponent = random(1 + (i % 7) * (i % 5));
             let odd = if i % 9 == 0 { U256::ONE } else { U256::from_be_slice(&random(1 + i % 32)) };
             let k = 1 + i * 7 % 200;
             let modulus = (U512::from(odd) << k).to_be_bytes_trimmed_vec();
