@@ -200,38 +200,65 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         skip_cold_load: bool,
     ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
         let Self { address, storage, discards_storage, inner } = self;
-        let (slot, is_cold) = match storage.slots.entry(key) {
-            hash_map::Entry::Occupied(entry) => {
-                // An already-loaded slot has no cold database read to skip, so the skip only
-                // signals an unaffordable *cold* access. Runtime warmth (`is_warm`, seeded from
-                // the prewarm set on load) decides coldness: a slot warmed earlier this execution
-                // is a cheap warm access and must not be forced out of gas.
-                let slot = entry.into_mut();
-                let is_cold = if WARM || skip_cold_load {
-                    !slot.is_warm && !inner.prewarm_set.is_storage_warm(address, &key)
-                } else {
-                    false
-                };
-                if skip_cold_load && is_cold {
-                    return Err(LoadError::ColdLoadSkipped);
-                }
-                (slot, is_cold)
+        let wiped = storage.wiped;
+        let (slot, is_cold) = if let Some(slot) = storage.slots.get_mut(&key) {
+            let slot: *mut StorageSlot = slot;
+            // SAFETY: `slot` points into `storage.slots`, which is not used again on this path, so
+            // the reference is the only live borrow of the map for `'a`. The borrow checker cannot
+            // express returning this borrow on a hit while reusing the map on a miss.
+            let slot = unsafe { &mut *slot };
+            // An already-loaded slot has no cold database read to skip, so the skip only signals
+            // an unaffordable *cold* access. Runtime warmth (`is_warm`, seeded from the prewarm set
+            // on load) decides coldness: a slot warmed earlier this execution is a cheap warm
+            // access and must not be forced out of gas.
+            let is_cold = if WARM || skip_cold_load {
+                !slot.is_warm && !inner.prewarm_set.is_storage_warm(address, &key)
+            } else {
+                false
+            };
+            if skip_cold_load && is_cold {
+                return Err(LoadError::ColdLoadSkipped);
             }
-            hash_map::Entry::Vacant(entry) => {
-                let is_warm = inner.prewarm_set.is_storage_warm(address, &key);
-                if skip_cold_load && !is_warm {
-                    return Err(LoadError::ColdLoadSkipped);
-                }
-                let value =
-                    inner.read_unloaded_slot(address, &key, storage.wiped || discards_storage)?;
-                (entry.insert(StorageSlot::loaded(value, is_warm)), !is_warm)
-            }
+            (slot, is_cold)
+        } else {
+            Self::load_cold_slot(
+                address,
+                &mut storage.slots,
+                wiped || discards_storage,
+                inner,
+                key,
+                skip_cold_load,
+            )?
         };
         if WARM && is_cold {
             slot.is_warm = true;
             inner.push_journal(|| JournalEntry::StorageWarmed { address: *address, key });
         }
         Ok((StorageSlotHandle { address, key, slot, inner }, is_cold))
+    }
+
+    /// Loads a slot that the caller found absent from the overlay, returning it and whether the
+    /// access was cold.
+    #[inline(never)]
+    fn load_cold_slot<'s>(
+        address: &Address,
+        slots: &'s mut U256Map<StorageSlot>,
+        reads_zero: bool,
+        inner: &mut StateInner<'db>,
+        key: Word,
+        skip_cold_load: bool,
+    ) -> Result<(&'s mut StorageSlot, bool), LoadError> {
+        Ok(match slots.entry(key) {
+            hash_map::Entry::Occupied(_) => unreachable!("the caller found the slot absent"),
+            hash_map::Entry::Vacant(entry) => {
+                let is_warm = inner.prewarm_set.is_storage_warm(address, &key);
+                if skip_cold_load && !is_warm {
+                    return Err(LoadError::ColdLoadSkipped);
+                }
+                let value = inner.read_unloaded_slot(address, &key, reads_zero)?;
+                (entry.insert(StorageSlot::loaded(value, is_warm)), !is_warm)
+            }
+        })
     }
 
     /// Marks all of the account's prior persistent storage as deleted.

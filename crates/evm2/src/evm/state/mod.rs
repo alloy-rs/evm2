@@ -570,21 +570,37 @@ impl<'a> State<'a> {
         address: &Address,
         skip_cold: bool,
     ) -> Result<&'h mut Account, LoadError> {
-        match accounts.entry(*address) {
-            hash_map::Entry::Occupied(entry) => {
-                // An already-loaded account has no cold database read to skip, so the skip only
-                // signals an unaffordable *cold* access. Runtime warmth (`AccountFlags::WARM`,
-                // seeded from the prewarm set on load) decides coldness: an account warmed earlier
-                // this execution is a cheap warm access and must not be forced out of gas.
-                let account = entry.into_mut();
-                if skip_cold
-                    && !account.flags.contains(AccountFlags::WARM)
-                    && inner.prewarm_set.is_cold(address)
-                {
-                    return Err(LoadError::ColdLoadSkipped);
-                }
-                Ok(account)
+        if let Some(account) = accounts.get_mut(address) {
+            let account: *mut Account = account;
+            // SAFETY: `account` points into `accounts`, which is not used again on this path, so
+            // the reference is the only live borrow of the map for `'h`. The borrow checker cannot
+            // express returning this borrow on a hit while reusing the map on a miss.
+            let account = unsafe { &mut *account };
+            // An already-loaded account has no cold database read to skip, so the skip only
+            // signals an unaffordable *cold* access. Runtime warmth (`AccountFlags::WARM`, seeded
+            // from the prewarm set on load) decides coldness: an account warmed earlier this
+            // execution is a cheap warm access and must not be forced out of gas.
+            if skip_cold
+                && !account.flags.contains(AccountFlags::WARM)
+                && inner.prewarm_set.is_cold(address)
+            {
+                return Err(LoadError::ColdLoadSkipped);
             }
+            return Ok(account);
+        }
+        Self::account_load_cold(inner, accounts, address, skip_cold)
+    }
+
+    /// Loads an account that the caller found absent from the transaction overlay.
+    #[inline(never)]
+    fn account_load_cold<'h>(
+        inner: &mut StateInner<'a>,
+        accounts: &'h mut AddressMap<Account>,
+        address: &Address,
+        skip_cold: bool,
+    ) -> Result<&'h mut Account, LoadError> {
+        match accounts.entry(*address) {
+            hash_map::Entry::Occupied(_) => unreachable!("the caller found the account absent"),
             hash_map::Entry::Vacant(entry) => {
                 let is_warm = inner.prewarm_set.is_warm(address);
                 if skip_cold && !is_warm {
