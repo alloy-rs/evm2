@@ -479,7 +479,6 @@ mod tests {
     /// Operands are in natural order matching the yellow paper specification:
     /// for `SUB(a, b)` = `a - b`, pass `&[a, b]` (first popped = first element).
     fn const_fold(opcode: u8, operands: &[U256]) -> Option<U256> {
-        use std::fmt::Write;
         let mut src = String::new();
         let mut num_insts = 0usize;
         // Push in reverse so that operands[0] ends up on TOS.

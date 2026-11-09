@@ -278,17 +278,12 @@ mod tests {
     use core::convert::Infallible;
 
     use super::super::StateChangeSink;
-    #[cfg(feature = "serde")]
     use crate::bytecode::Bytecode;
     use alloc::{vec, vec::Vec};
-    #[cfg(feature = "serde")]
-    use alloy_primitives::B256;
+    use alloy_primitives::{B256, Bytes};
 
     #[test]
     fn code_sorted_orders_by_hash() {
-        use crate::bytecode::Bytecode;
-        use alloy_primitives::{B256, Bytes};
-
         let mut block = BlockStateAccumulator::new();
         // Inserted descending, so map order cannot be mistaken for sorted order.
         for byte in [0xcc_u8, 0x11, 0x77] {

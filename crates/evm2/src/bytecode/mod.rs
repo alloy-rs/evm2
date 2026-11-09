@@ -7,7 +7,7 @@ use crate::{
 };
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
-use analysis::{analyze_legacy, pad_legacy};
+use analysis::pad_legacy;
 use core::{cmp::Ordering, fmt, hash};
 use thiserror::Error;
 
@@ -17,6 +17,7 @@ mod jump_table;
 #[cfg(feature = "serde")]
 mod serde_impl;
 
+pub use analysis::analyze_legacy;
 pub use jump_table::{JumpTable, JumpTableRef};
 
 /// EIP-7702 decode errors.

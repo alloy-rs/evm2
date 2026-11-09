@@ -134,6 +134,9 @@ pub enum Attribute {
     AlwaysInline,
     NoInline,
     Speculatable,
+    /// `"probe-stack"="inline-asm"` — touches every page of a frame larger than a page, so that
+    /// a stack overflow faults on the guard page instead of skipping past it.
+    InlineStackProbes,
 
     // Parameter attributes.
     NoAlias,

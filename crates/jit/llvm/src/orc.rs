@@ -16,8 +16,8 @@
 use crate::wrap::{Context, LLVMString, Module, TargetMachine};
 use llvm_sys::{
     core::{
-        LLVMContextCreate, LLVMCreateMemoryBufferWithMemoryRangeCopy,
-        LLVMModuleCreateWithNameInContext,
+        LLVMContextCreate, LLVMCreateMemoryBufferWithMemoryRangeCopy, LLVMDisposeMemoryBuffer,
+        LLVMGetBufferSize, LLVMGetBufferStart, LLVMModuleCreateWithNameInContext,
     },
     error::*,
     orc2::{lljit::*, *},
@@ -1570,10 +1570,6 @@ impl ObjectTransformLayerRef {
     /// Returning `Err` aborts materialization.
     pub fn set_transform(&self, f: ObjTransformFn) {
         extern "C" fn shim(ctx: *mut c_void, obj_in_out: *mut LLVMMemoryBufferRef) -> LLVMErrorRef {
-            use llvm_sys::core::{
-                LLVMCreateMemoryBufferWithMemoryRangeCopy, LLVMDisposeMemoryBuffer,
-                LLVMGetBufferSize, LLVMGetBufferStart,
-            };
             let f: ObjTransformFn = unsafe { mem::transmute(ctx) };
             let buf = unsafe { *obj_in_out };
             let data = unsafe {
@@ -1801,11 +1797,10 @@ mod tests {
         core::LLVMGetModuleContext,
         target_machine::{LLVMCodeGenOptLevel, LLVMCodeModel, LLVMRelocMode},
     };
+    use std::mem::ManuallyDrop;
 
     #[test]
     fn e2e_with_tsc() {
-        use mem::ManuallyDrop;
-
         Target::initialize_native().unwrap();
         let triple = TargetMachine::get_default_triple();
         let cpu = TargetMachine::get_host_cpu_name();
@@ -1895,8 +1890,6 @@ mod tests {
 
     #[test]
     fn lookup_in_custom_jd() {
-        use mem::ManuallyDrop;
-
         Target::initialize_native().unwrap();
         let triple = TargetMachine::get_default_triple();
         let cpu = TargetMachine::get_host_cpu_name();

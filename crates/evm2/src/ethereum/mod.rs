@@ -641,7 +641,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 destination: to,
                 call_target: to,
                 caller,
-                input: input.clone(),
+                input: input.clone().into(),
                 value,
                 code,
                 code_address,
@@ -672,7 +672,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 destination,
                 call_target: destination,
                 caller,
-                input: input.clone(),
+                input: input.clone().into(),
                 value,
                 code: Bytecode::new_legacy(input.clone()),
                 code_address: destination,
@@ -714,7 +714,7 @@ pub fn halted_initial_frame<T: EvmTypes>(
         destination,
         call_target: destination,
         caller,
-        input: input.clone(),
+        input: input.clone().into(),
         value,
         code_address: destination,
         caller_is_static: false,
@@ -985,7 +985,7 @@ mod tests {
         BaseEvmTypes, ExecutionConfig, Precompiles,
         constants::MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
         env::BlockEnvExt,
-        evm::InMemoryDB,
+        evm::{InMemoryDB, handler::TxHandlerHooks},
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
@@ -997,8 +997,6 @@ mod tests {
     fn adjusted_floor_gas_controls_validation_and_settlement(
         #[values(31_049, 31_050)] gas_limit: u64,
     ) {
-        use crate::evm::handler::TxHandlerHooks;
-
         struct CalldataSurcharge;
 
         impl TxHandlerHooks<BaseEvmTypes> for CalldataSurcharge {
