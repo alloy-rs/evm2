@@ -575,6 +575,7 @@ impl BackendState {
                 current_gen = self.generation,
                 "discarding stale worker result",
             );
+            self.inner.stats.compilations_discarded.fetch_add(1, Ordering::Relaxed);
             result.sync_notifier.notify();
             return;
         }
@@ -708,7 +709,7 @@ impl BackendState {
                     error = %e,
                     "failed to persist AOT artifact",
                 );
-                self.remove_entry(&key);
+                self.fail_entry(&key, CompilationKind::Aot, false);
                 self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
                 return;
             }
@@ -740,8 +741,8 @@ impl BackendState {
                             error = %e,
                             "failed to link persisted AOT artifact",
                         );
-                        // Persisted successfully but couldn't link — remove so JIT can retry.
-                        self.remove_entry(&key);
+                        // Back off AOT attempts; admission still allows a JIT request to retry.
+                        self.fail_entry(&key, CompilationKind::Aot, false);
                         self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
                     }
                 },
@@ -750,7 +751,7 @@ impl BackendState {
                         code_hash = %key.code_hash,
                         "stored AOT artifact not found on reload",
                     );
-                    self.remove_entry(&key);
+                    self.fail_entry(&key, CompilationKind::Aot, false);
                     self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(e) => {
@@ -759,7 +760,7 @@ impl BackendState {
                         error = %e,
                         "failed to reload persisted AOT artifact",
                     );
-                    self.remove_entry(&key);
+                    self.fail_entry(&key, CompilationKind::Aot, false);
                     self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -769,7 +770,7 @@ impl BackendState {
                 code_hash = %key.code_hash,
                 "AOT compilation completed but no artifact store configured",
             );
-            self.remove_entry(&key);
+            self.fail_entry(&key, CompilationKind::Aot, false);
             self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -1571,7 +1572,7 @@ mod tests {
         let job = CompileJob {
             kind: CompilationKind::Jit,
             key: RuntimeCacheKey { code_hash: keccak256(BYTECODE_RET42), spec_id: SpecId::CANCUN },
-            bytecode: Bytes::copy_from_slice(BYTECODE_RET42),
+            bytecode: Bytes::from_static(BYTECODE_RET42),
             symbol_name: symbol_name.to_owned(),
             opt_level: config.tuning.jit_opt_level,
             sync_notifier: SyncNotifier::none(),

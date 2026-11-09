@@ -1,19 +1,20 @@
-use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv};
+use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, SpecId, TransactTo, TxEnv};
 use alloy_consensus::{TxEip7702, transaction::Recovered};
 use alloy_eips::eip7702::{Authorization, SignedAuthorization};
-use alloy_primitives::{Address, Bytes, U256, hex, map::HashSet};
+use alloy_primitives::{Address, Bytes, U256, bytes, hex, map::HashSet};
 use alloy_rpc_types_trace::parity::{TraceResults, TraceType};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles,
     ethereum::{LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    evm::InMemoryDB,
 };
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
-fn trace(db: CacheDB<EmptyDB>, tx: TxEnv) -> TraceResults {
+fn trace(db: InMemoryDB, tx: TxEnv) -> TraceResults {
     trace_envelope(db, tx.envelope())
 }
 
-fn trace_envelope(mut db: CacheDB<EmptyDB>, tx: RecoveredTxEnvelope) -> TraceResults {
+fn trace_envelope(mut db: InMemoryDB, tx: RecoveredTxEnvelope) -> TraceResults {
     let types = HashSet::from_iter([TraceType::VmTrace]);
     let mut inspector = TracingInspector::new(TracingInspectorConfig::from_parity_config(&types));
     let mut evm = Evm::<BaseEvmTypes>::new(
@@ -87,15 +88,15 @@ fn authorization_resolves_executed_bytecode() {
     let delegate = Address::with_last_byte(0x44);
     for before in [Bytecode::default(), Bytecode::new_eip7702(old_delegate)] {
         for (delegate, code) in [
-            (delegate, Bytes::from_static(&hex!("602a5f5260205ff3"))),
-            (delegate, Bytes::from_static(&hex!("5f5ffd"))),
+            (delegate, bytes!("602a5f5260205ff3")),
+            (delegate, bytes!("5f5ffd")),
             (Address::ZERO, Bytes::new()),
         ] {
             let mut db = CacheDB::default();
             db.insert_account_info(&authority, AccountInfo::default().with_code(before.clone()));
             db.insert_account_info(
                 &old_delegate,
-                AccountInfo::default().with_code(Bytecode::new_raw(hex!("60015000").into())),
+                AccountInfo::default().with_code(Bytecode::new_raw(bytes!("60015000"))),
             );
             if !delegate.is_zero() {
                 db.insert_account_info(
@@ -112,11 +113,7 @@ fn authorization_resolves_executed_bytecode() {
                             to: authority,
                             gas_limit: 100_000,
                             authorization_list: vec![SignedAuthorization::new_unchecked(
-                                Authorization {
-                                    chain_id: U256::from(1),
-                                    address: delegate,
-                                    nonce: 0,
-                                },
+                                Authorization { chain_id: U256::ONE, address: delegate, nonce: 0 },
                                 0,
                                 U256::ZERO,
                                 U256::ZERO,

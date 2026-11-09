@@ -109,7 +109,7 @@ async fn capture(
         for (tx_index, ((pre_trace, diff_trace), tx)) in pre_traces
             .iter()
             .zip(diff_traces.iter())
-            .zip(consensus_block.body.transactions.iter())
+            .zip(consensus_block.body.transactions())
             .enumerate()
         {
             let pre = parse::trace_result(pre_trace)?;
@@ -214,8 +214,7 @@ async fn prepare_block(block: FetchedBlock) -> std::result::Result<PreparedBlock
 
         let transactions = consensus_block
             .body
-            .transactions
-            .iter()
+            .transactions()
             .map(|tx| {
                 let signer = tx.recover_signer().map_err(CaptureError::RecoverSigner)?;
                 Ok(model::CapturedTransaction { signer })
