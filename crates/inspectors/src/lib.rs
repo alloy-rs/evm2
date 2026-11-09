@@ -47,6 +47,4 @@ pub mod transfer;
 /// An inspector for tracking storage access.
 pub mod storage;
 
-mod step_cost;
-
 pub use colorchoice::ColorChoice;

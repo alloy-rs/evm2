@@ -2,10 +2,12 @@
 
 use crate::{
     opcode::immediate_size,
-    step_cost::step_cost,
-    tracing::types::{
-        CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
-        TraceMemberOrder,
+    tracing::{
+        types::{
+            CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
+            TraceMemberOrder,
+        },
+        utils::step_cost,
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -54,7 +56,7 @@ pub use opcount::OpcodeCountInspector;
 pub mod types;
 use types::{CallLog, CallTrace, CallTraceStep};
 
-mod utils;
+pub(crate) mod utils;
 
 #[cfg(feature = "std")]
 mod writer;

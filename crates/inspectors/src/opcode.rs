@@ -1,4 +1,4 @@
-use crate::step_cost::step_cost;
+use crate::tracing::utils::step_cost;
 use alloc::{string::ToString, vec::Vec};
 use alloy_primitives::map::HashMap;
 use alloy_rpc_types_trace::opcode::OpcodeGas;
