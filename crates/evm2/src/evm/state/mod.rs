@@ -47,11 +47,6 @@ use core::{
 };
 use derive_where::derive_where;
 
-/// Capacity of the first log buffer allocation, which `Vec` rounds small requests up to.
-const LOG_BUFFER_MIN_CAP: usize = 4;
-/// Largest log buffer left for the next transaction, in logs.
-const LOG_BUFFER_MAX_HINT: usize = 16384;
-
 /// Mutable EVM state with an accepted-state cache, transaction layer, and reversible journal.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -473,23 +468,21 @@ impl<'a> State<'a> {
 
     /// Takes logs emitted by the current in-flight transaction.
     ///
-    /// A transaction that emitted more than the first buffer holds leaves a buffer sized for that
-    /// many logs for the next one, which would otherwise regrow it by doubling and copying.
+    /// A transaction that emitted more logs than a `Vec` first allocates for (4) leaves a buffer
+    /// sized for that many for the next one, which would otherwise regrow it by doubling and
+    /// copying. If the next transaction emits few or no logs, the buffer stays for a later one and
+    /// the logs move into an exactly sized vector, so the result carries no unused capacity.
     #[inline]
     pub(crate) fn take_logs(&mut self) -> Vec<Log> {
-        let logs = mem::take(&mut self.inner.logs);
-        if logs.len() > LOG_BUFFER_MIN_CAP {
-            self.reserve_log_buffer(logs.len());
+        let logs = &mut self.inner.logs;
+        if logs.capacity() > 4 && logs.len() <= 4 {
+            return logs.drain(..).collect();
         }
-        logs
-    }
-
-    /// Reserves the log buffer out of line, keeping [`Self::take_logs`] small on the
-    /// per-transaction path.
-    #[cold]
-    #[inline(never)]
-    fn reserve_log_buffer(&mut self, logs: usize) {
-        self.inner.logs.reserve_exact(logs.min(LOG_BUFFER_MAX_HINT));
+        let taken = mem::take(logs);
+        if taken.len() > 4 {
+            logs.reserve_exact(taken.len());
+        }
+        taken
     }
 
     /// Records a transaction log.
@@ -1719,5 +1712,28 @@ mod tests {
         state.rollback(checkpoint, EvmFeatures::empty());
 
         assert_eq!(sorted_loaded_accounts(&state), [(read, vec![Word::ONE])]);
+    }
+
+    #[test]
+    fn take_logs_keeps_the_buffer_and_returns_exact_capacity() {
+        let mut state = State::new(CacheDB::default());
+        let mut take = |count: usize| {
+            for _ in 0..count {
+                state.log(Log::default());
+            }
+            state.take_logs()
+        };
+
+        let heavy = take(10);
+        assert_eq!(heavy.len(), 10);
+
+        let light = take(2);
+        assert_eq!((light.len(), light.capacity()), (2, 2));
+
+        let none = take(0);
+        assert_eq!(none.capacity(), 0);
+
+        let heavy = take(10);
+        assert_eq!(heavy.len(), 10);
     }
 }
