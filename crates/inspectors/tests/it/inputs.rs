@@ -10,7 +10,9 @@ use evm2_inspectors::{
     access_list::AccessListInspector,
     opcode::OpcodeGasInspector,
     otterscan::InternalOperationsInspector,
-    tracing::{TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig},
+    tracing::{
+        TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig, types::CallTrace,
+    },
     transfer::TransferInspector,
 };
 
@@ -257,7 +259,7 @@ fn byte_budget_halt_before_sstore_reports_no_store_delta() {
 }
 
 #[test]
-fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
+fn nested_roots_match_revm_inspectors() {
     let caller = Address::repeat_byte(0xaa);
     let child = Address::with_last_byte(0x43);
     // Send 1 wei to a child that executes STOP.
@@ -307,34 +309,50 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
             .with_limits(TraceLimits::default().set_max_recorded_bytes(Some(0)));
             run(&mut tracer);
             let nodes = tracer.traces().nodes();
-            assert_eq!(nodes.len(), 2);
-            assert_eq!(nodes[0].parent, None);
-            assert_eq!(nodes[0].trace.depth, usize::from(initial_call_depth));
-            assert_eq!(nodes[0].trace.data, data);
-            assert_eq!(nodes[0].children, [1]);
-            assert_eq!(nodes[1].parent, Some(0));
-            assert_eq!(nodes[1].trace.depth, usize::from(initial_call_depth) + 1);
+            // Like revm-inspectors, a top-level call above depth zero hangs under an empty root.
+            let root = usize::from(initial_call_depth > 0);
+            assert_eq!(nodes.len(), 2 + root);
+            if root == 1 {
+                assert_eq!(nodes[0].trace, CallTrace::default());
+                assert_eq!(nodes[0].children, [1]);
+            }
+            assert_eq!(nodes[root].parent, root.checked_sub(1));
+            assert_eq!(nodes[root].trace.depth, usize::from(initial_call_depth));
+            assert_eq!(nodes[root].trace.data, data);
+            assert_eq!(nodes[root].children, [root + 1]);
+            assert_eq!(nodes[root + 1].parent, Some(root));
+            assert_eq!(nodes[root + 1].trace.depth, usize::from(initial_call_depth) + 1);
             let geth = tracer.geth_builder().geth_traces(0, Bytes::new(), Default::default());
-            assert_eq!(geth.struct_logs[0].depth, u64::from(initial_call_depth) + 1);
-            assert!(
-                geth.struct_logs.iter().any(|log| log.depth == u64::from(initial_call_depth) + 2)
-            );
+            if root == 1 {
+                // As with revm-inspectors, struct logs only follow the root's own steps.
+                assert!(geth.struct_logs.is_empty());
+            } else {
+                assert_eq!(geth.struct_logs[0].depth, u64::from(initial_call_depth) + 1);
+                assert!(
+                    geth.struct_logs
+                        .iter()
+                        .any(|log| log.depth == u64::from(initial_call_depth) + 2)
+                );
+            }
 
+            // Like revm-inspectors, only a call at depth zero counts as top-level.
             let mut access = AccessListInspector::default();
             run(&mut access);
-            assert!(access.excluded().contains(&caller));
-            assert!(access.excluded().contains(&target));
+            assert_eq!(access.excluded().contains(&caller), root == 0);
+            assert_eq!(access.excluded().contains(&target), root == 0);
             assert!(access.touched_slots().contains_key(&child));
             let mut operations = InternalOperationsInspector::default();
             run(&mut operations);
-            assert_eq!(operations.operations().len(), 1);
-            assert_eq!(operations.operations()[0].from, target);
-            assert_eq!(operations.operations()[0].to, child);
+            let operations = &operations.operations()[root..];
+            assert_eq!(operations.len(), 1);
+            assert_eq!(operations[0].from, target);
+            assert_eq!(operations[0].to, child);
             let mut transfers = TransferInspector::internal_only();
             run(&mut transfers);
-            assert_eq!(transfers.transfers().len(), 1);
-            assert_eq!(transfers.transfers()[0].from, target);
-            assert_eq!(transfers.transfers()[0].to, child);
+            let transfers = &transfers.transfers()[root..];
+            assert_eq!(transfers.len(), 1);
+            assert_eq!(transfers[0].from, target);
+            assert_eq!(transfers[0].to, child);
             let mut opcodes = OpcodeGasInspector::new();
             run(&mut opcodes);
             assert!(
