@@ -443,15 +443,15 @@ impl<T: EvmTypes> Evm<'_, T> {
                 self.state.account(&sender)?.bump_nonce();
             }
             let fees = self.feature(EvmFeatures::FEE_CHARGE);
+            let top_up = !self.feature(EvmFeatures::BALANCE_CHECK)
+                && self.feature(EvmFeatures::BALANCE_TOP_UP);
+            let funded_balance = if top_up { balance.max(maximum) } else { balance };
             if fees {
-                self.state.account(&address)?.set_balance(balance.saturating_sub(maximum));
-            } else if !self.feature(EvmFeatures::BALANCE_CHECK)
-                && self.feature(EvmFeatures::BALANCE_TOP_UP)
-                && balance < maximum
-            {
-                self.state.account(&address)?.set_balance(maximum);
+                self.state.account(&address)?.set_balance(funded_balance.saturating_sub(maximum));
+            } else if funded_balance != balance {
+                self.state.account(&address)?.set_balance(funded_balance);
             }
-            precharge = if fees { balance.min(maximum) } else { U256::ZERO };
+            precharge = if fees { funded_balance.min(maximum) } else { U256::ZERO };
         }
         let rt = self.frame_tx.as_mut().unwrap();
         let next = FrameApprovalState {

@@ -477,6 +477,26 @@ fn resource_fee_and_blob_validation_precedes_database_reads() {
 }
 
 #[test]
+fn frame_transaction_total_gas_cap_includes_state_gas() {
+    let version = Version::new(SpecId::BOGOTA);
+    let (cap, execution_cap) = version.tx_gas_caps();
+    let mut tx = payload();
+    let gas = FrameGas::calculate(&tx, &version).unwrap();
+    assert!(gas.execution < execution_cap);
+    tx.frames[1].limits.state += cap - gas.maximum;
+    let block = BlockEnvExt { gas_limit: U256::from(cap + 1), ..Default::default() };
+    let (mut evm, reads) = evm(version, block);
+    assert!(matches!(evm.validate_tx(&recovered(tx.clone())), Err(HandlerError::Database(_))));
+    assert_eq!(reads.load(Ordering::Relaxed), 1);
+    tx.frames[1].limits.state += 1;
+    assert_eq!(
+        evm.validate_tx(&recovered(tx)),
+        Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: cap + 1, cap })
+    );
+    assert_eq!(reads.load(Ordering::Relaxed), 1);
+}
+
+#[test]
 fn competing_errors_follow_static_preparation_order_and_valid_payload_reaches_db() {
     let mut tx = payload();
     tx.frames.clear();

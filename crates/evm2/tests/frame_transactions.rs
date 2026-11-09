@@ -145,6 +145,60 @@ fn assertion_failure_reverts_body_and_preserves_payment_prefix() {
 }
 
 #[test]
+fn assertion_failure_preserves_sender_writes_before_payment_approval() {
+    let payer = Address::with_last_byte(0xd0);
+    let db = common::database_with_nonce_manager([
+        (SENDER, &[0x60, 2, 0x5f, 0x5f, 0xaa][..]),
+        (payer, &[0x60, 1, 0x5f, 0x5f, 0xaa]),
+        (BODY, &[0x5f, 0x35, 0x5f, 0x55, 0x00]),
+        (ASSERTION, &[0x5f, 0x5f, 0xfd]),
+    ]);
+    let mut evm = common::evm(db);
+    let write = |value: u8| Frame {
+        data: U256::from(value).to_be_bytes::<32>().to_vec().into(),
+        ..frame(FrameMode::Sender, BODY)
+    };
+    let tx = recovered(payload(vec![
+        Frame { flags: 2, ..frame(FrameMode::Verify, SENDER) },
+        write(42),
+        Frame { flags: 1, ..frame(FrameMode::Verify, payer) },
+        write(99),
+        frame(FrameMode::Assert, ASSERTION),
+    ]));
+    let result = evm.transact(&tx).unwrap().commit();
+    assert!(!result.status);
+    let outcome = result.frame.unwrap();
+    assert_eq!(outcome.payer, payer);
+    assert_eq!(outcome.assertion_failure, Some(4));
+    assert_eq!(outcome.rolled_back, [false, false, false, true, false]);
+    assert_eq!(stored(&mut evm, BODY, U256::ZERO), U256::from(42));
+}
+
+#[rstest::rstest]
+fn frames_respect_eip7702_delegation_activation(#[values(false, true)] enabled: bool) {
+    let mut db = common::database_with_nonce_manager([
+        (SENDER, APPROVE_BOTH),
+        (ASSERTION, &[0x60, 42, 0x5f, 0x55, 0x00]),
+    ]);
+    db.insert_account_info(
+        &BODY,
+        AccountInfo::default().with_code(Bytecode::new_eip7702(ASSERTION)),
+    );
+    let mut evm = common::evm(db);
+    let mut version = *evm.version();
+    version.features.set(EvmFeatures::EIP7702, enabled);
+    set_version(&mut evm, version);
+    let tx =
+        recovered(payload(vec![frame(FrameMode::Verify, SENDER), frame(FrameMode::Sender, BODY)]));
+    let result = evm.transact(&tx).unwrap().commit();
+    assert_eq!(
+        result.frame.unwrap().stops[1],
+        if enabled { InstrStop::Stop } else { InstrStop::OpcodeNotFound },
+    );
+    assert_eq!(stored(&mut evm, BODY, U256::ZERO), U256::from(if enabled { 42 } else { 0 }));
+}
+
+#[test]
 fn executable_prefix_discards_nonce_and_does_not_execute_body() {
     let mut evm = evm(&[0xfe], &[]);
     let tx =
@@ -776,24 +830,41 @@ fn nonce_intrinsic_charges_zero_keys_and_exempts_only_single_use_sequences() {
     assert_eq!(incrementable.floor - single_use.floor, 9 * floor_byte_cost);
 }
 
-#[test]
-fn disabling_base_fee_checks_keeps_zero_budget_simulation_coherent() {
+#[rstest::rstest]
+fn disabling_base_fee_checks_keeps_charging_within_budget(
+    #[values(0, 1, 1_000_000_000)] budget: u64,
+) {
     let mut evm = evm(&[0x3a, 0x5f, 0x52, 0x48, 0x60, 32, 0x52, 0x60, 64, 0x5f, 0xf3], &[]);
-    evm.set_block(BlockEnvExt { basefee: U256::from(7), ..Default::default() });
-    let tx =
-        recovered(payload(vec![frame(FrameMode::Verify, SENDER), frame(FrameMode::Sender, BODY)]));
-    assert!(evm.transact(&tx).is_err());
+    let beneficiary = Address::with_last_byte(0xd0);
+    let base_fee = U256::from(7);
+    let tip = U256::from(2);
+    evm.set_block(BlockEnvExt { basefee: base_fee, beneficiary, ..Default::default() });
+    let mut payload =
+        payload(vec![frame(FrameMode::Verify, SENDER), frame(FrameMode::Sender, BODY)]);
+    payload.fees.max_fee = U256::from(budget);
+    payload.fees.max_priority_fee_per_gas = tip;
+    let max_gas = U256::from(FrameGas::calculate(&payload, evm.version()).unwrap().maximum);
+    let escrow = U256::from(budget).min(max_gas * (base_fee + tip));
+    let tx = recovered(payload);
+    assert_eq!(evm.validate_tx(&tx).is_ok(), U256::from(budget) >= max_gas * base_fee);
     let mut version = *evm.version();
     version.features.remove(EvmFeatures::BASE_FEE_CHECK);
     set_version(&mut evm, version);
     let result = evm.transact(&tx).unwrap().commit();
     assert!(result.status);
+    let used = U256::from(result.tx_gas_used());
+    let base_paid = (used * base_fee).min(escrow);
+    let tip_paid = (used * tip).min(escrow - base_paid);
     let frame = result.frame.unwrap();
-    assert_eq!(frame.precharge, U256::ZERO);
+    assert_eq!(frame.precharge, escrow);
     assert_eq!(frame.outputs[1].len(), 64);
-    assert_eq!(U256::from_be_slice(&frame.outputs[1][..32]), U256::ZERO);
-    assert_eq!(U256::from_be_slice(&frame.outputs[1][32..]), U256::from(7));
-    assert_eq!(evm.state_mut().account(&SENDER).unwrap().balance(), U256::from(1_000_000_000));
+    assert_eq!(U256::from_be_slice(&frame.outputs[1][..32]), escrow / max_gas);
+    assert_eq!(U256::from_be_slice(&frame.outputs[1][32..]), base_fee);
+    assert_eq!(evm.state_mut().account(&beneficiary).unwrap().balance(), tip_paid);
+    assert_eq!(
+        evm.state_mut().account(&SENDER).unwrap().balance(),
+        U256::from(1_000_000_000) - base_paid - tip_paid
+    );
 }
 
 #[test]
@@ -835,6 +906,8 @@ fn payment_approval_honors_balance_top_up_independently_of_fee_and_balance_check
                     // The sender pays for this transaction. Read its balance after APPROVE,
                     // before settlement, so later refunds cannot hide an unwanted top-up.
                     let mut evm = evm(&[0x33, 0x31, 0x5f, 0x52, 0x60, 32, 0x5f, 0xf3], &[]);
+                    let beneficiary = Address::with_last_byte(0xd0);
+                    evm.set_block(BlockEnvExt { beneficiary, ..Default::default() });
                     let sender = evm
                         .database_as_mut::<InMemoryDB>()
                         .unwrap()
@@ -893,25 +966,23 @@ fn payment_approval_honors_balance_top_up_independently_of_fee_and_balance_check
                     let result = evm.transact(&tx).unwrap().commit();
                     assert!(result.status, "{label}");
                     let frame = result.frame.as_ref().unwrap();
-                    let expected_balance = if fee_charge {
-                        initial_balance.saturating_sub(escrow)
-                    } else if !balance_check && balance_top_up {
+                    let funded_balance = if !balance_check && balance_top_up {
                         initial_balance.max(escrow)
                     } else {
                         initial_balance
                     };
+                    let expected_precharge =
+                        if fee_charge { funded_balance.min(escrow) } else { U256::ZERO };
+                    let expected_balance = funded_balance - expected_precharge;
                     assert_eq!(U256::from_be_slice(&frame.outputs[1]), expected_balance, "{label}");
+                    assert_eq!(frame.precharge, expected_precharge, "{label}");
+                    let tip_paid = U256::from(result.tx_gas_used()).min(expected_precharge);
+                    let final_balance = funded_balance - tip_paid;
                     assert_eq!(
-                        frame.precharge,
-                        if fee_charge { initial_balance.min(escrow) } else { U256::ZERO },
+                        evm.state_mut().account(&beneficiary).unwrap().balance(),
+                        tip_paid,
                         "{label}"
                     );
-                    let final_balance = if fee_charge {
-                        expected_balance
-                            + frame.precharge.saturating_sub(U256::from(result.tx_gas_used()))
-                    } else {
-                        expected_balance
-                    };
                     assert_eq!(
                         evm.state_mut().account(&SENDER).unwrap().balance(),
                         final_balance,

@@ -1,6 +1,6 @@
 //! Frame transaction preparation and execution.
 
-use super::{validate_block_gas_limit, validate_chain_id};
+use super::{validate_block_gas_limit, validate_chain_id, validate_tx_gas_limit_cap};
 use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
@@ -214,12 +214,20 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         .and_then(|v| v.checked_mul(host.block.blob_basefee))
         .ok_or(invalid(FrameTransactionError::BaseFeeOverflow))?;
     let max_gas = U256::from(gas.maximum);
-    let base_fee =
-        if host.feature(EvmFeatures::BASE_FEE_CHECK) { host.block.basefee } else { U256::ZERO };
-    let required_max_fee = max_gas
-        .checked_mul(base_fee)
-        .and_then(|v| v.checked_add(blob_charge))
-        .ok_or(invalid(FrameTransactionError::BaseFeeOverflow))?;
+    let base_fee = host.block.basefee;
+    let required_max_fee = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
+        max_gas
+            .checked_mul(base_fee)
+            .and_then(|v| v.checked_add(blob_charge))
+            .ok_or(invalid(FrameTransactionError::BaseFeeOverflow))?
+    } else {
+        // Relax the execution base-fee budget check while retaining the blob charge.
+        max_gas
+            .saturating_mul(base_fee)
+            .saturating_add(blob_charge)
+            .min(tx.fees.max_fee)
+            .max(blob_charge)
+    };
     let budget_left = tx.fees.max_fee.checked_sub(required_max_fee).ok_or(
         HandlerError::FrameFeeBudgetTooLow { required: required_max_fee, got: tx.fees.max_fee },
     )?;
@@ -253,6 +261,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     if tx.frames.is_empty() || tx.frames.len() > MAX_FRAMES {
         return Err(invalid(FrameTransactionError::InvalidFrameCount));
     }
+    validate_tx_gas_limit_cap(host.version(), gas.maximum)?;
     if gas.execution > host.version().tx_gas_limit_cap {
         return Err(HandlerError::TxGasLimitGreaterThanCap {
             gas_limit: gas.execution,
@@ -267,7 +276,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let max_priority_fee =
         tx.fees.max_priority_fee_per_gas.saturating_mul(max_gas).min(budget_left);
     let max_cost = required_max_fee + max_priority_fee;
-    let gas_price = base_fee + max_priority_fee / max_gas;
+    let gas_price = (max_cost - blob_charge) / max_gas;
     let signature_hash = tx.signature_hash();
     validate_signatures(tx, signature_hash, placeholders)?;
     if host.feature(EvmFeatures::NONCE_CHECK)
@@ -592,6 +601,8 @@ fn execute_frames<T: EvmTypes>(
             rt.commit_root_approval();
         }
         if body.is_none() && stop.is_success() && rt.approval.payer.is_some() {
+            // EIP-7906 preserves the whole validation prefix, including any SENDER frames
+            // executed before the payment approval survived its frame.
             body = Some(checkpoint(host, receipts.len(), false));
         }
         if !stop.is_success() && frame.mode == FrameMode::Assert {
@@ -672,19 +683,16 @@ pub(crate) fn settle_fees<T: EvmTypes>(
         return Ok(());
     }
     let used = U256::from(result.tx_gas_used());
+    let frame = result.frame.as_ref().expect("frame handler produces frame results");
     let base_fee_paid = used
-        .checked_mul(prepared.base_fee)
-        .and_then(|value| value.checked_add(prepared.blob_charge))
-        .ok_or(invalid(FrameTransactionError::PaymentOverflow))?;
-    let available_tip = prepared
-        .max_cost
-        .checked_sub(base_fee_paid)
-        .ok_or(invalid(FrameTransactionError::PaymentOverflow))?;
+        .saturating_mul(prepared.base_fee)
+        .saturating_add(prepared.blob_charge)
+        .min(frame.precharge);
+    let available_tip = frame.precharge - base_fee_paid;
     let priority_fee_paid =
         prepared.payload.fees.max_priority_fee_per_gas.saturating_mul(used).min(available_tip);
     let actual = base_fee_paid + priority_fee_paid;
-    let frame = result.frame.as_ref().expect("frame handler produces frame results");
-    host.state.account(&frame.payer)?.add_balance(frame.precharge.saturating_sub(actual));
+    host.state.account(&frame.payer)?.add_balance(frame.precharge - actual);
     let beneficiary = host.block.beneficiary;
     host.state.account(&beneficiary)?.add_balance(priority_fee_paid);
     Ok(())
@@ -783,7 +791,10 @@ fn execute_frame<T: EvmTypes>(
             host.state.account(&target)?.load_code()?
         };
         let mut code_address = target;
-        if !precompile && let Some(delegate) = code.eip7702_address() {
+        if !precompile
+            && host.feature(EvmFeatures::EIP7702)
+            && let Some(delegate) = code.eip7702_address()
+        {
             gas.spend(warm)?;
             let load = host.load_account(&delegate, true, gas.remaining() < cold)?;
             if load.is_cold {
