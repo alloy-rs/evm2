@@ -453,7 +453,8 @@ macro_rules! define_precompiles {
                     message: &$crate::interpreter::Message<T>,
                     gas: &mut $crate::interpreter::GasTracker,
                 ) -> $crate::precompiles::PrecompileResult {
-                    $f(message.input.as_ref(), gas)
+                    let input = message.input.as_owned().expect("a precompile input is owned");
+                    $f(input, gas)
                 }
 
                 $crate::precompiles::Precompile::new(

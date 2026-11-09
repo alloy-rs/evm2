@@ -1901,7 +1901,7 @@ mod tests {
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.depth > 0 {
                     // The input is a range of the caller's memory, read through the caller.
-                    assert_eq!(message.input.caller_memory(), Some(0..32));
+                    assert_eq!(message.input.as_owned(), None);
                     assert_eq!(message.input.len(), 32);
                     assert_eq!(message.input.as_bytes(interp.memory()), [0xaa; 32]);
                     interp.memory_mut().set(0, &[0xbb; 32]);
@@ -1961,7 +1961,7 @@ mod tests {
             ) {
                 if message.depth > 0 {
                     assert_eq!(interp.memory().slice(0, 32), [0xaa; 32]);
-                    assert_eq!(&message.input[..16], [0xcc; 16]);
+                    assert_eq!(message.input.as_owned().unwrap()[..16], [0xcc; 16]);
                 }
             }
         }
@@ -1982,7 +1982,7 @@ mod tests {
     }
 
     #[test]
-    fn call_with_hook_overwriting_caller_memory_keeps_child_input() {
+    fn call_with_hook_overwriting_caller_memory_changes_child_input() {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_config::<OverwritingCallConfig>(),
             SpecId::OSAKA,
@@ -1998,7 +1998,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_matches!(result.stop, InstrStop::Return);
-        assert_eq!(result.output[..], [0xaa; 32]);
+        assert_eq!(result.output[..], [0xbb; 32]);
     }
 
     #[test]

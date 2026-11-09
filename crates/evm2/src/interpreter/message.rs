@@ -2,13 +2,9 @@ use crate::{
     BaseEvmTypes, EvmTypesHost, Version,
     bytecode::Bytecode,
     interpreter::{InstrStop, Memory, Word},
-    trustme,
 };
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
-use core::{
-    fmt,
-    ops::{Deref, Range},
-};
+use core::ops::Range;
 
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -208,45 +204,43 @@ pub fn create_preaccess_failure(
 
 /// The input of a message: call data, or initcode for create messages.
 ///
-/// When [`Evm`](crate::Evm) runs a call instruction's message, the input is a range of the caller
-/// frame's memory instead of a copy, since the caller waits for the call to return. While an
-/// inspector's call hooks hold the message, such an input holds only its range: borrow it with
-/// [`as_bytes`](Self::as_bytes) and the caller's memory (the hook's `interp.memory()`), and to
-/// change it, copy it out and assign an owned input, as in `message.input = bytes.into()`. It must
-/// not be dereferenced there (debug builds panic). A hook that writes the caller's memory without
-/// replacing the input changes what the child reads.
-#[derive(Default)]
-pub struct MessageInput {
-    /// The owned bytes, or the caller's memory with its lifetime erased while attached. Empty for
-    /// a detached input in the caller's memory.
-    bytes: Bytes,
-    /// The input's range in the caller frame's memory, unless the input owns its bytes.
-    caller_memory: Option<Range<usize>>,
+/// The input of a call instruction's message is a range of the caller frame's memory instead of a
+/// copy, since the caller waits for the call to return. The child frame reads it from there, and
+/// the inspector hooks that hold the message read it with [`as_bytes`](Self::as_bytes) and the
+/// caller's memory, which is the `interp.memory()` of the hook. To change an input, copy it out
+/// and assign an owned one, as in `message.input = bytes.into()`. A kept clone of such an input is
+/// only the range, so copy it out with [`to_bytes`](Self::to_bytes) to keep the bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageInput(Repr);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Repr {
+    /// The input's bytes.
+    Owned(Bytes),
+    /// The input's range in the caller frame's memory.
+    Borrowed(Range<usize>),
+}
+
+impl Default for Repr {
+    #[inline]
+    fn default() -> Self {
+        Self::Owned(Bytes::new())
+    }
 }
 
 impl MessageInput {
-    /// Borrows `bytes`, which are `range` of the caller frame's memory, without copying.
-    ///
-    /// # Safety
-    ///
-    /// `bytes` must stay valid and unchanged until the input is detached.
+    /// Creates an input that is `range` of the caller frame's memory.
     #[inline]
-    pub(crate) unsafe fn borrowed(bytes: &[u8], range: Range<usize>) -> Self {
-        debug_assert_eq!(bytes.len(), range.len());
-        // SAFETY: The caller keeps the bytes alive and unchanged until the input is detached, and
-        // cloning an attached input copies its bytes.
-        Self {
-            bytes: Bytes::from_static(unsafe { trustme::decouple_lt(bytes) }),
-            caller_memory: Some(range),
-        }
+    pub(crate) const fn borrowed(range: Range<usize>) -> Self {
+        Self(Repr::Borrowed(range))
     }
 
     /// Returns the length of the input.
     #[inline]
     pub fn len(&self) -> usize {
-        match &self.caller_memory {
-            Some(range) => range.len(),
-            None => self.bytes.len(),
+        match &self.0 {
+            Repr::Owned(bytes) => bytes.len(),
+            Repr::Borrowed(range) => range.len(),
         }
     }
 
@@ -256,10 +250,14 @@ impl MessageInput {
         self.len() == 0
     }
 
-    /// Returns the input's range in the caller frame's memory, unless it owns its bytes.
+    /// Returns the bytes of an input that owns them, and `None` for a range of the caller's
+    /// memory.
     #[inline]
-    pub fn caller_memory(&self) -> Option<Range<usize>> {
-        self.caller_memory.clone()
+    pub const fn as_owned(&self) -> Option<&Bytes> {
+        match &self.0 {
+            Repr::Owned(bytes) => Some(bytes),
+            Repr::Borrowed(_) => None,
+        }
     }
 
     /// Returns the input bytes, reading them from `memory`, the caller frame's memory, unless the
@@ -270,9 +268,9 @@ impl MessageInput {
     /// Panics if the input's range is out of bounds of `memory`.
     #[inline]
     pub fn as_bytes<'a>(&'a self, memory: &'a Memory) -> &'a [u8] {
-        match &self.caller_memory {
-            Some(range) => memory.slice(range.start, range.len()),
-            None => &self.bytes,
+        match &self.0 {
+            Repr::Owned(bytes) => bytes,
+            Repr::Borrowed(range) => memory.slice(range.start, range.len()),
         }
     }
 
@@ -284,107 +282,17 @@ impl MessageInput {
     /// Panics if the input's range is out of bounds of `memory`.
     #[inline]
     pub fn to_bytes(&self, memory: &Memory) -> Bytes {
-        match &self.caller_memory {
-            Some(range) => Bytes::copy_from_slice(memory.slice(range.start, range.len())),
-            None => self.bytes.clone(),
+        match &self.0 {
+            Repr::Owned(bytes) => bytes.clone(),
+            Repr::Borrowed(range) => Bytes::copy_from_slice(memory.slice(range.start, range.len())),
         }
-    }
-
-    /// Points an input in the caller's memory at `memory`, so that it derefs to its bytes.
-    ///
-    /// # Safety
-    ///
-    /// `memory` must be the caller frame's memory, and must stay in place and unchanged until
-    /// [`detach`](Self::detach).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the input's range is out of bounds of `memory`.
-    #[inline]
-    pub(crate) unsafe fn attach(&mut self, memory: &Memory) {
-        if let Some(range) = &self.caller_memory {
-            let bytes = memory.slice(range.start, range.len());
-            // SAFETY: Upheld by the caller.
-            self.bytes = Bytes::from_static(unsafe { trustme::decouple_lt(bytes) });
-        }
-    }
-
-    /// Returns the range of an input in the caller's memory that has no bytes to deref to.
-    #[inline]
-    fn detached(&self) -> Option<&Range<usize>> {
-        self.caller_memory.as_ref().filter(|range| self.bytes.len() != range.len())
-    }
-
-    /// Copies the bytes of an attached input into an owned buffer.
-    #[inline]
-    pub(crate) fn make_owned(&mut self) {
-        if self.caller_memory.is_some() {
-            *self = Self::from(Bytes::copy_from_slice(&self.bytes));
-        }
-    }
-
-    /// Drops the pointer of an input in the caller's memory, keeping only its range.
-    #[inline]
-    pub(crate) fn detach(&mut self) {
-        if self.caller_memory.is_some() {
-            self.bytes = Bytes::new();
-        }
-    }
-}
-
-impl Clone for MessageInput {
-    /// Copies the bytes of an attached input, so that a clone never points into memory. A detached
-    /// input clones its range.
-    #[inline]
-    fn clone(&self) -> Self {
-        if self.caller_memory.is_some() && self.detached().is_none() {
-            return Self::from(Bytes::copy_from_slice(&self.bytes));
-        }
-        Self { bytes: self.bytes.clone(), caller_memory: self.caller_memory.clone() }
-    }
-}
-
-impl fmt::Debug for MessageInput {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.caller_memory {
-            Some(range) if self.detached().is_some() => {
-                f.debug_tuple("CallerMemory").field(range).finish()
-            }
-            _ => self.bytes.fmt(f),
-        }
-    }
-}
-
-impl PartialEq for MessageInput {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        match (self.detached(), other.detached()) {
-            (None, None) => self.bytes == other.bytes,
-            (a, b) => a == b,
-        }
-    }
-}
-
-impl Eq for MessageInput {}
-
-impl Deref for MessageInput {
-    type Target = [u8];
-
-    #[inline]
-    fn deref(&self) -> &[u8] {
-        debug_assert!(
-            self.detached().is_none(),
-            "an inspector hook read a call input in the caller's memory without it: use `as_bytes(interp.memory())`",
-        );
-        &self.bytes
     }
 }
 
 impl From<Bytes> for MessageInput {
     #[inline]
     fn from(bytes: Bytes) -> Self {
-        Self { bytes, caller_memory: None }
+        Self(Repr::Owned(bytes))
     }
 }
 
@@ -453,22 +361,19 @@ mod tests {
         let mut memory = Memory::new();
         memory.resize(0, 3).unwrap();
         memory.set(0, &[1, 2, 3]);
-        // SAFETY: `memory` is unchanged until `input` is detached.
-        let mut input = unsafe { MessageInput::borrowed(memory.slice(1, 2), 1..3) };
-        assert_eq!(&*input, [2, 3]);
-        let clone = input.clone();
-        input.detach();
-        let range = input.clone();
+        let input = MessageInput::borrowed(1..3);
+        let owned = MessageInput::from(Bytes::from_static(&[9]));
+        let kept = input.clone();
         memory.set(1, &[7]);
 
-        // An attached input's clone copies its bytes.
-        assert_eq!(&*clone, [2, 3]);
-        assert_eq!(clone.caller_memory(), None);
-        // A detached input reads the caller's memory.
-        assert_eq!(input.len(), 2);
+        assert_eq!((input.len(), owned.len()), (2, 1));
+        assert_eq!(input.as_owned(), None);
+        assert_eq!(owned.as_owned(), Some(&Bytes::from_static(&[9])));
+        // A borrowed input, and a clone of it, read the caller's memory.
         assert_eq!(input.as_bytes(&memory), [7, 3]);
+        assert_eq!(kept.as_bytes(&memory), [7, 3]);
         assert_eq!(input.to_bytes(&memory)[..], [7, 3]);
-        assert_eq!(range, input);
-        assert_eq!(range.caller_memory(), Some(1..3));
+        assert_eq!(owned.as_bytes(&memory), [9]);
+        assert_eq!(MessageInput::default().len(), 0);
     }
 }
