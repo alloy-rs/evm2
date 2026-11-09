@@ -32,6 +32,14 @@
 //! [`Evm::set_defer_beneficiary_reward`]: a transaction that does not read the beneficiary itself
 //! never loads it, and the reward is credited when the transaction commits. A transaction that
 //! does read it executes again sequentially.
+//!
+//! Host code such as a precompile can give other shared keys the same treatment. Its blind adds
+//! to a storage slot ([`Host::sadd`]), such as a fee accumulator's, are published as deltas
+//! rather than read: a later transaction that reads the slot sees the latest value written below
+//! its version plus every delta since, while transactions that only add never conflict, and each
+//! add resolves against the committed value when its transaction commits. Its deferred storage
+//! operations ([`State::defer_storage_op`](crate::evm::State::defer_storage_op)), such as a
+//! ring buffer insert, run at commit against the committed state.
 
 use super::{
     EthBlockExecutor, EthTransactionResultWithState,
@@ -41,16 +49,12 @@ use crate::{
     Evm, EvmFeatures, EvmTypes, TxResultWithState, TxStateChanges,
     block::{BlockExecutionError, BlockExecutor, ExecutableTx, ReceiptBuilder},
     bytecode::Bytecode,
-    evm::{
-        AccountFlags, AccountInfo, Cache, DbResult, DynDatabase, DynDatabaseRef, EmptyDB,
-        PendingState,
-    },
+    evm::{AccountFlags, AccountInfo, Cache, DbResult, DynDatabase, DynDatabaseRef, PendingState},
     interpreter::{Host, Word},
 };
 use alloc::{
     boxed::Box,
-    collections::{BTreeMap, BTreeSet, BinaryHeap},
-    sync::Arc,
+    collections::{BTreeSet, BinaryHeap},
     vec,
     vec::Vec,
 };
@@ -65,19 +69,31 @@ use alloy_primitives::{
 };
 use core::{
     borrow::Borrow,
-    cell::RefCell,
+    cell::{Cell, RefCell},
     cmp::Reverse,
     hash::Hash,
     num::NonZeroUsize,
-    sync::atomic::{AtomicBool, Ordering},
+    ops::Deref,
+    ptr,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence},
 };
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Condvar, Mutex, RwLock, mpsc},
+    sync::{Condvar, Mutex, OnceLock, RwLock, mpsc},
+    thread::Thread,
 };
 
 /// Number of lock shards of the multi-version account and storage maps.
 const SHARDS: usize = 64;
+
+/// Number of buckets of a [`Buckets`], each twice the size of the one before.
+const BUCKETS: usize = 32;
+
+/// Number of elements of the first bucket of a [`Buckets`].
+const FIRST_BUCKET: usize = 64;
+
+/// Times the committer polls for the next result before parking.
+const COMMIT_SPINS: u32 = 1 << 10;
 
 /// Counters of one parallel block execution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -113,7 +129,9 @@ pub struct ParallelExecutionOutput {
 /// execute once.
 ///
 /// The block beneficiary is left out: rewards are credited at commit, so paying fees does not
-/// make transactions depend on each other.
+/// make transactions depend on each other. So are storage slots a transaction changes only through
+/// blind adds or deferred storage operations, which resolve at commit, though a later transaction
+/// that reads such a slot depends on every transaction that changed it so since its last write.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ParallelHints {
     dependencies: Vec<Vec<u32>>,
@@ -263,31 +281,37 @@ where
             return Ok(ParallelExecutionOutput { stats, dependencies: dependencies.finish() });
         }
 
-        let weights: Vec<_> = txs.iter().map(|tx| tx.borrow().gas_limit()).collect();
-        let priorities = priorities(&weights, hints);
-        let scheduler = Scheduler::default();
         let queue = TxQueue::default();
-        for (index, evm_tx) in evm_txs.into_iter().enumerate() {
-            queue.push(evm_tx);
-            let dependencies = hints.and_then(|hints| hints.dependencies.get(index));
-            scheduler.add(priorities[index], dependencies.map_or(&[][..], Vec::as_slice));
-        }
-        scheduler.close();
+        let scheduler = if let Some(hints) = hints {
+            let weights: Vec<_> = txs.iter().map(|tx| tx.borrow().gas_limit()).collect();
+            let priorities = priorities(&weights, Some(hints));
+            let scheduler = Scheduler::default();
+            for (index, evm_tx) in evm_txs.into_iter().enumerate() {
+                queue.push(evm_tx);
+                let dependencies = hints.dependencies.get(index);
+                scheduler.add(priorities[index], dependencies.map_or(&[][..], Vec::as_slice));
+            }
+            scheduler.close();
+            scheduler
+        } else {
+            for evm_tx in evm_txs {
+                queue.push(evm_tx);
+            }
+            Scheduler::in_order(txs.len())
+        };
         let store = MvStore::new(self.evm.overlay_db().cache.clone(), base);
-        let (sender, receiver) = mpsc::channel::<Speculative<T>>();
         let workers = threads.get().min(txs.len());
+        let results = Results::new(workers);
         std::thread::scope(|scope| {
-            for _ in 0..workers {
-                let sender = sender.clone();
-                let (store, scheduler, queue) = (&store, &scheduler, &queue);
+            for worker in 0..workers {
+                let (store, scheduler, queue, results) = (&store, &scheduler, &queue, &results);
                 let (make_evm, on_speculative) = (&make_evm, &on_speculative);
                 scope.spawn(move || {
-                    run_worker(store, scheduler, queue, make_evm, on_speculative, &sender);
+                    run_worker(store, scheduler, queue, make_evm, on_speculative, results, worker);
                 });
             }
-            drop(sender);
             let result =
-                self.commit_in_order(&store, &queue, txs, &receiver, &mut stats, &mut dependencies);
+                self.commit_in_order(&store, &queue, txs, &results, &mut stats, &mut dependencies);
             scheduler.abort();
             result
         })?;
@@ -342,7 +366,7 @@ where
         let scheduler = Scheduler::default();
         let queue = TxQueue::default();
         let store = MvStore::new(self.evm.overlay_db().cache.clone(), base);
-        let (sender, receiver) = mpsc::channel::<Speculative<T>>();
+        let results = Results::new(threads.get());
         let (tx_sender, tx_receiver) = mpsc::channel();
         let transactions = transactions.into_iter();
         std::thread::scope(|scope| {
@@ -362,20 +386,18 @@ where
                 }
                 scheduler.close();
             });
-            for _ in 0..threads.get() {
-                let sender = sender.clone();
-                let store = &store;
+            for worker in 0..threads.get() {
+                let (store, results) = (&store, &results);
                 let (make_evm, on_speculative) = (&make_evm, &on_speculative);
                 scope.spawn(move || {
-                    run_worker(store, scheduler, queue, make_evm, on_speculative, &sender);
+                    run_worker(store, scheduler, queue, make_evm, on_speculative, results, worker);
                 });
             }
-            drop(sender);
             let result = self.commit_in_order(
                 &store,
                 queue,
                 tx_receiver,
-                &receiver,
+                &results,
                 &mut stats,
                 &mut dependencies,
             );
@@ -394,23 +416,14 @@ where
         store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
         queue: &TxQueue<T::Tx>,
         txs: impl IntoIterator<Item = X>,
-        receiver: &mpsc::Receiver<Speculative<T>>,
+        results: &Results<Speculative<T>>,
         stats: &mut ParallelExecutionStats,
         dependencies: &mut DependencyTracker,
     ) -> Result<(), BlockExecutionError> {
-        let mut ready = Vec::<Option<Speculative<T>>>::new();
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
-            while ready.get(index).is_none_or(Option::is_none) {
-                let speculative =
-                    receiver.recv().expect("parallel execution workers exited without a result");
-                let slot = speculative.index;
-                if ready.len() <= slot {
-                    ready.resize_with(slot + 1, || None);
-                }
-                ready[slot] = Some(speculative);
-            }
-            let mut speculative = ready[index].take().expect("received above");
+            let Speculative { worker, outcome, reward, mut reads, mut writes } =
+                results.take(index).expect("parallel execution workers exited without a result");
             let evm_tx = queue.get(index);
             let tx = tx.borrow();
             let version = version(index);
@@ -420,44 +433,67 @@ where
             let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
             self.validate_transaction_blob_gas(blob_gas_used)?;
 
-            let writes = core::mem::take(&mut speculative.writes);
-            let result = match self.accept_speculative(store, version, speculative) {
+            let pending = match self.accept_speculative(outcome, reward, &reads) {
                 Some(result) => {
+                    // The worker published every write but the credited reward, which workers
+                    // never read, and what resolving its deferred storage at commit wrote.
                     stats.speculative += 1;
-                    result
+                    // Commit as `commit_transaction` does, but keep the pending state to hand its
+                    // allocations back to the worker.
+                    let TxResultWithState { result, pending_state, .. } = result;
+                    if !pending_state.deferred.resolved.is_empty() {
+                        store.publish_resolved(version, &pending_state);
+                    }
+                    dependencies.record(index, &pending_state);
+                    self.commit_pending_state(&pending_state);
+                    self.record_receipt(tx.tx_type(), blob_gas_used, result);
+                    pending_state
                 }
                 None => {
                     stats.reexecuted += 1;
-                    execute_transaction_without_commit(&mut self.evm, &evm_tx)
-                        .map_err(|error| map_transaction_error(error, *tx.tx_hash()))?
+                    let result = execute_transaction_without_commit(&mut self.evm, evm_tx)
+                        .map_err(|error| map_transaction_error(error, *tx.tx_hash()))?;
+                    // Overwrite the speculative writes before dropping stale ones: a worker
+                    // reading in between must never fall through to an older version.
+                    let mut committed = Vec::new();
+                    store.publish(version, &result.pending_state, &mut committed);
+                    store.unpublish(
+                        version,
+                        writes.iter().filter(|write| !committed.contains(write)),
+                    );
+                    dependencies.record(index, &result.pending_state);
+                    self.commit_transaction(EthTransactionResultWithState::new(
+                        result,
+                        tx.tx_type(),
+                        blob_gas_used,
+                    ))?;
+                    PendingState::default()
                 }
             };
-            // Overwrite the speculative writes before dropping stale ones: a worker reading in
-            // between must never fall through to an older version.
-            let committed = store.publish(version, &result.pending_state);
-            store.unpublish(version, writes.iter().filter(|write| !committed.contains(write)));
-            dependencies.record(index, &result.pending_state);
-            self.commit_transaction(EthTransactionResultWithState::new(
-                result,
-                tx.tx_type(),
-                blob_gas_used,
-            ))?;
+            reads.clear();
+            writes.clear();
+            results.recycle(worker, Buffers { reads, writes, pending });
         }
         Ok(())
     }
 
-    /// Returns the speculative result of the transaction at `version` with its beneficiary reward
-    /// credited, or `None` when it must execute again. Every earlier transaction has committed.
+    /// Returns a speculative result with its beneficiary `reward` credited, or `None` when it
+    /// must execute again. Every earlier transaction has committed.
     fn accept_speculative(
         &mut self,
-        store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
-        version: u32,
-        speculative: Speculative<T>,
+        outcome: Option<TxResultWithState<T>>,
+        reward: Word,
+        reads: &ReadSet,
     ) -> Option<TxResultWithState<T>> {
-        let Speculative { outcome: Some(mut outcome), reward, reads, .. } = speculative else {
+        let mut outcome = outcome?;
+        if !reads.validate(&mut self.evm).unwrap_or(false) {
             return None;
-        };
-        if !reads.validate(store, version).unwrap_or(false) {
+        }
+        // Resolve blind adds and deferred storage operations against the committed state, as the
+        // transaction's end would have: its execution did not read what they change.
+        if outcome.pending_state.has_deferred_storage()
+            && self.evm.state_mut().resolve_pending_state(&mut outcome.pending_state).is_err()
+        {
             return None;
         }
         if !self.evm.feature(EvmFeatures::FEE_CHARGE) {
@@ -470,7 +506,7 @@ where
             return None;
         }
         // Credit the reward as the default settlement would have: load, touch, add.
-        let (_, original) = store.account(&beneficiary, version).ok()?;
+        let original = self.evm.read_account_info(&beneficiary).ok()?;
         let current = match &original {
             Some(info) if reward.is_zero() => {
                 // Touching an existing empty account deletes it under EIP-161.
@@ -509,25 +545,44 @@ fn run_worker<T, F, H>(
     queue: &TxQueue<T::Tx>,
     make_evm: &F,
     on_speculative: &H,
-    sender: &mpsc::Sender<Speculative<T>>,
+    results: &Results<Speculative<T>>,
+    worker: usize,
 ) where
     T: EvmTypes<Tx: Typed2718>,
     F: for<'x> Fn(Box<dyn DynDatabase + 'x>) -> Evm<'x, T>,
     H: Fn(usize, TxStateChanges<'_>),
 {
+    let _exit = WorkerExit(results);
+    let view_version = Cell::new(0);
     let reads = RefCell::new(ReadSet::default());
+    let mut stash = Vec::new();
     let mut evm = None;
     while let Some(index) = scheduler.next() {
         let evm_tx = queue.get(index);
         let version = version(index);
-        let worker_evm = evm.get_or_insert_with(|| make_evm(Box::new(EmptyDB::default())));
-        worker_evm.set_defer_beneficiary_reward(true);
-        reads.borrow_mut().clear();
-        worker_evm.set_database(TxView { store, version, reads: &reads });
+        let worker_evm = evm.get_or_insert_with(|| {
+            let view = TxView { store, version: &view_version, reads: &reads };
+            let mut evm = make_evm(Box::new(view));
+            evm.set_defer_beneficiary_reward(true);
+            evm.set_defer_storage_resolution(true);
+            evm
+        });
+        // Values cached at the previous transaction's version are stale; code is
+        // content-addressed and stays valid.
+        let cache = &mut worker_evm.overlay_db_mut().cache;
+        cache.accounts.clear();
+        cache.storage.clear();
+        view_version.set(version);
+        let Buffers { reads: pooled, mut writes, pending } = results.buffers(worker, &mut stash);
+        *reads.borrow_mut() = pooled;
+        // Install a recycled pending state's allocations, emptied, for the transaction to fill.
+        let state = worker_evm.state_mut();
+        state.set_pending_state(pending);
+        state.clear_transaction_state();
         // Speculative reads may mix versions into state no sequential execution could produce:
         // treat a panic like any other failed speculation and rebuild the EVM.
         let executed = catch_unwind(AssertUnwindSafe(|| {
-            worker_evm.transact(&evm_tx).ok().map(|executed| executed.detach())
+            worker_evm.transact(evm_tx).ok().map(|executed| executed.detach())
         }));
         let (outcome, reward) = match executed {
             Ok(outcome) => (outcome, worker_evm.deferred_beneficiary_reward().unwrap_or_default()),
@@ -536,19 +591,13 @@ fn run_worker<T, F, H>(
                 (None, Default::default())
             }
         };
-        let writes = match &outcome {
-            Some(outcome) => {
-                let writes = store.publish(version, &outcome.pending_state);
-                on_speculative(index, outcome.pending_state.changes());
-                writes
-            }
-            None => Vec::new(),
-        };
+        if let Some(outcome) = &outcome {
+            store.publish(version, &outcome.pending_state, &mut writes);
+            on_speculative(index, outcome.pending_state.changes());
+        }
         scheduler.finish(index);
         let reads = core::mem::take(&mut *reads.borrow_mut());
-        if sender.send(Speculative { index, outcome, reward, reads, writes }).is_err() {
-            break;
-        }
+        results.put(index, Speculative { worker, outcome, reward, reads, writes });
     }
 }
 
@@ -594,26 +643,31 @@ fn priorities(weights: &[u64], hints: Option<&ParallelHints>) -> Vec<u64> {
     priority
 }
 
-/// The block's transactions, appended as they arrive and shared with the workers.
+/// The block's transactions, appended as they arrive and shared with the workers without locking.
 #[derive(Debug)]
 struct TxQueue<Tx> {
-    txs: RwLock<Vec<Arc<Recovered<Tx>>>>,
+    txs: Buckets<OnceLock<Recovered<Tx>>>,
+    len: AtomicUsize,
 }
 
 impl<Tx> Default for TxQueue<Tx> {
     fn default() -> Self {
-        Self { txs: RwLock::default() }
+        Self { txs: Buckets::default(), len: AtomicUsize::new(0) }
     }
 }
 
 impl<Tx> TxQueue<Tx> {
+    /// Appends the next transaction. Only one thread pushes.
     fn push(&self, tx: Recovered<Tx>) {
-        self.txs.write().expect("lock poisoned").push(Arc::new(tx));
+        let index = self.len.fetch_add(1, Ordering::Relaxed);
+        if self.txs.get(index).set(tx).is_err() {
+            unreachable!("each index is pushed once");
+        }
     }
 
     /// Returns the transaction at `index`, which was pushed.
-    fn get(&self, index: usize) -> Arc<Recovered<Tx>> {
-        self.txs.read().expect("lock poisoned")[index].clone()
+    fn get(&self, index: usize) -> &Recovered<Tx> {
+        self.txs.get(index).get().expect("transaction was pushed")
     }
 }
 
@@ -625,6 +679,9 @@ struct Scheduler {
     /// Signalled when a transaction becomes ready, the block is closed or the scheduler stops.
     wake: Condvar,
     stopped: AtomicBool,
+    /// The next transaction and the block's length when every transaction is known up front and
+    /// none waits on another: transactions are then handed out in block order without locking.
+    in_order: Option<(AtomicUsize, usize)>,
 }
 
 #[derive(Debug, Default)]
@@ -646,6 +703,11 @@ struct SchedulerState {
 }
 
 impl Scheduler {
+    /// A scheduler that hands out the `len` transactions of a closed block in block order.
+    fn in_order(len: usize) -> Self {
+        Self { in_order: Some((AtomicUsize::new(0), len)), ..Default::default() }
+    }
+
     /// Adds the block's next transaction. Dependencies on itself or later transactions are
     /// ignored.
     fn add(&self, priority: u64, dependencies: &[u32]) {
@@ -677,6 +739,10 @@ impl Scheduler {
     /// Returns the next transaction to execute, waiting for one to become ready, or `None` once
     /// the block is closed and every transaction was handed out, or the scheduler stopped.
     fn next(&self) -> Option<usize> {
+        if let Some((next, len)) = &self.in_order {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            return (index < *len && !self.is_stopped()).then_some(index);
+        }
         let mut state = self.state.lock().expect("lock poisoned");
         loop {
             if self.is_stopped() {
@@ -695,6 +761,9 @@ impl Scheduler {
 
     /// Marks a transaction executed, readying the dependents it was the last dependency of.
     fn finish(&self, index: usize) {
+        if self.in_order.is_some() {
+            return;
+        }
         let mut state = self.state.lock().expect("lock poisoned");
         state.finished[index] = true;
         let mut released = false;
@@ -726,19 +795,18 @@ impl Scheduler {
     }
 }
 
-/// A unit of state for dependency tracking.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum StateKey {
-    Account(Address),
-    Storage(Address, Word),
-}
-
 /// Derives each committed transaction's dependencies from the state it accessed.
 struct DependencyTracker {
     /// Left out: rewards are credited at commit.
     beneficiary: Address,
-    /// The last committed writer of each key.
-    writers: HashMap<StateKey, u32>,
+    /// The last committed writer of each account.
+    accounts: AddressMap<u32>,
+    /// The last committed writer of each storage slot.
+    storage: HashMap<(Address, Word), u32>,
+    /// The committed transactions that changed each slot since its last writer only through blind
+    /// adds or deferred storage operations: they do not depend on each other, but a reader of the
+    /// slot depends on all of them.
+    deferred_writers: HashMap<(Address, Word), Vec<u32>>,
     /// The last committed transaction that wiped each account's storage.
     wipes: AddressMap<u32>,
     dependencies: Vec<Vec<u32>>,
@@ -748,7 +816,9 @@ impl DependencyTracker {
     fn new(beneficiary: Address) -> Self {
         Self {
             beneficiary,
-            writers: HashMap::default(),
+            accounts: AddressMap::default(),
+            storage: HashMap::default(),
+            deferred_writers: HashMap::default(),
             wipes: AddressMap::default(),
             dependencies: Vec::new(),
         }
@@ -757,37 +827,59 @@ impl DependencyTracker {
     /// Records the transaction at `index`, which every earlier transaction precedes.
     fn record(&mut self, index: usize, pending: &PendingState) {
         let index = u32::try_from(index).expect("block has fewer than 2^32 transactions");
+        // Slots only the transaction's end loaded, to resolve its deferred storage.
+        let resolved = |key: &(Address, Word)| pending.deferred.resolved.contains(key);
         let mut dependencies = Vec::new();
+        // Each key is visited once, so reading its last writer and then recording this transaction
+        // as the writer, in one lookup, is the same as reading every key before writing any.
         for (&address, account) in &pending.accounts {
             if address == self.beneficiary {
                 continue;
             }
-            dependencies.extend(self.writers.get(&StateKey::Account(address)));
+            let changed = account.is_changed();
+            dependencies.extend(if changed {
+                self.accounts.insert(address, index)
+            } else {
+                self.accounts.get(&address).copied()
+            });
             if !account.storage.slots.is_empty() {
                 dependencies.extend(self.wipes.get(&address));
             }
+            if account.storage.wiped
+                || account.discards_storage()
+                || changed && account.present.is_none()
+            {
+                self.wipes.insert(address, index);
+            }
+            // Changed slots come in the order of all slots: they are the same map, filtered.
+            let mut changed_slots = account.storage.changed_slots().map(|(key, _)| key).peekable();
             for key in account.storage.slots.keys() {
-                dependencies.extend(self.writers.get(&StateKey::Storage(address, *key)));
+                let written = changed_slots.next_if(|&changed| ptr::eq(changed, key)).is_some();
+                let key = (address, *key);
+                if resolved(&key) {
+                    if written {
+                        self.deferred_writers.entry(key).or_default().push(index);
+                    }
+                    continue;
+                }
+                dependencies.extend(if written {
+                    self.storage.insert(key, index)
+                } else {
+                    self.storage.get(&key).copied()
+                });
+                if self.deferred_writers.is_empty() {
+                    continue;
+                }
+                if written {
+                    dependencies.extend(self.deferred_writers.remove(&key).into_iter().flatten());
+                } else {
+                    dependencies.extend(self.deferred_writers.get(&key).into_iter().flatten());
+                }
             }
         }
         dependencies.sort_unstable();
         dependencies.dedup();
         self.dependencies.push(dependencies);
-        for (&address, account) in &pending.accounts {
-            if address == self.beneficiary {
-                continue;
-            }
-            let deleted = account.is_changed() && account.present.is_none();
-            if account.storage.wiped || account.discards_storage() || deleted {
-                self.wipes.insert(address, index);
-            }
-            for (&key, _) in account.storage.changed_slots() {
-                self.writers.insert(StateKey::Storage(address, key), index);
-            }
-            if account.is_changed() {
-                self.writers.insert(StateKey::Account(address), index);
-            }
-        }
     }
 
     fn finish(self) -> ParallelHints {
@@ -797,8 +889,8 @@ impl DependencyTracker {
 
 /// One speculative execution sent from a worker to the committer.
 struct Speculative<T: EvmTypes> {
-    /// Transaction index in the block.
-    index: usize,
+    /// Index of the worker that executed it.
+    worker: usize,
     /// Detached result, or `None` when execution failed.
     outcome: Option<TxResultWithState<T>>,
     /// Beneficiary reward withheld from the result.
@@ -809,20 +901,11 @@ struct Speculative<T: EvmTypes> {
     writes: Vec<WriteKey>,
 }
 
-/// Where a recorded read was served from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReadOrigin {
-    /// The state before the first transaction.
-    Base,
-    /// The write of the transaction at this version.
-    Version(u32),
-}
-
 /// The values one speculative execution read.
 #[derive(Debug, Default)]
 struct ReadSet {
-    accounts: Vec<(Address, ReadOrigin, Option<AccountInfo>)>,
-    storage: Vec<(Address, Word, ReadOrigin, Word)>,
+    accounts: Vec<(Address, Option<AccountInfo>)>,
+    storage: Vec<(Address, Word, Word)>,
 }
 
 impl ReadSet {
@@ -831,19 +914,16 @@ impl ReadSet {
         self.storage.clear();
     }
 
-    /// Returns whether every read still sees the same value at `version`.
-    fn validate(
-        &self,
-        store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
-        version: u32,
-    ) -> DbResult<bool> {
-        for (address, origin, value) in &self.accounts {
-            if !store.validate_account(address, version, *origin, value)? {
+    /// Returns whether every read sees the same value in the committed state of `evm`, the
+    /// executor's EVM, which holds the sequential state.
+    fn validate<T: EvmTypes>(&self, evm: &mut Evm<'_, T>) -> DbResult<bool> {
+        for (address, value) in &self.accounts {
+            if evm.read_account_info(address)? != *value {
                 return Ok(false);
             }
         }
-        for (address, key, origin, value) in &self.storage {
-            if !store.validate_storage(address, key, version, *origin, *value)? {
+        for (address, key, value) in &self.storage {
+            if evm.read_storage(address, key)? != *value {
                 return Ok(false);
             }
         }
@@ -859,28 +939,35 @@ enum WriteKey {
     Wipe(Address),
 }
 
-/// Versions of one key: the value each writing transaction left, by version.
-type Versions<V> = BTreeMap<u32, V>;
-
 /// One lock shard of account versions.
 type AccountShard = RwLock<AddressMap<Versions<Option<AccountInfo>>>>;
 
 /// One lock shard of storage slot versions.
-type StorageShard = RwLock<HashMap<(Address, Word), Versions<Word>>>;
+type StorageShard = RwLock<HashMap<(Address, Word), Versions<SlotWrite>>>;
+
+/// A transaction's write to a storage slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotWrite {
+    /// The value it left.
+    Value(Word),
+    /// A wrapping sum of blind adds to whatever value it found.
+    Delta(Word),
+}
 
 /// Multi-version state of a block in execution.
 ///
 /// Transaction `i` publishes its writes at version `i + 1`. Reading at version `v` returns the
 /// latest write below `v`, then the state before the first transaction: the executor's overlay at
 /// the start (pre-execution changes), then the base database. A storage wipe at a version shadows
-/// every slot write of that account below it, as in [`CacheDB`](crate::evm::CacheDB).
+/// every slot write of that account below it, as in [`CacheDB`](crate::evm::CacheDB). A slot
+/// reads as its latest value below `v` plus every blind-add delta published above that value.
 struct MvStore<'s, B: ?Sized> {
     /// Executor overlay before the first transaction.
     initial: Cache,
     /// Backing database beneath the overlay.
     base: &'s B,
-    accounts: Box<[AccountShard]>,
-    storage: Box<[StorageShard]>,
+    accounts: Box<[CachePadded<AccountShard>]>,
+    storage: Box<[CachePadded<StorageShard>]>,
     wipes: RwLock<AddressMap<BTreeSet<u32>>>,
     has_wipes: AtomicBool,
     contracts: RwLock<B256Map<Bytecode>>,
@@ -891,8 +978,8 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         Self {
             initial,
             base,
-            accounts: (0..SHARDS).map(|_| RwLock::default()).collect(),
-            storage: (0..SHARDS).map(|_| RwLock::default()).collect(),
+            accounts: (0..SHARDS).map(|_| CachePadded::default()).collect(),
+            storage: (0..SHARDS).map(|_| CachePadded::default()).collect(),
             wipes: RwLock::default(),
             has_wipes: AtomicBool::new(false),
             contracts: RwLock::default(),
@@ -910,14 +997,10 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     }
 
     /// Returns the latest account write below `version`.
-    fn account_version(
-        &self,
-        address: &Address,
-        version: u32,
-    ) -> Option<(u32, Option<AccountInfo>)> {
+    fn account_version(&self, address: &Address, version: u32) -> Option<Option<AccountInfo>> {
         let shard = self.account_shard(address).read().expect("lock poisoned");
-        let (&at, info) = shard.get(address)?.range(..version).next_back()?;
-        Some((at, info.clone()))
+        let (_, info) = shard.get(address)?.latest_below(version)?;
+        Some(info.clone())
     }
 
     /// Returns the account before the first transaction.
@@ -929,38 +1012,48 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     }
 
     /// Reads an account at `version`.
-    fn account(
-        &self,
-        address: &Address,
-        version: u32,
-    ) -> DbResult<(ReadOrigin, Option<AccountInfo>)> {
-        if let Some((at, info)) = self.account_version(address, version) {
-            return Ok((ReadOrigin::Version(at), info));
+    fn account(&self, address: &Address, version: u32) -> DbResult<Option<AccountInfo>> {
+        match self.account_version(address, version) {
+            Some(info) => Ok(info),
+            None => self.account_initial(address),
         }
-        Ok((ReadOrigin::Base, self.account_initial(address)?))
     }
 
-    /// Returns the latest slot write or wipe below `version`; a wipe reads as zero.
-    fn storage_version(&self, address: &Address, key: &Word, version: u32) -> Option<(u32, Word)> {
-        let slot = {
-            let shard = self.storage_shard(address, key).read().expect("lock poisoned");
-            shard.get(&(*address, *key)).and_then(|versions| {
-                versions.range(..version).next_back().map(|(&at, &value)| (at, value))
-            })
-        };
+    /// Reads a storage slot at `version`: the latest value written below it, or zero after a later
+    /// wipe, then the state before the first transaction, plus every delta published above that.
+    fn storage(&self, address: &Address, key: &Word, version: u32) -> DbResult<Word> {
         let wipe = if self.has_wipes.load(Ordering::Acquire) {
             let wipes = self.wipes.read().expect("lock poisoned");
             wipes.get(address).and_then(|wipes| wipes.range(..version).next_back().copied())
         } else {
             None
         };
-        match (slot, wipe) {
-            (Some(slot), None) => Some(slot),
-            // A transaction that wipes and then writes a slot publishes both at its version.
-            (Some((at, value)), Some(wipe)) if at >= wipe => Some((at, value)),
-            (_, Some(wipe)) => Some((wipe, Word::ZERO)),
-            (None, None) => None,
+        let (mut value, mut delta) = (None, Word::ZERO);
+        {
+            let shard = self.storage_shard(address, key).read().expect("lock poisoned");
+            if let Some(versions) = shard.get(&(*address, *key)) {
+                for (at, write) in versions.below(version) {
+                    // A transaction that wipes and then writes a slot publishes both at its
+                    // version.
+                    if wipe.is_some_and(|wipe| at < wipe) {
+                        break;
+                    }
+                    match *write {
+                        SlotWrite::Value(written) => {
+                            value = Some(written);
+                            break;
+                        }
+                        SlotWrite::Delta(added) => delta = delta.wrapping_add(added),
+                    }
+                }
+            }
         }
+        let value = match (value, wipe) {
+            (Some(value), _) => value,
+            (None, Some(_)) => Word::ZERO,
+            (None, None) => self.storage_initial(address, key)?,
+        };
+        Ok(value.wrapping_add(delta))
     }
 
     /// Returns a slot before the first transaction.
@@ -979,46 +1072,6 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         self.base.get_storage(address, key)
     }
 
-    /// Reads a storage slot at `version`.
-    fn storage(&self, address: &Address, key: &Word, version: u32) -> DbResult<(ReadOrigin, Word)> {
-        if let Some((at, value)) = self.storage_version(address, key, version) {
-            return Ok((ReadOrigin::Version(at), value));
-        }
-        Ok((ReadOrigin::Base, self.storage_initial(address, key)?))
-    }
-
-    /// Returns whether an account read at `version` still sees `value`.
-    fn validate_account(
-        &self,
-        address: &Address,
-        version: u32,
-        origin: ReadOrigin,
-        value: &Option<AccountInfo>,
-    ) -> DbResult<bool> {
-        match (self.account_version(address, version), origin) {
-            (Some((_, current)), _) => Ok(current == *value),
-            // Nothing below the version wrote the account, then or now.
-            (None, ReadOrigin::Base) => Ok(true),
-            (None, ReadOrigin::Version(_)) => Ok(self.account_initial(address)? == *value),
-        }
-    }
-
-    /// Returns whether a storage read at `version` still sees `value`.
-    fn validate_storage(
-        &self,
-        address: &Address,
-        key: &Word,
-        version: u32,
-        origin: ReadOrigin,
-        value: Word,
-    ) -> DbResult<bool> {
-        match (self.storage_version(address, key, version), origin) {
-            (Some((_, current)), _) => Ok(current == value),
-            (None, ReadOrigin::Base) => Ok(true),
-            (None, ReadOrigin::Version(_)) => Ok(self.storage_initial(address, key)? == value),
-        }
-    }
-
     /// Reads bytecode by hash: deployed in this block, before it, or in the base database.
     fn code(&self, code_hash: &B256) -> DbResult<Bytecode> {
         if let Some(code) = self.contracts.read().expect("lock poisoned").get(code_hash) {
@@ -1031,9 +1084,8 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     }
 
     /// Publishes a transaction's writes at `version`, as [`CacheDB`](crate::evm::CacheDB) commits
-    /// them, and returns the keys written.
-    fn publish(&self, version: u32, pending: &PendingState) -> Vec<WriteKey> {
-        let mut writes = Vec::new();
+    /// them, and appends the keys written to `writes`.
+    fn publish(&self, version: u32, pending: &PendingState, writes: &mut Vec<WriteKey>) {
         for (&address, account) in &pending.accounts {
             let storage = &account.storage;
             let mut wiped = storage.wiped || account.discards_storage();
@@ -1052,7 +1104,10 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             }
             for (&key, slot) in storage.changed_slots() {
                 let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
-                shard.entry((address, key)).or_default().insert(version, slot.current);
+                shard
+                    .entry((address, key))
+                    .or_default()
+                    .insert(version, SlotWrite::Value(slot.current));
                 writes.push(WriteKey::Storage(address, key));
             }
             if let Some((code_hash, code)) = account.changed_code() {
@@ -1069,7 +1124,24 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 writes.push(WriteKey::Account(address));
             }
         }
-        writes
+        // Unresolved blind adds publish as deltas, unless the transaction loaded the slot too.
+        for (key, pending_delta) in &pending.deferred.deltas {
+            if pending_delta.delta.is_zero() {
+                continue;
+            }
+            let (address, key) = (key.address(), key.key());
+            let loaded =
+                pending.accounts.get(&address).and_then(|account| account.storage.slots.get(&key));
+            let write = match loaded {
+                Some(slot) => {
+                    SlotWrite::Value(slot.value.current.wrapping_add(pending_delta.delta))
+                }
+                None => SlotWrite::Delta(pending_delta.delta),
+            };
+            let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+            shard.entry((address, key)).or_default().insert(version, write);
+            writes.push(WriteKey::Storage(address, key));
+        }
     }
 
     /// Removes the writes a speculative execution published at `version`.
@@ -1079,14 +1151,14 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 WriteKey::Account(address) => {
                     let mut shard = self.account_shard(address).write().expect("lock poisoned");
                     if let Some(versions) = shard.get_mut(address) {
-                        versions.remove(&version);
+                        versions.remove(version);
                     }
                 }
                 WriteKey::Storage(address, key) => {
                     let mut shard =
                         self.storage_shard(address, key).write().expect("lock poisoned");
                     if let Some(versions) = shard.get_mut(&(*address, *key)) {
-                        versions.remove(&version);
+                        versions.remove(version);
                     }
                 }
                 WriteKey::Wipe(address) => {
@@ -1098,20 +1170,40 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             }
         }
     }
+
+    /// Publishes at `version` the slots that resolving a committed transaction's deferred storage
+    /// changed: the values of blind adds it never read and the slots its deferred operations wrote,
+    /// which its speculative execution could not publish.
+    fn publish_resolved(&self, version: u32, pending: &PendingState) {
+        for &(address, key) in &pending.deferred.resolved {
+            if let Some(account) = pending.accounts.get(&address)
+                && let Some(slot) = account.storage.slots.get(&key)
+                && (slot.value.is_changed() || account.storage.wiped)
+            {
+                let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+                shard
+                    .entry((address, key))
+                    .or_default()
+                    .insert(version, SlotWrite::Value(slot.value.current));
+            }
+        }
+    }
 }
 
 /// A worker's database for one transaction: the multi-version store at the transaction's
 /// version, recording every value served.
 struct TxView<'m, 's, B: ?Sized> {
     store: &'m MvStore<'s, B>,
-    version: u32,
+    /// The version of the worker's current transaction.
+    version: &'m Cell<u32>,
     reads: &'m RefCell<ReadSet>,
 }
 
 impl<B: DynDatabaseRef + Sync + ?Sized> DynDatabase for TxView<'_, '_, B> {
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        let (origin, info) = self.store.account(address, self.version)?;
-        self.reads.borrow_mut().accounts.push((*address, origin, info.clone()));
+        let info = self.store.account(address, self.version.get())?;
+        let read = info.as_ref().map(AccountInfo::clone_no_code);
+        self.reads.borrow_mut().accounts.push((*address, read));
         Ok(info)
     }
 
@@ -1121,8 +1213,8 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DynDatabase for TxView<'_, '_, B> {
     }
 
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        let (origin, value) = self.store.storage(address, key, self.version)?;
-        self.reads.borrow_mut().storage.push((*address, *key, origin, value));
+        let value = self.store.storage(address, key, self.version.get())?;
+        self.reads.borrow_mut().storage.push((*address, *key, value));
         Ok(value)
     }
 
@@ -1131,6 +1223,239 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DynDatabase for TxView<'_, '_, B> {
             Some(hash) => Ok(*hash),
             None => self.store.base.get_block_hash(number),
         }
+    }
+}
+
+/// A sequence that grows by buckets allocated on first use, so threads index it without locking.
+struct Buckets<T> {
+    buckets: [OnceLock<Box<[T]>>; BUCKETS],
+}
+
+impl<T> Default for Buckets<T> {
+    fn default() -> Self {
+        Self { buckets: core::array::from_fn(|_| OnceLock::new()) }
+    }
+}
+
+impl<T> core::fmt::Debug for Buckets<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Buckets").finish_non_exhaustive()
+    }
+}
+
+impl<T: Default> Buckets<T> {
+    /// Returns the element at `index`, allocating its bucket on first use.
+    #[inline]
+    fn get(&self, index: usize) -> &T {
+        let bucket = (index / FIRST_BUCKET + 1).ilog2() as usize;
+        let start = FIRST_BUCKET * ((1 << bucket) - 1);
+        let elements = self.buckets[bucket]
+            .get_or_init(|| (0..FIRST_BUCKET << bucket).map(|_| T::default()).collect());
+        &elements[index - start]
+    }
+}
+
+/// Speculative results by transaction index, handed from the workers to the committer.
+struct Results<S> {
+    slots: Buckets<ResultSlot<S>>,
+    /// The committing thread, unparked when the result it waits for arrives or a worker exits.
+    committer: Thread,
+    /// Index of the result the committer is about to park for, or `usize::MAX`.
+    waiting: AtomicUsize,
+    /// Workers still running.
+    workers: AtomicUsize,
+    /// Each worker's buffers, handed back by the committer.
+    pools: Box<[CachePadded<Mutex<Vec<Buffers>>>]>,
+}
+
+impl<S> Results<S> {
+    /// Results produced by `workers` threads for the calling thread to take.
+    fn new(workers: usize) -> Self {
+        Self {
+            slots: Buckets::default(),
+            committer: std::thread::current(),
+            waiting: AtomicUsize::new(usize::MAX),
+            workers: AtomicUsize::new(workers),
+            pools: (0..workers).map(|_| CachePadded::default()).collect(),
+        }
+    }
+
+    /// Stores the result of the transaction at `index`, waking the committer if it waits for it.
+    fn put(&self, index: usize, result: S) {
+        let slot = self.slots.get(index);
+        *slot.value.lock().expect("lock poisoned") = Some(result);
+        slot.ready.store(true, Ordering::Release);
+        // Pairs with the fence in `take`: either it sees the result or this sees it waiting.
+        fence(Ordering::SeqCst);
+        if self.waiting.load(Ordering::Relaxed) == index {
+            self.committer.unpark();
+        }
+    }
+
+    /// Takes the result of the transaction at `index`, waiting for it, or returns `None` once
+    /// every worker exited without producing it.
+    fn take(&self, index: usize) -> Option<S> {
+        let slot = self.slots.get(index);
+        let mut spins = 0;
+        while !slot.ready.load(Ordering::Acquire) {
+            if spins < COMMIT_SPINS {
+                spins += 1;
+                core::hint::spin_loop();
+                continue;
+            }
+            self.waiting.store(index, Ordering::Relaxed);
+            fence(Ordering::SeqCst);
+            if slot.ready.load(Ordering::Acquire) {
+                break;
+            }
+            if self.workers.load(Ordering::Acquire) == 0 {
+                // A worker stores its last result before it exits.
+                if !slot.ready.load(Ordering::Acquire) {
+                    self.waiting.store(usize::MAX, Ordering::Relaxed);
+                    return None;
+                }
+                break;
+            }
+            std::thread::park();
+        }
+        self.waiting.store(usize::MAX, Ordering::Relaxed);
+        slot.value.lock().expect("lock poisoned").take()
+    }
+
+    /// Returns buffers for `worker`, with empty reads and writes, from its `stash`, which it
+    /// refills with every buffer handed back since it last ran out.
+    fn buffers(&self, worker: usize, stash: &mut Vec<Buffers>) -> Buffers {
+        if stash.is_empty() {
+            core::mem::swap(stash, &mut *self.pools[worker].lock().expect("lock poisoned"));
+        }
+        stash.pop().unwrap_or_default()
+    }
+
+    /// Hands buffers, with emptied reads and writes, back to the `worker` that filled them.
+    fn recycle(&self, worker: usize, buffers: Buffers) {
+        self.pools[worker].lock().expect("lock poisoned").push(buffers);
+    }
+}
+
+/// The allocations of one speculative execution, which the committer hands back to the worker that
+/// made them, so that they are reused instead of allocated by one thread and freed by another.
+#[derive(Debug, Default)]
+struct Buffers {
+    reads: ReadSet,
+    writes: Vec<WriteKey>,
+    /// A committed pending state, whose account and storage maps the worker's EVM reuses.
+    pending: PendingState,
+}
+
+/// One transaction's result in [`Results`].
+struct ResultSlot<S> {
+    /// Whether `value` was stored.
+    ready: AtomicBool,
+    value: Mutex<Option<S>>,
+}
+
+impl<S> Default for ResultSlot<S> {
+    fn default() -> Self {
+        Self { ready: AtomicBool::new(false), value: Mutex::new(None) }
+    }
+}
+
+/// Counts a worker out of [`Results`] when it exits, even by unwinding.
+struct WorkerExit<'r, S>(&'r Results<S>);
+
+impl<S> Drop for WorkerExit<'_, S> {
+    fn drop(&mut self) {
+        self.0.workers.fetch_sub(1, Ordering::AcqRel);
+        self.0.committer.unpark();
+    }
+}
+
+/// Versions of one key: the value each writing transaction left, by ascending version. Most keys
+/// have a single version, kept without allocating.
+#[derive(Debug, Default)]
+enum Versions<V> {
+    #[default]
+    Empty,
+    One(u32, V),
+    Many(Vec<(u32, V)>),
+}
+
+impl<V> Versions<V> {
+    /// Sets the value at `version`.
+    fn insert(&mut self, version: u32, value: V) {
+        *self = match core::mem::take(self) {
+            Self::Empty => Self::One(version, value),
+            Self::One(at, _) if at == version => Self::One(version, value),
+            Self::One(at, current) => {
+                let mut versions = Vec::with_capacity(4);
+                versions.push((at, current));
+                insert_version(&mut versions, version, value);
+                Self::Many(versions)
+            }
+            Self::Many(mut versions) => {
+                insert_version(&mut versions, version, value);
+                Self::Many(versions)
+            }
+        };
+    }
+
+    /// Removes the value at `version`, if any.
+    fn remove(&mut self, version: u32) {
+        match self {
+            Self::One(at, _) if *at == version => *self = Self::Empty,
+            Self::Many(versions) => {
+                if let Ok(index) = versions.binary_search_by_key(&version, |&(at, _)| at) {
+                    versions.remove(index);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Returns the latest version below `version` and its value.
+    fn latest_below(&self, version: u32) -> Option<(u32, &V)> {
+        match self {
+            Self::Empty => None,
+            Self::One(at, value) => (*at < version).then_some((*at, value)),
+            Self::Many(versions) => {
+                let index = versions.partition_point(|&(at, _)| at < version).checked_sub(1)?;
+                let (at, value) = &versions[index];
+                Some((*at, value))
+            }
+        }
+    }
+
+    /// Returns the versions below `version` and their values, latest first.
+    fn below(&self, version: u32) -> impl Iterator<Item = (u32, &V)> {
+        let (one, many) = match self {
+            Self::Empty => (None, &[][..]),
+            Self::One(at, value) => ((*at < version).then_some((*at, value)), &[][..]),
+            Self::Many(versions) => {
+                (None, &versions[..versions.partition_point(|&(at, _)| at < version)])
+            }
+        };
+        one.into_iter().chain(many.iter().rev().map(|(at, value)| (*at, value)))
+    }
+}
+
+/// Sets the value at `version` in versions sorted by version.
+fn insert_version<V>(versions: &mut Vec<(u32, V)>, version: u32, value: V) {
+    match versions.binary_search_by_key(&version, |&(at, _)| at) {
+        Ok(index) => versions[index].1 = value,
+        Err(index) => versions.insert(index, (version, value)),
+    }
+}
+
+/// A value aligned to its own cache lines, so threads using neighbouring values do not contend.
+#[derive(Debug, Default)]
+#[repr(align(128))]
+struct CachePadded<T>(T);
+
+impl<T> Deref for CachePadded<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
     }
 }
 

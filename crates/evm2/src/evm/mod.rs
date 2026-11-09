@@ -178,9 +178,10 @@ mod state;
 pub use state::AccountExtension;
 pub use state::{
     AccountChangeRef, AccountChanges, AccountFlags, AccountHandle, AccountInfo,
-    BlockStateAccumulator, JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink,
-    StateChangeSource, StateCheckpoint, StateInner, StateSnapshot, StorageChange, StorageHandle,
-    StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked, TxStateChanges,
+    BlockStateAccumulator, DeferredStorageAccess, DeferredStorageOp, JournalEntry, NoopChangeSink,
+    PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint, StateInner,
+    StateSnapshot, StorageChange, StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle,
+    Tee, Tracked, TxStateChanges,
 };
 
 pub(crate) mod prewarm_set;
@@ -688,6 +689,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.state.account_info_untracked(address)
     }
 
+    /// Returns a persistent storage slot visible through the accepted state overlay.
+    #[inline]
+    pub fn read_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        self.state.storage_slot_untracked(address, key)
+    }
+
     /// Applies borrowed changes to the accepted state overlay.
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
@@ -1088,6 +1095,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             }
             None => false,
         }
+    }
+
+    /// Sets whether a transaction's end leaves its blind adds to storage slots it did not read
+    /// ([`Host::sadd`]) and its deferred storage operations ([`State::defer_storage_op`])
+    /// unresolved in its detached pending state, for the caller to resolve with
+    /// [`State::resolve_pending_state`] against the state the transaction commits on, as parallel
+    /// block execution does at commit. See [`State::set_defer_storage_resolution`].
+    ///
+    /// Defaults to `false`.
+    #[inline]
+    pub const fn set_defer_storage_resolution(&mut self, defer: bool) {
+        self.state.set_defer_storage_resolution(defer);
     }
 
     /// Sets the optional external interpreter runner.
@@ -2062,6 +2081,11 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             _non_exhaustive: (),
         })
     }
+
+    fn sadd(&mut self, address: &Address, key: &Word, delta: &Word) -> Result<SAdd, HostError> {
+        let is_cold = self.state.storage_add(address, *key, *delta)?;
+        Ok(SAdd { is_cold: is_cold && self.feature(EvmFeatures::EIP2929), _non_exhaustive: () })
+    }
 }
 
 /// Loaded account information.
@@ -2170,6 +2194,15 @@ pub struct SelfDestructResult {
     /// Whether this account was already destroyed in this transaction.
     pub previously_destroyed: bool,
 
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
+}
+
+/// Result of a blind add to a storage slot. See [`Host::sadd`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SAdd {
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }

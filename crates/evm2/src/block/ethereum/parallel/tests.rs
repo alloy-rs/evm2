@@ -7,7 +7,13 @@ use crate::{
     },
     env::BlockEnvExt,
     ethereum::ethereum_tx_registry,
-    evm::{BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB},
+    evm::{
+        BEACON_ROOTS_ADDRESS, DeferredStorageOp, EmptyDB, HISTORY_STORAGE_ADDRESS, InMemoryDB,
+        precompile::PrecompileOutput,
+    },
+    interpreter::{GasTracker, Message},
+    precompiles::{Precompile, PrecompileId, PrecompileResult},
+    utils::address_to_word,
 };
 use alloc::{sync::Arc, vec, vec::Vec};
 use alloy_consensus::{
@@ -98,7 +104,13 @@ fn block() -> BlockEnvExt {
 }
 
 fn evm<'x>(database: impl DynDatabase + 'x) -> Evm<'x, crate::BaseEvmTypes> {
-    Evm::new(SPEC, block(), ethereum_tx_registry(SPEC), database, Precompiles::base(SPEC))
+    let mut precompiles = Precompiles::base(SPEC);
+    precompiles.as_map_mut().insert(Precompile::new(
+        LEDGER,
+        PrecompileId::custom("ledger"),
+        ledger,
+    ));
+    Evm::new(SPEC, block(), ethereum_tx_registry(SPEC), database, precompiles)
 }
 
 fn executor(database: InMemoryDB, updates: &Updates) -> EthBlockExecutor<'static> {
@@ -704,5 +716,156 @@ fn streamed_public_mix_benchmark() {
             last
         });
         let _ = last_arrival;
+    }
+}
+
+/// A precompile standing in for Tempo's fee and nonce managers, whose first input byte selects
+/// what it does with its accumulator in slot 0 and its ring buffer:
+///
+/// - 0: blind-adds a caller-dependent fee to the accumulator, as fee collection would.
+/// - 1: reads the accumulator into the caller's slot.
+/// - 2: reads the accumulator, then blind-adds to it.
+/// - 3: blind-adds to the accumulator, then reads it into the caller's slot.
+/// - 4: defers inserting the caller into the ring buffer and marking it seen, clearing the seen
+///   mark of the entry it evicts.
+/// - 5: reads the ring pointer, which only deferred operations write, into the caller's slot.
+const LEDGER: Address = Address::repeat_byte(0x1d);
+const RING_CAPACITY: u64 = 4;
+
+fn ledger(
+    evm: &mut Evm<'_, crate::BaseEvmTypes>,
+    message: &Message<crate::BaseEvmTypes>,
+    gas: &mut GasTracker,
+) -> PrecompileResult {
+    gas.spend(5_000)?;
+    let caller = address_to_word(&message.caller);
+    // Key spaces of the seen marks, the ring pointer and the ring entries, above callers' slots.
+    let (seen, pointer_key, ring) = (U256::ONE << 200, U256::ONE << 201, U256::ONE << 202);
+    let fee = U256::from(message.caller[19]) + U256::ONE;
+    let read = |evm: &mut Evm<'_, _>| -> PrecompileResult {
+        let value = Host::sload(evm, &LEDGER, &U256::ZERO, false)?.value;
+        Host::sstore(evm, &LEDGER, &caller, &value, false)?;
+        Ok(PrecompileOutput::new(Bytes::new()))
+    };
+    match message.input.first().copied().unwrap_or_default() {
+        0 => {
+            Host::sadd(evm, &LEDGER, &U256::ZERO, &fee)?;
+        }
+        1 => {
+            read(evm)?;
+        }
+        2 => {
+            read(evm)?;
+            Host::sadd(evm, &LEDGER, &U256::ZERO, &fee)?;
+        }
+        3 => {
+            Host::sadd(evm, &LEDGER, &U256::ZERO, &fee)?;
+            read(evm)?;
+        }
+        4 => evm.state_mut().defer_storage_op(DeferredStorageOp::new(move |storage| {
+            let pointer = storage.sload(&LEDGER, pointer_key)?;
+            let entry = ring + pointer;
+            let evicted = storage.sload(&LEDGER, entry)?;
+            if !evicted.is_zero() {
+                storage.sstore(&LEDGER, evicted + seen, U256::ZERO)?;
+            }
+            storage.sstore(&LEDGER, entry, caller)?;
+            storage.sstore(&LEDGER, caller + seen, U256::ONE)?;
+            let next = (pointer + U256::ONE) % U256::from(RING_CAPACITY);
+            storage.sstore(&LEDGER, pointer_key, next)
+        })),
+        _ => {
+            let pointer = Host::sload(evm, &LEDGER, &pointer_key, false)?.value;
+            Host::sstore(evm, &LEDGER, &caller, &pointer, false)?;
+        }
+    }
+    Ok(PrecompileOutput::new(Bytes::new()))
+}
+
+fn ledger_database() -> InMemoryDB {
+    let mut database = database(None);
+    let code = Bytecode::new_legacy(Bytes::from_static(&[0xef]));
+    database.insert_account_info(&LEDGER, AccountInfo::default().with_code(code));
+    database
+}
+
+/// A block of `len` calls to [`ledger`] from random senders, each picking one of `ops`.
+fn ledger_block(seed: u64, len: usize, ops: &[u8]) -> Vec<Tx> {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let mut nonces = [0u64; ACCOUNTS as usize];
+    (0..len)
+        .map(|_| {
+            let sender = rng.below(ACCOUNTS as u64) as u8;
+            let nonce = nonces[sender as usize];
+            nonces[sender as usize] += 1;
+            let op = ops[rng.below(ops.len() as u64) as usize];
+            tx(user(sender), nonce, TxKind::Call(LEDGER), 0, 1, vec![op])
+        })
+        .collect()
+}
+
+#[test]
+fn blind_adds_to_one_slot_commit_without_conflicts() {
+    // Every transaction adds to the same accumulator, inserts into the same ring buffer, or both.
+    for ops in [&[0][..], &[4], &[0, 4]] {
+        let txs: Vec<_> = (0..ACCOUNTS)
+            .map(|index| {
+                let op = ops[index as usize % ops.len()];
+                tx(user(index), 0, TxKind::Call(LEDGER), 0, 1, vec![op])
+            })
+            .collect();
+        for threads in [2, 4, 8] {
+            let run = assert_matches_sequential_with(ledger_database(), &txs, threads, None);
+            assert_eq!(run.stats.reexecuted, 0, "ops {ops:?}, {threads} threads");
+            assert_eq!(run.dependencies.critical_path(), 1);
+        }
+        let sequential = assert_matches_sequential_with(ledger_database(), &txs, 1, None);
+        assert_eq!(sequential.dependencies.critical_path(), 1);
+    }
+    let txs: Vec<_> = (0..ACCOUNTS)
+        .map(|index| tx(user(index), 0, TxKind::Call(LEDGER), 0, 1, vec![0]))
+        .collect();
+    let run = parallel(ledger_database(), &txs, 4, None);
+    let total = (0..ACCOUNTS).map(|index| U256::from(index) + U256::from(2)).sum::<U256>();
+    assert_eq!(run.output.state.storage(&LEDGER, U256::ZERO), Some(total));
+}
+
+#[test]
+fn blind_adds_mixed_with_reads_match_sequential() {
+    let mut reexecuted = 0;
+    for seed in 0..30 {
+        let txs = ledger_block(seed, 96, &[0, 0, 0, 1, 2, 3, 4, 4]);
+        for threads in [2, 5, 8] {
+            reexecuted += assert_matches_sequential(ledger_database(), &txs, threads).reexecuted;
+        }
+        // Exact dependencies make readers wait for every add before them.
+        let first = assert_matches_sequential_with(ledger_database(), &txs, 4, None);
+        let hinted =
+            assert_matches_sequential_with(ledger_database(), &txs, 4, Some(&first.dependencies));
+        assert_eq!(hinted.stats.reexecuted, 0, "seed {seed}");
+        assert_eq!(hinted.dependencies, first.dependencies);
+        let sequential = assert_matches_sequential_with(ledger_database(), &txs, 1, None);
+        assert_eq!(sequential.dependencies, first.dependencies);
+    }
+    // Readers of the accumulator conflict with the adds before them.
+    assert!(reexecuted > 0);
+}
+
+#[test]
+fn reads_of_deferred_op_writes_match_sequential() {
+    // Readers of the ring pointer, which only commit-time operations write, either execute after
+    // the operations before them committed and published, or are caught validating against the
+    // committed state and execute again.
+    for seed in 0..30 {
+        let txs = ledger_block(seed, 96, &[4, 4, 4, 5, 0, 3]);
+        for threads in [2, 5, 8] {
+            assert_matches_sequential(ledger_database(), &txs, threads);
+        }
+        let first = assert_matches_sequential_with(ledger_database(), &txs, 4, None);
+        let hinted =
+            assert_matches_sequential_with(ledger_database(), &txs, 4, Some(&first.dependencies));
+        assert_eq!(hinted.dependencies, first.dependencies);
+        let sequential = assert_matches_sequential_with(ledger_database(), &txs, 1, None);
+        assert_eq!(sequential.dependencies, first.dependencies);
     }
 }

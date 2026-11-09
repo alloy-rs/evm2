@@ -1,8 +1,8 @@
 //! Owned pending transaction state detached from the EVM.
 
 use super::{
-    Account, AccountChanges, AccountFlags, AccountInfo, StateChangeSink, StateChangeSource,
-    StorageSlot, Tracked,
+    Account, AccountChanges, AccountFlags, AccountInfo, DeferredStorage, StateChangeSink,
+    StateChangeSource, StorageSlot, Tracked,
 };
 use crate::interpreter::Word;
 use alloy_primitives::{Address, map::AddressMap};
@@ -29,6 +29,11 @@ pub struct PendingState {
     /// Accounts loaded by the transaction: transaction-boundary original info, present info, and
     /// account-lifetime flags.
     pub(crate) accounts: AddressMap<Account>,
+    /// Storage effects deferred to the transaction's end: left unresolved by an EVM that defers
+    /// their resolution (see
+    /// [`State::set_defer_storage_resolution`](super::State::set_defer_storage_resolution)),
+    /// and the slots their resolution loaded.
+    pub(crate) deferred: DeferredStorage,
 }
 
 impl PendingState {
@@ -106,6 +111,14 @@ impl PendingState {
     #[inline]
     pub fn account_changes_for(&self, address: &Address) -> Option<AccountChanges<'_>> {
         self.changes().account_changes_for(address)
+    }
+
+    /// Returns whether the transaction left blind adds or deferred storage operations unresolved,
+    /// to resolve with [`State::resolve_pending_state`](super::State::resolve_pending_state)
+    /// before it commits.
+    #[inline]
+    pub fn has_deferred_storage(&self) -> bool {
+        self.deferred.is_pending()
     }
 }
 

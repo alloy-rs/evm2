@@ -15,7 +15,7 @@ use alloy_consensus::{
     transaction::Recovered,
 };
 use alloy_eips::{eip2935::HISTORY_STORAGE_CODE, eip4788::BEACON_ROOTS_CODE};
-use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, keccak256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     block::{
@@ -29,10 +29,12 @@ use evm2::{
     env::BlockEnvExt,
     ethereum::ethereum_tx_registry,
     evm::{
-        AccountInfo, BEACON_ROOTS_ADDRESS, Cache, DbResult, DynDatabase, DynDatabaseRef, EmptyDB,
-        HISTORY_STORAGE_ADDRESS, InMemoryDB,
+        AccountInfo, BEACON_ROOTS_ADDRESS, Cache, DbResult, DeferredStorageOp, DynDatabase,
+        DynDatabaseRef, EmptyDB, HISTORY_STORAGE_ADDRESS, InMemoryDB,
     },
-    interpreter::Word,
+    interpreter::{GasTracker, Host, Message, Word},
+    precompile::PrecompileOutput,
+    precompiles::{Precompile, PrecompileId, PrecompileResult},
 };
 use std::{
     num::NonZeroUsize,
@@ -55,6 +57,18 @@ const HOT_TOKEN: Address = Address::repeat_byte(0x7b);
 const HOT_VAULT: Address = Address::repeat_byte(0xa1);
 const HOT_PORTAL: Address = Address::repeat_byte(0xa2);
 const HOT_SUPPLY: Address = Address::repeat_byte(0xa3);
+const DELTA_TOKEN: Address = Address::repeat_byte(0x7c);
+/// A precompile standing in for Tempo's fee manager and nonce manager.
+const LEDGER: Address = Address::repeat_byte(0x0f);
+/// The ledger's collected-fees slot, as `collected_fees[validator][token]`.
+const FEE_SLOT: U256 = U256::from_limbs([0x0fee, 0, 0, 0]);
+/// The ledger's expiring nonce ring pointer, as `expiringNonceRingPtr`.
+const RING_POINTER: U256 = U256::from_limbs([3, 0, 0, 0]);
+/// Expiring nonce ring slots: `RING_CAPACITY` entries from `RING` on.
+const RING: U256 = U256::from_limbs([0, 0, 1, 0]);
+const RING_CAPACITY: u64 = 1_024;
+/// How long an expiring nonce stays valid, in seconds.
+const NONCE_EXPIRY: u64 = 30;
 const DEAD: Address =
     Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xde, 0xad]);
 
@@ -85,16 +99,36 @@ impl DynDatabaseRef for Snapshot {
     }
 }
 
-/// Moves one unit from the caller to the address in calldata word 0, then hashes calldata word 1
-/// times. With `hot_fee`, every call also increments one shared slot, as Tempo's fee accumulator
-/// and expiring nonce ring pointer do today.
-fn token_code(hot_fee: bool) -> Bytes {
+/// The fee and nonce bookkeeping a transaction does in a token.
+#[derive(Clone, Copy, Debug)]
+enum Fee {
+    /// None.
+    None,
+    /// Increment one shared slot, as Tempo's fee accumulator and expiring nonce ring pointer do
+    /// today.
+    HotSlot,
+    /// Call [`ledger`], which does Tempo's bookkeeping without conflicts.
+    Ledger,
+}
+
+/// Moves one unit from the caller to the address in calldata word 0, then does the `fee`
+/// bookkeeping, then hashes calldata word 1 times.
+fn token_code(fee: Fee) -> Bytes {
     let mut code = vec![
         0x33, 0x54, 0x60, 0x01, 0x90, 0x03, 0x33, 0x55, // balances[caller] -= 1
         0x60, 0x00, 0x35, 0x80, 0x54, 0x60, 0x01, 0x01, 0x90, 0x55, // balances[to] += 1
     ];
-    if hot_fee {
-        code.extend([0x61, 0x0f, 0xee, 0x54, 0x60, 0x01, 0x01, 0x61, 0x0f, 0xee, 0x55]);
+    match fee {
+        Fee::None => {}
+        Fee::HotSlot => {
+            code.extend([0x61, 0x0f, 0xee, 0x54, 0x60, 0x01, 0x01, 0x61, 0x0f, 0xee, 0x55]);
+        }
+        Fee::Ledger => {
+            // CALL(gas, LEDGER, 0, 0, 0, 0, 0)
+            code.extend([0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x73]);
+            code.extend_from_slice(LEDGER.as_slice());
+            code.extend([0x5a, 0xf1, 0x50]);
+        }
     }
     code.extend([0x60, 0x20, 0x35]);
     let start = code.len() as u8;
@@ -106,6 +140,59 @@ fn token_code(hot_fee: bool) -> Bytes {
     code[start as usize + 4] = end;
     code.extend([0x5b, 0x00]);
     code.into()
+}
+
+/// Tempo's fee manager and expiring nonce manager in one precompile, on evm2's conflict-free
+/// primitives. Per call it:
+///
+/// - adds the fee to the collected-fees slot with a blind add, which never reads it;
+/// - rejects a replayed expiring nonce and marks the transaction's nonce hash seen until it
+///   expires, in a slot only that transaction touches;
+/// - defers inserting the hash into the nonce ring to the end of the transaction: the deferred
+///   operation reads the ring pointer, clears the seen mark of the entry it evicts, writes the hash
+///   in its place and advances the pointer, at commit in parallel execution.
+fn ledger(
+    evm: &mut Evm<'_, BaseEvmTypes>,
+    _message: &Message<BaseEvmTypes>,
+    gas: &mut GasTracker,
+) -> PrecompileResult {
+    let fee = Host::sadd(evm, &LEDGER, &FEE_SLOT, &U256::ONE)?;
+    // Blind-add gas depends on warmth only: the access cost plus a fixed write cost.
+    gas.spend(if fee.is_cold { 2_100 } else { 100 } + 2_900)?;
+
+    let origin = evm.tx_env().origin;
+    let nonce = evm.state_mut().account_info_untracked(&origin)?.map_or(0, |info| info.nonce);
+    let hash = keccak256([origin.as_slice(), &nonce.to_be_bytes()].concat());
+    let hash = U256::from_be_bytes(hash.0);
+    let now = Host::block_env(evm).timestamp;
+    let seen = Host::sload(evm, &LEDGER, &seen_slot(hash), false)?;
+    gas.spend(if seen.is_cold { 2_100 } else { 100 })?;
+    if seen.value > now {
+        return Err("expiring nonce replayed".into());
+    }
+    Host::sstore(evm, &LEDGER, &seen_slot(hash), &(now + U256::from(NONCE_EXPIRY)), false)?;
+    gas.spend(20_000)?;
+
+    evm.state_mut().defer_storage_op(DeferredStorageOp::new(move |storage| {
+        let pointer = storage.sload(&LEDGER, RING_POINTER)?;
+        let entry = RING + pointer;
+        // The ring holds more entries than expire within the expiry window, so the evicted entry
+        // has expired.
+        let evicted = storage.sload(&LEDGER, entry)?;
+        if !evicted.is_zero() {
+            storage.sstore(&LEDGER, seen_slot(evicted), U256::ZERO)?;
+        }
+        storage.sstore(&LEDGER, entry, hash)?;
+        storage.sstore(&LEDGER, RING_POINTER, (pointer + U256::ONE) % U256::from(RING_CAPACITY))
+    }));
+    // The deferred ring update's fixed price.
+    gas.spend(10_000)?;
+    Ok(PrecompileOutput::new(Bytes::new()))
+}
+
+/// The slot marking a nonce hash seen, with its expiry.
+fn seen_slot(hash: U256) -> U256 {
+    U256::from_be_bytes(keccak256(hash.to_be_bytes::<32>()).0)
 }
 
 fn user(index: u64) -> Address {
@@ -124,8 +211,11 @@ fn database(users: u64) -> InMemoryDB {
     for (address, code) in [
         (HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE.clone()),
         (BEACON_ROOTS_ADDRESS, BEACON_ROOTS_CODE.clone()),
-        (TOKEN, token_code(false)),
-        (HOT_TOKEN, token_code(true)),
+        (TOKEN, token_code(Fee::None)),
+        (HOT_TOKEN, token_code(Fee::HotSlot)),
+        (DELTA_TOKEN, token_code(Fee::Ledger)),
+        // Tempo gives its precompiles code so that they exist.
+        (LEDGER, Bytes::from_static(&[0xef])),
     ] {
         database.insert_account_info(
             &address,
@@ -164,6 +254,9 @@ enum Workload {
     PublicMix,
     /// `public-mix.yml` with the shared fee and nonce-ring slot Tempo writes today.
     PublicMixToday,
+    /// `public-mix.yml` with Tempo's fee collection and expiring nonce ring done through
+    /// evm2's conflict-free blind adds and deferred storage operations.
+    PublicMixDelta,
     /// `dex.yml`-like: every swap on one pool.
     DexHot,
 }
@@ -176,6 +269,7 @@ impl Workload {
             "spam-dead" => Self::SpamDead,
             "public-mix" => Self::PublicMix,
             "public-mix-today" => Self::PublicMixToday,
+            "public-mix-delta" => Self::PublicMixDelta,
             "dex-hot" => Self::DexHot,
             _ => panic!("unknown workload {name}"),
         }
@@ -188,6 +282,7 @@ impl Workload {
             Self::SpamDead => "spam-dead",
             Self::PublicMix => "public-mix",
             Self::PublicMixToday => "public-mix-today",
+            Self::PublicMixDelta => "public-mix-delta",
             Self::DexHot => "dex-hot",
         }
     }
@@ -213,9 +308,12 @@ impl Workload {
                     Self::Tip20Users => (TOKEN, user(rng.below(users))),
                     Self::SpamDead => (TOKEN, DEAD),
                     Self::DexHot => (TOKEN, HOT_VAULT),
-                    Self::PublicMix | Self::PublicMixToday => {
-                        let token =
-                            if matches!(self, Self::PublicMixToday) { HOT_TOKEN } else { TOKEN };
+                    Self::PublicMix | Self::PublicMixToday | Self::PublicMixDelta => {
+                        let token = match self {
+                            Self::PublicMixToday => HOT_TOKEN,
+                            Self::PublicMixDelta => DELTA_TOKEN,
+                            _ => TOKEN,
+                        };
                         let to = match roll {
                             0 => {
                                 sender = 0;
@@ -274,9 +372,14 @@ impl Engine {
             gas_limit: U256::from(u64::MAX / 2),
             ..BlockEnvExt::default()
         };
+        let mut precompiles = Precompiles::base(SPEC);
+        precompiles.as_map_mut().insert(Precompile::new(
+            LEDGER,
+            PrecompileId::custom("ledger"),
+            ledger,
+        ));
         #[allow(unused_mut)]
-        let mut evm =
-            Evm::new(SPEC, block, ethereum_tx_registry(SPEC), database, Precompiles::base(SPEC));
+        let mut evm = Evm::new(SPEC, block, ethereum_tx_registry(SPEC), database, precompiles);
         #[cfg(feature = "jit")]
         if let Some(jit) = &self.jit {
             evm.set_interpreter_runner(JitInterpreterRunner::new(jit.clone()));
@@ -426,6 +529,7 @@ fn main() {
         Workload::SpamDead,
         Workload::PublicMix,
         Workload::PublicMixToday,
+        Workload::PublicMixDelta,
         Workload::DexHot,
     ];
     let mut threads = vec![1, 2, 4, 8, 16, 32]

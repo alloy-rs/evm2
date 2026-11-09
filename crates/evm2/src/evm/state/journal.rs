@@ -74,6 +74,30 @@ pub enum JournalEntry {
         /// Storage key.
         key: Word,
     },
+    /// A blind add was deferred for a storage slot the transaction has not read.
+    StorageDeltaAdded {
+        /// Account address.
+        address: Address,
+        /// Storage key.
+        key: Word,
+        /// Added value.
+        delta: Word,
+        /// Whether the add warmed the slot.
+        warmed: bool,
+    },
+    /// A slot's pending blind adds were applied to its loaded value.
+    StorageDeltaResolved {
+        /// Account address.
+        address: Address,
+        /// Storage key.
+        key: Word,
+        /// Wrapping sum of the applied blind adds.
+        delta: Word,
+        /// Whether the blind adds had warmed the slot.
+        warm: bool,
+    },
+    /// A storage operation was deferred to the end of the transaction.
+    StorageOpDeferred,
 }
 
 #[cfg(test)]
