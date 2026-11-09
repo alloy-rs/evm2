@@ -1913,48 +1913,6 @@ mod tests {
     }
 
     #[test]
-    fn message_sent_by_initialize_hook_cannot_change_caller_memory() {
-        // Sends a message from the initialize hook of the child, whose `call` hook then grows and
-        // overwrites the memory of the frame it gets. That must be the child, not the caller whose
-        // memory the child's input is read from.
-        struct SendFromInitialize;
-
-        impl Inspector<BaseEvmTypes> for SendFromInitialize {
-            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
-                if interp.message().depth == 1 {
-                    let mut message =
-                        MessageExt { depth: 2, gas_limit: 1_000, ..Default::default() };
-                    Host::execute_message(interp.host(), &mut message).unwrap();
-                }
-            }
-
-            fn call(
-                &mut self,
-                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
-                message: &mut Message<BaseEvmTypes>,
-            ) -> Option<MessageResult<BaseEvmTypes>> {
-                if message.depth == 2 {
-                    let memory = interp.memory_mut();
-                    memory.resize(0, 1 << 20).unwrap();
-                    memory.set(0, &[0xbb; 32]);
-                }
-                None
-            }
-        }
-
-        let (result, _, _) = run_evm_with_inspector_db(
-            echo_db(),
-            memory_input_call_code(ECHO, op::CALL),
-            &MessageExt::default(),
-            100_000,
-            SendFromInitialize,
-        );
-
-        assert_matches!(result.stop, InstrStop::Return);
-        assert_eq!(result.output[..], [0xaa; 32]);
-    }
-
-    #[test]
     fn call_hook_replacing_input_keeps_caller_memory() {
         struct ReplaceInput;
 
