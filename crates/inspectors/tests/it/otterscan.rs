@@ -3,7 +3,12 @@
 use crate::utils::{AccountInfo, Bytecode, Context, ExecutionResult, SpecId, TxEnv};
 use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
 use alloy_rpc_types_trace::otterscan::{InternalOperation, OperationType};
-use evm2::evm::InMemoryDB;
+use evm2::{
+    BaseEvmTypes, Evm, ExecutionConfig, Precompiles, Version,
+    ethereum::{ethereum_tx_registry, execute_initial_frame, prepare_initial_frame},
+    evm::InMemoryDB,
+    interpreter::GasTracker,
+};
 use evm2_inspectors::otterscan::InternalOperationsInspector;
 
 const CONTRACT: Address = Address::repeat_byte(0x11);
@@ -181,4 +186,62 @@ fn preserves_execution_order() {
             },
         ]
     );
+}
+
+#[test]
+fn includes_top_level_messages_of_a_started_batch() {
+    let caller = Address::repeat_byte(0xaa);
+    let expected = [
+        InternalOperation {
+            from: caller,
+            to: caller.create(0),
+            value: U256::ZERO,
+            r#type: OperationType::OpCreate,
+        },
+        InternalOperation {
+            from: caller,
+            to: CONTRACT,
+            value: U256::from(7),
+            r#type: OperationType::OpTransfer,
+        },
+    ];
+    assert_eq!(execute_batch(caller, false), []);
+    assert_eq!(execute_batch(caller, true), expected);
+}
+
+/// Runs a creation with empty initcode, then a 7 wei transfer to [`CONTRACT`], as the top-level
+/// messages of one transaction. With `batch_start`, the inspector is told first that the messages
+/// form a batch.
+fn execute_batch(caller: Address, batch_start: bool) -> Vec<InternalOperation> {
+    let mut db = InMemoryDB::default();
+    db.insert_account_info(
+        &caller,
+        AccountInfo { balance: U256::from(1_000_000), ..Default::default() },
+    );
+    db.insert_account_info(
+        &CONTRACT,
+        AccountInfo { code: Some(Bytecode::new_legacy(bytes!("00"))), ..Default::default() },
+    );
+    let mut inspector = InternalOperationsInspector::default();
+    let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::CANCUN, Version::new(SpecId::CANCUN)),
+        SpecId::CANCUN,
+        Default::default(),
+        ethereum_tx_registry(SpecId::CANCUN),
+        db,
+        Precompiles::base(SpecId::CANCUN),
+    );
+    evm.set_inspector(&mut inspector);
+    if batch_start {
+        evm.inspect_batch_start();
+    }
+    for (kind, value) in [(TxKind::Create, U256::ZERO), (TxKind::Call(CONTRACT), U256::from(7))] {
+        let mut gas = GasTracker::new(100_000);
+        let frame =
+            prepare_initial_frame(&mut evm, caller, 0, kind, &Bytes::new(), value, &mut gas)
+                .unwrap();
+        assert!(execute_initial_frame(&mut evm, frame, &mut gas, 100_000, 0).unwrap().is_success());
+    }
+    drop(evm);
+    inspector.into_operations()
 }

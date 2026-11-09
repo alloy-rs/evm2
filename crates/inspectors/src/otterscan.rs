@@ -12,13 +12,17 @@ use evm2::{
 ///
 /// Collects non-zero-value `CALL` transfers, `CREATE`, `CREATE2`, and `SELFDESTRUCT`
 /// operations in execution order without retaining call inputs or outputs. Top-level calls and
-/// creations are excluded, while zero-value creations and self-destructs are included.
+/// creations are excluded, while zero-value creations and self-destructs are included. The
+/// top-level messages of a batch started with [`Inspector::batch_start`] are included, since
+/// tracers nest them under a synthetic root.
 ///
 /// Operations are retained even if their frame or an ancestor reverts. This is an execution
 /// history, not a list of committed balance changes.
 #[derive(Debug, Default, Clone)]
 pub struct InternalOperationsInspector {
     operations: Vec<InternalOperation>,
+    /// Whether the transaction runs its top-level messages as a batch.
+    batch: bool,
 }
 
 impl InternalOperationsInspector {
@@ -33,7 +37,7 @@ impl InternalOperationsInspector {
     }
 
     fn on_operation<T: EvmTypesHost>(&mut self, message: &Message<T>, initial_call_depth: u16) {
-        if message.depth == initial_call_depth {
+        if message.depth == initial_call_depth && !self.batch {
             return;
         }
         let r#type = match message.kind {
@@ -54,6 +58,10 @@ impl InternalOperationsInspector {
 impl<T: EvmTypesHost> Inspector<T> for InternalOperationsInspector {
     fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::without_steps()
+    }
+
+    fn batch_start(&mut self) {
+        self.batch = true;
     }
 
     fn call(
