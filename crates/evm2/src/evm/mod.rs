@@ -1774,21 +1774,23 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
         if message.input.as_owned().is_none() {
-            // SAFETY: The caller frame is suspended until this frame returns, and the frame that
-            // runs next is this one, so nothing can reach the caller's memory in between.
+            // SAFETY: The caller frame is suspended until this frame returns, and `current_frame`
+            // becomes this one below, so nothing can reach the caller's memory in between.
             interp_ref.set_input(unsafe { trustme::decouple_lt(guard.evm.message_input(message)) });
         }
         interp_ref.lend_memory();
+        // The initialize hook can send messages, whose hooks must get this frame and not the
+        // caller, whose memory the input slice points into.
+        let prev_frame = guard
+            .evm
+            .current_frame
+            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
         guard.evm.inspect_initialize_interp(interp_ref);
         let inspector = guard.evm.active_inspector().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // interpreter run.
             unsafe { trustme::decouple_lt_mut(inspector) }
         });
-        let prev_frame = guard
-            .evm
-            .current_frame
-            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
         let runner =
             guard.evm.interpreter_runner.as_ref().filter(|_| guard.evm.runner_supported).cloned();
         let stop = if let Some(inspector) = inspector {
