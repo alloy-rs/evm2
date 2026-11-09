@@ -6,7 +6,6 @@ use evm2::{
     interpreter::{Host, InstrStop, Interpreter},
 };
 use evm2_jit_context::can_run_compiled;
-use std::borrow::Cow;
 
 /// External interpreter runner backed by [`JitBackend`].
 #[derive(Clone, Debug)]
@@ -93,8 +92,7 @@ fn run_supported<'frame, 'host, T: EvmTypesHost>(
         code_hash: interpreter.original_bytecode_hash(),
         spec_id: host.execution_config().base_spec_id(),
     };
-    let decision =
-        backend.lookup(LookupRequest { key, code: Cow::Borrowed(interpreter.original_bytecode()) });
+    let decision = backend.lookup(LookupRequest { key, code: interpreter.active_bytecode() });
 
     let program = match decision {
         LookupDecision::Compiled(program) => program,
@@ -875,7 +873,7 @@ mod tests {
                 assert!(matches!(
                     backend.lookup(LookupRequest {
                         key: RuntimeCacheKey { code_hash: code.hash_slow(), spec_id: spec },
-                        code: Cow::Borrowed(&code),
+                        code: &code,
                     }),
                     LookupDecision::Compiled(_)
                 ));

@@ -5,9 +5,9 @@ use super::*;
 use alloy_primitives::B256;
 use alloy_primitives::Bytes;
 use evm2::{SpecId, bytecode::Bytecode};
+use std::sync::Arc;
 #[cfg(feature = "llvm")]
 use std::sync::Mutex;
-use std::{borrow::Cow, sync::Arc};
 
 // ---------------------------------------------------------------------------
 // Test bytecodes.
@@ -89,7 +89,8 @@ impl TestBackend {
     fn req(bytecode: &[u8], spec_id: SpecId) -> LookupRequest<'static> {
         LookupRequest {
             key: RuntimeCacheKey { code_hash: alloy_primitives::keccak256(bytecode), spec_id },
-            code: Cow::Owned(Bytecode::new_legacy(Bytes::copy_from_slice(bytecode))),
+            // Leaked so that the request is `'static`, which a short-lived test can afford.
+            code: Box::leak(Box::new(Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)))),
         }
     }
 

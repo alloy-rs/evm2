@@ -6,17 +6,15 @@ use crate::{
 };
 use alloy_primitives::{B256, Bytes};
 use evm2::{SpecId, bytecode::Bytecode};
-use std::{borrow::Cow, sync::Arc};
+use std::sync::Arc;
 
 /// Request to look up a compiled function.
-///
-/// A caller that holds the bytecode borrows it, so a lookup hit takes no reference to it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct LookupRequest<'a> {
     /// The cache key (code hash + spec).
     pub key: RuntimeCacheKey,
     /// The contract bytecode.
-    pub code: Cow<'a, Bytecode>,
+    pub code: &'a Bytecode,
 }
 
 /// Result of a lookup.

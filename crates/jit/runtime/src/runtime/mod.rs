@@ -6,16 +6,16 @@
 //! - Background JIT compilation for hot keys (threshold-based promotion).
 
 use crate::eyre::{self, WrapErr};
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 use backend::{
-    Command, CompileJitRequest, EventQueue, JitObjectLinker, PrepareAotRequest, ResidentMap,
+    Command, CompileJitRequest, EventQueue, JitObjectLinker, LookupEvent, PrepareAotRequest,
+    ResidentMap,
 };
 use crossbeam_channel as chan;
 use crossbeam_queue::ArrayQueue;
-use evm2::{SpecId, bytecode::Bytecode};
+use evm2::SpecId;
 use stats::RuntimeStats;
 use std::{
-    borrow::Cow,
     hint::cold_path,
     ops::ControlFlow,
     sync::{
@@ -304,7 +304,7 @@ impl JitBackend {
         }
         if inner.blocking {
             cold_path();
-            return self.lookup_blocking(LookupRequest { key, code });
+            return self.lookup_blocking(req);
         }
         if !inner.tuning.should_compile(code.original_byte_slice()) {
             cold_path();
@@ -312,13 +312,13 @@ impl JitBackend {
         }
 
         // An empty bytecode marks a hit for the backend.
-        let mut event = LookupRequest { key, code: Cow::Owned(Bytecode::default()) };
+        let mut event = LookupEvent { key, code: Bytes::new() };
         let decision = if let Some(program_ref) = shared.resident.try_get(&key).try_unwrap() {
             let program = Arc::clone(&program_ref);
             drop(program_ref);
             LookupDecision::Compiled(program)
         } else {
-            event.code = Cow::Owned(code.into_owned());
+            event.code = code.original_bytes();
             LookupDecision::Unavailable(LookupMissReason::NotReady)
         };
 
