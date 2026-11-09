@@ -1,6 +1,6 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrStop, Memory, Message, Pc, Result, StackBacking, StackMut,
-    StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageInput, Pc, Result, StackBacking,
+    StackMut, StackRef, Word,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
@@ -48,8 +48,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
-    /// Whether the running instruction is `hooked`.
-    hooked_running: bool,
+    /// Whether the inspector's config changed while the last `hooked` instruction ran. The frame
+    /// leaves the dispatch after the instruction and continues on the table for the new config.
+    reload: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
     #[derive_where(skip)]
@@ -64,6 +65,10 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
+    /// Whether [`Self::call_input`] borrows memory. Set only for frames that [`Evm`](crate::Evm)
+    /// runs, whose host keeps a borrowed input from being read after the call or while the memory
+    /// changes.
+    lends_memory: bool,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
@@ -104,11 +109,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             output: 0..0,
             message: None,
             is_static: false,
+            lends_memory: false,
             return_data: Bytes::new(),
             host: None,
             inspector: None,
             steps: OpcodeSet::EMPTY,
-            hooked_running: false,
+            reload: false,
             inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
@@ -130,6 +136,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.output = 0..0;
         self.message = Some(message);
         self.is_static = is_static;
+        self.lends_memory = false;
         self.return_data = Bytes::new();
     }
 
@@ -262,6 +269,39 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn memory_mut(&mut self) -> &mut Memory {
         &mut self.memory
+    }
+
+    /// Returns `len` bytes of memory at `offset` as the input of a call message, borrowed when
+    /// this frame is run by [`Evm`](crate::Evm) and copied otherwise.
+    ///
+    /// # Safety
+    ///
+    /// The input must only be read as the input of a message passed to this frame's
+    /// [`Host::execute_message`](crate::interpreter::Host::execute_message), and memory must not
+    /// change and no other code may access this frame in between. It must not be read after
+    /// `execute_message` returns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bytes are out of bounds of memory.
+    #[inline]
+    #[doc(hidden)]
+    pub unsafe fn call_input(&self, offset: usize, len: usize) -> MessageInput {
+        let bytes = self.memory.slice(offset, len);
+        if !self.lends_memory {
+            return Bytes::copy_from_slice(bytes).into();
+        }
+        // SAFETY: The caller keeps memory unchanged until the host returns, and the host is
+        // `Evm`, which copies the input before any inspector hook can reach this frame or the
+        // message. Otherwise it only reads the message through shared references, which cannot
+        // move the input out, and cloning copies it.
+        unsafe { MessageInput::borrowed(bytes) }
+    }
+
+    /// Lets [`Self::call_input`] borrow memory for the rest of this frame.
+    #[inline]
+    pub(crate) const fn lend_memory(&mut self) {
+        self.lends_memory = true;
     }
 
     /// Returns the current interpreter result.
@@ -442,6 +482,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.features = version.features;
         self.host = Some(NonNull::from(host));
         self.inspector = None;
+        self.reload = false;
     }
 
     /// Runs the host's instruction implementation for the opcode at `pc` on the interpreter
@@ -566,8 +607,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             }
             cold_path();
             self.result = Ok(());
-            // SAFETY: The stop left the pc at the message instruction, which a next one follows.
-            self.pc = unsafe { self.pc.add(dispatch::instruction_len(*self.pc)) };
+            self.reload = false;
         }
     }
 
@@ -687,9 +727,8 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.steps
     }
 
-    /// Stops the instruction with [`InstrStop::Reload`] if the inspector's config no longer
-    /// matches the table this frame runs on. A message instruction calls it after its child
-    /// message and returns the result.
+    /// Requests a reload if the inspector's config no longer matches the table this frame runs on.
+    /// The dispatch calls it after each `hooked` instruction returns, and leaves for the reload.
     #[inline(always)]
     pub(crate) fn note_inspector_config_change(&mut self) {
         if self.0.inspector.is_some() {
@@ -699,21 +738,18 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline(never)]
     fn reload_if_config_changed(&mut self) {
-        assert!(self.0.hooked_running, "an instruction that runs a message must be `hooked`");
-        if self.0.result.is_ok()
-            && let Some(inspector) = self.0.inspector
+        if let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
             && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
         {
-            self.set_result(Err(InstrStop::Reload));
+            self.0.reload = true;
         }
     }
 
-    /// Records whether the running instruction is `hooked`, so that the dispatch stored the latest
-    /// state into the interpreter before it ran.
+    /// Returns whether the running instruction requested a reload.
     #[inline]
-    pub(crate) const fn set_hooked_running(&mut self, running: bool) {
-        self.0.hooked_running = running;
+    pub(crate) const fn reload_requested(&self) -> bool {
+        self.0.reload
     }
 
     #[inline]
@@ -846,14 +882,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
         self.set_pc_stack_len(pc.as_ptr(), stack_len);
-        let reload = self.0.result == Err(InstrStop::Reload);
-        if reload {
-            cold_path();
-            // The hook sees the instruction as done, with the pc after it.
-            self.set_result(Ok(()));
-            // SAFETY: A next instruction follows the instruction at `pc`.
-            self.0.pc = unsafe { pc.as_ptr().add(dispatch::instruction_len(pc.op())) };
-        } else if self.0.result.is_err() {
+        if self.0.result.is_err() {
             cold_path();
             if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
                 // An out-of-gas frame has burned all its gas, so 0 is the real remaining gas.
@@ -865,11 +894,9 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             inspector.as_mut().step_end(&mut self.0);
         }
         // A stop the hook set wins over the reload.
-        if reload {
-            self.0.pc = pc.as_ptr();
-            if self.0.result.is_ok() {
-                self.set_result(Err(InstrStop::Reload));
-            }
+        if self.0.reload && self.0.result.is_ok() {
+            cold_path();
+            self.set_result(Err(InstrStop::Reload));
         }
     }
 

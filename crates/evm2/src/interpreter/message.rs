@@ -2,8 +2,10 @@ use crate::{
     BaseEvmTypes, EvmTypesHost, Version,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
+    trustme,
 };
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+use core::{fmt, ops::Deref};
 
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -68,7 +70,7 @@ pub struct MessageExt<E = ()> {
     /// Immediate caller.
     pub caller: Address,
     /// Call input data, or initcode for create messages.
-    pub input: Bytes,
+    pub input: MessageInput,
     /// Value transferred with the message.
     pub value: U256,
     /// Bytecode resolved for this frame: the code at [`MessageExt::code_address`] (the resolved
@@ -201,6 +203,87 @@ pub fn create_preaccess_failure(
     }
 }
 
+/// The input of a message: call data, or initcode for create messages.
+///
+/// It derefs to the input bytes. When [`Evm`](crate::Evm) runs without an inspector, the child of
+/// a call instruction reads its input from the caller's memory instead of a copy, since the caller
+/// waits for the call to return. [`Clone`] and [`to_bytes`](Self::to_bytes) copy borrowed bytes, so
+/// a kept input always owns them.
+#[derive(Default)]
+pub struct MessageInput {
+    /// The owned bytes, or the borrowed bytes with their lifetime erased.
+    bytes: Bytes,
+    /// Whether `bytes` borrows. If set, `bytes` must never be cloned.
+    borrowed: bool,
+}
+
+impl MessageInput {
+    /// Borrows `bytes` without copying.
+    ///
+    /// # Safety
+    ///
+    /// `bytes` must stay valid and unchanged for as long as the input is read.
+    #[inline]
+    pub(crate) unsafe fn borrowed(bytes: &[u8]) -> Self {
+        // SAFETY: The caller keeps the bytes alive while they are read, and `borrowed` keeps
+        // them from being cloned out.
+        Self { bytes: Bytes::from_static(unsafe { trustme::decouple_lt(bytes) }), borrowed: true }
+    }
+
+    /// Returns the input as owned bytes, copying borrowed ones.
+    #[inline]
+    pub fn to_bytes(&self) -> Bytes {
+        if self.borrowed { Bytes::copy_from_slice(&self.bytes) } else { self.bytes.clone() }
+    }
+
+    /// Copies borrowed bytes into an owned buffer.
+    #[inline]
+    pub(crate) fn make_owned(&mut self) {
+        if self.borrowed {
+            *self = Self::from(Bytes::copy_from_slice(&self.bytes));
+        }
+    }
+}
+
+impl Clone for MessageInput {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self::from(self.to_bytes())
+    }
+}
+
+impl fmt::Debug for MessageInput {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.bytes.fmt(f)
+    }
+}
+
+impl PartialEq for MessageInput {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Eq for MessageInput {}
+
+impl Deref for MessageInput {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl From<Bytes> for MessageInput {
+    #[inline]
+    fn from(bytes: Bytes) -> Self {
+        Self { bytes, borrowed: false }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +342,23 @@ mod tests {
         assert!(!delegated(MessageKind::CallCode, executing).is_direct_call());
         // Address-based: a delegate call to the executing account's own address is direct.
         assert!(delegated(MessageKind::DelegateCall, target).is_direct_call());
+    }
+
+    #[test]
+    fn kept_borrowed_input_owns_its_bytes() {
+        let mut memory = [1, 2, 3];
+        // SAFETY: `memory` is unchanged until `input` is dropped.
+        let input = unsafe { MessageInput::borrowed(&memory) };
+        let clone = input.clone();
+        let bytes = input.to_bytes();
+        // SAFETY: `memory` is unchanged until `owned` owns its bytes.
+        let mut owned = unsafe { MessageInput::borrowed(&memory) };
+        owned.make_owned();
+        drop(input);
+        memory.fill(0);
+
+        assert_eq!(&*clone, [1, 2, 3]);
+        assert_eq!(bytes[..], [1, 2, 3]);
+        assert_eq!(&*owned, [1, 2, 3]);
     }
 }
