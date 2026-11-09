@@ -21,7 +21,7 @@ fn execute_with_child(
     child: &[u8],
     gas_limit: u64,
 ) -> (Result<Value, JsInspectorError>, ResultAndState) {
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     for (address, code, balance) in [
         (Address::ZERO, &[][..], U256::from(1e18)),
         (TARGET, code, U256::from(5)),
@@ -125,9 +125,8 @@ fn oversized_initcode_is_reported_by_step() {
 
 #[test]
 fn static_write_errors_follow_the_opcode_validation_stage() {
-    let mut parent = hex!("600060006000600073").to_vec();
-    parent.extend_from_slice(CHILD.as_slice());
-    parent.extend_from_slice(&hex!("61fffffa00"));
+    let parent =
+        [&hex!("600060006000600073")[..], CHILD.as_slice(), &hex!("61fffffa00")[..]].concat();
     for (child, opcode, callback) in [
         (&hex!("6000600055")[..], "SSTORE", "step"),
         (&hex!("600060006000f0")[..], "CREATE", "step"),
@@ -159,9 +158,12 @@ fn static_write_errors_follow_the_opcode_validation_stage() {
 
 #[test]
 fn hook_errors_preserve_execution() {
-    let mut call = hex!("6000600060006000600073").to_vec();
-    call.extend_from_slice(CHILD.as_slice());
-    call.extend_from_slice(&hex!("61fffff150600160015500"));
+    let call = [
+        &hex!("6000600060006000600073")[..],
+        CHILD.as_slice(),
+        &hex!("61fffff150600160015500")[..],
+    ]
+    .concat();
     let baseline = "{fault:function(){},result:function(){return 42}}";
     for hook in ["step", "enter", "exit", "fault"] {
         let child = if hook == "fault" { &hex!("60ff56")[..] } else { &hex!("600160005500")[..] };
@@ -182,9 +184,8 @@ fn hook_errors_preserve_execution() {
 
 #[test]
 fn call_step_errors_preserve_execution() {
-    let mut call = hex!("6000600060006000600073").to_vec();
-    call.extend_from_slice(CHILD.as_slice());
-    call.extend_from_slice(&hex!("61fffff100"));
+    let call =
+        [&hex!("6000600060006000600073")[..], CHILD.as_slice(), &hex!("61fffff100")[..]].concat();
     let baseline = "{fault:function(){},result:function(){return 42}}";
     let script = "{fault:function(){},result:function(){return 42},step:function(l){var o=l.op.toString();if(o=='CALL'||o=='CREATE')throw new Error('boom')}}";
     // The step ends before the child runs, which must still run with the gas it was given.

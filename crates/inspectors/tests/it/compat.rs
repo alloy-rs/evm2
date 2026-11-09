@@ -5,10 +5,10 @@ use alloy_eip2930::AccessList;
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypesHost, Inspector, NoopInspector, Precompiles, TxResult,
-    TxResultWithState, env as evm_env,
+    BaseEvmTypes, Evm, EvmTypesHost, Inspector, InspectorConfig, NoopInspector, Precompiles,
+    TxResult, TxResultWithState, env as evm_env,
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
-    evm::PendingState,
+    evm::{InMemoryDB, PendingState},
     interpreter::{Interpreter, Message, MessageResult},
     registry::HandlerError,
 };
@@ -127,7 +127,7 @@ impl TxEnvBuilder {
 
 #[derive(Clone, Debug)]
 pub struct Context {
-    pub db: CacheDB<EmptyDB>,
+    pub db: InMemoryDB,
     pub(crate) tx: TxEnv,
     block: evm_env::BlockEnv,
     pub(crate) spec: SpecId,
@@ -142,19 +142,19 @@ impl Default for Context {
 impl Context {
     pub fn mainnet() -> Self {
         Self {
-            db: CacheDB::new(EmptyDB::default()),
+            db: InMemoryDB::default(),
             tx: TxEnv::default(),
             block: evm_env::BlockEnvExt::default(),
             spec: SpecId::OSAKA,
         }
     }
 
-    pub fn with_db(mut self, db: CacheDB<EmptyDB>) -> Self {
+    pub fn with_db(mut self, db: InMemoryDB) -> Self {
         self.db = db;
         self
     }
 
-    pub fn modify_db_chained(mut self, f: impl FnOnce(&mut CacheDB<EmptyDB>)) -> Self {
+    pub fn modify_db_chained(mut self, f: impl FnOnce(&mut InMemoryDB)) -> Self {
         f(&mut self.db);
         self
     }
@@ -172,7 +172,7 @@ impl Context {
     }
 
     pub fn modify_tx_chained(mut self, f: impl FnOnce(&mut TxEnv)) -> Self {
-        f(&mut self.tx);
+        self.modify_tx(f);
         self
     }
 
@@ -285,15 +285,15 @@ impl Context {
         &self.block
     }
 
-    pub const fn db(&self) -> &CacheDB<EmptyDB> {
+    pub const fn db(&self) -> &InMemoryDB {
         &self.db
     }
 
-    pub const fn db_ref(&self) -> &CacheDB<EmptyDB> {
+    pub const fn db_ref(&self) -> &InMemoryDB {
         &self.db
     }
 
-    pub const fn db_mut(&mut self) -> &mut CacheDB<EmptyDB> {
+    pub const fn db_mut(&mut self) -> &mut InMemoryDB {
         &mut self.db
     }
 
@@ -347,21 +347,18 @@ impl TxEnv {
         if !self.authorization_list.is_empty() {
             let TxKind::Call(to) = self.kind else { panic!("EIP-7702 transactions must be calls") };
             return Recovered::new_unchecked(
-                TxEnvelope::Eip7702(
-                    TxEip7702 {
-                        chain_id: self.chain_id.unwrap_or(1),
-                        nonce: self.nonce,
-                        gas_limit: self.gas_limit,
-                        max_fee_per_gas: self.gas_price,
-                        max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or(self.gas_price),
-                        to,
-                        value: self.value,
-                        access_list: Default::default(),
-                        authorization_list: self.authorization_list.clone(),
-                        input: self.data.clone(),
-                    }
-                    .into(),
-                ),
+                TxEnvelope::from(TxEip7702 {
+                    chain_id: self.chain_id.unwrap_or(1),
+                    nonce: self.nonce,
+                    gas_limit: self.gas_limit,
+                    max_fee_per_gas: self.gas_price,
+                    max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or(self.gas_price),
+                    to,
+                    value: self.value,
+                    access_list: Default::default(),
+                    authorization_list: self.authorization_list.clone(),
+                    input: self.data.clone(),
+                }),
                 self.caller,
             );
         }
@@ -423,7 +420,7 @@ pub enum ExecutionResult {
 impl ExecutionResult {
     fn from_tx_result(result: TxResult) -> Self {
         let gas_used = result.tx_gas_used();
-        if result.status {
+        if result.is_success() {
             let output = if result.created_address.is_some() {
                 Output::Create(result.output, result.created_address)
             } else {
@@ -498,7 +495,7 @@ pub trait DatabaseCommit {
     fn commit(&mut self, changes: PendingState);
 }
 
-impl DatabaseCommit for CacheDB<EmptyDB> {
+impl DatabaseCommit for InMemoryDB {
     fn commit(&mut self, changes: PendingState) {
         self.commit_source(&changes);
     }
@@ -513,7 +510,7 @@ pub trait TestDbExt {
     fn load_account(&mut self, address: Address) -> LoadedAccountMut<'_>;
 }
 
-impl TestDbExt for CacheDB<EmptyDB> {
+impl TestDbExt for InMemoryDB {
     fn load_account(&mut self, address: Address) -> LoadedAccountMut<'_> {
         let info = self.cache.accounts.entry(address).or_default().get_or_insert_default();
         LoadedAccountMut { info }
@@ -574,6 +571,11 @@ impl<I> RawInspector<I> {
 impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().initialize_interp(interp);
+    }
+
+    fn inspector_config(&self) -> InspectorConfig {
+        // SAFETY: As in `inner`.
+        unsafe { &*self.inspector }.inspector_config()
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {

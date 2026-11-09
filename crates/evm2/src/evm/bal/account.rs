@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     bytecode::{Bytecode, BytecodeDecodeError},
-    evm::state::{AccountInfo, StorageSlot},
+    evm::state::AccountInfo,
 };
 use alloc::vec::Vec;
 use alloy_eip7928::{
@@ -108,10 +108,10 @@ impl From<AccountBal> for AlloyAccountChanges {
             .collect::<Vec<_>>();
 
         let mut balance_changes = account.account_info.balance.changes;
-        balance_changes.sort_unstable_by_key(|change| change.block_access_index);
+        balance_changes.sort_unstable_by_key(|change| change.block_access_index());
 
         let mut nonce_changes = account.account_info.nonce.changes;
-        nonce_changes.sort_unstable_by_key(|change| change.block_access_index);
+        nonce_changes.sort_unstable_by_key(|change| change.block_access_index());
 
         let mut code_changes = account
             .account_info
@@ -120,7 +120,7 @@ impl From<AccountBal> for AlloyAccountChanges {
             .into_iter()
             .map(AlloyCodeChange::from)
             .collect::<Vec<_>>();
-        code_changes.sort_unstable_by_key(|change| change.block_access_index);
+        code_changes.sort_unstable_by_key(|change| change.block_access_index());
 
         Self {
             address: Address::ZERO,
@@ -226,11 +226,11 @@ impl AccountInfoBal {
         self.nonce.update(index, &original.nonce, present.nonce);
         self.balance.update(index, &original.balance, present.balance);
         if original.code_hash != present.code_hash {
-            self.code.update_with_key(
+            self.code_update(
                 index,
                 &(original.code_hash, original.code.clone().unwrap_or_default()),
-                (present.code_hash, present.code.clone().unwrap_or_default()),
-                |i| &i.0,
+                present.code_hash,
+                present.code.clone().unwrap_or_default(),
             );
         }
     }
@@ -317,20 +317,6 @@ impl StorageBal {
                     entry.insert(value);
                 }
             }
-        }
-    }
-
-    /// Update storage from an account's pending [`StorageSlot`] overlay: a changed slot records a
-    /// write at `bal_index`, a loaded-but-unchanged slot records a read.
-    #[inline]
-    pub fn update_pending(&mut self, bal_index: BlockAccessIndex, slots: &U256Map<StorageSlot>) {
-        self.storage.reserve(slots.len());
-        for (key, slot) in slots {
-            self.storage.entry(*key).or_default().update(
-                bal_index,
-                &slot.value.original,
-                slot.value.current,
-            );
         }
     }
 

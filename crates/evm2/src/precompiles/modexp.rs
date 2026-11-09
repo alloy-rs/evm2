@@ -4,7 +4,7 @@
 use crate::{
     interpreter::GasTracker,
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult, eip7823},
-    utils::{left_pad, left_pad_vec_be, read_word_padded, right_pad_vec},
+    utils::{b256_to_word, left_pad, left_pad_vec_be, read_word_padded, right_pad_vec},
 };
 #[cfg(feature = "gmp")]
 use alloc::vec;
@@ -154,19 +154,19 @@ fn modexp_big(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
 /// See: <https://eips.ethereum.org/EIPS/eip-198>
 /// See: <https://etherscan.io/address/0000000000000000000000000000000000000005>
 pub fn run_byzantium(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    run_inner(input, gas, 0, false, byzantium_gas_calc)
+    run_inner(input, gas, BYZANTIUM_PARAMS, false, byzantium_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-2565>
 /// Gas cost of berlin is modified from byzantium.
 pub fn run_berlin(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    run_inner(input, gas, 200, false, berlin_gas_calc)
+    run_inner(input, gas, BERLIN_PARAMS, false, berlin_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-7823>
-/// Gas cost of berlin is modified from byzantium.
+/// See: <https://eips.ethereum.org/EIPS/eip-7883>
 pub fn run_osaka(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    run_inner(input, gas, 500, true, osaka_gas_calc)
+    run_inner(input, gas, OSAKA_PARAMS, true, osaka_gas_calc)
 }
 
 /// Calculate the iteration count for the modexp precompile.
@@ -186,14 +186,15 @@ pub(crate) fn calculate_iteration_count(exp_length: u64, exp_highp: &U256, multi
 }
 
 /// Run the modexp precompile.
-pub fn run_inner(
+fn run_inner(
     input: &[u8],
     gas: &mut GasTracker,
-    min_gas: u64,
+    params: GasCalcParams,
     osaka: bool,
     calc_gas: fn(u64, u64, u64, &U256) -> u64,
 ) -> PrecompileResult {
-    gas.spend(min_gas)?;
+    // Fail before parsing the lengths when the minimum price is unaffordable.
+    gas.spend(params.min_price)?;
 
     // The format of input is:
     // <length_of_BASE> <length_of_EXPONENT> <length_of_MODULUS> <BASE> <EXPONENT> <MODULUS>
@@ -202,13 +203,13 @@ pub fn run_inner(
     const HEADER_LENGTH: usize = 96;
 
     // Extract the header
-    let base_len = U256::from_be_bytes(read_word_padded(input, 0).0);
-    let exp_len = U256::from_be_bytes(read_word_padded(input, 32).0);
-    let mod_len = U256::from_be_bytes(read_word_padded(input, 64).0);
+    let base_len = b256_to_word(read_word_padded(input, 0));
+    let exp_len = b256_to_word(read_word_padded(input, 32));
+    let mod_len = b256_to_word(read_word_padded(input, 64));
 
     // Lengths that do not fit in 64 bits cost more gas than any call has.
     let [base_len64, exp_len64, mod_len64] =
-        [base_len, exp_len, mod_len].map(|len| u64::try_from(len).unwrap_or(u64::MAX));
+        [base_len, exp_len, mod_len].map(|len| len.saturating_to::<u64>());
     let [base_len, exp_len, mod_len] =
         [base_len64, exp_len64, mod_len64].map(|len| usize::try_from(len).unwrap_or(usize::MAX));
 
@@ -229,7 +230,7 @@ pub fn run_inner(
 
     // Check if we have enough gas.
     let gas_cost = calc_gas(base_len64, exp_len64, mod_len64, &exp_highp);
-    gas.spend(gas_cost.saturating_sub(min_gas))?;
+    gas.spend(gas_cost - params.min_price)?;
 
     // EIP-7823 limits the size of the inputs, after the gas is charged.
     if osaka
@@ -269,7 +270,7 @@ pub(crate) fn byzantium_gas_calc(
         exp_len,
         mod_len,
         exp_highp,
-        GasCalcParams { min_price: 0, multiplier: 8, divisor: 20 },
+        BYZANTIUM_PARAMS,
         byzantium_multiplication_complexity,
     )
 }
@@ -277,14 +278,7 @@ pub(crate) fn byzantium_gas_calc(
 /// Calculate gas cost according to EIP 2565:
 /// <https://eips.ethereum.org/EIPS/eip-2565>
 pub(crate) fn berlin_gas_calc(base_len: u64, exp_len: u64, mod_len: u64, exp_highp: &U256) -> u64 {
-    gas_calc(
-        base_len,
-        exp_len,
-        mod_len,
-        exp_highp,
-        GasCalcParams { min_price: 200, multiplier: 8, divisor: 3 },
-        berlin_multiplication_complexity,
-    )
+    gas_calc(base_len, exp_len, mod_len, exp_highp, BERLIN_PARAMS, berlin_multiplication_complexity)
 }
 
 /// Calculate gas cost according to EIP-7883:
@@ -295,14 +289,7 @@ pub(crate) fn berlin_gas_calc(base_len: u64, exp_len: u64, mod_len: u64, exp_hig
 /// 2. Increase cost when exponent is larger than 32 bytes
 /// 3. Increase cost when base or modulus is larger than 32 bytes
 pub(crate) fn osaka_gas_calc(base_len: u64, exp_len: u64, mod_len: u64, exp_highp: &U256) -> u64 {
-    gas_calc(
-        base_len,
-        exp_len,
-        mod_len,
-        exp_highp,
-        GasCalcParams { min_price: 500, multiplier: 16, divisor: 1 },
-        osaka_multiplication_complexity,
-    )
+    gas_calc(base_len, exp_len, mod_len, exp_highp, OSAKA_PARAMS, osaka_multiplication_complexity)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -311,6 +298,10 @@ pub(crate) struct GasCalcParams {
     multiplier: u64,
     divisor: u64,
 }
+
+const BYZANTIUM_PARAMS: GasCalcParams = GasCalcParams { min_price: 0, multiplier: 8, divisor: 20 };
+const BERLIN_PARAMS: GasCalcParams = GasCalcParams { min_price: 200, multiplier: 8, divisor: 3 };
+const OSAKA_PARAMS: GasCalcParams = GasCalcParams { min_price: 500, multiplier: 16, divisor: 1 };
 
 /// Calculate gas cost.
 #[inline]
@@ -353,8 +344,7 @@ fn osaka_multiplication_complexity(max_len: u64) -> U256 {
         return U256::from(16);
     }
 
-    let words = U256::from(max_len.div_ceil(8));
-    words * words * U256::from(2)
+    berlin_multiplication_complexity(max_len) * U256::from(2)
 }
 
 #[cfg(test)]
@@ -636,8 +626,8 @@ mod tests {
                 expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
-                base_len: U256::from(0),
-                exp_len: U256::from(0),
+                base_len: U256::ZERO,
+                exp_len: U256::ZERO,
                 mod_len: U256::from(1025),
                 gas: u64::MAX,
                 expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
@@ -650,30 +640,30 @@ mod tests {
                 expected: Some(PrecompileHalt::OutOfGas),
             },
             TestInput {
-                base_len: U256::from(1) << 64,
-                exp_len: U256::from(1),
-                mod_len: U256::from(1),
+                base_len: U256::ONE << 64,
+                exp_len: U256::ONE,
+                mod_len: U256::ONE,
                 gas: u64::MAX,
                 expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
-                base_len: U256::from(1),
-                exp_len: U256::from(1) << 64,
-                mod_len: U256::from(1),
+                base_len: U256::ONE,
+                exp_len: U256::ONE << 64,
+                mod_len: U256::ONE,
                 gas: u64::MAX,
                 expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
-                base_len: U256::from(1),
-                exp_len: U256::from(1),
-                mod_len: U256::from(1) << 64,
+                base_len: U256::ONE,
+                exp_len: U256::ONE,
+                mod_len: U256::ONE << 64,
                 gas: u64::MAX,
                 expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
-                base_len: U256::from(0),
-                exp_len: U256::from(0),
-                mod_len: U256::from(0),
+                base_len: U256::ZERO,
+                exp_len: U256::ZERO,
+                mod_len: U256::ZERO,
                 gas: 100_000_000,
                 expected: None,
             },
@@ -706,68 +696,64 @@ mod tests {
         };
         // A length that does not fit in 64 bits costs more than any call can pay, on every fork.
         for position in 0..3 {
-            let mut lengths = [U256::from(1); 3];
-            lengths[position] = U256::from(1) << 64;
+            let mut lengths = [U256::ONE; 3];
+            lengths[position] = U256::ONE << 64;
             for run in [run_byzantium, run_berlin, run_osaka] {
                 assert_eq!(halt(&input(lengths), run), PrecompileHalt::OutOfGas, "{position}");
             }
         }
         // An Osaka length over the limit is out of gas when the gas does not cover its price.
-        let lengths = [U256::from(65_536), U256::from(1), U256::from(1)];
+        let lengths = [U256::from(65_536), U256::ONE, U256::ONE];
         assert_eq!(halt(&input(lengths), run_osaka), PrecompileHalt::OutOfGas);
     }
 
     #[test]
     fn test_modexp_edge_cases() {
         // Test case 1: Zero base with non-zero exponent and modulus
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              00\
              05\
-             07",
-        )
-        .unwrap();
+             07"
+        );
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         assert_eq!(res.bytes(), vec![0x00], "0^5 mod 7 should be 0");
 
         // Test case 2: Base equals modulus
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              07\
              03\
-             07",
-        )
-        .unwrap();
+             07"
+        );
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         assert_eq!(res.bytes(), vec![0x00], "7^3 mod 7 should be 0");
 
         // Test case 3: Exponent is zero (result should always be 1)
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000000\
              0000000000000000000000000000000000000000000000000000000000000001\
              05\
-             07",
-        )
-        .unwrap();
+             07"
+        );
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         assert_eq!(res.bytes(), vec![0x01], "5^0 mod 7 should be 1");
 
         // Test case 4: Large base with small modulus
         // Actually, (2^256 - 1) mod 3 = 0, so 0^2 = 0
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000020\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
              02\
-             03",
-        )
-        .unwrap();
+             03"
+        );
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         // (2^256 - 1) = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
         // This is divisible by 3, so (2^256 - 1) mod 3 = 0
@@ -790,15 +776,14 @@ mod tests {
         assert_eq!(gas.spent(), 200, "Empty input should use minimum gas 200 for Berlin");
 
         // Test gas consumption with very small inputs
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              01\
              01\
-             01",
-        )
-        .unwrap();
+             01"
+        );
         // For Byzantium, check that it computes correctly
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         assert_eq!(res.bytes(), vec![0x00], "1^1 mod 1 = 0");
@@ -812,15 +797,14 @@ mod tests {
     #[test]
     fn test_modexp_padding() {
         // Test that results are properly padded to modulus length
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000020\
              02\
              03\
-             0000000000000000000000000000000000000000000000000000000000000101",
-        )
-        .unwrap();
+             0000000000000000000000000000000000000000000000000000000000000101"
+        );
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         assert_eq!(res.bytes().len(), 32, "Result should be padded to modulus length");
         assert_eq!(res.bytes()[31], 8, "2^3 mod 257 = 8");
@@ -829,15 +813,14 @@ mod tests {
     #[test]
     fn test_modexp_berlin_vs_byzantium_gas() {
         // Test that Berlin gas costs are lower than Byzantium for the same input
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000020\
              0000000000000000000000000000000000000000000000000000000000000020\
              0000000000000000000000000000000000000000000000000000000000000020\
              ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
              ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
-             fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd",
-        )
-        .unwrap();
+             fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd"
+        );
 
         let gas_limit = 10_000_000u64;
         let mut byzantium_gas = GasTracker::new(gas_limit);
@@ -857,30 +840,28 @@ mod tests {
     #[test]
     fn test_modexp_osaka_size_limits() {
         // Test Osaka's 1024-byte limit per parameter
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000400\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              00\
              01\
-             01",
-        )
-        .unwrap();
+             01"
+        );
 
         // Should succeed with exactly 1024 bytes
         let res = run_osaka(&input, &mut GasTracker::new(100_000_000));
         assert!(res.is_ok(), "1024-byte base should be allowed");
 
         // Test with 1025 bytes - should fail
-        let input_fail = hex::decode(
+        let input_fail = hex!(
             "0000000000000000000000000000000000000000000000000000000000000401\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              00\
              01\
-             01",
-        )
-        .unwrap();
+             01"
+        );
 
         let res = run_osaka(&input_fail, &mut GasTracker::new(100_000_000));
         assert_matches!(
@@ -893,13 +874,13 @@ mod tests {
     #[test]
     fn test_modexp_input_truncation() {
         // Test behavior when input is shorter than expected
-        let input = hex::decode(
+        // Only 1 byte provided for 2-byte base
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000002\
              0000000000000000000000000000000000000000000000000000000000000002\
              0000000000000000000000000000000000000000000000000000000000000002\
-             ff", // Only 1 byte provided for 2-byte base
-        )
-        .unwrap();
+             ff"
+        );
 
         let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
         // Should pad with zeros and compute ff00^ff00 mod ff00
@@ -909,15 +890,14 @@ mod tests {
     #[test]
     fn test_modexp_maximum_values() {
         // Test with maximum U256 values
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000020\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000020\
              ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
              01\
-             fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe",
-        )
-        .unwrap();
+             fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe"
+        );
 
         let res = run_byzantium(&input, &mut GasTracker::new(10_000_000)).unwrap();
         assert_eq!(res.bytes().len(), 32, "Result should be 32 bytes");
@@ -968,12 +948,11 @@ mod tests {
     #[test]
     fn test_modexp_out_of_gas() {
         // Test that large inputs properly return out of gas error
-        let input = hex::decode(
+        let input = hex!(
             "0000000000000000000000000000000000000000000000000000000000000100\
              0000000000000000000000000000000000000000000000000000000000000100\
-             0000000000000000000000000000000000000000000000000000000000000100",
-        )
-        .unwrap();
+             0000000000000000000000000000000000000000000000000000000000000100"
+        );
 
         // Provide insufficient gas
         let res = run_byzantium(&input, &mut GasTracker::new(1000));

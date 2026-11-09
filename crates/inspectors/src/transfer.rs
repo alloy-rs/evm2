@@ -1,17 +1,16 @@
 //! Internal transfer inspector.
 
 use alloc::{vec, vec::Vec};
-use alloy_primitives::{Address, B256, Log, U256, address, b256};
-use alloy_sol_types::SolValue;
+use alloy_primitives::{Address, B256, Log, U256, b256};
 use evm2::{
-    Evm, EvmFeatures, EvmTypes, Inspector,
+    Evm, EvmFeatures, EvmTypes, Inspector, InspectorConfig,
     interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 
 /// Sender of ETH transfer log per `eth_simulateV1` spec.
 ///
 /// <https://github.com/ethereum/execution-apis/pull/484>
-pub const TRANSFER_LOG_EMITTER: Address = address!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+pub const TRANSFER_LOG_EMITTER: Address = Address::repeat_byte(0xee);
 
 /// Topic of `Transfer(address,address,uint256)` event.
 pub const TRANSFER_EVENT_TOPIC: B256 =
@@ -28,6 +27,10 @@ pub const TRANSFER_EVENT_TOPIC: B256 =
 /// Like `go-ethereum`'s `eth_simulateV1` tracer, the logs are kept by the inspector and are never
 /// added to the EVM's own logs, so receipts and log blooms do not include them.
 ///
+/// The inspector has no view of transaction errors: if a transaction stops on an error, the
+/// transfers and logs recorded so far are kept and its open frames are only dropped at the next
+/// top-level call. Discard the inspector after such an error instead of reusing it.
+///
 /// This can be used to construct an `eth_simulateV1` response. For `ots_getInternalOperations`,
 /// use [InternalOperationsInspector](crate::otterscan::InternalOperationsInspector).
 #[derive(Debug, Default, Clone)]
@@ -41,7 +44,7 @@ pub struct TransferInspector {
     ///
     /// Can be used for [eth_simulateV1](https://github.com/ethereum/execution-apis/pull/484) execution.
     collect_logs: bool,
-    /// Logs of the top-level frames that succeeded.
+    /// Logs of the top-level frames that succeeded, and logs emitted outside any frame.
     logs: Vec<Log>,
 }
 
@@ -79,12 +82,14 @@ impl TransferInspector {
         self
     }
 
-    /// Returns a reference to the logs of the succeeded top-level frames, in emission order.
+    /// Returns a reference to the logs of the succeeded top-level frames and the logs emitted
+    /// outside any frame, in emission order.
     pub fn logs(&self) -> &[Log] {
         &self.logs
     }
 
-    /// Takes the logs of the succeeded top-level frames, in emission order.
+    /// Takes the logs of the succeeded top-level frames and the logs emitted outside any frame,
+    /// in emission order.
     pub fn take_logs(&mut self) -> Vec<Log> {
         core::mem::take(&mut self.logs)
     }
@@ -152,25 +157,29 @@ impl TransferInspector {
             && !host.feature(EvmFeatures::EIP7708)
             && let Some(frame) = self.frames.last_mut()
         {
-            let from = B256::from_slice(&from.abi_encode());
-            let to = B256::from_slice(&to.abi_encode());
-            let data = value.abi_encode();
-
             frame.logs.push(Log::new_unchecked(
                 TRANSFER_LOG_EMITTER,
-                vec![TRANSFER_EVENT_TOPIC, from, to],
-                data.into(),
+                vec![TRANSFER_EVENT_TOPIC, from.into_word(), to.into_word()],
+                value.to_be_bytes::<32>().into(),
             ));
         }
     }
 }
 
 impl<T: EvmTypes> Inspector<T> for TransferInspector {
+    fn inspector_config(&self) -> InspectorConfig {
+        InspectorConfig::without_steps()
+    }
+
     fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
-        if self.collect_logs
-            && let Some(frame) = self.frames.last_mut()
-        {
-            frame.logs.push(log.clone());
+        if !self.collect_logs {
+            return;
+        }
+        match self.frames.last_mut() {
+            Some(frame) => frame.logs.push(log.clone()),
+            // Embedders can emit logs before the first call or after the last; no frame failure
+            // reverts them.
+            None => self.logs.push(log.clone()),
         }
     }
 

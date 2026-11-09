@@ -1,5 +1,5 @@
 use crate::fixture::Suites;
-use alloy_primitives::{B256, hex, map::B256Map};
+use alloy_primitives::{B256, map::B256Map};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
     BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId,
@@ -9,7 +9,7 @@ use evm2::{
     interpreter::{InstrStop, Interpreter},
 };
 use evm2_cli::evm_bench::BenchCase;
-use evm2_jit_context::EvmCompilerFn;
+use evm2_jit_context::{EvmCompilerFn, can_run_compiled};
 use evm2_jit_llvm::EvmLlvmBackend;
 use evm2_jit_runtime::{EvmCompiler, OptimizationLevel};
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
@@ -84,7 +84,7 @@ impl PreparedBench {
         let mut functions = B256Map::default();
         for account in accounts {
             let func = *compiler.functions.entry((account.code_hash, spec)).or_insert_with(|| {
-                let name = format!("contract_{}_{spec:?}", hex::encode(account.code_hash));
+                let name = format!("contract_{:x}_{spec:?}", account.code_hash);
                 let func = unsafe {
                     compiler.compiler.jit(&name, account.bytecode.as_ref(), spec).unwrap_or_else(
                         |err| panic!("{} benchmark JIT compilation failed: {err:?}", bench.name),
@@ -115,9 +115,10 @@ impl PreparedBench {
             panic!("{} JIT benchmark transaction must execute: {err:?}", self.name)
         });
         assert!(
-            interpreter.status,
+            interpreter.is_success(),
             "{} benchmark transaction must succeed: {:?}",
-            self.name, interpreter.stop
+            self.name,
+            interpreter.stop
         );
         assert_eq!(interpreter, jit, "{} interpreter and JIT results differ", self.name);
     }
@@ -209,8 +210,7 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
-        // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
-        if interpreter.gas().remaining() > i64::MAX as u64 {
+        if !can_run_compiled(interpreter) {
             return None;
         }
         let func = *self.functions.get(&interpreter.original_bytecode_hash())?;
@@ -220,7 +220,7 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
 }
 
 fn new_evm(spec: SpecId, block: BlockEnv, db: InMemoryDB) -> BenchEvm {
-    Evm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
+    BenchEvm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
 }
 
 fn new_compiler(opt_level: OptimizationLevel) -> LlvmCompiler {

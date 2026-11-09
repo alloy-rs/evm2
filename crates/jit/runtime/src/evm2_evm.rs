@@ -5,6 +5,7 @@ use evm2::{
     EvmTypesHost, ExecutionConfig, InterpreterRunner,
     interpreter::{Host, InstrStop, Interpreter},
 };
+use evm2_jit_context::can_run_compiled;
 
 /// External interpreter runner backed by [`JitBackend`].
 #[derive(Clone, Debug)]
@@ -80,11 +81,10 @@ fn run_supported<'frame, 'host, T: EvmTypesHost>(
     host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
     // Disabled runners must not hash code merely to discover that lookup is unavailable.
-    // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
     if !backend.enabled() {
         return None;
     }
-    if interpreter.gas().remaining() > i64::MAX as u64 {
+    if !can_run_compiled(interpreter) {
         backend.count_interpreter_fallback();
         return None;
     }
@@ -128,6 +128,7 @@ mod tests {
         env::BlockEnv,
         evm::{AccountInfo, InMemoryDB, JournalEntry},
         interpreter::{Host, MessageKind, Word},
+        utils::address_to_word,
         version::GasId,
     };
 
@@ -136,7 +137,7 @@ mod tests {
         &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
 
     #[cfg(feature = "llvm")]
-    fn blocking_backend() -> JitBackend {
+    pub(super) fn blocking_backend() -> JitBackend {
         JitBackend::new(RuntimeConfig { enabled: true, blocking: true, ..RuntimeConfig::default() })
             .unwrap()
     }
@@ -329,7 +330,7 @@ mod tests {
     #[cfg(feature = "llvm")]
     fn rejected_gas_schedule_counts_fallback() {
         let spec = SpecId::CANCUN;
-        let mut version = *Version::base(spec);
+        let mut version = Version::new(spec);
         version.gas_params.set(GasId::SstoreStatic, 800);
         let host = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(spec, version),
@@ -368,14 +369,14 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_call_executes_message() {
-        let target = Address::from([0x22; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let caller = Address::repeat_byte(0x11);
         let mut database = InMemoryDB::default();
         database.insert_account_info(&caller, AccountInfo::default());
         database.insert_account_info(
             &target,
             AccountInfo::default()
-                .with_code(Bytecode::new_legacy(Bytes::copy_from_slice(BYTECODE_RET42))),
+                .with_code(Bytecode::new_legacy(Bytes::from_static(BYTECODE_RET42))),
         );
         let backend = blocking_backend();
         let mut host = Evm::<BaseEvmTypes>::new(
@@ -420,7 +421,7 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_create_executes_message() {
-        let creator = Address::from([0x33; 20]);
+        let creator = Address::repeat_byte(0x33);
         let mut database = InMemoryDB::default();
         database.insert_account_info(&creator, AccountInfo::default());
         let backend = blocking_backend();
@@ -464,7 +465,7 @@ mod tests {
         let message = MessageExt {
             gas_limit: 1_000_000,
             destination: creator,
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            code: Bytecode::new_legacy(Bytes::from(code)),
             ..MessageExt::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
@@ -477,7 +478,7 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_staticcall_zeros_child_callvalue() {
-        let caller = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0x11);
         let target = Address::with_last_byte(0x68);
         let mut database = InMemoryDB::default();
         database.insert_account_info(&caller, AccountInfo::default());
@@ -537,7 +538,7 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_staticcall_child_callvalue_does_not_transfer() {
-        let caller = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0x11);
         let child = Address::with_last_byte(0x68);
         let beneficiary = Address::with_last_byte(0x69);
         let initial_beneficiary_balance = Word::from(7);
@@ -606,18 +607,17 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_dynamic_call_to_staticcall_loop_matches_interpreter_gas() {
-        let caller = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0x11);
         let outer = Address::with_last_byte(0xfd);
         let middle = Address::with_last_byte(0xed);
         let leaf = Address::with_last_byte(0xdd);
         let outer_code = dynamic_call_outer_code();
-        let mut input = [0u8; 32];
-        input[12..].copy_from_slice(middle.as_slice());
+        let input = middle.into_word().0;
         let message = MessageExt {
             gas_limit: 0xcd79195900 - 21_368,
             destination: outer,
             caller,
-            input: Bytes::copy_from_slice(&input),
+            input: Bytes::from(input).into(),
             value: Word::from(10),
             code: Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code)),
             code_address: outer,
@@ -629,7 +629,7 @@ mod tests {
                 .insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(100)));
             database
                 .insert_account_info(&outer, AccountInfo::default().with_balance(Word::from(10)));
-            database.insert_account_storage(&outer, &Word::from(1), &Word::from(1));
+            database.insert_account_storage(&outer, &Word::ONE, &Word::ONE);
             database.insert_account_info(
                 &middle,
                 AccountInfo::default()
@@ -671,6 +671,7 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn compiled_precompile_dispatch_uses_original_callee() {
+        use alloy_primitives::bytes;
         let sha256 = Address::with_last_byte(2);
         let delegate = Address::with_last_byte(0x33);
         let parent = Address::with_last_byte(0x44);
@@ -708,7 +709,7 @@ mod tests {
                     call_target: parent,
                     code_address: parent,
                     caller,
-                    input: hex!("01020304").into(),
+                    input: bytes!("01020304").into(),
                     code: Bytecode::new_legacy(code.into()),
                     ..Default::default()
                 };
@@ -774,6 +775,47 @@ mod tests {
             assert_eq!(Word::from_be_slice(&interpreted.1), Word::from(expected));
             assert_eq!(run(true), interpreted);
         }
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn section_gas_too_large_to_compile_falls_back_to_interpreter() {
+        let spec = SpecId::CANCUN;
+        let mut version = Version::new(spec);
+        version.gas_params.set(GasId::ExpByte, u32::MAX);
+        let backend = JitBackend::new(RuntimeConfig {
+            enabled: true,
+            blocking: true,
+            gas_params: Some(version.gas_params),
+            ..RuntimeConfig::default()
+        })
+        .unwrap();
+        let mut host = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnv::<BaseEvmTypes>::default(),
+            ethereum_tx_registry(spec),
+            InMemoryDB::default(),
+            Precompiles::base(spec),
+        );
+        // `0 ** (2^256 - 1)`: the exponent's 32 bytes cost more than `u32::MAX` gas in one section.
+        let mut code = vec![op::PUSH32];
+        code.extend([0xff; 32]);
+        code.extend([op::PUSH0, op::EXP, op::STOP]);
+        let expected_gas = 3 + 2 + 10 + 32 * u32::MAX as u64;
+        let message = MessageExt {
+            gas_limit: 2 * expected_gas,
+            code: Bytecode::new_legacy(Bytes::from(code)),
+            ..MessageExt::default()
+        };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
+
+        assert_eq!(run_interpreter(&backend, &mut interpreter, &mut host), None);
+        let stats = backend.stats();
+        assert_eq!((stats.compilations_failed, stats.interpreter_fallbacks), (1, 1));
+
+        assert_eq!(interpreter.run(&mut host).unwrap(), InstrStop::Stop);
+        assert_eq!(interpreter.gas().spent(), expected_gas);
     }
 
     #[test]
@@ -885,9 +927,9 @@ mod tests {
                     let returned = Word::from_be_slice(&compiled.0.output);
                     if descendants == 1023 {
                         let expected = if kind == MessageKind::Call {
-                            Word::from(1)
+                            Word::ONE
                         } else {
-                            Word::from_be_slice(destination.as_slice())
+                            address_to_word(&destination)
                         };
                         assert_eq!(returned, expected);
                         assert!(compiled.1);
@@ -910,9 +952,9 @@ mod tests {
 
 #[cfg(all(test, feature = "llvm"))]
 mod custom_host_tests {
-    use super::*;
+    use super::{tests::blocking_backend, *};
     use crate::runtime::{HostConfig, RuntimeConfig};
-    use alloy_primitives::{Address, Bytes, U256};
+    use alloy_primitives::{Address, B256, Bytes, U256};
     use evm2::{
         BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, ExecutionConfig, ExecutionError,
         OpcodeConfig, SpecId,
@@ -963,7 +1005,7 @@ mod custom_host_tests {
             destination: Address::repeat_byte(0x11),
             caller: Address::repeat_byte(0x22),
             value: U256::from(0x33),
-            input: Bytes::from_static(&[0x44; 32]),
+            input: Bytes::from_static(&[0x44; 32]).into(),
             code: Bytecode::new_legacy(Bytes::from_static(&[
                 op::ADDRESS,
                 op::PUSH0,
@@ -1000,8 +1042,7 @@ mod custom_host_tests {
         assert_eq!(run_interpreter(&backend, &mut compiled, &mut host), Some(InstrStop::Return));
         assert_eq!(compiled.output(), expected_output);
         assert_eq!(compiled.gas(), expected_gas);
-        let wrong =
-            JitBackend::new(RuntimeConfig { blocking: true, ..Default::default() }).unwrap();
+        let wrong = blocking_backend();
         let mut fresh = Interpreter::<CustomTypes>::new(&message);
         assert_eq!(run_interpreter(&wrong, &mut fresh, &mut host), None);
         let config = host.execution_config();
@@ -1042,7 +1083,7 @@ mod custom_host_tests {
         cx.gas.spend(7)?;
         // Rewrites existing memory, which compiled code must not assume it still knows.
         if cx.state.memory().len() >= 32 {
-            cx.state.memory().set(0, &Word::from(2_u64).to_be_bytes::<32>());
+            cx.state.memory().set(0, B256::with_last_byte(2).as_slice());
         }
         *out = Word::from(0xbeef_u64);
     }

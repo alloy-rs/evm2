@@ -17,13 +17,17 @@ use evm2::{
 };
 use evm2_jit_builtins::gas;
 
-/// `KECCAK256` opcode gas cost (base + dynamic).
-const fn keccak256_cost(len: u64) -> Option<u64> {
-    let words = len.div_ceil(32);
-    match words.checked_mul(gas::KECCAK256WORD as u64) {
-        Some(dyn_cost) => Some((gas::KECCAK256 as u64).saturating_add(dyn_cost)),
+/// Opcode gas cost of `base` plus `per_word` for each 32-byte word of `len`.
+const fn word_cost(base: u64, per_word: u64, len: u64) -> Option<u64> {
+    match len.div_ceil(32).checked_mul(per_word) {
+        Some(dyn_cost) => Some(base.saturating_add(dyn_cost)),
         None => None,
     }
+}
+
+/// `KECCAK256` opcode gas cost (base + dynamic).
+const fn keccak256_cost(len: u64) -> Option<u64> {
+    word_cost(gas::KECCAK256 as u64, gas::KECCAK256WORD as u64, len)
 }
 
 /// `LOG` opcode gas cost (base + topics + dynamic).
@@ -38,11 +42,7 @@ const fn log_cost(n_topics: u8, len: u64) -> Option<u64> {
 
 /// `CALLDATACOPY`, `CODECOPY`, `RETURNDATACOPY` opcode gas cost (base + dynamic).
 const fn verylowcopy_cost(len: u64) -> Option<u64> {
-    let words = len.div_ceil(32);
-    match words.checked_mul(gas::COPY as u64) {
-        Some(dyn_cost) => Some((gas::VERYLOW as u64).saturating_add(dyn_cost)),
-        None => None,
-    }
+    word_cost(gas::VERYLOW as u64, gas::COPY as u64, len)
 }
 
 #[macro_use]
@@ -53,6 +53,8 @@ mod meta;
 mod fibonacci;
 
 mod entry_stack;
+
+mod large_section_gas;
 
 mod runner;
 pub use runner::*;
@@ -796,8 +798,8 @@ tests! {
             ].concat()),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // A return through `JUMPI` whose condition is opaque and whose target has two callers.
@@ -838,7 +840,7 @@ tests! {
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Jumps into a table whose index the analysis only knows to be at most 3.
@@ -846,8 +848,8 @@ tests! {
             bytecode: &asm(&range_jump_table(2)),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x22).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x22).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x22).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x22).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         range_jump_table_non_jumpdest_entry(@raw {
@@ -896,8 +898,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Like the above, but pc 0 is a `JUMPDEST` and one caller passes 0, so the condition
@@ -939,8 +941,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x07).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x07).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x07).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x07).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // The constant folding budget runs out between the fixpoint and the snapshot pass: 20
@@ -975,8 +977,8 @@ tests! {
             inspect_stack: Some(false),
             gas_limit: 1_000_000,
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Here the budget runs out before the fold inside `b` in the snapshot pass: the fixpoint
@@ -1010,8 +1012,8 @@ tests! {
             inspect_stack: Some(false),
             gas_limit: 1_000_000,
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // A function returns to pc 0, which is a `JUMPDEST`, so the entry block is also a
@@ -1043,8 +1045,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // An unreached block ends in a `JUMPI` with an opaque target; it must not disturb the
@@ -1077,8 +1079,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // A function pointer chosen by `JUMPI`, called through a shared call block, where the
@@ -1123,8 +1125,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0xf0).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0xf0).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0xf0).as_slice(),
+            expected_output: Some(B256::with_last_byte(0xf0).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // EXP folds to 1 in both call contexts, but its exponent differs, so its gas does too.
@@ -1227,8 +1229,8 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(140).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(140).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(140).as_slice(),
+            expected_output: Some(B256::with_last_byte(140).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // One caller passes an invalid return address, so the return must stay dynamic and
@@ -1281,8 +1283,8 @@ tests! {
             spec_id: SpecId::AMSTERDAM,
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Same with `DUPN` copying the deep return address.
@@ -1315,8 +1317,8 @@ tests! {
             spec_id: SpecId::AMSTERDAM,
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
-            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_memory: B256::with_last_byte(0x42).as_slice(),
+            expected_output: Some(B256::with_last_byte(0x42).as_slice()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Two callers of a function that moves its return address with `EXCHANGE`.
@@ -1364,7 +1366,7 @@ tests! {
             bytecode: &asm(&binary_choice_chain(11)),
             inspect_stack: Some(false),
             modify_message: Some(|message| {
-                message.input = Bytes::from_static(&[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]);
+                message.input = Bytes::from_static(&[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]).into();
             }),
             expected_return: InstrStop::Return,
             expected_memory: &U256::from(606).to_be_bytes::<32>(),
@@ -1843,6 +1845,13 @@ tests! {
             expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, DEF_GAS_LIMIT_U256 - 122_U256],
             expected_gas: 2 + 3 + 3 + 110 + 2 + 2,
         }),
+        // A constant exponent above 2 lowers to a gas-free builtin: its dynamic gas (10 + 50 * 2)
+        // is charged up front with the section, once.
+        gas_around_const_exponent_pow(@raw {
+            bytecode: &[op::GAS, op::PUSH2, 1, 0, op::ADDRESS, op::EXP, op::POP, op::GAS],
+            expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, DEF_GAS_LIMIT_U256 - 121_U256],
+            expected_gas: 2 + 3 + 2 + 110 + 2 + 2,
+        }),
         // `SLOAD` ends the gas section, so only its base gas is owed by the first `GAS`.
         gas_around_sload(@raw {
             bytecode: &[op::GAS, op::PUSH1, 69, op::SLOAD, op::GAS],
@@ -2116,13 +2125,12 @@ tests! {
             expected_return: InstrStop::InvalidOperandOOG,
         }),
         mload_const_offset_too_large(@raw {
-            bytecode: &{
-                let mut code = Vec::new();
-                code.push(op::PUSH9);
-                code.extend_from_slice(&0x1_0000_0000_0000_0000_U256.to_be_bytes::<32>()[23..]);
-                code.push(op::MLOAD);
-                code
-            },
+            bytecode: &[
+                &[op::PUSH9][..],
+                &0x1_0000_0000_0000_0000_U256.to_be_bytes::<32>()[23..],
+                &[op::MLOAD][..],
+            ]
+            .concat(),
             expected_return: InstrStop::InvalidOperandOOG,
         }),
         mstore1(@raw {
@@ -2526,7 +2534,7 @@ tests! {
             assert_host: Some(|host| {
                 assert_eq!(host.logs, [Log {
                     address: DEF_ADDR,
-                    data: LogData::new(vec![], Bytes::copy_from_slice(&0x6942_U256.to_be_bytes::<32>())).unwrap(),
+                    data: LogData::new(vec![], Bytes::from(0x6942_U256.to_be_bytes::<32>())).unwrap(),
                 }]);
             }),
         }),
@@ -2554,7 +2562,7 @@ tests! {
                     address: DEF_ADDR,
                     data: LogData::new(
                         vec![0xffffffffffffffffffffffffffffffffffffffff_U256.into()],
-                        Bytes::copy_from_slice(&[0; 50]),
+                        Bytes::from([0; 50]),
                     ).unwrap(),
                 }]);
             }),
@@ -3024,7 +3032,7 @@ tests! {
             ],
             spec_id: SpecId::CANCUN,
             modify_message: Some(|message| {
-                message.input = Bytes::copy_from_slice(&U256::from(0x68).to_be_bytes::<32>());
+                message.input = Bytes::from(B256::with_last_byte(0x68)).into();
                 message.value = U256::from(10);
             }),
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
@@ -3318,9 +3326,9 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x2a).to_be_bytes::<32>(),
+            expected_memory: B256::with_last_byte(0x2a).as_slice(),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_output: Some(&U256::from(0x2a).to_be_bytes::<32>()),
+            expected_output: Some(B256::with_last_byte(0x2a).as_slice()),
         }),
 
         // Same class of bug but triggered by a deduped reachable JUMPDEST block rather than
@@ -3369,9 +3377,9 @@ tests! {
             "),
             inspect_stack: Some(false),
             expected_return: InstrStop::Return,
-            expected_memory: &U256::from(0x2a).to_be_bytes::<32>(),
+            expected_memory: B256::with_last_byte(0x2a).as_slice(),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_output: Some(&U256::from(0x2a).to_be_bytes::<32>()),
+            expected_output: Some(B256::with_last_byte(0x2a).as_slice()),
         }),
 
         dedup_false_jumpi_non_jumpdest_fallthrough(@raw {
@@ -3527,7 +3535,7 @@ tests! {
             spec_id: SpecId::ISTANBUL,
             modify_message: Some(|message| {
                 message.value = 1_U256;
-                message.input = Bytes::from(&hex!("c0406226"));
+                message.input = alloy_primitives::bytes!("c0406226").into();
             }),
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
@@ -3619,7 +3627,7 @@ tests! {
             modify_message: Some(|message| {
                 let mut input = [0; 96];
                 input[63] = 1;
-                message.input = Bytes::copy_from_slice(&input);
+                message.input = Bytes::from(input).into();
             }),
             inspect_stack: Some(false),
             expected_return: InstrStop::Stop,

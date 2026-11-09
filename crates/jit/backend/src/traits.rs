@@ -134,6 +134,9 @@ pub enum Attribute {
     AlwaysInline,
     NoInline,
     Speculatable,
+    /// `"probe-stack"="inline-asm"` — touches every page of a frame larger than a page, so that
+    /// a stack overflow faults on the guard page instead of skipping past it.
+    InlineStackProbes,
 
     // Parameter attributes.
     NoAlias,
@@ -294,7 +297,6 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn switch_to_block(&mut self, block: Self::BasicBlock);
     fn seal_block(&mut self, block: Self::BasicBlock);
     fn seal_all_blocks(&mut self);
-    fn set_current_block_cold(&mut self);
     fn current_block(&mut self) -> Option<Self::BasicBlock>;
     fn block_addr(&mut self, block: Self::BasicBlock) -> Option<Self::Value>;
 
