@@ -5137,4 +5137,66 @@ mod tests {
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output[..], [0xaa; 32]);
     }
+
+    #[test]
+    fn initialize_hook_message_keeps_caller_memory() {
+        const CALLEE: Address = Address::with_last_byte(0xca);
+
+        struct SendOnInitialize;
+
+        impl Inspector<BaseEvmTypes> for SendOnInitialize {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.message().destination == CALLEE {
+                    let mut message = precompile_message(INNER_TEST_PRECOMPILE);
+                    message.depth = interp.message().depth + 1;
+                    Host::execute_message(interp.host(), &mut message).unwrap();
+                }
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.destination == INNER_TEST_PRECOMPILE {
+                    let memory = interp.memory_mut();
+                    memory.resize(0, 1 << 20).unwrap();
+                    memory.set(0, &[0xbb; 64]);
+                }
+                None
+            }
+        }
+
+        let precompiles = precompiles_with([test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
+            Ok(PrecompileOutput::new(Bytes::new()))
+        })]);
+        let mut database = InMemoryDB::default();
+        let echo = [
+            op::CALLDATASIZE,
+            op::PUSH0,
+            op::PUSH0,
+            op::CALLDATACOPY,
+            op::CALLDATASIZE,
+            op::PUSH0,
+            op::RETURN,
+        ];
+        database
+            .insert_account_info(&CALLEE, AccountInfo::default().with_code(legacy_bytecode(echo)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            precompiles,
+        );
+        evm.set_inspector(SendOnInitialize);
+        let code = memory_input_call_code(CALLEE, op::CALL);
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
+
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
+
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(result.output[..], [0xaa; 32]);
+    }
 }
