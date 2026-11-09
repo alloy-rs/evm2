@@ -1889,16 +1889,6 @@ mod tests {
         code
     }
 
-    /// The identity precompile, which returns its input.
-    const IDENTITY: Address = Address::with_last_byte(4);
-
-    /// A call hook borrows the input through the caller's memory instead of getting a copy, and a
-    /// hook that writes that memory without replacing the input changes what the callee reads, as
-    /// in revm.
-    ///
-    /// The caller stores `0xaa` bytes at memory 0..32 and calls an echo account (and the identity
-    /// precompile) with them as input. The hook checks it sees them, then overwrites them with
-    /// `0xbb`: the callee echoes `0xbb`.
     #[test]
     fn call_hook_overwriting_caller_memory_changes_child_input() {
         struct OverwriteCallerMemory;
@@ -1909,9 +1899,8 @@ mod tests {
                 interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
-                // Depth 0 is the top-level call, whose input owns its bytes.
                 if message.depth > 0 {
-                    // The input is memory 0..32 of the caller, which is `interp` here.
+                    // The input is a range of the caller's memory, read through the caller.
                     assert_eq!(message.input.caller_memory(), Some(0..32));
                     assert_eq!(message.input.len(), 32);
                     assert_eq!(message.input.as_bytes(interp.memory()), [0xaa; 32]);
@@ -1926,14 +1915,13 @@ mod tests {
                 message: &Message<BaseEvmTypes>,
                 _result: &mut MessageResult<BaseEvmTypes>,
             ) {
-                // After the call the input still reads the caller's memory, now overwritten.
                 if message.depth > 0 {
                     assert_eq!(message.input.to_bytes(interp.memory())[..], [0xbb; 32]);
                 }
             }
         }
 
-        for target in [ECHO, IDENTITY] {
+        for target in [ECHO, Address::with_last_byte(4)] {
             let (result, _, _) = run_evm_with_inspector_db(
                 echo_db(),
                 memory_input_call_code(target, op::CALL),
@@ -1943,16 +1931,10 @@ mod tests {
             );
 
             assert_matches!(result.stop, InstrStop::Return);
-            assert_eq!(result.output[..], [0xbb; 32], "{target} reads the overwritten memory");
+            assert_eq!(result.output[..], [0xbb; 32], "{target}");
         }
     }
 
-    /// A call hook changes the input by copying it out and assigning an owned input: the callee
-    /// reads the new input, and the caller's memory stays as it was.
-    ///
-    /// The caller calls with `0xaa` bytes at memory 0..32 as input. The hook replaces the first
-    /// 16 bytes with `0xcc`: the callee echoes `0xcc` then `0xaa`, and the caller's memory
-    /// still holds `0xaa` only.
     #[test]
     fn call_hook_replacing_input_keeps_caller_memory() {
         struct ReplaceInput;
@@ -1978,14 +1960,13 @@ mod tests {
                 _result: &mut MessageResult<BaseEvmTypes>,
             ) {
                 if message.depth > 0 {
-                    assert_eq!(interp.memory().slice(0, 32), [0xaa; 32], "caller memory unchanged");
-                    // An owned input derefs to its bytes, in hooks too.
+                    assert_eq!(interp.memory().slice(0, 32), [0xaa; 32]);
                     assert_eq!(&message.input[..16], [0xcc; 16]);
                 }
             }
         }
 
-        for target in [ECHO, IDENTITY] {
+        for target in [ECHO, Address::with_last_byte(4)] {
             let (result, _, _) = run_evm_with_inspector_db(
                 echo_db(),
                 memory_input_call_code(target, op::CALL),
@@ -1995,16 +1976,11 @@ mod tests {
             );
 
             assert_matches!(result.stop, InstrStop::Return);
-            assert_eq!(result.output[..16], [0xcc; 16], "{target} reads the replaced bytes");
-            assert_eq!(result.output[16..], [0xaa; 16], "{target} reads the rest unchanged");
+            assert_eq!(result.output[..16], [0xcc; 16], "{target}");
+            assert_eq!(result.output[16..], [0xaa; 16], "{target}");
         }
     }
 
-    /// `call_with` copies the input before its `before` hook, so a hook that overwrites the
-    /// caller's memory does not change what the callee reads.
-    ///
-    /// [`overwriting_call`] overwrites memory 0..32 with `0xbb` in `before`: the echo account
-    /// still returns the `0xaa` input.
     #[test]
     fn call_with_hook_overwriting_caller_memory_keeps_child_input() {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
@@ -2022,11 +1998,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_matches!(result.stop, InstrStop::Return);
-        assert_eq!(
-            result.output[..],
-            [0xaa; 32],
-            "the callee reads the copy taken before the hook"
-        );
+        assert_eq!(result.output[..], [0xaa; 32]);
     }
 
     #[test]
