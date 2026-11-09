@@ -1,4 +1,4 @@
-use crate::precompiles::{installed_crypto, secp256k1::ecrecover_bytes};
+use crate::precompiles::crypto;
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, TxEip7702, TxType};
 use alloy_eips::{
@@ -266,13 +266,9 @@ impl Transaction for LazyTxEip7702 {
     }
 }
 
-/// Recovers the authority of a signed authorization like the ecrecover precompile does, instead
-/// of with whichever backend alloy-primitives was built with.
-///
-/// Uses the installed [`Crypto`](crate::precompiles::Crypto) provider if there is one, so zkVM
-/// guests get their accelerated secp256k1, and the precompile's feature-selected backend
-/// otherwise. It doesn't initialize the global provider, so a later
-/// [`install_crypto`](crate::precompiles::install_crypto) still succeeds.
+/// Recovers the authority of a signed authorization with the installed
+/// [`Crypto`](crate::precompiles::Crypto) provider, like the ecrecover precompile does, instead of
+/// whichever backend alloy-primitives was built with.
 ///
 /// Keeps the checks of [`SignedAuthorization::recover_authority`]: the y-parity must be 0 or 1,
 /// `s` must not exceed secp256k1n/2, and the backend rejects a zero or out-of-range `r` or `s`.
@@ -282,12 +278,9 @@ fn recover_authority(authorization: &SignedAuthorization) -> Option<Address> {
         return None;
     }
     let rsy = signature.as_rsy();
-    let (sig, recid, msg) = (rsy.first_chunk()?, rsy[64], authorization.signature_hash());
-    let hash = match installed_crypto() {
-        Some(crypto) => crypto.secp256k1_ecrecover(sig, recid, &msg).ok()?,
-        None => ecrecover_bytes(sig, recid, &msg)?,
-    };
-    Some(Address::from_word(hash.into()))
+    let hash =
+        crypto().secp256k1_ecrecover(rsy.first_chunk()?, rsy[64], &authorization.signature_hash());
+    Some(Address::from_word(hash.ok()?.into()))
 }
 
 #[cfg(test)]
