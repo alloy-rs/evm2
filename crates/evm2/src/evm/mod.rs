@@ -458,6 +458,21 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         ExecutionGuard { evm: self, was_running }
     }
 
+    /// Counts a message as executing until the guard drops, also when it unwinds.
+    #[inline]
+    const fn enter_message(&mut self) -> MessageGuard<'_, 'a, T> {
+        self.active_messages += 1;
+        MessageGuard { evm: self }
+    }
+
+    /// Restores [`Self::initial_call_depth`] when the guard drops, also when it unwinds, so a
+    /// depth a transaction handler sets applies to its own transaction only.
+    #[inline]
+    const fn scope_initial_call_depth(&mut self) -> InitialCallDepthGuard<'_, 'a, T> {
+        let initial_call_depth = self.initial_call_depth;
+        InitialCallDepthGuard { evm: self, initial_call_depth }
+    }
+
     /// Returns the transaction handler registry.
     #[inline]
     pub const fn registry(&self) -> &TxRegistry<T, TxResult<T>> {
@@ -1223,6 +1238,29 @@ impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     }
 }
 
+struct MessageGuard<'guard, 'evm, T: EvmTypesHost> {
+    evm: &'guard mut Evm<'evm, T>,
+}
+
+impl<'guard, 'evm, T: EvmTypesHost> Drop for MessageGuard<'guard, 'evm, T> {
+    #[inline]
+    fn drop(&mut self) {
+        self.evm.active_messages -= 1;
+    }
+}
+
+struct InitialCallDepthGuard<'guard, 'evm, T: EvmTypesHost> {
+    evm: &'guard mut Evm<'evm, T>,
+    initial_call_depth: u16,
+}
+
+impl<'guard, 'evm, T: EvmTypesHost> Drop for InitialCallDepthGuard<'guard, 'evm, T> {
+    #[inline]
+    fn drop(&mut self) {
+        self.evm.initial_call_depth = self.initial_call_depth;
+    }
+}
+
 /// The concrete types of the erased database, precompile provider, and inspector.
 #[cfg(feature = "async")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1297,12 +1335,11 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[inline]
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let initial_call_depth = self.initial_call_depth;
-        let guard = self.enter_execution();
+        let depth_guard = self.scope_initial_call_depth();
+        let guard = depth_guard.evm.enter_execution();
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
-        // A depth a handler sets applies to its own transaction only.
-        self.initial_call_depth = initial_call_depth;
+        drop(depth_guard);
         if result.is_err() {
             self.state.clear_transaction_state();
         }
@@ -1327,12 +1364,13 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     ///
     /// Uses the active validation rules; callers must configure any pool-specific relaxations.
     pub fn validate_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<()> {
-        let initial_call_depth = self.initial_call_depth;
-        let result = self
+        let depth_guard = self.scope_initial_call_depth();
+        let evm = &mut *depth_guard.evm;
+        let result = evm
             .registry
             .try_get_by_type(tx.ty())
-            .and_then(|handler| handler.validate(tx.as_recovered_ref(), self));
-        self.initial_call_depth = initial_call_depth;
+            .and_then(|handler| handler.validate(tx.as_recovered_ref(), evm));
+        drop(depth_guard);
         self.state.clear_transaction_state();
         result
     }
@@ -1888,10 +1926,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         result: MessageResult<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         if self.inspector.is_some() {
-            self.active_messages += 1;
-            let result = self.execute_message_inspected(message, Some(result));
-            self.active_messages -= 1;
-            return result;
+            return self.enter_message().evm.execute_message_inspected(message, Some(result));
         }
         Ok(result)
     }
@@ -2035,13 +2070,13 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let checkpoint = self.state.checkpoint();
-        self.active_messages += 1;
-        let result = if self.inspector.is_some() {
-            self.execute_message_inspected(message, None)
+        let guard = self.enter_message();
+        let result = if guard.evm.inspector.is_some() {
+            guard.evm.execute_message_inspected(message, None)
         } else {
-            self.execute_message_impl(message)
+            guard.evm.execute_message_impl(message)
         };
-        self.active_messages -= 1;
+        drop(guard);
         if result.is_err() {
             self.state.rollback(checkpoint, self.features);
         }
@@ -5282,6 +5317,57 @@ mod tests {
         assert_eq!(evm.initial_call_depth(), 3);
         assert!(evm.transact(&test_tx(0)).is_err());
         assert_eq!(evm.initial_call_depth(), 3);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn set_initial_call_depth_survives_panics() {
+        struct PanickingInspector;
+
+        impl Inspector<BaseEvmTypes> for PanickingInspector {
+            fn step(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                panic!("inspector panicked");
+            }
+        }
+
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    req.host.set_initial_call_depth(5);
+                    panic!("transaction handler panicked")
+                },
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        evm.set_inspector(PanickingInspector);
+        let mut message = MessageExt {
+            gas_limit: 30_000,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..MessageExt::default()
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Host::execute_message(&mut evm, &mut message)
+        }));
+        assert!(result.is_err());
+        let _ = evm.clear_inspector();
+        evm.set_initial_call_depth(3);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact(&test_tx(0));
+        }));
+        assert!(result.is_err());
+        assert_eq!(evm.initial_call_depth(), 3);
+        evm.set_initial_call_depth(0);
     }
 
     #[test]
