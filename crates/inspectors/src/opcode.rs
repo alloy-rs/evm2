@@ -67,16 +67,6 @@ impl OpcodeGasInspector {
         })
     }
 
-    /// Drops the steps a frame that ended left pending.
-    ///
-    /// A step that an inspector stopped in `step` never receives `step_end`, so it would pair
-    /// with a step of the parent frame.
-    fn end_frame(&mut self, depth: u16) {
-        while self.pending_steps.last().is_some_and(|pending| pending.depth >= depth) {
-            self.pending_steps.pop();
-        }
-    }
-
     /// Helper function to exclude child gas from opcode gas tracking.
     /// This prevents call/create opcodes from including the gas consumed within the call/create.
     fn exclude_child_gas(&mut self, opcode_value: u8, child_gas_used: u64) {
@@ -87,6 +77,16 @@ impl OpcodeGasInspector {
             && pending.opcode == Some(opcode)
         {
             pending.child_gas_used = pending.child_gas_used.saturating_add(child_gas_used);
+        }
+    }
+
+    /// Drops the steps a frame that ended left pending.
+    ///
+    /// A step that an inspector stopped in `step` never receives `step_end`, so it would pair
+    /// with a step of the parent frame.
+    fn end_frame(&mut self, depth: u16) {
+        while self.pending_steps.last().is_some_and(|pending| pending.depth >= depth) {
+            self.pending_steps.pop();
         }
     }
 }

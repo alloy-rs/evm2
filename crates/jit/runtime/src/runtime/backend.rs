@@ -720,9 +720,13 @@ impl BackendState {
         bytecode: Bytes,
         waiters: Vec<SyncNotifier>,
     ) {
-        let mut waiters = waiters.into_iter();
-        let first = waiters.next().unwrap_or(SyncNotifier::none());
-        self.try_admit(CompilationKind::Aot, key, bytecode.clone(), first, AdmitMode::Explicit);
+        self.try_admit(
+            CompilationKind::Aot,
+            key,
+            bytecode.clone(),
+            SyncNotifier::none(),
+            AdmitMode::Explicit,
+        );
         for waiter in waiters {
             self.try_admit(
                 CompilationKind::Aot,

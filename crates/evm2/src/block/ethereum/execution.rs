@@ -214,7 +214,7 @@ pub fn commit_detached_transaction<T: EvmTypes>(
     output: TxResultWithState<T>,
 ) -> TxResult<T> {
     let TxResultWithState { result, pending_state, .. } = output;
-    accumulate_pending_state(block_state, on_state_update, &pending_state);
+    accumulate_account_changes(block_state, on_state_update, pending_state.account_changes());
     // Reattach the finalized transaction so evm2 retains its account capacity and recycles
     // storage maps for the next transaction instead of dropping the detached allocations.
     evm.state_mut().set_pending_state(pending_state);
@@ -229,16 +229,8 @@ pub fn commit_pending_state<T: EvmTypes>(
     on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     pending_state: &evm2::evm::PendingState,
 ) {
-    accumulate_pending_state(block_state, on_state_update, pending_state);
-    evm.overlay_db_mut().commit_pending(pending_state);
-}
-
-fn accumulate_pending_state(
-    block_state: &mut BlockState,
-    on_state_update: Option<&mut impl FnMut(StateUpdate)>,
-    pending_state: &evm2::evm::PendingState,
-) {
     accumulate_account_changes(block_state, on_state_update, pending_state.account_changes());
+    evm.overlay_db_mut().commit_pending(pending_state);
 }
 
 /// Commits account changes into the block state and, when a hook is installed, streams them to it
@@ -248,17 +240,15 @@ fn accumulate_account_changes<'c>(
     on_state_update: Option<&mut impl FnMut(StateUpdate)>,
     account_changes: impl Iterator<Item = AccountChanges<'c>>,
 ) {
-    let Some(on_state_update) = on_state_update else {
-        for changes in account_changes {
-            block_state.commit_account_changes(changes, None);
-        }
-        return;
-    };
-    let mut update = StateUpdate::default();
+    let mut update = on_state_update.is_some().then(StateUpdate::default);
     for changes in account_changes {
-        block_state.commit_account_changes(changes, Some(&mut update));
+        block_state.commit_account_changes(changes, update.as_mut());
     }
-    send_state_update(update, on_state_update);
+    if let Some(update) = update
+        && let Some(on_state_update) = on_state_update
+    {
+        send_state_update(update, on_state_update);
+    }
 }
 
 /// Runs the EIP-2935 and EIP-4788 pre-block system calls.
@@ -491,7 +481,7 @@ fn commit_state_changes<T: EvmTypes>(
         let Ok(()) = evm.overlay_db_mut().account(change);
         pending_state.insert_account(*address, original.clone(), current.clone());
     }
-    accumulate_pending_state(block_state, on_state_update, &pending_state);
+    accumulate_account_changes(block_state, on_state_update, pending_state.account_changes());
 }
 
 /// Drains the DAO accounts into the refund beneficiary. Runs before the block's transactions.

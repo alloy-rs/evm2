@@ -1238,16 +1238,11 @@ impl<T: EvmTypesHost> RunnerSlot<T> {
     /// Reclassifies the runner for `config`.
     #[inline]
     fn refresh(&mut self, config: &ExecutionConfig<T>) {
-        let supported = match self {
-            Self::Empty => return,
-            Self::Unsupported(runner) | Self::Active(runner) => runner.supports(config),
-        };
-        // `supports` ran above, so an unwinding runner leaves the slot untouched.
-        *self = match core::mem::replace(self, Self::Empty) {
-            Self::Unsupported(runner) | Self::Active(runner) if supported => Self::Active(runner),
-            Self::Unsupported(runner) | Self::Active(runner) => Self::Unsupported(runner),
-            Self::Empty => Self::Empty,
-        };
+        let (Self::Unsupported(runner) | Self::Active(runner)) = &*self else { return };
+        // `supports` runs before the slot changes, so an unwinding runner leaves it untouched.
+        let supported = runner.supports(config);
+        let runner = Arc::clone(runner);
+        *self = if supported { Self::Active(runner) } else { Self::Unsupported(runner) };
     }
 
     /// Removes the runner.

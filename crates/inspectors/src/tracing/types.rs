@@ -387,16 +387,15 @@ impl CallTraceNode {
 
     /// If the trace is a selfdestruct, returns the `CallFrame` for a geth call trace
     pub fn geth_selfdestruct_call_trace(&self) -> Option<CallFrame> {
-        self.is_selfdestruct().then(|| CallFrame {
-            typ: "SELFDESTRUCT".to_string(),
-            from: self
-                .trace
-                .selfdestruct
-                .map(|selfdestruct| selfdestruct.address)
-                .unwrap_or_default(),
-            to: self.trace.selfdestruct.map(|selfdestruct| selfdestruct.refund_target),
-            value: self.trace.selfdestruct.map(|selfdestruct| selfdestruct.value),
-            ..Default::default()
+        self.is_selfdestruct().then(|| {
+            let selfdestruct = self.trace.selfdestruct;
+            CallFrame {
+                typ: "SELFDESTRUCT".to_string(),
+                from: selfdestruct.map(|selfdestruct| selfdestruct.address).unwrap_or_default(),
+                to: selfdestruct.map(|selfdestruct| selfdestruct.refund_target),
+                value: selfdestruct.map(|selfdestruct| selfdestruct.value),
+                ..Default::default()
+            }
         })
     }
 
