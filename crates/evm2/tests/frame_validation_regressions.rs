@@ -836,8 +836,9 @@ mod nonces {
     use super::*;
 
     use alloy_consensus::{TxEip8141, transaction::Recovered};
-    use alloy_eips::eip8141::{
-        Frame, FrameLimits, FrameMode, FrameStatus, NONCE_MANAGER, nonce_keys_hash, nonce_slot,
+    use alloy_eips::{
+        eip8141::{Frame, FrameLimits, FrameMode, FrameStatus},
+        eip8250::{NONCE_MANAGER, nonce_keys_hash, nonce_slot},
     };
     use alloy_primitives::{Address, Bytes, U256};
     use common::{APPROVE_BOTH, BODY, SENDER, stored};

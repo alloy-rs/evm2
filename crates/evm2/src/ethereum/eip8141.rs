@@ -23,9 +23,9 @@ use alloy_eips::{
     eip4844::{DATA_GAS_PER_BLOB, VERSIONED_HASH_VERSION_KZG},
     eip8141::{
         ENTRY_POINT, Eip8141Error, FRAME_TX_INTRINSIC_COST, FRAME_TX_PER_FRAME_COST, Frame,
-        FrameGasUsed, FrameMode, FrameReceipt, FrameStatus, MAX_FRAMES, MAX_NONCE_KEYS,
-        NONCE_MANAGER, SignatureScheme, nonce_calldata, nonce_slot, validate_nonce_keys,
+        FrameGasUsed, FrameMode, FrameReceipt, FrameStatus, MAX_FRAMES, SignatureScheme,
     },
+    eip8250::{MAX_NONCE_KEYS, NONCE_MANAGER, nonce_calldata, nonce_slot, validate_nonce_keys},
 };
 use alloy_primitives::{Address, B256, Bytes, U256};
 use core::marker::PhantomData;
@@ -423,7 +423,7 @@ fn validate_structure(tx: &TxEip8141, placeholders: bool, assertions: bool) -> H
     if tx.frames.iter().any(Frame::has_reserved_flags) {
         return Err(invalid(FrameTransactionError::ReservedFrameFlag));
     }
-    if !assertions && tx.frames.iter().any(Frame::is_assertion) {
+    if !assertions && tx.frames.iter().any(Frame::is_assert) {
         return Err(invalid(FrameTransactionError::AssertionsNotActive));
     }
     if !alloy_eips::eip8141::has_valid_assertion_suffix(&tx.frames) {
@@ -435,10 +435,10 @@ fn validate_structure(tx: &TxEip8141, placeholders: bool, assertions: bool) -> H
         if frame.mode != FrameMode::Sender && !frame.value.is_zero() {
             return Err(invalid(FrameTransactionError::ValueTransferNotAllowed));
         }
-        if frame.is_assertion() && frame.is_atomic_batch() {
+        if frame.is_assert() && frame.is_atomic_batch() {
             return Err(invalid(FrameTransactionError::AtomicAssertion));
         }
-        if frame.is_assertion() && previous_atomic {
+        if frame.is_assert() && previous_atomic {
             return Err(invalid(FrameTransactionError::AtomicBatchEndsOnAssertion));
         }
         if frame.allowed_scope().allows_execution() && frame.resolved_target(tx.sender) != tx.sender

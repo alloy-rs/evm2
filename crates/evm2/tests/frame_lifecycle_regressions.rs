@@ -3,9 +3,12 @@
 mod common;
 
 use alloy_consensus::TxEip8141;
-use alloy_eips::eip8141::{
-    Frame, FrameLimits, FrameMode, FrameSignature, FrameStatus, NONCE_MANAGER, SignatureMessage,
-    SignatureScheme, nonce_slot,
+use alloy_eips::{
+    eip8141::{
+        Frame, FrameLimits, FrameMode, FrameSignature, FrameStatus, SignatureMessage,
+        SignatureScheme,
+    },
+    eip8250::{NONCE_MANAGER, nonce_slot},
 };
 use alloy_primitives::{Address, B256, U256};
 use common::{APPROVE_BOTH, BODY, SENDER, recovered, set_version, stored};
@@ -570,8 +573,9 @@ mod async_validation {
     use super::*;
 
     use alloy_consensus::{TxEip8141, transaction::Recovered};
-    use alloy_eips::eip8141::{
-        FrameMode, FrameReceipt, NONCE_MANAGER, TransactionFees, nonce_slot,
+    use alloy_eips::{
+        eip8141::{FrameMode, FrameReceipt, TransactionFees},
+        eip8250::{NONCE_MANAGER, nonce_slot},
     };
     use alloy_primitives::{Address, B256, Bytes, U256};
     use common::{APPROVE_BOTH, CountingRunner, SENDER};

@@ -5,10 +5,8 @@ mod common;
 use alloy_consensus::{TxEip8141, TxLegacy, transaction::Recovered};
 use alloy_eips::{
     Typed2718,
-    eip8141::{
-        Frame, FrameMode, FrameSignature, FrameStatus, NONCE_MANAGER, SignatureMessage,
-        SignatureScheme, nonce_slot,
-    },
+    eip8141::{Frame, FrameMode, FrameSignature, FrameStatus, SignatureMessage, SignatureScheme},
+    eip8250::{NONCE_MANAGER, nonce_slot},
     eip8272::{RECENT_ROOT_ADDRESS, RECENT_ROOT_CODE, RECENT_ROOT_CODE_HASH},
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};

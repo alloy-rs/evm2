@@ -2,7 +2,8 @@
 
 use alloy_consensus::{TxEip8141, transaction::Recovered};
 use alloy_eips::{
-    eip8141::{Frame, FrameLimits, FrameMode, NONCE_MANAGER},
+    eip8141::{Frame, FrameLimits, FrameMode},
+    eip8250::NONCE_MANAGER,
     eip8272::{
         RECENT_ROOT_ADDRESS, RECENT_ROOT_CODE, RECENT_ROOT_ENTRY_DOMAIN, RECENT_ROOT_STORAGE_DOMAIN,
     },

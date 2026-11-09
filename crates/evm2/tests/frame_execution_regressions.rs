@@ -3,8 +3,9 @@
 mod common;
 
 use alloy_consensus::TxEip8141;
-use alloy_eips::eip8141::{
-    Frame, FrameMode, FrameReceipt, FrameStatus, NONCE_MANAGER, nonce_calldata, nonce_slot,
+use alloy_eips::{
+    eip8141::{Frame, FrameMode, FrameReceipt, FrameStatus},
+    eip8250::{NONCE_MANAGER, nonce_calldata, nonce_slot},
 };
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use common::{APPROVE_BOTH, BODY, SENDER, frame};
@@ -844,7 +845,10 @@ mod sequences {
     use super::*;
 
     use alloy_consensus::TxEip8141;
-    use alloy_eips::eip8141::{Frame, FrameMode, FrameStatus, NONCE_MANAGER, nonce_slot};
+    use alloy_eips::{
+        eip8141::{Frame, FrameMode, FrameStatus},
+        eip8250::{NONCE_MANAGER, nonce_slot},
+    };
     use alloy_primitives::{Address, Bytes, U256};
     use common::{APPROVE_BOTH, BODY, SENDER};
     use evm2::{

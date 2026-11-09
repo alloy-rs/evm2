@@ -2365,7 +2365,10 @@ mod tests {
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxEip8141, TxLegacy, transaction::Recovered};
     use alloy_eip7928::{BlockAccessList, StorageChange};
-    use alloy_eips::eip8141::{Frame, FrameLimits, FrameMode, NONCE_MANAGER};
+    use alloy_eips::{
+        eip8141::{Frame, FrameLimits, FrameMode},
+        eip8250::NONCE_MANAGER,
+    };
     use alloy_primitives::{Address, Bytes, Log, LogData, TxKind, U256, keccak256};
     use core::{
         error::Error,

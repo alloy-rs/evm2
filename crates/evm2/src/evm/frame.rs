@@ -15,7 +15,8 @@ use alloy_consensus::{TxEip8141, transaction::Recovered};
 use alloy_eips::{
     Typed2718,
     eip7906::TxTraceParam,
-    eip8141::{FrameMode, FrameStatus, NONCE_MANAGER, SignatureScheme, nonce_slot},
+    eip8141::{FrameMode, FrameStatus, SignatureScheme},
+    eip8250::{NONCE_MANAGER, nonce_keys_hash, nonce_slot},
 };
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, map::HashMap};
 
@@ -88,8 +89,7 @@ impl FrameTransactionRuntime {
         legacy_nonce: u64,
     ) -> Self {
         let frame_count = payload.frames.len();
-        let nonce_keys_hash =
-            payload.nonce_keys.as_deref().map(alloy_eips::eip8141::nonce_keys_hash);
+        let nonce_keys_hash = payload.nonce_keys.as_deref().map(nonce_keys_hash);
         Self {
             resolved_target: payload.sender,
             payload,
