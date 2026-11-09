@@ -135,8 +135,8 @@ fn modexp_big(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
     ///
     /// # Safety
     ///
-    /// `b`, `e` and `m` must be initialized, `m` must be `odd * 2^k` with `k > 0`, and `e` must be
-    /// positive.
+    /// `b`, `e` and `m` must be initialized, `m` must be `odd * 2^k` with `k > 0`, and `e` must
+    /// have more than `k` bits.
     unsafe fn powm_even(
         result: &mut Mpz,
         b: *const gmp::mpz_t,
@@ -150,12 +150,8 @@ fn modexp_big(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
             gmp::mpz_set_ui(pow2.as_mut_ptr(), 1);
             gmp::mpz_mul_2exp(pow2.as_mut_ptr(), pow2.as_ptr(), k);
 
-            // `y = b^e mod 2^k`.
-            if gmp::mpz_tstbit(b, 0) == 0 {
-                if gmp::mpz_cmp_ui(e, k) < 0 {
-                    gmp::mpz_powm(y.as_mut_ptr(), b, e, pow2.as_ptr());
-                }
-            } else {
+            // `y = b^e mod 2^k`, which is 0 for an even `b`.
+            if gmp::mpz_tstbit(b, 0) != 0 {
                 gmp::mpz_fdiv_r_2exp(t.as_mut_ptr(), e, k - 1);
                 gmp::mpz_powm(y.as_mut_ptr(), b, t.as_ptr(), pow2.as_ptr());
             }
@@ -194,11 +190,13 @@ fn modexp_big(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
             return Vec::new();
         }
 
+        // The split only saves work when the exponent has more than `k` bits, which also keeps
+        // the extended GCD below cheap next to the exponentiation.
         let k = gmp::mpz_scan1(m, 0);
-        if k == 0 || gmp::mpz_sgn(e) == 0 {
-            gmp::mpz_powm(result.as_mut_ptr(), b, e, m);
-        } else {
+        if k != 0 && gmp::mpz_sgn(b) != 0 && gmp::mpz_sizeinbase(e, 2) > k as usize {
             powm_even(&mut result, b, e, m, k);
+        } else {
+            gmp::mpz_powm(result.as_mut_ptr(), b, e, m);
         }
     }
 
