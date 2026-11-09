@@ -477,6 +477,8 @@ impl<'a> State<'a> {
     pub(crate) fn take_logs(&mut self) -> Vec<Log> {
         let logs = &mut self.inner.logs;
         if logs.capacity() > 4 && logs.len() <= 4 {
+            // Moves the logs into a right-sized vector and keeps the buffer; `mem::take` would not.
+            #[allow(clippy::drain_collect)]
             return logs.drain(..).collect();
         }
         let taken = mem::take(logs);
