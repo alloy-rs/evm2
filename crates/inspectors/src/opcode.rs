@@ -5,7 +5,7 @@ use alloy_rpc_types_trace::opcode::OpcodeGas;
 use evm2::{
     EvmTypesHost, Inspector,
     interpreter::{
-        Interpreter, Message, MessageKind, MessageResult,
+        Host, Interpreter, Message, MessageKind, MessageResult,
         opcode::{OpCode, op},
     },
 };
@@ -117,7 +117,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        if message.depth == interp.version().initial_call_depth {
+        if message.depth == interp.host().initial_call_depth() {
             // skip the root call
             return;
         }
@@ -142,7 +142,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        if message.depth == interp.version().initial_call_depth {
+        if message.depth == interp.host().initial_call_depth() {
             // skip the root create
             return;
         }

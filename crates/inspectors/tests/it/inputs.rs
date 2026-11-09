@@ -3,9 +3,8 @@
 use crate::utils::{AccountInfo, Bytecode, SpecId, TransactTo, TxEnv};
 use alloy_primitives::{Address, Bytes, U256, bytes, hex};
 use evm2::{
-    BaseEvmTypes, Evm, ExecutionConfig, Inspector, Precompiles, Version,
-    constants::CALL_DEPTH_LIMIT, ethereum::ethereum_tx_registry, evm::InMemoryDB,
-    interpreter::opcode::op,
+    BaseEvmTypes, Evm, Inspector, Precompiles, constants::CALL_DEPTH_LIMIT,
+    ethereum::ethereum_tx_registry, evm::InMemoryDB, interpreter::opcode::op,
 };
 use evm2_inspectors::{
     access_list::AccessListInspector,
@@ -283,16 +282,14 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
                         AccountInfo::default().with_code(Bytecode::new_raw(code.clone())),
                     );
                 }
-                let mut version = Version::new(SpecId::CANCUN);
-                version.initial_call_depth = initial_call_depth;
-                let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-                    ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
+                let mut evm = Evm::<BaseEvmTypes>::new(
                     SpecId::CANCUN,
                     Default::default(),
                     ethereum_tx_registry(SpecId::CANCUN),
                     db,
                     Precompiles::base(SpecId::CANCUN),
                 );
+                evm.set_initial_call_depth(initial_call_depth);
                 evm.set_inspector(inspector);
                 let tx = TxEnv {
                     caller,

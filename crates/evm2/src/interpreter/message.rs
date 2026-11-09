@@ -1,6 +1,7 @@
 use crate::{
-    BaseEvmTypes, EvmTypesHost, Version,
+    BaseEvmTypes, EvmTypesHost,
     bytecode::Bytecode,
+    constants::CALL_DEPTH_LIMIT,
     interpreter::{InstrStop, Memory, Word},
 };
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
@@ -42,7 +43,7 @@ pub struct MessageExt<E = ()> {
     /// Message kind.
     pub kind: MessageKind,
     /// Inspector-visible call depth, starting at
-    /// [`Version::initial_call_depth`](crate::Version::initial_call_depth).
+    /// [`Host::initial_call_depth`](crate::interpreter::Host::initial_call_depth).
     pub depth: u16,
     /// Gas available to this message.
     pub gas_limit: u64,
@@ -180,22 +181,23 @@ pub fn derive_create_destination(
 /// Returns the reason a create message fails before its destination is accessed, if any.
 ///
 /// `balance` and `nonce` are the creator's, and are zero for an absent account. Failures are
-/// checked in order: call depth, insufficient balance for `value`, then, for a nested create
-/// (`depth` above [`Version::initial_call_depth`]), a creator nonce at `u64::MAX` (EIP-2681). The
-/// transaction itself bumps the nonce of a top-level create, so that one skips the nonce check.
+/// checked in order: call depth (more than [`CALL_DEPTH_LIMIT`] below `initial_call_depth`),
+/// insufficient balance for `value`, then, for a nested create (`depth` above
+/// `initial_call_depth`), a creator nonce at `u64::MAX` (EIP-2681). The transaction itself bumps
+/// the nonce of a top-level create, so that one skips the nonce check.
 #[inline]
 pub fn create_preaccess_failure(
     balance: Word,
     nonce: u64,
     value: Word,
     depth: u16,
-    version: &Version,
+    initial_call_depth: u16,
 ) -> Option<InstrStop> {
-    if depth > version.max_call_depth() {
+    if depth.saturating_sub(initial_call_depth) > CALL_DEPTH_LIMIT {
         Some(InstrStop::CallTooDeep)
     } else if balance < value {
         Some(InstrStop::OutOfFunds)
-    } else if depth > version.initial_call_depth && nonce == u64::MAX {
+    } else if depth > initial_call_depth && nonce == u64::MAX {
         Some(InstrStop::NonceOverflow)
     } else {
         None
@@ -315,22 +317,37 @@ impl From<Bytes> for MessageInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SpecId;
 
     #[test]
     fn create_preaccess_failure_order_and_nesting() {
-        let mut version = Version::new(SpecId::CANCUN);
-        version.initial_call_depth = 5;
-        let max = version.max_call_depth();
+        let initial_call_depth = 5;
+        let max = initial_call_depth + CALL_DEPTH_LIMIT;
         let check = |balance: u64, nonce: u64, value: u64, depth: u16| {
-            create_preaccess_failure(Word::from(balance), nonce, Word::from(value), depth, &version)
+            create_preaccess_failure(
+                Word::from(balance),
+                nonce,
+                Word::from(value),
+                depth,
+                initial_call_depth,
+            )
         };
 
         assert_eq!(check(0, u64::MAX, 1, max + 1), Some(InstrStop::CallTooDeep));
         assert_eq!(check(0, u64::MAX, 1, max), Some(InstrStop::OutOfFunds));
         assert_eq!(check(1, u64::MAX, 1, max), Some(InstrStop::NonceOverflow));
-        assert_eq!(check(1, u64::MAX, 1, version.initial_call_depth), None);
+        assert_eq!(check(1, u64::MAX, 1, initial_call_depth), None);
         assert_eq!(check(0, 0, 0, max), None);
+
+        // A host-supplied initial depth near `u16::MAX` must not overflow the limit.
+        let check_at = |initial_call_depth: u16, depth: u16| {
+            create_preaccess_failure(Word::ZERO, 0, Word::ZERO, depth, initial_call_depth)
+        };
+        assert_eq!(check_at(u16::MAX, u16::MAX), None);
+        assert_eq!(check_at(u16::MAX - CALL_DEPTH_LIMIT, u16::MAX), None);
+        assert_eq!(
+            check_at(u16::MAX - CALL_DEPTH_LIMIT - 1, u16::MAX),
+            Some(InstrStop::CallTooDeep)
+        );
     }
 
     #[test]
