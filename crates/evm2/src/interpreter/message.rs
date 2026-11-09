@@ -207,9 +207,10 @@ pub fn create_preaccess_failure(
 /// The input of a call instruction's message is a range of the caller frame's memory instead of a
 /// copy, since the caller waits for the call to return. The child frame reads it from there, and
 /// the inspector hooks that hold the message read it with [`as_bytes`](Self::as_bytes) and the
-/// caller's memory, which is the `interp.memory()` of the hook. To change an input, copy it out
-/// and assign an owned one, as in `message.input = bytes.into()`. A kept clone of such an input is
-/// only the range, so copy it out with [`to_bytes`](Self::to_bytes) to keep the bytes.
+/// caller's memory, which is the `interp.memory()` of the hook, and a precompile reads it with
+/// [`Evm::message_input`](crate::Evm::message_input). To change an input, copy it out and assign
+/// an owned one, as in `message.input = bytes.into()`. A kept clone of such an input is only the
+/// range, so copy it out with [`to_bytes`](Self::to_bytes) to keep the bytes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MessageInput(Repr);
 

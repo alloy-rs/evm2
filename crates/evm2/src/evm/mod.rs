@@ -1373,26 +1373,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         Ok(result)
     }
 
-    /// Returns the bytes of `message`'s input if it is a range of the caller's memory, which it
-    /// reads from the running caller frame.
-    ///
-    /// The bytes are valid until the caller frame runs again.
-    ///
-    /// # Panics
-    ///
-    /// Panics if no frame runs or the range is out of bounds of its memory, which means that the
-    /// message did not come from a call instruction that this EVM runs.
-    #[inline]
-    fn borrowed_input<'m>(&self, message: &'m Message<T>) -> Option<&'m [u8]> {
-        if message.input.as_owned().is_some() {
-            return None;
-        }
-        let caller = self.current_frame.expect("a call input must come from a running frame");
-        // SAFETY: The running frame is suspended on this call stack.
-        let memory = unsafe { trustme::decouple_lt(caller.as_ref().memory()) };
-        Some(message.input.as_bytes(memory))
-    }
-
     /// Fires the inspector call/create hooks around message execution.
     ///
     /// This is invoked for every message when an inspector is installed; hook overrides skip
@@ -1678,11 +1658,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         }
         if self.contains_precompile(message) {
-            // A precompile can send messages whose hooks write the caller's memory, so it gets a
-            // copy of a range of that memory.
-            if let Some(input) = self.borrowed_input(message) {
-                message.input = Bytes::copy_from_slice(input).into();
-            }
             return self.execute_call_precompile(checkpoint, message);
         }
         // Empty accounts complete the call without executing the bytecode's padding STOP.
@@ -1798,10 +1773,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
-        if let Some(input) = guard.evm.borrowed_input(message) {
-            // The caller frame is suspended until this frame returns, and the frame that runs
-            // next is this one, so nothing can reach the caller's memory in between.
-            interp_ref.set_input(input);
+        if message.input.as_owned().is_none() {
+            // SAFETY: The caller frame is suspended until this frame returns, and the frame that
+            // runs next is this one, so nothing can reach the caller's memory in between.
+            interp_ref.set_input(unsafe { trustme::decouple_lt(guard.evm.message_input(message)) });
         }
         interp_ref.lend_memory();
         guard.evm.inspect_initialize_interp(interp_ref);
@@ -1857,6 +1832,29 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return self.execute_message_inspected(message, Some(result));
         }
         Ok(result)
+    }
+}
+
+impl<T: EvmTypesHost> Evm<'_, T> {
+    /// Returns the bytes of `message`'s input, reading a range of the caller's memory from the
+    /// running caller frame.
+    ///
+    /// The bytes borrow the EVM, so a precompile cannot send a message, whose hooks could change
+    /// the caller's memory, while it holds them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the input is a range of memory and no frame runs or the range is out of bounds
+    /// of its memory, which means that the message did not come from a call instruction that this
+    /// EVM runs.
+    #[inline]
+    pub fn message_input<'m>(&'m self, message: &'m Message<T>) -> &'m [u8] {
+        if let Some(input) = message.input.as_owned() {
+            return input;
+        }
+        let caller = self.current_frame.expect("a call input must come from a running frame");
+        // SAFETY: The running frame is suspended on this call stack.
+        message.input.as_bytes(unsafe { caller.as_ref() }.memory())
     }
 }
 
@@ -5086,9 +5084,9 @@ mod tests {
     }
 
     #[test]
-    fn hook_writing_caller_memory_keeps_precompile_input() {
+    fn hook_resizing_caller_memory_keeps_precompile_input_readable() {
         // Grows and overwrites the caller's memory in the hook of a message that a precompile
-        // sends after it was given a range of that memory as its input.
+        // sends, after the precompile read its input from that memory.
         struct OverwriteCallerMemory;
 
         impl Inspector<BaseEvmTypes> for OverwriteCallerMemory {
@@ -5108,10 +5106,13 @@ mod tests {
 
         let precompiles = precompiles_with([
             test_precompile(TEST_PRECOMPILE, |evm, message, _| {
+                let input = Bytes::copy_from_slice(evm.message_input(message));
                 let mut child = precompile_message(INNER_TEST_PRECOMPILE);
                 child.depth = message.depth + 1;
                 Host::execute_message(evm, &mut child)?;
-                Ok(PrecompileOutput::new(message.input.as_owned().unwrap().clone()))
+                // The input is a range of the caller's memory, which the hook changed.
+                assert_eq!(evm.message_input(message), [0xbb; 32]);
+                Ok(PrecompileOutput::new(input))
             }),
             test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
                 Ok(PrecompileOutput::new(Bytes::new()))
