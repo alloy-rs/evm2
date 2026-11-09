@@ -470,8 +470,9 @@ impl<'a> State<'a> {
     ///
     /// A transaction that emitted more logs than a `Vec` first allocates for (4) leaves a buffer
     /// sized for that many for the next one, which would otherwise regrow it by doubling and
-    /// copying. If the next transaction emits few or no logs, the buffer stays for a later one and
-    /// the logs move into an exactly sized vector, so the result carries no unused capacity.
+    /// copying. If the next transaction emits four or fewer logs, they move into an exactly sized
+    /// vector and the buffer stays for a later transaction, so a light transaction after a heavy
+    /// one carries no unused capacity.
     #[inline]
     pub(crate) fn take_logs(&mut self) -> Vec<Log> {
         let logs = &mut self.inner.logs;
