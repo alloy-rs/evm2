@@ -6,7 +6,7 @@
 //! - Background JIT compilation for hot keys (threshold-based promotion).
 
 use crate::eyre::{self, WrapErr};
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 use backend::{
     Command, CompileJitRequest, EventQueue, JitObjectLinker, PrepareAotRequest, ResidentMap,
 };
@@ -291,7 +291,22 @@ impl JitBackend {
     ///
     /// In normal mode this never blocks. In [`blocking`](RuntimeConfig::blocking) mode,
     /// a miss triggers synchronous JIT compilation and the call blocks until it completes.
-    pub fn lookup(&self, mut req: LookupRequest) -> LookupDecision {
+    pub fn lookup(&self, req: LookupRequest) -> LookupDecision {
+        let LookupRequest { key, code } = req;
+        self.lookup_with(key, &code, || code.clone())
+    }
+
+    /// Like [`lookup`](Self::lookup), for a caller that holds `code` borrowed.
+    ///
+    /// `owned_code` returns the same bytes as `code`, owned. It only runs when the lookup misses
+    /// and the bytecode may be compiled, so a hit takes no reference to the bytecode.
+    #[inline]
+    pub fn lookup_with(
+        &self,
+        key: RuntimeCacheKey,
+        code: &[u8],
+        owned_code: impl FnOnce() -> Bytes,
+    ) -> LookupDecision {
         let inner = &*self.inner;
         let shared = &*inner.shared;
 
@@ -301,23 +316,27 @@ impl JitBackend {
         }
         if inner.blocking {
             cold_path();
-            return self.lookup_blocking(req);
+            return self.lookup_blocking(LookupRequest { key, code: owned_code() });
         }
-        if !inner.tuning.should_compile(&req.code) {
+        if !inner.tuning.should_compile(code) {
             cold_path();
             return LookupDecision::Unavailable(LookupMissReason::Ineligible);
         }
 
-        let decision = if let Some(program_ref) = shared.resident.try_get(&req.key).try_unwrap() {
-            let program = Arc::clone(&program_ref);
-            drop(program_ref);
-            req.code.clear();
-            LookupDecision::Compiled(program)
-        } else {
-            LookupDecision::Unavailable(LookupMissReason::NotReady)
-        };
+        let (decision, event) =
+            if let Some(program_ref) = shared.resident.try_get(&key).try_unwrap() {
+                let program = Arc::clone(&program_ref);
+                drop(program_ref);
+                // An empty bytecode marks a hit for the backend.
+                (LookupDecision::Compiled(program), LookupRequest { key, code: Bytes::new() })
+            } else {
+                (
+                    LookupDecision::Unavailable(LookupMissReason::NotReady),
+                    LookupRequest { key, code: owned_code() },
+                )
+            };
 
-        if let Err(_v) = shared.events.push(req) {
+        if let Err(_v) = shared.events.push(event) {
             cold_path();
             shared.stats.events_dropped.fetch_add(1, Ordering::Relaxed);
         }

@@ -43,9 +43,18 @@ wait-timeout.workspace = true
 wincode = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+criterion.workspace = true
 evm2-macros.workspace = true
 paste.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+[[bench]]
+name = "lookup"
+harness = false
+
+[[bench]]
+name = "builtins"
+harness = false
 
 [features]
 default = ["llvm"]
