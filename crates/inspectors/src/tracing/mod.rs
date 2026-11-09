@@ -728,6 +728,10 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
     }
 
+    fn batch_start(&mut self) {
+        self.traces.start_batch();
+    }
+
     fn call(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,

@@ -383,6 +383,10 @@ impl<T: EvmTypes> Inspector<T> for Erc7562Inspector {
         Inspector::<T>::log(&mut self.calls, log, host);
     }
 
+    fn batch_start(&mut self) {
+        Inspector::<T>::batch_start(&mut self.calls);
+    }
+
     fn call(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,

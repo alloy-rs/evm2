@@ -21,8 +21,13 @@ const INNER: Address = Address::with_last_byte(0x43);
 const REVERTER: Address = Address::with_last_byte(0x44);
 
 /// Runs each of `calls` as a top-level call of one transaction under `inspector`, returning
-/// whether each call succeeded.
-fn run_calls<I: evm2::Inspector<BaseEvmTypes>>(inspector: &mut I, calls: &[Address]) -> Vec<bool> {
+/// whether each call succeeded. With `batch_start`, the inspector is told first that the calls
+/// form a batch.
+fn run_calls<I: evm2::Inspector<BaseEvmTypes>>(
+    inspector: &mut I,
+    calls: &[Address],
+    batch_start: bool,
+) -> Vec<bool> {
     let mut db = InMemoryDB::default();
     let code = |code: &[u8]| {
         AccountInfo::default().with_code(Bytecode::new_raw(Bytes::copy_from_slice(code)))
@@ -39,6 +44,9 @@ fn run_calls<I: evm2::Inspector<BaseEvmTypes>>(inspector: &mut I, calls: &[Addre
         Precompiles::base(SpecId::CANCUN),
     );
     evm.set_inspector(inspector);
+    if batch_start {
+        evm.inspect_batch_start();
+    }
     calls
         .iter()
         .map(|&to| {
@@ -61,7 +69,7 @@ fn run_calls<I: evm2::Inspector<BaseEvmTypes>>(inspector: &mut I, calls: &[Addre
 #[test]
 fn batch_calls_share_a_synthetic_root() {
     let mut tracer = TracingInspector::new(TracingInspectorConfig::default_geth());
-    assert_eq!(run_calls(&mut tracer, &[OUTER, INNER]), [true, true]);
+    assert_eq!(run_calls(&mut tracer, &[OUTER, INNER], false), [true, true]);
 
     let nodes = tracer.traces().nodes();
     let shape: Vec<_> = nodes
@@ -102,7 +110,7 @@ fn batch_calls_share_a_synthetic_root() {
 #[test]
 fn single_top_level_call_is_the_root() {
     let mut tracer = TracingInspector::new(TracingInspectorConfig::default_geth());
-    run_calls(&mut tracer, &[OUTER]);
+    run_calls(&mut tracer, &[OUTER], false);
     let nodes = tracer.traces().nodes();
     let shape: Vec<_> = nodes.iter().map(|node| (node.parent, node.trace.address)).collect();
     assert_eq!(shape, [(None, OUTER), (Some(0), INNER)]);
@@ -111,7 +119,7 @@ fn single_top_level_call_is_the_root() {
 #[test]
 fn failed_batch_call_fails_the_root() {
     let mut tracer = TracingInspector::new(TracingInspectorConfig::default_geth());
-    assert_eq!(run_calls(&mut tracer, &[INNER, REVERTER]), [true, false]);
+    assert_eq!(run_calls(&mut tracer, &[INNER, REVERTER], false), [true, false]);
     let root = &tracer.traces().nodes()[0].trace;
     assert_eq!((root.success, root.status), (false, Some(InstrStop::Revert)));
 }
@@ -121,6 +129,42 @@ fn vm_trace_of_a_batch_running_different_code() {
     // The root used to keep the first call's step ordering and index the last call's steps.
     let mut tracer =
         TracingInspector::new(TracingInspectorConfig::default_parity().set_steps(true));
-    run_calls(&mut tracer, &[OUTER, REVERTER]);
+    run_calls(&mut tracer, &[OUTER, REVERTER], false);
     assert!(tracer.into_parity_builder().vm_trace().ops.is_empty());
+}
+
+#[test]
+fn started_batch_with_one_call_has_a_synthetic_root() {
+    let mut tracer = TracingInspector::new(TracingInspectorConfig::default_geth());
+    assert_eq!(run_calls(&mut tracer, &[OUTER], true), [true]);
+
+    let nodes = tracer.traces().nodes();
+    let shape: Vec<_> = nodes
+        .iter()
+        .map(|node| (node.parent, node.trace.depth, node.trace.address, node.children.clone()))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            (None, 0, Address::ZERO, vec![1]),
+            (Some(0), 1, OUTER, vec![2]),
+            (Some(1), 2, INNER, vec![])
+        ]
+    );
+    let (root, call) = (&nodes[0].trace, &nodes[1].trace);
+    assert_eq!((root.caller, root.success), (CALLER, true));
+    assert_eq!((root.gas_limit, root.gas_used), (call.gas_limit, call.gas_used));
+
+    let frame = tracer.geth_builder().geth_call_traces(CallConfig::default(), root.gas_used);
+    let calls: Vec<_> = frame.calls.iter().map(|call| call.to).collect();
+    assert_eq!((frame.to, calls), (Some(Address::ZERO), vec![Some(OUTER)]));
+}
+
+#[test]
+fn started_batch_records_the_same_trace_as_a_nested_one() {
+    let mut started = TracingInspector::new(TracingInspectorConfig::default_geth());
+    run_calls(&mut started, &[OUTER, INNER], true);
+    let mut nested = TracingInspector::new(TracingInspectorConfig::default_geth());
+    run_calls(&mut nested, &[OUTER, INNER], false);
+    assert_eq!(started.traces().nodes(), nested.traces().nodes());
 }

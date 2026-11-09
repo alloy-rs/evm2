@@ -10,15 +10,14 @@ use alloy_primitives::Address;
 pub struct CallTraceArena {
     /// The arena of recorded trace nodes
     pub(crate) arena: Vec<CallTraceNode>,
-    /// Whether the root is synthetic and holds the top-level calls of a transaction that runs
-    /// several of them, such as an account-abstraction batch.
+    /// What the root holds.
     #[cfg_attr(feature = "serde", serde(skip))]
-    batch: bool,
+    root: Root,
 }
 
 impl Default for CallTraceArena {
     fn default() -> Self {
-        let mut this = Self { arena: Vec::with_capacity(8), batch: false };
+        let mut this = Self { arena: Vec::with_capacity(8), root: Root::Call };
         this.clear();
         this
     }
@@ -49,7 +48,16 @@ impl CallTraceArena {
     pub fn clear(&mut self) {
         self.arena.clear();
         self.arena.push(Default::default());
-        self.batch = false;
+        self.root = Root::Call;
+    }
+
+    /// Marks the transaction as a batch, so that its first top-level call already sits under a
+    /// synthetic root, see [`Self::nest_root`].
+    ///
+    /// Must be called before the first top-level call.
+    pub(crate) fn start_batch(&mut self) {
+        debug_assert!(self.arena.len() == 1, "a batch starts before its first call");
+        self.root = Root::PendingBatch;
     }
 
     /// Returns __all__ addresses in the recorded traces, that is addresses of the trace and the
@@ -63,19 +71,24 @@ impl CallTraceArena {
     /// This appends a new trace to the arena, and also inserts a new entry in the node's parent
     /// node children set.
     ///
-    /// Without a parent, the first top-level call of a transaction fills the root. A later
-    /// top-level call moves the recorded root under a synthetic root, see [`Self::nest_root`],
-    /// and joins it there.
+    /// Without a parent, the first top-level call of a transaction fills the root, and moves under
+    /// a synthetic root right away if the transaction is a batch, see [`Self::start_batch`]. A
+    /// later top-level call moves the recorded root under a synthetic root, see
+    /// [`Self::nest_root`], and joins it there.
     pub(crate) fn push_trace(&mut self, parent: Option<usize>, mut new_trace: CallTrace) -> usize {
         let parent = match parent {
             Some(parent) => parent,
             // The placeholder root, just fill it in.
-            None if !self.batch && self.arena[0].trace.status.is_none() => {
+            None if self.root != Root::Batch && self.arena[0].trace.status.is_none() => {
                 self.arena[0].trace = new_trace;
-                return 0;
+                if self.root == Root::Call {
+                    return 0;
+                }
+                self.nest_root();
+                return 1;
             }
             None => {
-                if !self.batch {
+                if self.root == Root::Call {
                     self.nest_root();
                 }
                 // The transaction's own calls are never left out as precompile calls.
@@ -84,7 +97,7 @@ impl CallTraceArena {
             }
         };
         // Below a synthetic root, every call sits one level deeper than the EVM runs it.
-        new_trace.depth += usize::from(self.batch);
+        new_trace.depth += usize::from(self.root == Root::Batch);
         debug_assert_eq!(
             self.arena[parent].trace.depth + 1,
             new_trace.depth,
@@ -114,7 +127,7 @@ impl CallTraceArena {
     ///
     /// Does nothing unless the arena holds a batch and `idx` is one of its top-level calls.
     pub(crate) fn settle_batch_call(&mut self, idx: usize) {
-        if !self.batch || self.arena[idx].parent != Some(0) {
+        if self.root != Root::Batch || self.arena[idx].parent != Some(0) {
             return;
         }
         let (root, calls) = self.arena.split_at_mut(1);
@@ -159,6 +172,19 @@ impl CallTraceArena {
                 ..Default::default()
             },
         );
-        self.batch = true;
+        self.root = Root::Batch;
     }
+}
+
+/// What the root of a [`CallTraceArena`] holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Root {
+    /// The transaction's top-level call, or a placeholder until it starts.
+    #[default]
+    Call,
+    /// A placeholder until the first top-level call of a batch starts, see
+    /// [`CallTraceArena::start_batch`].
+    PendingBatch,
+    /// A synthetic call holding the transaction's top-level calls.
+    Batch,
 }

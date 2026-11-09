@@ -366,6 +366,10 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
         delegate!(self => inspector.log(log, host))
     }
 
+    fn batch_start(&mut self) {
+        delegate!(self => inspector.batch_start())
+    }
+
     fn call(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,

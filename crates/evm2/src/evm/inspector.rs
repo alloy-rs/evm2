@@ -150,6 +150,16 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
         let _ = host;
     }
 
+    /// Called before a transaction runs its top-level messages as one batch, such as the calls
+    /// of an account-abstraction transaction.
+    ///
+    /// Handlers that run batches call this through
+    /// [`Evm::inspect_batch_start`](crate::Evm::inspect_batch_start) before the first top-level
+    /// message, even when the batch has a single message. The batch lasts until the transaction
+    /// ends.
+    #[inline]
+    fn batch_start(&mut self) {}
+
     /// Called before a call message executes.
     ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
@@ -284,6 +294,12 @@ impl<T: EvmTypesHost, L: Inspector<T>, R: Inspector<T>> Inspector<T> for (L, R) 
     }
 
     #[inline]
+    fn batch_start(&mut self) {
+        self.0.batch_start();
+        self.1.batch_start();
+    }
+
+    #[inline]
     fn call(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
@@ -373,6 +389,13 @@ impl<T: EvmTypesHost, I: Inspector<T>> Inspector<T> for Option<I> {
     fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
         if let Some(inspector) = self {
             inspector.log(log, host);
+        }
+    }
+
+    #[inline]
+    fn batch_start(&mut self) {
+        if let Some(inspector) = self {
+            inspector.batch_start();
         }
     }
 

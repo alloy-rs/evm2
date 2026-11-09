@@ -956,6 +956,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
     }
 
+    /// Notifies the inspector that the transaction runs its top-level messages as one batch, see
+    /// [`Inspector::batch_start`].
+    #[inline]
+    pub fn inspect_batch_start(&mut self) {
+        if let Some(inspector) = self.active_inspector() {
+            inspector.batch_start();
+        }
+    }
+
     /// Returns whether emitted logs are observed: recorded in the transaction result
     /// ([`EvmFeatures::LOG_COLLECTION`]) or passed to an inspector.
     ///

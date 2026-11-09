@@ -320,6 +320,11 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
     }
 
     #[inline]
+    fn batch_start(&mut self) {
+        fan_out!(self.batch_start());
+    }
+
+    #[inline]
     fn call(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
