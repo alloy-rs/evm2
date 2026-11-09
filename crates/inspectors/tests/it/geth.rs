@@ -10,7 +10,7 @@ use crate::utils::{
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{
-    Address, B256, Bytes, Log, TxKind, U256, address, bytes, hex, keccak256, map::HashMap,
+    Address, B256, Bytes, TxKind, U256, address, bytes, hex, keccak256, map::HashMap,
 };
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
@@ -24,11 +24,11 @@ use alloy_rpc_types_trace::{
     parity::{Action, CallType},
 };
 use evm2::{
-    AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, EvmTypesHost, ExecutionConfig,
-    Inspector, InspectorConfig, OpcodeSet, Precompiles, Version,
+    AnyError, BaseEvmTypes, DatabaseError, Evm, EvmFeatures, ExecutionConfig, Inspector,
+    InspectorConfig, OpcodeSet, Precompiles, Version,
     ethereum::ethereum_tx_registry,
     evm::{DbResult, DynDatabase, InMemoryDB},
-    interpreter::{Interpreter, Message, MessageResult, Word},
+    interpreter::{Interpreter, Word},
 };
 use evm2_inspectors::tracing::{
     DebugInspector, Erc7562Error, Erc7562Inspector, KECCAK256_PREIMAGE_TRACER,
@@ -36,7 +36,7 @@ use evm2_inspectors::tracing::{
     TracingInspector, TracingInspectorConfig,
 };
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[test]
 fn test_calltracer_invalid_opcode_errors() {
@@ -2809,14 +2809,18 @@ fn mux_and_debug_inspector_forward_the_steps_of_their_members() {
     };
 
     // The 4byte tracer only needs message hooks, and the keccak tracer steps `KECCAK256`.
-    let keccak_steps: OpcodeSet = [op::KECCAK256].into_iter().collect();
+    let keccak_steps = [op::KECCAK256].into_iter().collect::<OpcodeSet>();
     assert_eq!(steps(&mux(&[&four_byte])), OpcodeSet::EMPTY);
     assert_eq!(steps(&mux(&[&four_byte, &keccak])), keccak_steps);
-    let options: GethDebugTracingOptions =
-        serde_json::from_value(serde_json::json!({"tracer": "4byteTracer"})).unwrap();
+    let options = serde_json::from_value::<GethDebugTracingOptions>(
+        serde_json::json!({"tracer": "4byteTracer"}),
+    )
+    .unwrap();
     assert_eq!(steps(&DebugInspector::new(options).unwrap()), OpcodeSet::EMPTY);
-    let options: GethDebugTracingOptions =
-        serde_json::from_value(serde_json::json!({"tracer": "keccak256PreimageTracer"})).unwrap();
+    let options = serde_json::from_value::<GethDebugTracingOptions>(
+        serde_json::json!({"tracer": "keccak256PreimageTracer"}),
+    )
+    .unwrap();
     assert_eq!(steps(&DebugInspector::new(options).unwrap()), keccak_steps);
 }
 
@@ -3843,83 +3847,29 @@ fn test_geth_erc7562_operand_overflow_is_not_out_of_gas() {
     }
 }
 
-/// Forwards every hook to `inner` and records the opcodes it steps. Steps every opcode if `all`.
-struct SteppedSpy<I> {
-    inner: I,
-    all: bool,
-    stepped: BTreeSet<u8>,
+/// Asks to step `steps` and records the opcodes it is stepped for, which are those of every
+/// inspector it runs with.
+struct StepRecorder {
+    steps: OpcodeSet,
+    stepped: OpcodeSet,
 }
 
-impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for SteppedSpy<I> {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
-        self.inner.initialize_interp(interp);
-    }
-
+impl Inspector<BaseEvmTypes> for StepRecorder {
     fn inspector_config(&self) -> InspectorConfig {
-        if self.all { InspectorConfig::new() } else { self.inner.inspector_config() }
+        InspectorConfig::new().with_steps(self.steps)
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.stepped.insert(interp.opcode());
-        self.inner.step(interp);
-    }
-
-    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
-        self.inner.step_end(interp);
-    }
-
-    fn log(&mut self, log: &Log, host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>) {
-        self.inner.log(log, host);
-    }
-
-    fn call(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
-        message: &mut Message<BaseEvmTypes>,
-    ) -> Option<MessageResult<BaseEvmTypes>> {
-        self.inner.call(interp, message)
-    }
-
-    fn call_end(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
-        message: &Message<BaseEvmTypes>,
-        result: &mut MessageResult<BaseEvmTypes>,
-    ) {
-        self.inner.call_end(interp, message, result);
-    }
-
-    fn create(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
-        message: &mut Message<BaseEvmTypes>,
-    ) -> Option<MessageResult<BaseEvmTypes>> {
-        self.inner.create(interp, message)
-    }
-
-    fn create_end(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
-        message: &Message<BaseEvmTypes>,
-        result: &mut MessageResult<BaseEvmTypes>,
-    ) {
-        self.inner.create_end(interp, message, result);
-    }
-
-    fn selfdestruct(
-        &mut self,
-        contract: &Address,
-        target: &Address,
-        value: &U256,
-        host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>,
-    ) {
-        self.inner.selfdestruct(contract, target, value, host);
     }
 }
 
 /// Traces a contract that stores, loads, writes memory, logs and calls a second contract that
 /// stores and loads.
-fn run_spy(config: TracingInspectorConfig, all: bool) -> SteppedSpy<TracingInspector> {
+fn run_with_recorder(
+    config: TracingInspectorConfig,
+    recorder_steps: OpcodeSet,
+) -> (TracingInspector, OpcodeSet) {
     let (contract, mut db) = contract_with_code(&hex!(
         // SSTORE(0, 5), SLOAD(0), MSTORE8(0, 0xaa), LOG0(0, 1), CALL(0x2000, 0x43), STOP.
         "6005" "5f55" "5f54" "50" "60aa" "5f53" "6001" "5f" "a0"
@@ -3932,18 +3882,20 @@ fn run_spy(config: TracingInspectorConfig, all: bool) -> SteppedSpy<TracingInspe
             bytes!("6007" "6001" "55" "5f54" "50" "00"),
         )),
     );
-    let mut spy =
-        SteppedSpy { inner: TracingInspector::new(config), all, stepped: BTreeSet::new() };
+    let mut inspectors = (
+        TracingInspector::new(config),
+        StepRecorder { steps: recorder_steps, stepped: OpcodeSet::EMPTY },
+    );
     Context::mainnet()
         .with_db(db)
-        .build_mainnet_with_inspector(&mut spy)
+        .build_mainnet_with_inspector(&mut inspectors)
         .inspect_tx(TxEnv {
             gas_limit: 1_000_000,
             kind: TransactTo::Call(contract),
             ..Default::default()
         })
         .unwrap();
-    spy
+    (inspectors.0, inspectors.1.stepped)
 }
 
 #[test]
@@ -3951,7 +3903,7 @@ fn tracing_inspector_steps_only_what_its_config_records() {
     let steps = |config: TracingInspectorConfig| {
         Inspector::<BaseEvmTypes>::inspector_config(&TracingInspector::new(config)).steps()
     };
-    let filter: OpcodeSet = [op::SLOAD, op::SSTORE, op::CALL].into_iter().collect();
+    let filter = [op::SLOAD, op::SSTORE, op::CALL].into_iter().collect::<OpcodeSet>();
     let filtered = TracingInspectorConfig {
         record_opcodes_filter: Some(filter),
         ..TracingInspectorConfig::default_geth()
@@ -3993,7 +3945,7 @@ fn tracing_inspector_steps_only_what_its_config_records() {
 
 #[test]
 fn tracing_inspector_traces_the_same_with_the_steps_it_asks_for_and_with_every_step() {
-    let filter: OpcodeSet = [op::SLOAD, op::SSTORE, op::CALL].into_iter().collect();
+    let filter = [op::SLOAD, op::SSTORE, op::CALL].into_iter().collect::<OpcodeSet>();
     for (config, stepped) in [
         (TracingInspectorConfig::none(), Some(OpcodeSet::EMPTY)),
         (
@@ -4016,24 +3968,17 @@ fn tracing_inspector_traces_the_same_with_the_steps_it_asks_for_and_with_every_s
             Some(filter),
         ),
     ] {
-        let asked = run_spy(config, false);
-        let every = run_spy(config, true);
-        assert_eq!(
-            format!("{:?}", asked.inner.traces()),
-            format!("{:?}", every.inner.traces()),
-            "{config:?}"
-        );
-        let expected: OpcodeSet = match stepped {
+        // The recorder asks for nothing in the first run, so the tracer's own set decides what
+        // both are stepped for. In the second run the recorder asks for every opcode.
+        let (asked, asked_steps) = run_with_recorder(config, OpcodeSet::EMPTY);
+        let (every, every_steps) = run_with_recorder(config, OpcodeSet::ALL);
+        assert_eq!(format!("{:?}", asked.traces()), format!("{:?}", every.traces()), "{config:?}");
+        match stepped {
             Some(set) => {
-                assert!(every.stepped.len() > set_len(set), "{config:?}");
-                set
+                assert_eq!(asked_steps, set, "{config:?}");
+                assert_ne!(every_steps, set, "{config:?}");
             }
-            None => every.stepped.iter().copied().collect(),
-        };
-        assert_eq!(asked.stepped.iter().copied().collect::<OpcodeSet>(), expected, "{config:?}");
+            None => assert_eq!(asked_steps, every_steps, "{config:?}"),
+        }
     }
-}
-
-fn set_len(set: OpcodeSet) -> usize {
-    (0..=u8::MAX).filter(|op| set.contains(*op)).count()
 }

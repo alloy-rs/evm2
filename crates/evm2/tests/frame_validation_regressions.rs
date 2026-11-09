@@ -548,6 +548,27 @@ fn activation_and_signature_placeholder_controls_do_not_relax_static_shape() {
         HandlerError::UnsupportedTransactionType(6)
     );
     assert_eq!(reads.load(Ordering::Relaxed), 0);
+    for (feature, mode, error) in [
+        (EvmFeatures::EIP8141, FrameMode::Sender, HandlerError::UnsupportedTransactionType(6)),
+        (
+            EvmFeatures::EIP8250,
+            FrameMode::Sender,
+            invalid(FrameTransactionError::NoncePayloadMismatch),
+        ),
+        (
+            EvmFeatures::EIP7906,
+            FrameMode::Assert,
+            invalid(FrameTransactionError::AssertionsNotActive),
+        ),
+    ] {
+        let mut version = Version::new(SpecId::BOGOTA);
+        version.features.remove(feature);
+        let (mut evm, reads) = evm(version, BlockEnvExt::default());
+        let mut tx = payload();
+        tx.frames[1] = frame(mode, BODY, 0);
+        assert_eq!(evm.validate_tx(&recovered(tx)).unwrap_err(), error);
+        assert_eq!(reads.load(Ordering::Relaxed), 0);
+    }
     let mut version = Version::new(SpecId::BOGOTA);
     version.features.insert(EvmFeatures::FRAME_SIGNATURE_PLACEHOLDERS);
     let (mut evm, reads) = evm(version, BlockEnvExt::default());

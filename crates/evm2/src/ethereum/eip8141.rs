@@ -2,7 +2,7 @@
 
 use super::{validate_block_gas_limit, validate_chain_id};
 use crate::{
-    Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
+    Evm, EvmFeatures, EvmTypes, HostError, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
     env::{TxEnv, TxEnvExt},
     evm::{
@@ -46,6 +46,13 @@ pub struct FrameGas {
     pub maximum: u64,
     /// Protocol signature verification work.
     pub signatures: u64,
+}
+
+/// A frame reservation computed at block admission for the corresponding payload.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameGasReservation<'a> {
+    pub(crate) tx: &'a TxEip8141,
+    pub(crate) gas: FrameGas,
 }
 
 /// Prepared frame transaction.
@@ -193,12 +200,15 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let host = &mut *req.host;
     let tx = *req.tx.inner();
     validate_chain_id(host.version(), Some(tx.chain_id), false)?;
-    if !host.spec_id().enables(SpecId::BOGOTA) {
+    if !host.feature(EvmFeatures::EIP8141) {
         return Err(HandlerError::UnsupportedTransactionType(6));
     }
     // Match Revm's environment validation before frame structure and signatures.
-    let gas = FrameGas::calculate(tx, host.version())
-        .map_err(|_| invalid(FrameTransactionError::PaymentOverflow))?;
+    let gas = match req.frame_gas {
+        Some(reservation) if reservation.tx == tx => reservation.gas,
+        _ => FrameGas::calculate(tx, host.version())
+            .map_err(|_| invalid(FrameTransactionError::PaymentOverflow))?,
+    };
     let blob_charge = U256::from(tx.blob_versioned_hashes.len())
         .checked_mul(U256::from(DATA_GAS_PER_BLOB))
         .and_then(|v| v.checked_mul(host.block.blob_basefee))
@@ -222,18 +232,24 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
             max: host.version().max_blobs_per_tx,
         });
     }
-    if tx.nonce == u64::MAX && tx.nonce_keys.as_ref().is_none_or(|keys| keys.is_empty()) {
+    let keyed_nonces = host.feature(EvmFeatures::EIP8250);
+    if tx.nonce == u64::MAX
+        && !(keyed_nonces && tx.nonce_keys.as_ref().is_some_and(|keys| !keys.is_empty()))
+    {
         return Err(HandlerError::NonceOverflow);
     }
-    let keys =
-        tx.nonce_keys.as_deref().ok_or(invalid(FrameTransactionError::NoncePayloadMismatch))?;
-    validate_nonce_keys(keys).map_err(|_| {
-        invalid(if keys.len() > MAX_NONCE_KEYS {
-            FrameTransactionError::TooManyNonceKeys
-        } else {
-            FrameTransactionError::NonceKeysNotIncreasing
-        })
-    })?;
+    if tx.nonce_keys.is_some() != keyed_nonces {
+        return Err(invalid(FrameTransactionError::NoncePayloadMismatch));
+    }
+    if let Some(keys) = &tx.nonce_keys {
+        validate_nonce_keys(keys).map_err(|_| {
+            invalid(if keys.len() > MAX_NONCE_KEYS {
+                FrameTransactionError::TooManyNonceKeys
+            } else {
+                FrameTransactionError::NonceKeysNotIncreasing
+            })
+        })?;
+    }
     if tx.frames.is_empty() || tx.frames.len() > MAX_FRAMES {
         return Err(invalid(FrameTransactionError::InvalidFrameCount));
     }
@@ -245,7 +261,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     }
     validate_block_gas_limit(host.version(), gas.execution.max(gas.state), host.block.gas_limit)?;
     let placeholders = host.feature(EvmFeatures::FRAME_SIGNATURE_PLACEHOLDERS);
-    validate_structure(tx, placeholders)?;
+    validate_structure(tx, placeholders, host.feature(EvmFeatures::EIP7906))?;
     // The requested tip product can exceed U256 even when the signed budget is valid.
     // Saturating before the minimum preserves the arbitrary-precision result.
     let max_priority_fee =
@@ -401,11 +417,14 @@ fn validate_signatures(tx: &TxEip8141, hash: B256, placeholders: bool) -> Handle
 }
 
 /// Checks frame flags, batching, assertion ordering, expiry fields, and signature structure.
-fn validate_structure(tx: &TxEip8141, placeholders: bool) -> HandlerResult<()> {
+fn validate_structure(tx: &TxEip8141, placeholders: bool, assertions: bool) -> HandlerResult<()> {
     // Shared wire validation also applies a fixed gas schedule. Native execution must use
     // the selected Version, so validate structure here and calculate reservations separately.
     if tx.frames.iter().any(Frame::has_reserved_flags) {
         return Err(invalid(FrameTransactionError::ReservedFrameFlag));
+    }
+    if !assertions && tx.frames.iter().any(Frame::is_assertion) {
+        return Err(invalid(FrameTransactionError::AssertionsNotActive));
     }
     if !alloy_eips::eip8141::has_valid_assertion_suffix(&tx.frames) {
         return Err(invalid(FrameTransactionError::InvalidAssertionSuffix));

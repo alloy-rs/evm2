@@ -240,7 +240,9 @@ impl StateChangeSink for CanonicalState {
     }
 
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-        self.storage.insert((change.address, change.key), change.current);
+        if !change.current.is_zero() {
+            self.storage.insert((change.address, change.key), change.current);
+        }
         Ok(())
     }
 }
@@ -290,7 +292,9 @@ pub(crate) fn state_from_revm(
             );
         }
         for (key, slot) in changed_storage_slots {
-            canonical.storage.insert((address, *key), slot.present_value());
+            if !slot.present_value().is_zero() {
+                canonical.storage.insert((address, *key), slot.present_value());
+            }
         }
     }
     canonical

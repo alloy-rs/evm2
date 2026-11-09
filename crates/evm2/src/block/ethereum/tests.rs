@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    BaseEvmTypes, Precompiles, SpecId,
+    BaseEvmTypes, ExecutionConfig, Precompiles, SpecId, Version,
     block::BlockExecutionError,
     bytecode::Bytecode,
     env::BlockEnvExt,
@@ -313,6 +313,27 @@ fn block_execution_preserves_frame_receipt_payload() {
         ..Default::default()
     };
     let tx = Recovered::new_unchecked(EthereumTxEnvelope::Eip8141(tx.seal_slow()), SENDER);
+    let mut combined_evm = evm_with(SpecId::BOGOTA, 300_000, db.clone());
+    let mut version = Version::new(SpecId::BOGOTA);
+    version.features.remove(EvmFeatures::EIP8037);
+    combined_evm.set_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::BOGOTA, version),
+        SpecId::BOGOTA,
+        ethereum_tx_registry(SpecId::BOGOTA),
+        Precompiles::base(SpecId::BOGOTA),
+    );
+    let mut combined =
+        EthBlockExecutor::new(combined_evm, ctx(), EthBlockRules::default(), EthReceiptBuilder);
+    combined.cumulative_gas_used = 240_000;
+    assert!(matches!(
+        combined.execute_transaction_without_commit(&tx),
+        Err(BlockExecutionError::Validation(
+            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                block_available_gas: 60_000,
+                ..
+            }
+        ))
+    ));
     let mut executor = EthBlockExecutor::new(
         evm_with(SpecId::BOGOTA, 300_000, db),
         ctx(),

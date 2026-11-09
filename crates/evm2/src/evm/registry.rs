@@ -8,7 +8,8 @@
 //! the rest of the crate.
 
 use crate::{
-    AnyError, DatabaseError, EvmTypesHost, ExecutionError, ethereum::eip8141::FrameValidationResult,
+    AnyError, DatabaseError, EvmTypesHost, ExecutionError,
+    ethereum::eip8141::{FrameGasReservation, FrameValidationResult},
 };
 use alloc::sync::Arc;
 use alloy_consensus::transaction::Recovered;
@@ -218,6 +219,7 @@ pub struct TxRequest<'a, 'host, T: EvmTypesHost, Tx> {
     pub tx: Recovered<&'a Tx>,
     /// Mutable host used by this handler.
     pub host: &'a mut T::Host<'host>,
+    pub(crate) frame_gas: Option<FrameGasReservation<'a>>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -311,7 +313,16 @@ impl<T: EvmTypesHost, Output> AnyTxHandler<T, Output> {
         env: Recovered<&T::Tx>,
         host: &mut T::Host<'host>,
     ) -> HandlerResult<Output> {
-        self.inner.execute(env, host)
+        self.execute_with_frame_gas(env, host, None)
+    }
+
+    pub(crate) fn execute_with_frame_gas<'host>(
+        &self,
+        env: Recovered<&T::Tx>,
+        host: &mut T::Host<'host>,
+        frame_gas: Option<FrameGasReservation<'_>>,
+    ) -> HandlerResult<Output> {
+        self.inner.execute(env, host, frame_gas)
     }
 
     /// Validates an envelope using the registered handler without executing user calls.
@@ -344,6 +355,7 @@ trait ErasedTxHandler<T: EvmTypesHost, Output>: Send + Sync {
         &self,
         env: Recovered<&T::Tx>,
         host: &mut T::Host<'host>,
+        frame_gas: Option<FrameGasReservation<'_>>,
     ) -> HandlerResult<Output>;
 
     fn validate<'host>(
@@ -383,6 +395,7 @@ where
         &self,
         env: Recovered<&T::Tx>,
         host: &mut T::Host<'host>,
+        frame_gas: Option<FrameGasReservation<'_>>,
     ) -> HandlerResult<Output> {
         let (envelope, signer) = env.into_parts();
         let tx = (self.extract)(envelope)
@@ -391,6 +404,7 @@ where
             envelope,
             tx: Recovered::new_unchecked(tx, signer),
             host,
+            frame_gas,
             _non_exhaustive: (),
         })
     }
@@ -407,6 +421,7 @@ where
             envelope,
             tx: Recovered::new_unchecked(tx, signer),
             host,
+            frame_gas: None,
             _non_exhaustive: (),
         })
     }
@@ -425,6 +440,7 @@ where
                 envelope,
                 tx: Recovered::new_unchecked(tx, signer),
                 host,
+                frame_gas: None,
                 _non_exhaustive: (),
             },
             prefix_end,

@@ -40,7 +40,7 @@ use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use evm2::{
     BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     block::{
-        BlockExecutionError, BlockExecutor as _, BundleSource, ReceiptBuilder, ReceiptBuilderCtx,
+        BlockExecutor as _, BundleSource, ReceiptBuilder, ReceiptBuilderCtx,
         bundle_state::BundleRetention,
         ethereum::{EthBlockExecutionCtx, EthBlockExecutor, EthBlockRules, EthReceiptBuilder},
     },
@@ -900,8 +900,8 @@ impl ReceiptBuilder for HarnessReceiptBuilder {
     fn build_receipt<T: EvmTypes>(
         &self,
         ctx: ReceiptBuilderCtx<TxType, TxResult<T>>,
-    ) -> Result<ReceiptEnvelope, BlockExecutionError> {
-        if ctx.tx_type == TxType::Eip8141 {
+    ) -> ReceiptEnvelope {
+        if ctx.result.frame.is_some() {
             return EthReceiptBuilder::default().build_receipt::<T>(ctx);
         }
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
@@ -916,7 +916,7 @@ impl ReceiptBuilder for HarnessReceiptBuilder {
             ReceiptWithBloom::new(receipt, Bloom::ZERO)
         };
         ReceiptEnvelope::from_typed(tx_type, receipt)
-            .map_err(|_| BlockExecutionError::msg("unexpected receipt type"))
+            .expect("non-frame transaction results produce ordinary receipts")
     }
 }
 

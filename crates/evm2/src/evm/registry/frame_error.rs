@@ -41,6 +41,9 @@ pub enum FrameTransactionError {
     /// EIP-8141 reserved frame flag is set.
     #[error("EIP-8141 reserved frame flag is set")]
     ReservedFrameFlag,
+    /// EIP-7906 ASSERT frames are disabled by the active configuration.
+    #[error("EIP-7906 ASSERT frames are not active")]
+    AssertionsNotActive,
     /// EIP-7906 ASSERT frames must form a trailing suffix.
     #[error("EIP-7906 ASSERT frames must form a trailing suffix")]
     InvalidAssertionSuffix,

@@ -964,6 +964,14 @@ evm_versions! {
     }
 
     BOGOTA {
+        features: [
+            EIP8141,
+            EIP8250,
+            EIP7906,
+            EIP8298,
+            EIP4758,
+            EIP8151,
+        ],
         ops: [
             APPROVE: ZERO,
             TXPARAM: BASE,

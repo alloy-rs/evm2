@@ -8,6 +8,7 @@ use crate::{
         InternalBlockExecutionError, InvalidTxError, StateUpdate, map_database_error,
         map_handler_error,
     },
+    ethereum::eip8141::FrameGasReservation,
     evm::{
         AccountChangeRef, AccountInfo, BEACON_ROOTS_ADDRESS, BUILDER_DEPOSIT_REQUEST_ADDRESS,
         BUILDER_EXIT_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
@@ -186,8 +187,31 @@ pub fn execute_transaction_with_condition<T: EvmTypes>(
 where
     T::Tx: Typed2718,
 {
+    execute_transaction_with_frame_gas(
+        evm,
+        block_state,
+        stream_state,
+        on_state_update,
+        transaction,
+        None,
+        commit,
+    )
+}
+
+pub(super) fn execute_transaction_with_frame_gas<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
+    block_state: &mut BlockState,
+    stream_state: bool,
+    on_state_update: &mut impl FnMut(StateUpdate),
+    transaction: &Recovered<T::Tx>,
+    frame_gas: Option<FrameGasReservation<'_>>,
+    commit: impl FnOnce(&TxResult<T>, TxStateChanges<'_>) -> CommitChanges,
+) -> Result<Option<TxResult<T>>, HandlerError>
+where
+    T::Tx: Typed2718,
+{
     let mut update = StateUpdate::default();
-    let result = evm.transact(transaction).map(|executed| {
+    let result = evm.transact_with_frame_gas(transaction, frame_gas).map(|executed| {
         if commit(executed.result(), executed.changes()).should_commit() {
             for changes in executed.account_changes() {
                 block_state.commit_account_changes(changes, stream_state.then_some(&mut update));

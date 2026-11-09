@@ -7,7 +7,7 @@ use crate::{
         BlockTransactionResult, BlockValidationError, BundleState, CommitChanges, ExecutableTx,
         GasOutput, ReceiptBuilder, ReceiptBuilderCtx, StateUpdate,
     },
-    ethereum::eip8141::FrameGas,
+    ethereum::eip8141::{FrameGas, FrameGasReservation},
     evm::{Bal, PendingState},
     interpreter::Host,
 };
@@ -31,7 +31,7 @@ pub mod execution;
 use execution::{
     BlockExecutionContext, BlockSystemCalls, block_requests_from_receipts,
     commit_detached_transaction, commit_pending_state, dao_fork_state_changes,
-    execute_transaction_without_commit, map_transaction_error, post_block_balance_state_changes,
+    map_transaction_error, post_block_balance_state_changes,
     post_execution_system_call_state_changes, pre_execution_system_call_state_changes,
 };
 
@@ -100,26 +100,25 @@ impl ReceiptBuilder for EthReceiptBuilder {
     fn build_receipt<T: EvmTypes>(
         &self,
         ctx: ReceiptBuilderCtx<TxType, TxResult<T>>,
-    ) -> Result<ReceiptEnvelope, BlockExecutionError> {
+    ) -> ReceiptEnvelope {
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
         if let Some(frame) = result.frame {
-            return Ok(ReceiptEnvelope::Eip8141(
+            return ReceiptEnvelope::Eip8141(
                 FrameReceiptPayload {
                     cumulative_gas_used,
                     payer: frame.payer,
                     frame_receipts: frame.receipts,
                 }
                 .into(),
-            ));
+            );
         }
         let receipt = Receipt {
             status: Eip658Value::Eip658(result.is_success()),
             cumulative_gas_used,
             logs: result.logs,
         };
-        ReceiptEnvelope::from_typed(tx_type, receipt.with_bloom()).map_err(|_| {
-            BlockExecutionError::msg("frame transaction result is missing receipt data")
-        })
+        ReceiptEnvelope::from_typed(tx_type, receipt.with_bloom())
+            .expect("non-frame transaction results produce ordinary receipts")
     }
 }
 
@@ -414,29 +413,32 @@ where
         tx_type: <R::Transaction as TransactionEnvelope>::TxType,
         blob_gas_used: u64,
         outcome: TxResult<T>,
-    ) -> Result<GasOutput, BlockExecutionError> {
+    ) -> GasOutput {
         let tx_gas_used = outcome.tx_gas_used();
         let regular_gas_used = outcome.execution_gas_spent();
         let state_gas_used = outcome.state_gas_spent();
-        let cumulative_gas_used = self.cumulative_gas_used + tx_gas_used;
-        let receipt = self.receipt_builder.build_receipt::<T>(ReceiptBuilderCtx {
-            tx_type,
-            result: outcome,
-            cumulative_gas_used,
-        })?;
         self.block_regular_gas_used = self.block_regular_gas_used.saturating_add(regular_gas_used);
         self.block_state_gas_used = self.block_state_gas_used.saturating_add(state_gas_used);
-        self.cumulative_gas_used = cumulative_gas_used;
+        self.cumulative_gas_used += tx_gas_used;
         self.blob_gas_used += blob_gas_used;
-        self.receipts.push(receipt);
-        Ok(GasOutput::new_with_regular(tx_gas_used, regular_gas_used, state_gas_used))
+        self.receipts.push(self.receipt_builder.build_receipt::<T>(ReceiptBuilderCtx {
+            tx_type,
+            result: outcome,
+            cumulative_gas_used: self.cumulative_gas_used,
+        }));
+        GasOutput::new_with_regular(tx_gas_used, regular_gas_used, state_gas_used)
     }
 
-    fn validate_transaction_gas(&mut self, tx: &R::Transaction) -> Result<(), BlockExecutionError> {
-        let Some(frame) =
-            tx.frame_transaction().filter(|_| self.evm.spec_id().enables(SpecId::BOGOTA))
+    fn validate_transaction_gas<'tx>(
+        &mut self,
+        tx: &'tx R::Transaction,
+    ) -> Result<Option<FrameGasReservation<'tx>>, BlockExecutionError> {
+        let Some(frame) = tx
+            .frame_transaction()
+            .filter(|_| self.separate_block_gas && self.evm.feature(EvmFeatures::EIP8141))
         else {
-            return self.validate_transaction_gas_limit(tx.gas_limit());
+            self.validate_transaction_gas_limit(tx.gas_limit())?;
+            return Ok(None);
         };
         let gas = FrameGas::calculate(frame, self.evm.version())
             .map_err(|error| map_transaction_error(error, *tx.tx_hash()))?;
@@ -453,7 +455,7 @@ where
                 .into());
             }
         }
-        Ok(())
+        Ok(Some(FrameGasReservation { tx: frame, gas }))
     }
 }
 
@@ -571,23 +573,24 @@ where
         let (transaction, tx) = tx.into_parts();
         let tx = tx.borrow();
         self.set_transaction_block_access_index();
-        self.validate_transaction_gas(tx)?;
+        let frame_gas = self.validate_transaction_gas(tx)?;
         let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
         self.validate_transaction_blob_gas(blob_gas_used)?;
         let tx_type = tx.tx_type();
-        let Some(outcome) = execution::execute_transaction_with_condition(
+        let Some(outcome) = execution::execute_transaction_with_frame_gas(
             &mut self.evm,
             &mut self.block_state,
             self.state_update_hook.is_some(),
             &mut |state| emit_state(&mut self.state_update_hook, state),
             &transaction,
+            frame_gas,
             commit,
         )
         .map_err(|error| map_transaction_error(error, *tx.tx_hash()))?
         else {
             return Ok(None);
         };
-        self.record_receipt(tx_type, blob_gas_used, outcome).map(Some)
+        Ok(Some(self.record_receipt(tx_type, blob_gas_used, outcome)))
     }
 
     fn execute_transaction_without_commit(
@@ -597,11 +600,14 @@ where
         let (transaction, tx) = tx.into_parts();
         let tx = tx.borrow();
         self.set_transaction_block_access_index();
-        self.validate_transaction_gas(tx)?;
+        let frame_gas = self.validate_transaction_gas(tx)?;
         let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
         self.validate_transaction_blob_gas(blob_gas_used)?;
         let tx_type = tx.tx_type();
-        let result = execute_transaction_without_commit(&mut self.evm, &transaction)
+        let result = self
+            .evm
+            .transact_with_frame_gas(&transaction, frame_gas)
+            .map(|executed| executed.detach())
             .map_err(|err| map_transaction_error(err, *tx.tx_hash()))?;
         Ok(EthTransactionResultWithState::new(result, tx_type, blob_gas_used))
     }
@@ -620,7 +626,7 @@ where
             &mut |state| emit_state(&mut self.state_update_hook, state),
             result,
         );
-        self.record_receipt(tx_type, blob_gas_used, outcome)
+        Ok(self.record_receipt(tx_type, blob_gas_used, outcome))
     }
 
     fn receipts(&self) -> &[Self::Receipt] {

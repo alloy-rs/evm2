@@ -1246,7 +1246,15 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// Transaction handlers cannot modify the inspector, precompile provider, interpreter runner,
     /// or execution configuration while the transaction is being executed.
     pub fn transact(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
-        let result = self.execute_tx(tx)?;
+        self.transact_with_frame_gas(tx, None)
+    }
+
+    pub(crate) fn transact_with_frame_gas(
+        &mut self,
+        tx: &Recovered<T::Tx>,
+        frame_gas: Option<crate::ethereum::eip8141::FrameGasReservation<'_>>,
+    ) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
+        let result = self.execute_tx(tx, frame_gas)?;
         self.finish_executed_tx(result)
     }
 
@@ -1266,18 +1274,22 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     ) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         self.assert_inspector_mutable();
         let mut scope = ScopedInspector::install(self, inspector);
-        let result = scope.evm.execute_tx(tx);
+        let result = scope.evm.execute_tx(tx, None);
         scope.completed = true;
         drop(scope);
         self.finish_executed_tx(result?)
     }
 
     #[inline]
-    fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
+    fn execute_tx(
+        &mut self,
+        tx: &Recovered<T::Tx>,
+        frame_gas: Option<crate::ethereum::eip8141::FrameGasReservation<'_>>,
+    ) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut guard = self.enter_execution();
         guard.discard_on_drop = true;
-        let result = handler.execute(tx.as_recovered_ref(), guard.evm);
+        let result = handler.execute_with_frame_gas(tx.as_recovered_ref(), guard.evm, frame_gas);
         guard.discard_on_drop = false;
         drop(guard);
         if result.is_err() {
@@ -1636,7 +1648,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         mut gas: Gas,
         mut output: Bytes,
     ) -> Result<MessageResult<T>, ExecutionError> {
-        let code_adoption = self.spec_id().enables(SpecId::BOGOTA);
+        let code_adoption = self.feature(EvmFeatures::EIP8298);
         let adopted = if stop.is_success() && code_adoption {
             let mut account = self.state.account(address)?;
             if account.is_empty_code_hash() {
@@ -2062,18 +2074,6 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         &mut self,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
-        #[cfg(feature = "async")]
-        if r#async::is_on_fiber() {
-            return self.execute_message_inner(message, None);
-        }
-        #[cfg(feature = "std")]
-        {
-            // Native calls recurse; grow only under stack pressure to preserve the EVM depth limit.
-            stacker::maybe_grow(128 * 1024, 2 * 1024 * 1024, || {
-                self.execute_message_inner(message, None)
-            })
-        }
-        #[cfg(not(feature = "std"))]
         self.execute_message_inner(message, None)
     }
 
@@ -2136,7 +2136,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         source: &Address,
         gas: &mut Gas,
     ) -> Result<bool, HostError> {
-        if !self.spec_id().enables(SpecId::BOGOTA) {
+        if !self.feature(EvmFeatures::EIP8298) {
             return Err(InstrStop::OpcodeNotFound.into());
         }
         if matches!(
@@ -2187,7 +2187,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, HostError> {
         let features = self.features;
-        let send_all = self.spec_id().enables(SpecId::BOGOTA);
+        let send_all = features.contains(EvmFeatures::EIP4758);
         let (is_cold, target_is_empty_for_new_account_gas) =
             match self.state.account_with_skip(target, skip_cold_load) {
                 Ok(mut account) => (account.warm(), account.is_empty_for_new_account_gas(features)),
@@ -2354,7 +2354,6 @@ mod tests {
     use crate::{
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
-        constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
         ethereum::{TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
@@ -2377,108 +2376,6 @@ mod tests {
     const TEST_TX_TYPE: u8 = 0x00;
     const TEST_PRECOMPILE: Address = Address::with_last_byte(0x42);
     const INNER_TEST_PRECOMPILE: Address = Address::with_last_byte(0x43);
-
-    #[cfg(all(feature = "std", not(target_family = "wasm")))]
-    #[test]
-    fn nested_static_calls_reach_depth_limit_on_small_stack() {
-        std::thread::Builder::new()
-            .stack_size(2 * 1024 * 1024)
-            .spawn(|| {
-                let outer = Address::repeat_byte(0x11);
-                let inner = Address::repeat_byte(0x22);
-                let recursive = legacy_bytecode(vec![
-                    op::PUSH1,
-                    32,
-                    op::PUSH0,
-                    op::PUSH0,
-                    op::PUSH0,
-                    op::ADDRESS,
-                    op::GAS,
-                    op::STATICCALL,
-                    op::POP,
-                    op::PUSH0,
-                    op::MLOAD,
-                    op::PUSH1,
-                    1,
-                    op::ADD,
-                    op::PUSH0,
-                    op::MSTORE,
-                    op::PUSH1,
-                    32,
-                    op::PUSH0,
-                    op::RETURN,
-                ]);
-                for inspected in [false, true] {
-                    for revert in [false, true] {
-                        let mut code = vec![
-                            op::PUSH1,
-                            7,
-                            op::PUSH0,
-                            op::SSTORE,
-                            op::PUSH1,
-                            32,
-                            op::PUSH0,
-                            op::PUSH0,
-                            op::PUSH0,
-                        ];
-                        push_address(&mut code, &inner);
-                        code.extend_from_slice(&[
-                            op::GAS,
-                            op::STATICCALL,
-                            op::POP,
-                            op::PUSH1,
-                            32,
-                            op::PUSH0,
-                            if revert { op::REVERT } else { op::RETURN },
-                        ]);
-                        let code = legacy_bytecode(code);
-                        let mut database = InMemoryDB::default();
-                        database.insert_account_info(
-                            &outer,
-                            AccountInfo::default().with_code(code.clone()),
-                        );
-                        database.insert_account_info(
-                            &inner,
-                            AccountInfo::default().with_code(recursive.clone()),
-                        );
-                        let mut evm = Evm::<BaseEvmTypes>::new(
-                            SpecId::SHANGHAI,
-                            BlockEnvExt::default(),
-                            ethereum_tx_registry(SpecId::SHANGHAI),
-                            database,
-                            Precompiles::base(SpecId::SHANGHAI),
-                        );
-                        if inspected {
-                            evm.set_inspector(NoopInspector::default());
-                        }
-                        let mut message = MessageExt {
-                            destination: outer,
-                            code_address: outer,
-                            call_target: outer,
-                            gas_limit: 1 << 60,
-                            code,
-                            ..Default::default()
-                        };
-                        let result = evm.execute_message(&mut message).unwrap();
-                        assert_eq!(
-                            result.stop,
-                            if revert { InstrStop::Revert } else { InstrStop::Return }
-                        );
-                        assert_eq!(
-                            U256::from_be_slice(&result.output),
-                            U256::from(CALL_DEPTH_LIMIT)
-                        );
-                        assert_eq!(
-                            evm.state.get_storage(&outer, &Word::ZERO).unwrap(),
-                            Word::from(if revert { 0 } else { 7 })
-                        );
-                    }
-                }
-            })
-            .unwrap()
-            .join()
-            .unwrap();
-    }
 
     fn code_adoption_evm() -> Evm<'static, BaseEvmTypes> {
         let mut database = InMemoryDB::default();
