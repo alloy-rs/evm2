@@ -271,7 +271,7 @@ impl Transaction for LazyTxEip7702 {
 /// whichever backend alloy-primitives was built with.
 ///
 /// Keeps the checks of [`SignedAuthorization::recover_authority`]: the y-parity must be 0 or 1,
-/// `s` must not exceed secp256k1n/2, and the backend rejects a zero or out-of-range `r` or `s`.
+/// `s` must not exceed secp256k1n/2, and the provider rejects a zero or out-of-range `r` or `s`.
 fn recover_authority(authorization: &SignedAuthorization) -> Option<Address> {
     let signature = authorization.signature().ok()?;
     if signature.s() > SECP256K1N_HALF {
