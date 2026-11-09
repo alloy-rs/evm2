@@ -156,7 +156,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Handlers that run batches call this through
     /// [`Evm::inspect_batch_start`](crate::Evm::inspect_batch_start) before the first top-level
     /// message, even when the batch has a single message. The batch lasts until the transaction
-    /// ends.
+    /// ends. Each message runs on the gas the earlier ones left, and a failed message ends the
+    /// batch and reverts it.
     #[inline]
     fn batch_start(&mut self) {}
 

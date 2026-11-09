@@ -1,6 +1,7 @@
 use super::types::{CallTrace, CallTraceNode, TraceMemberOrder};
 use alloc::{vec, vec::Vec};
 use alloy_primitives::Address;
+use evm2::interpreter::InstrStop;
 
 /// An arena of recorded traces.
 ///
@@ -133,9 +134,7 @@ impl CallTraceArena {
         let (root, calls) = self.arena.split_at_mut(1);
         let (root, call) = (&mut root[0].trace, &calls[idx - 1].trace);
         root.gas_used += call.gas_used;
-        root.status = call.status;
-        root.success = call.success;
-        root.output = call.output.clone();
+        copy_outcome(root, call);
     }
 
     /// Moves the recorded root and its subtree one level down under a synthetic root at index 0,
@@ -153,16 +152,14 @@ impl CallTraceArena {
         }
         let first = &mut self.arena[0].trace;
         first.maybe_precompile = first.maybe_precompile.map(|_| false);
-        let root = CallTrace {
+        let mut root = CallTrace {
             depth,
             caller: first.caller,
             gas_limit: first.gas_limit,
             gas_used: first.gas_used,
-            status: first.status,
-            success: first.success,
-            output: first.output.clone(),
             ..Default::default()
         };
+        copy_outcome(&mut root, first);
         self.arena.insert(
             0,
             CallTraceNode {
@@ -187,4 +184,15 @@ enum Root {
     PendingBatch,
     /// A synthetic call holding the transaction's top-level calls.
     Batch,
+}
+
+/// Copies the status and output of a top-level call onto the synthetic root of a batch, which
+/// destroys nothing itself.
+fn copy_outcome(root: &mut CallTrace, call: &CallTrace) {
+    root.status = call.status.map(|status| match status {
+        InstrStop::SelfDestruct => InstrStop::Stop,
+        status => status,
+    });
+    root.success = call.success;
+    root.output = call.output.clone();
 }

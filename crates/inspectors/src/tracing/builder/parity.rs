@@ -376,6 +376,20 @@ impl ParityTraceBuilder {
 
                         instructions.push(self.make_instruction(step, delta, maybe_sub_call));
                     }
+                    // A batch root runs no opcodes; each of its top-level calls gets an entry
+                    // without one.
+                    if current.trace.steps.is_empty() {
+                        instructions.extend(children.into_iter().flatten().map(|sub| {
+                            VmInstruction {
+                                pc: 0,
+                                cost: 0,
+                                ex: None,
+                                sub: Some(sub),
+                                op: None,
+                                idx: None,
+                            }
+                        }));
+                    }
 
                     match current.parent {
                         Some(parent) => {

@@ -150,7 +150,8 @@ impl<'a> GethTraceBuilder<'a> {
         let mut steps = main_trace_node.steps_with_children();
         let mut parents = Vec::new();
         // A batch root runs no opcodes itself; its top-level calls run one after another.
-        if main_trace_node.trace.steps.is_empty() {
+        let batch = main_trace_node.trace.steps.is_empty();
+        if batch {
             let calls = main_trace_node.children.iter().rev();
             parents.extend(calls.map(|&child| self.nodes[child].steps_with_children()));
         }
@@ -170,7 +171,7 @@ impl<'a> GethTraceBuilder<'a> {
 
             // We increment the depth by one because steps that are part of call at depth N should
             // have depth N + 1. For example, steps inside of a top-level call should
-            // have depth 1.
+            // have depth 1. The calls of a batch already sit one level below its root.
             let stack = if !opts.is_stack_enabled() {
                 None
             } else if let Some(stacks) = stacks.as_deref_mut() {
@@ -178,8 +179,8 @@ impl<'a> GethTraceBuilder<'a> {
             } else {
                 step.stack.as_deref().map(<[U256]>::to_vec)
             };
-            let mut log =
-                step.convert_to_geth_struct_log(opts, trace_node.trace.depth as u64 + 1, stack);
+            let depth = trace_node.trace.depth as u64 + u64::from(!batch);
+            let mut log = step.convert_to_geth_struct_log(opts, depth, stack);
 
             // geth snapshots the storage of the contract, with the slots of all its earlier
             // SLOADs and SSTOREs, unless the opcode fails before it runs.

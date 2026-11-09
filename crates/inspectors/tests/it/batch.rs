@@ -1,16 +1,22 @@
 //! Transactions that run several top-level calls, such as account-abstraction batches.
 
+use crate::utils::TxEnv;
 use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
 use alloy_rpc_types_eth::TransactionInfo;
-use alloy_rpc_types_trace::geth::CallConfig;
+use alloy_rpc_types_trace::geth::{
+    CallConfig,
+    erc7562::{Erc7562Config, Erc7562Frame},
+};
 use evm2::{
-    BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SpecId, Version,
+    BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SpecId, TxResultExt, Version,
     bytecode::Bytecode,
     ethereum::{ethereum_tx_registry, execute_initial_frame, prepare_initial_frame},
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{GasTracker, InstrStop},
+    interpreter::{GasTracker, InstrStop, op},
 };
-use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig, types::CallKind};
+use evm2_inspectors::tracing::{
+    Erc7562Inspector, TracingInspector, TracingInspectorConfig, types::CallKind,
+};
 
 const CALLER: Address = Address::repeat_byte(0xaa);
 /// Calls `INNER` with no input, then stops.
@@ -19,6 +25,8 @@ const OUTER: Address = Address::with_last_byte(0x42);
 const INNER: Address = Address::with_last_byte(0x43);
 /// Reverts.
 const REVERTER: Address = Address::with_last_byte(0x44);
+/// Destroys itself.
+const DESTRUCTOR: Address = Address::with_last_byte(0x45);
 
 /// Runs each of `calls` as a top-level call of one transaction under `inspector`, returning
 /// whether each call succeeded. With `batch_start`, the inspector is told first that the calls
@@ -35,6 +43,7 @@ fn run_calls<I: evm2::Inspector<BaseEvmTypes>>(
     db.insert_account_info(&OUTER, code(&hex!("5f5f5f5f5f60435af100")));
     db.insert_account_info(&INNER, code(&hex!("00")));
     db.insert_account_info(&REVERTER, code(&hex!("5f5ffd")));
+    db.insert_account_info(&DESTRUCTOR, code(&hex!("5fff")));
     let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
         ExecutionConfig::for_spec_and_version(SpecId::CANCUN, Version::new(SpecId::CANCUN)),
         SpecId::CANCUN,
@@ -93,10 +102,10 @@ fn batch_calls_share_a_synthetic_root() {
     let calls: Vec<_> = frame.calls.iter().map(|call| (call.to, call.calls.len())).collect();
     assert_eq!((frame.to, calls), (Some(Address::ZERO), vec![(Some(OUTER), 1), (Some(INNER), 0)]));
 
-    // The batch's calls sit one level below the synthetic root, and so do their opcodes.
+    // The opcodes keep the depth the EVM runs them at.
     let logs = tracer.geth_builder().geth_traces(0, Bytes::new(), Default::default()).struct_logs;
     let depths: Vec<_> = logs.iter().map(|log| log.depth).collect();
-    assert_eq!(depths, [2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 2]);
+    assert_eq!(depths, [1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1]);
 
     let addresses: Vec<_> = tracer
         .into_parity_builder()
@@ -130,7 +139,39 @@ fn vm_trace_of_a_batch_running_different_code() {
     let mut tracer =
         TracingInspector::new(TracingInspectorConfig::default_parity().set_steps(true));
     run_calls(&mut tracer, &[OUTER, REVERTER], false);
-    assert!(tracer.into_parity_builder().vm_trace().ops.is_empty());
+    let trace = tracer.into_parity_builder().vm_trace();
+    let calls: Vec<_> = trace
+        .ops
+        .iter()
+        .map(|entry| (entry.op.clone(), entry.sub.as_ref().map(|sub| sub.ops.len())))
+        .collect();
+    assert_eq!(calls, [(None, Some(9)), (None, Some(3))]);
+}
+
+#[test]
+fn batch_root_does_not_destroy_itself() {
+    let mut tracer = TracingInspector::new(TracingInspectorConfig::default_parity());
+    assert_eq!(run_calls(&mut tracer, &[INNER, DESTRUCTOR], true), [true, true]);
+    let nodes = tracer.traces().nodes();
+    assert_eq!((nodes[0].trace.status, nodes[0].is_selfdestruct()), (Some(InstrStop::Stop), false));
+    assert!(nodes[2].is_selfdestruct());
+}
+
+#[test]
+fn erc7562_counters_follow_a_nested_root() {
+    let mut inspector = Erc7562Inspector::new(Erc7562Config::default());
+    run_calls(&mut inspector, &[OUTER, INNER], false);
+    let tx = TxEnv { kind: TxKind::Call(OUTER), ..Default::default() }.envelope();
+    let root = inspector.frame(&tx, &TxResultExt::<()>::default()).unwrap();
+    let opcodes = |frame: &Erc7562Frame| {
+        let mut opcodes: Vec<_> = frame.used_opcodes.keys().copied().collect();
+        opcodes.sort_unstable();
+        opcodes
+    };
+    assert!(root.used_opcodes.is_empty());
+    assert_eq!(opcodes(&root.calls[0]), [op::STOP, op::CALL]);
+    assert_eq!(opcodes(&root.calls[0].calls[0]), [op::STOP]);
+    assert_eq!(opcodes(&root.calls[1]), [op::STOP]);
 }
 
 #[test]
