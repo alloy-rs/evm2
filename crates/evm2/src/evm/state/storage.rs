@@ -200,7 +200,6 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         skip_cold_load: bool,
     ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
         let Self { address, storage, discards_storage, inner } = self;
-        let wiped = storage.wiped;
         let (slot, is_cold) = if let Some(slot) = storage.slots.get_mut(&key) {
             let slot: *mut StorageSlot = slot;
             // SAFETY: `slot` points into `storage.slots`, which is not used again on this path, so
@@ -224,7 +223,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
             Self::load_cold_slot(
                 address,
                 &mut storage.slots,
-                wiped || discards_storage,
+                storage.wiped || discards_storage,
                 inner,
                 key,
                 skip_cold_load,
