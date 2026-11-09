@@ -120,7 +120,7 @@ use crate::{
     DatabaseError, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig, ExecutionError,
     HostError, LoadError, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
-    constants::EIP7708_TRANSFER_TOPIC,
+    constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
@@ -235,6 +235,7 @@ pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     inspector: Option<InspectorSlot<'a, T>>,
     inspect_system_calls: bool,
+    initial_call_depth: u16,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// Whether `interpreter_runner` is set and supports `execution_config`.
@@ -374,6 +375,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
             inspect_system_calls: false,
+            initial_call_depth: 0,
             interpreter_runner: None,
             runner_supported: false,
             current_frame: None,
@@ -625,32 +627,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
         self.refresh_runner_support();
-    }
-
-    /// Sets [`Version::initial_call_depth`](crate::Version::initial_call_depth), the depth of the
-    /// next top-level message.
-    ///
-    /// The call depth limit, the nested-create nonce check, and inspectors all measure depth from
-    /// this value. A transaction handler can use it to run its top-level messages below an
-    /// implicit parent, such as the calls of a batch transaction, while keeping the full
-    /// [`CALL_DEPTH_LIMIT`](crate::constants::CALL_DEPTH_LIMIT) budget below each of them. The
-    /// value stays until it is set again, so a handler that changes it should restore it before
-    /// returning.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called from inside a running interpreter frame, or if `depth` is invalid; see
-    /// [`Version::assert_valid`](crate::Version::assert_valid).
-    #[inline]
-    pub fn set_initial_call_depth(&mut self, depth: u16) {
-        assert!(
-            self.current_frame.is_none(),
-            "initial call depth cannot be modified while a frame is running"
-        );
-        let mut version = self.execution_config.version;
-        version.initial_call_depth = depth;
-        version.assert_valid();
-        self.execution_config.version = version;
     }
 
     #[inline]
@@ -1074,6 +1050,50 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub const fn set_inspect_system_calls(&mut self, inspect: bool) {
         self.inspect_system_calls = inspect;
+    }
+
+    /// Returns the inspector-visible depth of top-level messages. Defaults to zero.
+    ///
+    /// The call depth limit and the nested-create nonce check are measured from this depth, so a
+    /// top-level message started at a non-zero depth still gets the full [`CALL_DEPTH_LIMIT`]
+    /// budget below it. Inspectors compare against it to find the top-level message.
+    #[inline]
+    pub const fn initial_call_depth(&self) -> u16 {
+        self.initial_call_depth
+    }
+
+    /// Sets [`Self::initial_call_depth`] for top-level messages started afterwards.
+    ///
+    /// A caller can set it before running a nested transaction, such as an isolated call of a
+    /// test framework that keeps its outer depth, and a transaction handler can set it around the
+    /// messages it runs below an implicit parent, such as the calls of a batch transaction. The
+    /// value stays until it is set again, so a handler that changes it should restore it before
+    /// returning.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from inside a running interpreter frame, or if `depth` does not leave room
+    /// in `u16` for the call depth budget and the rejected too-deep message: it must be at most
+    /// `u16::MAX - CALL_DEPTH_LIMIT - 1` (64510).
+    #[inline]
+    pub fn set_initial_call_depth(&mut self, depth: u16) {
+        assert!(
+            self.current_frame.is_none(),
+            "initial call depth cannot be modified while a frame is running"
+        );
+        assert!(
+            depth < u16::MAX - CALL_DEPTH_LIMIT,
+            "initial call depth must leave room for 1024 descendants and the rejected attempt"
+        );
+        self.initial_call_depth = depth;
+    }
+
+    /// Returns the deepest permitted inspector-visible call depth.
+    ///
+    /// [`Self::set_initial_call_depth`] keeps this from overflowing.
+    #[inline]
+    const fn max_call_depth(&self) -> u16 {
+        self.initial_call_depth + CALL_DEPTH_LIMIT
     }
 
     /// Sets the optional external interpreter runner.
@@ -1537,18 +1557,21 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
-        let nested = message.depth > self.version().initial_call_depth;
+        let nested = message.depth > self.initial_call_depth;
         // A too-deep create fails on depth alone, without reading the creator.
-        let info =
-            if message.depth <= self.version().max_call_depth() && (message.value > 0 || nested) {
-                self.state.account_info_untracked(&message.caller)?
-            } else {
-                None
-            };
+        let info = if message.depth <= self.max_call_depth() && (message.value > 0 || nested) {
+            self.state.account_info_untracked(&message.caller)?
+        } else {
+            None
+        };
         let (balance, nonce) = info.as_ref().map_or((Word::ZERO, 0), |i| (i.balance, i.nonce));
-        if let Some(stop) =
-            create_preaccess_failure(balance, nonce, message.value, message.depth, self.version())
-        {
+        if let Some(stop) = create_preaccess_failure(
+            balance,
+            nonce,
+            message.value,
+            message.depth,
+            self.initial_call_depth,
+        ) {
             return Err(stop.into());
         }
 
@@ -1665,7 +1688,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         &mut self,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
-        if message.depth > self.version().max_call_depth() {
+        if message.depth > self.max_call_depth() {
             return Ok(Self::error_message_result(
                 InstrStop::CallTooDeep,
                 message.gas_limit,
@@ -1875,6 +1898,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
 
     fn tx_env(&mut self) -> &TxEnv<T> {
         &self.tx_env
+    }
+
+    fn initial_call_depth(&self) -> u16 {
+        self.initial_call_depth
     }
 
     fn load_account(
@@ -3377,7 +3404,7 @@ mod tests {
     #[derive(Debug)]
     struct SpecBoundRunner {
         spec_id: SpecId,
-        initial_call_depth: u16,
+        chain_id: u64,
         calls: Arc<AtomicUsize>,
     }
 
@@ -3392,8 +3419,7 @@ mod tests {
         }
 
         fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
-            config.base_spec_id() == self.spec_id
-                && config.version().initial_call_depth == self.initial_call_depth
+            config.base_spec_id() == self.spec_id && config.version().chain_id == self.chain_id
         }
     }
 
@@ -3427,7 +3453,7 @@ mod tests {
 
         evm.set_shared_interpreter_runner(Arc::new(SpecBoundRunner {
             spec_id: SpecId::PRAGUE,
-            initial_call_depth: 0,
+            chain_id: Version::new(SpecId::PRAGUE).chain_id,
             calls: Arc::clone(&calls),
         }));
         assert_eq!(run(&mut evm), (InstrStop::Stop, 0));
@@ -3442,7 +3468,7 @@ mod tests {
         assert_eq!(run(&mut evm), (InstrStop::Return, 2));
 
         let mut version = Version::new(SpecId::PRAGUE);
-        version.initial_call_depth = 1;
+        version.chain_id += 1;
         evm.set_block_and_execution_config_within_spec(
             BlockEnvExt::default(),
             ExecutionConfig::for_spec_and_version(SpecId::PRAGUE, version),
@@ -4737,16 +4763,14 @@ mod tests {
         let created = caller.create(nonce);
         let mut database = InMemoryDB::default();
         database.insert_account_info(&caller, AccountInfo::default().with_nonce(nonce));
-        let mut version = Version::new(spec);
-        version.initial_call_depth = initial_call_depth;
-        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-            ExecutionConfig::for_spec_and_version(spec, version),
+        let mut evm = Evm::<BaseEvmTypes>::new(
             spec,
             BlockEnvExt::default(),
             ethereum_tx_registry(spec),
             database,
             Precompiles::base(spec),
         );
+        evm.set_initial_call_depth(initial_call_depth);
         // The nested transaction root also creates a child, which must still bump its creator.
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
@@ -5116,7 +5140,7 @@ mod tests {
             Precompiles::base(SpecId::CANCUN),
         );
         evm.set_initial_call_depth(7);
-        assert_eq!(evm.version().initial_call_depth, 7);
+        assert_eq!(evm.initial_call_depth(), 7);
 
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
@@ -5157,7 +5181,7 @@ mod tests {
                 |_| Ok(()),
                 |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
                     req.host.set_initial_call_depth(1);
-                    let depth = req.host.version().initial_call_depth;
+                    let depth = req.host.initial_call_depth();
                     req.host.set_initial_call_depth(0);
                     Ok(TxResultExt {
                         status: true,
@@ -5177,7 +5201,7 @@ mod tests {
 
         let executed = evm.transact(&test_tx(0)).unwrap();
         assert_eq!(executed.discard().tx_gas_used(), 1);
-        assert_eq!(evm.version().initial_call_depth, 0);
+        assert_eq!(evm.initial_call_depth(), 0);
     }
 
     #[test]

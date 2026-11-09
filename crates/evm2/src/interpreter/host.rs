@@ -133,6 +133,12 @@ pub trait Host<T: EvmTypesHost> {
     /// must keep it at a stable address while the interpreter runs.
     fn tx_env(&mut self) -> &TxEnv<T>;
 
+    /// Returns the inspector-visible depth of top-level messages.
+    ///
+    /// The call depth limit and the nested-create nonce check are measured from this depth, and
+    /// inspectors compare against it to find the top-level message.
+    fn initial_call_depth(&self) -> u16;
+
     /// Loads account information.
     fn load_account(
         &mut self,
