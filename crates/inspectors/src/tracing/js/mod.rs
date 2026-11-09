@@ -238,7 +238,9 @@ impl JsInspector {
     pub fn try_clone(&self) -> Result<Self, JsInspectorError> {
         self.ensure_not_interrupted()?;
         let mut inspector = Self::new(self.code.clone(), self.config.clone())?;
-        inspector.interrupt = self.interrupt.clone();
+        if let Some(interrupt) = &self.interrupt {
+            inspector.set_interrupt(interrupt.clone());
+        }
         Ok(inspector)
     }
 
@@ -252,8 +254,9 @@ impl JsInspector {
         self.ensure_not_interrupted()?;
         // `setup` of the fresh tracer must not see the previous transaction's precompiles.
         self.precompiles.clear();
-        let JsTracerObject { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn } =
-            JsTracerObject::evaluate(&self.script, &self.config, &mut self.ctx)?;
+        let evaluated = JsTracerObject::evaluate(&self.script, &self.config, &mut self.ctx);
+        self.ensure_not_interrupted()?;
+        let JsTracerObject { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn } = evaluated?;
         // Callback objects are mutable JS objects: replacing their Rust state does not remove
         // user-defined properties or restore overwritten methods. Rebuild them once per
         // transaction, while retaining the parsed script and reusing wrappers within a transaction.
@@ -313,9 +316,9 @@ impl JsInspector {
         db: &mut dyn DynDatabase,
     ) -> Result<serde_json::Value, JsInspectorError> {
         let result = self.result(res, tx, block, db)?;
-        let result = to_serde_value(result, &mut self.ctx)?;
+        let result = to_serde_value(result, &mut self.ctx);
         self.ensure_not_interrupted()?;
-        Ok(result)
+        Ok(result?)
     }
 
     /// Calls the result function and returns the result.
@@ -460,17 +463,19 @@ impl JsInspector {
     /// Sets a shared handle that cooperatively interrupts JavaScript tracing.
     ///
     /// Call [`JsInspectorInterrupt::interrupt`] from a timeout or cancellation handler to abort
-    /// execution with a fatal evm2 error at the next inspection boundary. [`Self::try_clone`]
-    /// shares the handle and [`Self::fuse`] does not reset it. Result collection also fails after
+    /// execution with a fatal evm2 error at the next inspection boundary. A running JavaScript
+    /// callback stops at its next loop iteration or function call. [`Self::try_clone`] shares the
+    /// handle and [`Self::fuse`] does not reset it. Result collection also fails after
     /// interruption.
     ///
     /// The handle is checked even if the tracer has no `step` callback. Checking it performs a
     /// relaxed atomic load without cloning the handle. Without a handle, no atomic loads are
     /// performed.
     ///
-    /// This cannot preempt a running JavaScript callback, native operation or precompile. It does
-    /// not bound memory usage or interrupt script evaluation and `setup` in the constructor.
-    /// Boa's runtime limits still apply while JavaScript is running.
+    /// This cannot preempt a native operation that does not call back into JavaScript, such as a
+    /// regular expression match, or a precompile. It does not bound memory usage or interrupt
+    /// script evaluation and `setup` in the constructor. Boa's runtime limits still apply while
+    /// JavaScript is running.
     ///
     /// ```
     /// use evm2_inspectors::tracing::js::{JsInspector, JsInspectorInterrupt};
@@ -494,6 +499,7 @@ impl JsInspector {
     /// Sets the shared handle that cooperatively interrupts JavaScript tracing, see
     /// [`Self::with_interrupt`].
     pub fn set_interrupt(&mut self, interrupt: JsInspectorInterrupt) {
+        self.ctx.set_interrupt_flag(Some(interrupt.0.clone()));
         self.interrupt = Some(interrupt);
     }
 
@@ -536,7 +542,8 @@ impl JsInspector {
     }
 
     fn record_hook_error(&mut self, hook: &'static str, err: JsError) {
-        if self.hook_error.is_none() {
+        // An interrupted callback is reported through the interrupt flag.
+        if self.hook_error.is_none() && !matches!(err.as_engine(), Some(EngineError::Interrupted)) {
             let suffix = format!("    in server-side tracer function '{hook}'");
             self.hook_error = Some(with_message_suffix(err, &suffix, &mut self.ctx));
         }
