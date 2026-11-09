@@ -114,6 +114,10 @@ impl Host<TestTypes> for TestHost {
         &self.tx_env
     }
 
+    fn initial_call_depth(&self) -> u16 {
+        0
+    }
+
     fn load_account(
         &mut self,
         address: &Address,

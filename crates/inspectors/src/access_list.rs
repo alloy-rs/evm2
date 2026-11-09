@@ -172,7 +172,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
-        if message.depth == interp.version().initial_call_depth {
+        if message.depth == 0 {
             self.collect_excluded_addresses(message, interp.host());
         }
         None
@@ -184,7 +184,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
-        if message.depth == interp.version().initial_call_depth {
+        if message.depth == 0 {
             self.collect_excluded_addresses(message, interp.host());
         }
         None

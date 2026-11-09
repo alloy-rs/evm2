@@ -448,7 +448,7 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmConfig, BaseEvmTypes, DatabaseError, Evm, EvmConfig, EvmTypesHost, ExecutionConfig,
-        OpcodeConfig, Precompiles, SpecId, Version,
+        OpcodeConfig, Precompiles, SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
@@ -1653,16 +1653,14 @@ mod tests {
         code.extend([op::CALL, op::STOP]);
 
         for initial_call_depth in [0, 7] {
-            let mut version = Version::new(SpecId::OSAKA);
-            version.initial_call_depth = initial_call_depth;
-            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-                ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            let mut evm = Evm::<BaseEvmTypes>::new(
                 SpecId::OSAKA,
                 BlockEnvExt::default(),
                 TxRegistry::new(),
                 InMemoryDB::default(),
                 Precompiles::base(SpecId::OSAKA),
             );
+            evm.set_initial_call_depth(initial_call_depth);
             evm.set_inspector(HookInspector::default());
             let depth = initial_call_depth + CALL_DEPTH_LIMIT;
             let mut message = MessageExt {
