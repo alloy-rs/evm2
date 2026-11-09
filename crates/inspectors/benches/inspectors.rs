@@ -1,12 +1,12 @@
 #![allow(missing_docs)]
 
-//! Per-step recording cost of the opcode gas inspector.
+//! Cost of recording a transaction with the opcode gas inspector.
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use evm2::{
-    BaseEvmTypes, Evm, Inspector, Precompiles, SpecId,
+    BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     env::BlockEnvExt,
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
@@ -69,15 +69,6 @@ const fn tx() -> RecoveredTxEnvelope {
     )
 }
 
-fn run(
-    evm: &mut Evm<'static, BaseEvmTypes>,
-    tx: &RecoveredTxEnvelope,
-    inspector: &mut dyn Inspector<BaseEvmTypes>,
-) {
-    let result = evm.transact_with_inspector(tx, inspector).unwrap();
-    assert!(result.result().is_success());
-}
-
 fn inspectors(c: &mut Criterion) {
     let tx = tx();
     let mut evm = evm();
@@ -85,7 +76,8 @@ fn inspectors(c: &mut Criterion) {
     c.bench_function("inspectors/opcode_gas", |b| {
         b.iter(|| {
             let mut inspector = OpcodeGasInspector::new();
-            run(&mut evm, &tx, &mut inspector);
+            let result = evm.transact_with_inspector(&tx, &mut inspector).unwrap();
+            assert!(result.result().is_success());
             black_box(inspector)
         })
     });

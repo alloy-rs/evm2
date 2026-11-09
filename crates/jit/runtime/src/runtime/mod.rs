@@ -323,18 +323,16 @@ impl JitBackend {
             return LookupDecision::Unavailable(LookupMissReason::Ineligible);
         }
 
-        let (decision, event) =
-            if let Some(program_ref) = shared.resident.try_get(&key).try_unwrap() {
-                let program = Arc::clone(&program_ref);
-                drop(program_ref);
-                // An empty bytecode marks a hit for the backend.
-                (LookupDecision::Compiled(program), LookupRequest { key, code: Bytes::new() })
-            } else {
-                (
-                    LookupDecision::Unavailable(LookupMissReason::NotReady),
-                    LookupRequest { key, code: owned_code() },
-                )
-            };
+        // An empty bytecode marks a hit for the backend.
+        let mut event = LookupRequest { key, code: Bytes::new() };
+        let decision = if let Some(program_ref) = shared.resident.try_get(&key).try_unwrap() {
+            let program = Arc::clone(&program_ref);
+            drop(program_ref);
+            LookupDecision::Compiled(program)
+        } else {
+            event.code = owned_code();
+            LookupDecision::Unavailable(LookupMissReason::NotReady)
+        };
 
         if let Err(_v) = shared.events.push(event) {
             cold_path();

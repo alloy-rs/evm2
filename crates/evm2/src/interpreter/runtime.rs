@@ -219,7 +219,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Returns the original active bytecode as a byte slice.
     #[inline]
-    pub fn original_bytecode_slice(&self) -> &[u8] {
+    pub fn original_bytecode_slice(&self) -> &'frame [u8] {
         self.bytecode.original_byte_slice()
     }
 

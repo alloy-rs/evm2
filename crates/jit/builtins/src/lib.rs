@@ -255,9 +255,6 @@ pub unsafe fn __revmc_builtin_codecopy<T: EvmTypesHost>(
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
     let code = ecx.interpreter().original_bytecode_slice();
-    // SAFETY: The slice points into the frame's `Bytecode`, which outlives the frame and which
-    // charging gas and writing memory leave untouched.
-    let code = unsafe { core::slice::from_raw_parts(code.as_ptr(), code.len()) };
     unsafe { copy_operation(ecx, sp, code) }
 }
 

@@ -238,12 +238,6 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
         self.interpreter_mut().set_static(is_static);
     }
 
-    /// Returns active original bytecode.
-    #[inline]
-    pub fn bytecode(&self) -> Bytes {
-        self.interpreter().original_bytecode()
-    }
-
     /// Returns return data from the last call-like operation.
     #[inline]
     pub const fn return_data(&self) -> &Bytes {

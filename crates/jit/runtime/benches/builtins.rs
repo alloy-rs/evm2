@@ -2,14 +2,14 @@
 
 //! Cost of the builtins that compiled code calls, over loops of one opcode.
 
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::Bytes;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     env::BlockEnvExt,
     ethereum::ethereum_tx_registry,
-    evm::{AccountInfo, InMemoryDB},
+    evm::InMemoryDB,
     interpreter::{InstrStop, Interpreter, MessageExt, op},
 };
 use evm2_jit_runtime::{
@@ -20,9 +20,6 @@ use std::time::Duration;
 
 /// Loop iterations per frame.
 const ITERS: u16 = 1000;
-
-/// The account whose code `EXTCODECOPY` copies.
-const OTHER: Address = Address::repeat_byte(0x22);
 
 /// Returns a loop that runs `body` `ITERS` times, then stops.
 fn loop_code(body: &[u8]) -> Vec<u8> {
@@ -37,11 +34,7 @@ fn bench_loop(c: &mut Criterion, name: &str, body: &[u8]) {
     let backend =
         JitBackend::new(RuntimeConfig { enabled: true, blocking: true, ..Default::default() })
             .unwrap();
-    let mut database = InMemoryDB::default();
-    database.insert_account_info(
-        &OTHER,
-        AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from(vec![op::JUMPDEST; 64]))),
-    );
+    let database = InMemoryDB::default();
     let mut host = Evm::<BaseEvmTypes>::new(
         SpecId::CANCUN,
         BlockEnvExt::default(),
@@ -85,13 +78,6 @@ fn codecopy(c: &mut Criterion) {
     bench_loop(c, "builtins/codecopy", &[op::PUSH1, 32, op::PUSH0, op::PUSH0, op::CODECOPY]);
 }
 
-fn extcodecopy(c: &mut Criterion) {
-    let mut body = vec![op::PUSH1, 32, op::PUSH0, op::PUSH0, op::PUSH20];
-    body.extend_from_slice(OTHER.as_slice());
-    body.push(op::EXTCODECOPY);
-    bench_loop(c, "builtins/extcodecopy", &body);
-}
-
 /// A full-width dividend for the arithmetic builtins.
 const DIVIDEND: [u8; 32] = [0xab; 32];
 
@@ -112,5 +98,5 @@ fn mod_(c: &mut Criterion) {
     bench_loop(c, "builtins/mod", &counter_divisor_body(op::MOD));
 }
 
-criterion_group!(benches, codecopy, extcodecopy, div, mod_);
+criterion_group!(benches, codecopy, div, mod_);
 criterion_main!(benches);
