@@ -5087,10 +5087,17 @@ mod tests {
         let _ = evm.transact_with_inspector(&test_tx(0), &mut CallCounter::default());
     }
 
+    /// While a precompile reads its input straight from the caller's memory, the hook of a message
+    /// the precompile sends gets that caller frame too. If the hook grows or overwrites the
+    /// caller's memory, the frame gets a copy, so the precompile keeps reading its original input
+    /// instead of changed or freed memory.
+    ///
+    /// The caller calls `TEST_PRECOMPILE` with `0xaa` bytes at memory 0..32 as input. The
+    /// precompile calls `INNER_TEST_PRECOMPILE`, whose hook grows the caller's memory to 1 MiB
+    /// (moving its buffer) and overwrites 0..32 with `0xbb`, then returns its own input. Without
+    /// the copy it would return freed memory.
     #[test]
     fn hook_writing_lent_memory_keeps_precompile_input() {
-        /// Grows and overwrites the caller's memory in the hook of a message that a precompile
-        /// sends while it reads its input from that memory.
         struct OverwriteLentMemory;
 
         impl Inspector<BaseEvmTypes> for OverwriteLentMemory {
@@ -5099,6 +5106,8 @@ mod tests {
                 interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message,
             ) -> Option<MessageResult<BaseEvmTypes>> {
+                // `interp` is the frame that called `TEST_PRECOMPILE`, since a precompile has no
+                // frame of its own.
                 if message.destination == INNER_TEST_PRECOMPILE {
                     let memory = interp.memory_mut();
                     memory.resize(0, 1 << 20).unwrap();
@@ -5113,6 +5122,7 @@ mod tests {
                 let mut child = precompile_message(INNER_TEST_PRECOMPILE);
                 child.depth = message.depth + 1;
                 Host::execute_message(evm, &mut child)?;
+                // Read the input only after the nested message, whose hook wrote memory.
                 Ok(PrecompileOutput::new(Bytes::copy_from_slice(&message.input)))
             }),
             test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
@@ -5127,7 +5137,7 @@ mod tests {
             precompiles,
         );
         evm.set_inspector(OverwriteLentMemory);
-        // Calls the precompile with memory 0..32 as input and returns its output.
+        // mstore(0, 0xaa..aa); call(gas, TEST_PRECOMPILE, 0, 0, 32, 32, 32); return(32, 32)
         let mut code = vec![op::PUSH32];
         code.extend([0xaa; 32]);
         code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH1, 32, op::PUSH1, 32]);
@@ -5140,6 +5150,6 @@ mod tests {
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::Return);
-        assert_eq!(result.output[..], [0xaa; 32]);
+        assert_eq!(result.output[..], [0xaa; 32], "the precompile read its original input");
     }
 }

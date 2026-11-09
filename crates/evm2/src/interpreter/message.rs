@@ -448,27 +448,47 @@ mod tests {
         assert!(delegated(MessageKind::DelegateCall, target).is_direct_call());
     }
 
-    #[test]
-    fn caller_memory_input() {
+    /// Memory holding `[1, 2, 3]`, and an input borrowing its last two bytes, at `1..3`.
+    fn memory_and_input() -> (Memory, MessageInput) {
         let mut memory = Memory::new();
         memory.resize(0, 3).unwrap();
         memory.set(0, &[1, 2, 3]);
-        // SAFETY: `memory` is unchanged until `input` is detached.
-        let mut input = unsafe { MessageInput::borrowed(memory.slice(1, 2), 1..3) };
+        // SAFETY: Each test changes `memory` only after it detaches the input or drops it.
+        let input = unsafe { MessageInput::borrowed(memory.slice(1, 2), 1..3) };
+        (memory, input)
+    }
+
+    /// While attached, as while `Evm` runs the message, the input derefs to the caller's memory
+    /// without a copy, and a clone copies the bytes out, so a clone never points into memory.
+    #[test]
+    fn attached_input_derefs_to_memory_and_clones_by_copy() {
+        let (mut memory, input) = memory_and_input();
         assert_eq!(&*input, [2, 3]);
+
         let clone = input.clone();
+        drop(input);
+        memory.set(1, &[7, 7]);
+
+        assert_eq!(&*clone, [2, 3], "the clone owns a copy taken before memory changed");
+        assert_eq!(clone.caller_memory(), None);
+    }
+
+    /// While detached, as while inspector hooks hold the message, the input is only a range: hooks
+    /// borrow its bytes through the caller's memory, so they see that memory as it is now, and
+    /// a clone or a kept input is just the range.
+    #[test]
+    fn detached_input_reads_through_caller_memory() {
+        let (mut memory, mut input) = memory_and_input();
         input.detach();
-        let range = input.clone();
         memory.set(1, &[7]);
 
-        // An attached input's clone copies its bytes.
-        assert_eq!(&*clone, [2, 3]);
-        assert_eq!(clone.caller_memory(), None);
-        // A detached input reads the caller's memory.
         assert_eq!(input.len(), 2);
-        assert_eq!(input.as_bytes(&memory), [7, 3]);
+        assert_eq!(input.caller_memory(), Some(1..3));
+        assert_eq!(input.as_bytes(&memory), [7, 3], "reads memory as it is now");
         assert_eq!(input.to_bytes(&memory)[..], [7, 3]);
-        assert_eq!(range, input);
-        assert_eq!(range.caller_memory(), Some(1..3));
+
+        let kept = input.clone();
+        assert_eq!(kept, input);
+        assert_eq!(kept.caller_memory(), Some(1..3), "keeping the input keeps only its range");
     }
 }
