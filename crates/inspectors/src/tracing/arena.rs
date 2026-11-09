@@ -97,9 +97,10 @@ impl CallTraceArena {
         idx
     }
 
-    /// Moves the recorded root and its subtree down a level under a synthetic root at index 0.
+    /// Moves the recorded root and its subtree down a level under a synthetic root at index 0,
+    /// which keeps the root's depth, caller and gas limit.
     fn nest_root(&mut self) {
-        let depth = self.arena[0].trace.depth;
+        let CallTrace { depth, caller, gas_limit, .. } = self.arena[0].trace;
         // Shift every node by one so parents still precede their children.
         for node in &mut self.arena {
             node.idx += 1;
@@ -109,21 +110,14 @@ impl CallTraceArena {
                 *child += 1;
             }
         }
-        let root = &self.arena[0].trace;
-        self.arena.insert(
-            0,
-            CallTraceNode {
-                children: alloc::vec![1],
-                ordering: alloc::vec![TraceMemberOrder::Call(0)],
-                trace: CallTrace {
-                    depth,
-                    caller: root.caller,
-                    gas_limit: root.gas_limit,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let trace = CallTrace { depth, caller, gas_limit, ..Default::default() };
+        let root = CallTraceNode {
+            children: alloc::vec![1],
+            ordering: alloc::vec![TraceMemberOrder::Call(0)],
+            trace,
+            ..Default::default()
+        };
+        self.arena.insert(0, root);
         self.settle_batch_call(1);
         self.nested = true;
     }

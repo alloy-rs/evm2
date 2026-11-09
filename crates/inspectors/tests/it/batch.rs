@@ -127,10 +127,9 @@ fn parity_traces_keep_a_batch_of_precompile_calls() {
 
 #[test]
 fn vm_trace_of_a_batch_is_empty() {
-    // vmTrace hangs a call's subtrace on the instruction that made it, and a batch root runs none.
     let call = (TxKind::Call(OUTER), Bytes::new());
     let mut tracer = TracingInspector::new(TracingInspectorConfig::parity_vm_trace());
-    run_batch(&mut tracer, std::slice::from_ref(&call));
+    run_batch(&mut tracer, core::slice::from_ref(&call));
     assert!(!tracer.clone().into_parity_builder().vm_trace().ops.is_empty());
     tracer.fuse();
     run_batch(&mut tracer, &[call.clone(), call]);

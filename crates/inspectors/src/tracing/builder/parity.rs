@@ -36,8 +36,8 @@ impl ParityTraceBuilder {
         Self::with_nested_root(nodes, exclusion, false)
     }
 
-    /// As [`Self::new`]; with `nested` the root is synthetic and its calls are the transaction's
-    /// own, which no exclusion hides.
+    /// As [`Self::new`]; with `nested` the root is synthetic and its direct calls are the
+    /// transaction's own, which no exclusion hides, like the root call itself.
     pub(crate) fn with_nested_root(
         mut nodes: Vec<CallTraceNode>,
         exclusion: PrecompileExclusion,
@@ -317,8 +317,8 @@ impl ParityTraceBuilder {
 
     /// Creates a VM trace by walking over `CallTraceNode`s
     ///
-    /// Bytecode is included if it was recorded by the inspector. A batch root runs no instruction
-    /// to hang its calls on, so its trace stays empty.
+    /// Bytecode is included if it was recorded by the inspector. A subcall hangs on the instruction
+    /// that made it, and a batch root runs none, so its trace stays empty.
     pub fn vm_trace(&self) -> VmTrace {
         self.nodes.first().map(|node| self.make_vm_trace(node)).unwrap_or_default()
     }
@@ -445,7 +445,7 @@ impl ParityTraceBuilder {
 /// Which calls to precompiles a [`ParityTraceBuilder`] leaves out of its traces.
 ///
 /// A call is only left out if the inspector recorded it as a call to a precompile, see
-/// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls), and it is neither the root call nor one of a batch root's calls.
+/// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls), and it is neither the root call nor, for a batch, one of the root's direct calls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrecompileExclusion {
     /// Keeps every call to a precompile.
