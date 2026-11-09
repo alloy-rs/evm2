@@ -11,10 +11,11 @@ use core::{
 /// EVM stack word.
 pub type Word = U256;
 
-/// Units of [`RawStack`]'s stored length per stack word: the word size in bytes on x86-64, where
-/// an address scale stops at 8 and a word index costs a shift, and 1 elsewhere, where the scale is
-/// free.
-const RAW_LEN_SCALE: usize = if cfg!(target_arch = "x86_64") { size_of::<Word>() } else { 1 };
+/// Units of [`RawStack`]'s stored length per stack word: the word size in bytes for the tail-call
+/// dispatch on x86-64, where an address scale stops at 8 and a word index costs a shift, and 1
+/// elsewhere, where the scale is free or the table dispatch only reads the length at its entry.
+const RAW_LEN_SCALE: usize =
+    if cfg!(all(tco, target_arch = "x86_64")) { size_of::<Word>() } else { 1 };
 
 /// Operand stack storage.
 ///
