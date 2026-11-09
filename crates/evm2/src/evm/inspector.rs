@@ -460,8 +460,8 @@ mod tests {
         },
         registry::TxRegistry,
         test_utils::{
-            TestHost, TestTypes, call_code, create_code, legacy_bytecode, push, push_all,
-            return_top_word,
+            TestHost, TestTypes, call_code, create_code, legacy_bytecode, memory_input_call_code,
+            push, push_all, return_top_word,
         },
         utils::{WordExt, address_to_word},
     };
@@ -1864,29 +1864,6 @@ mod tests {
             ])),
         );
         db
-    }
-
-    /// Calls `target` through `call_op` with memory 0..32 as input and returns its 32-byte output.
-    fn memory_input_call_code(target: Address, call_op: u8) -> Vec<u8> {
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
-        code.push(op::MSTORE);
-        push_all(
-            &mut code,
-            [
-                Word::from(32),
-                Word::from(32),
-                Word::from(32),
-                Word::ZERO,
-                Word::ZERO,
-                address_to_word(&target),
-                Word::from(50_000),
-            ],
-        );
-        code.extend([call_op, op::POP]);
-        push_all(&mut code, [Word::from(32), Word::from(32)]);
-        code.push(op::RETURN);
-        code
     }
 
     #[test]

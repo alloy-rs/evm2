@@ -86,8 +86,8 @@ pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result 
     // SAFETY: Charging and copying data make no host calls.
     let gas_params = unsafe { cx.state.gas_params_detached() };
     cx.gas.spend(gas_params.copy_cost(len))?;
-    let (input, memory) = cx.state.input_and_memory();
-    copy_data(cx.gas, memory, gas_params, memory_offset, data_offset, len, input)
+    let input = cx.state.0.input;
+    copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, data_offset, len, input)
 }
 
 #[instruction]

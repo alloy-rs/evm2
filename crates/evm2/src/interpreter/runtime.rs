@@ -45,9 +45,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
     /// The bytes of the message's input: the message's own bytes, or the caller's memory for an
-    /// input that is a range of it. The caller frame is suspended and its memory unchanged until
-    /// this frame returns, and [`Self::init`] and [`Self::clear_frame_refs`] reset it.
-    input: NonNull<[u8]>,
+    /// input that is a range of it, with the lifetime erased. The suspended caller does not change
+    /// its memory until this frame returns.
+    pub(in crate::interpreter) input: &'frame [u8],
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
@@ -111,7 +111,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             error: None,
             output: 0..0,
             message: None,
-            input: NonNull::from(<&[u8]>::default()),
+            input: &[],
             is_static: false,
             lends_memory: false,
             return_data: Bytes::new(),
@@ -139,7 +139,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.error = None;
         self.output = 0..0;
         self.message = Some(message);
-        self.input = NonNull::from(message.input.as_owned().map_or(&[][..], |input| &input[..]));
+        self.input = message.input.as_owned().map_or(&[][..], |input| &input[..]);
         self.is_static = is_static;
         self.lends_memory = false;
         self.return_data = Bytes::new();
@@ -156,7 +156,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.bytecode = Default::default();
         self.bytecode_ref = None;
         self.message = None;
-        self.input = NonNull::from(<&[u8]>::default());
+        self.input = &[];
         self.host = None;
         self.inspector = None;
     }
@@ -281,18 +281,16 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// range of this frame's memory when this frame is run by [`Evm`](crate::Evm), and a copy
     /// otherwise.
     ///
-    /// The range is only meaningful for the host that runs this frame, which resolves it against
-    /// this frame's memory when it executes the message.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the bytes are out of bounds of memory.
+    /// The range is only meaningful for the host that runs this frame, which reads it from this
+    /// frame's memory when it executes the message, so it must be in bounds of memory.
     #[inline]
     #[doc(hidden)]
     pub fn call_input(&self, offset: usize, len: usize) -> MessageInput {
-        let bytes = self.memory.slice(offset, len);
+        if len == 0 {
+            return MessageInput::default();
+        }
         if !self.lends_memory {
-            return Bytes::copy_from_slice(bytes).into();
+            return Bytes::copy_from_slice(self.memory.slice(offset, len)).into();
         }
         MessageInput::borrowed(offset..offset + len)
     }
@@ -300,18 +298,13 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Returns the bytes of the active message's input.
     #[inline]
     pub const fn input(&self) -> &[u8] {
-        // SAFETY: See the field.
-        unsafe { self.input.as_ref() }
+        self.input
     }
 
-    /// Sets the input bytes of the active message.
-    ///
-    /// # Safety
-    ///
-    /// `input` must stay valid and unchanged until this frame returns.
+    /// Sets the bytes of the active message's input.
     #[inline]
-    pub(crate) const unsafe fn set_input(&mut self, input: &[u8]) {
-        self.input = NonNull::from_ref(input);
+    pub(crate) const fn set_input(&mut self, input: &'frame [u8]) {
+        self.input = input;
     }
 
     /// Lets [`Self::call_input`] return ranges of this frame's memory for the rest of this frame.
@@ -846,13 +839,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     pub const fn memory(&mut self) -> &mut Memory {
         &mut self.0.memory
-    }
-
-    /// Returns the bytes of the active message's input and linear memory.
-    #[inline]
-    pub const fn input_and_memory(&mut self) -> (&[u8], &mut Memory) {
-        // SAFETY: See `Interpreter::input`. The input is never this frame's memory.
-        (unsafe { self.0.input.as_ref() }, &mut self.0.memory)
     }
 
     /// Resizes linear memory using the active runtime gas parameters.

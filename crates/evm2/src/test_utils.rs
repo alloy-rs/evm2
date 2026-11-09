@@ -464,6 +464,29 @@ pub(crate) fn neg(value: u64) -> Word {
     Word::ZERO.wrapping_sub(Word::from(value))
 }
 
+/// Calls `target` through `call_op` with memory 0..32 as input and returns its 32-byte output.
+pub(crate) fn memory_input_call_code(target: Address, call_op: u8) -> Vec<u8> {
+    let mut code = Vec::new();
+    push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
+    code.push(op::MSTORE);
+    push_all(
+        &mut code,
+        [
+            Word::from(32),
+            Word::from(32),
+            Word::from(32),
+            Word::ZERO,
+            Word::ZERO,
+            address_to_word(&target),
+            Word::from(50_000),
+        ],
+    );
+    code.extend([call_op, op::POP]);
+    push_all(&mut code, [Word::from(32), Word::from(32)]);
+    code.push(op::RETURN);
+    code
+}
+
 pub(crate) fn legacy_bytecode(code: impl Into<Vec<u8>>) -> Bytecode {
     Bytecode::new_legacy(Bytes::from(code.into()))
 }

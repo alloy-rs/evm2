@@ -284,7 +284,7 @@ impl MessageInput {
     pub fn to_bytes(&self, memory: &Memory) -> Bytes {
         match &self.0 {
             Repr::Owned(bytes) => bytes.clone(),
-            Repr::Borrowed(range) => Bytes::copy_from_slice(memory.slice(range.start, range.len())),
+            Repr::Borrowed(_) => Bytes::copy_from_slice(self.as_bytes(memory)),
         }
     }
 }

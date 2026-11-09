@@ -1354,9 +1354,6 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
 }
 
 impl<'a, T: EvmTypes> Evm<'a, T> {
-    /// The input of a call message may be a range of the caller's memory (see
-    /// [`Interpreter::call_input`]), which only a precompile or a frame that runs the message
-    /// reads through [`Self::input_bytes`].
     #[inline]
     fn execute_message_impl(
         &mut self,
@@ -1376,23 +1373,24 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         Ok(result)
     }
 
-    /// Returns the bytes of `message`'s input, reading a range of the caller's memory from the
-    /// running caller frame.
+    /// Returns the bytes of `message`'s input if it is a range of the caller's memory, which it
+    /// reads from the running caller frame.
+    ///
+    /// The bytes are valid until the caller frame runs again.
     ///
     /// # Panics
     ///
-    /// Panics if the input is a range of memory and no frame runs, or the range is out of bounds
-    /// of the running frame's memory. Both mean that the message did not come from a call
-    /// instruction that this EVM runs.
+    /// Panics if no frame runs or the range is out of bounds of its memory, which means that the
+    /// message did not come from a call instruction that this EVM runs.
     #[inline]
-    fn input_bytes<'m>(&self, message: &'m Message<T>) -> &'m [u8] {
-        if let Some(input) = message.input.as_owned() {
-            return input;
+    fn borrowed_input<'m>(&self, message: &'m Message<T>) -> Option<&'m [u8]> {
+        if message.input.as_owned().is_some() {
+            return None;
         }
         let caller = self.current_frame.expect("a call input must come from a running frame");
-        // SAFETY: The running frame is suspended on this call stack, and the returned bytes are
-        // not read once it runs again.
-        message.input.as_bytes(unsafe { trustme::decouple_lt(caller.as_ref().memory()) })
+        // SAFETY: The running frame is suspended on this call stack.
+        let memory = unsafe { trustme::decouple_lt(caller.as_ref().memory()) };
+        Some(message.input.as_bytes(memory))
     }
 
     /// Fires the inspector call/create hooks around message execution.
@@ -1444,9 +1442,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 // `top_frame` and dropped after the frame is returned to the pool, which resets
                 // its bytecode borrow.
                 frame.set_bytecode(unsafe { trustme::decouple_lt(&top_code) });
-                // SAFETY: An empty slice is always valid. The frame only runs hooks, which can
-                // replace the message's input, so it must not point at it.
-                unsafe { frame.set_input(&[]) };
+                // The frame only runs hooks, which can replace the message's input.
+                frame.set_input(&[]);
                 frame.prepare_run(guard.evm);
                 frame
             }
@@ -1683,8 +1680,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         if self.contains_precompile(message) {
             // A precompile can send messages whose hooks write the caller's memory, so it gets a
             // copy of a range of that memory.
-            if message.input.as_owned().is_none() {
-                message.input = Bytes::copy_from_slice(self.input_bytes(message)).into();
+            if let Some(input) = self.borrowed_input(message) {
+                message.input = Bytes::copy_from_slice(input).into();
             }
             return self.execute_call_precompile(checkpoint, message);
         }
@@ -1801,11 +1798,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
-        if message.input.as_owned().is_none() {
-            // SAFETY: The caller frame is suspended, with its memory unchanged, until this frame
-            // returns. The frame that runs next is this one, so no hook can reach the caller's
-            // memory.
-            unsafe { interp_ref.set_input(trustme::decouple_lt(guard.evm.input_bytes(message))) };
+        if let Some(input) = guard.evm.borrowed_input(message) {
+            // The caller frame is suspended until this frame returns, and the frame that runs
+            // next is this one, so nothing can reach the caller's memory in between.
+            interp_ref.set_input(input);
         }
         interp_ref.lend_memory();
         guard.evm.inspect_initialize_interp(interp_ref);
@@ -2186,7 +2182,9 @@ mod tests {
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
         registry::{HandlerError, TxRequest, handler},
-        test_utils::{handle_test_tx, legacy_bytecode, push_address, test_tx},
+        test_utils::{
+            handle_test_tx, legacy_bytecode, memory_input_call_code, push_address, test_tx,
+        },
         utils::address_to_word,
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
@@ -5127,13 +5125,7 @@ mod tests {
             precompiles,
         );
         evm.set_inspector(OverwriteCallerMemory);
-        // Calls the precompile with memory 0..32 as input and returns its output.
-        let mut code = vec![op::PUSH32];
-        code.extend([0xaa; 32]);
-        code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH1, 32, op::PUSH1, 32]);
-        code.extend([op::PUSH0, op::PUSH0]);
-        push_address(&mut code, &TEST_PRECOMPILE);
-        code.extend([op::GAS, op::CALL, op::POP, op::PUSH1, 32, op::PUSH1, 32, op::RETURN]);
+        let code = memory_input_call_code(TEST_PRECOMPILE, op::CALL);
         let mut message =
             MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
 
