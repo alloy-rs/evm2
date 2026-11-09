@@ -1169,9 +1169,7 @@ mod tests {
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.call_static_flags
                 .push(interp.is_static() || message.kind == MessageKind::StaticCall);
-            let mut message = message.clone();
-            message.input = message.input.to_bytes(interp.memory()).into();
-            self.calls.push(message);
+            self.calls.push(message.clone());
             Some(self.execute_result.clone())
         }
 
