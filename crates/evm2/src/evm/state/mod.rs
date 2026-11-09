@@ -840,9 +840,20 @@ impl<'a> State<'a> {
     /// This is intended for transaction-finalization policies that encode per-account pending
     /// work in EIP-1153 storage and must consume it before transaction scratch is cleared.
     pub fn take_transient_storage(&mut self, address: &Address) -> Vec<(Word, Word)> {
-        self.transient_storage
-            .extract_if(|key, _| key.address() == *address)
-            .map(|(key, value)| (key.key(), value))
+        let keys = self
+            .transient_storage
+            .keys()
+            .copied()
+            .filter(|key| key.address() == *address)
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .map(|key| {
+                let value = self
+                    .transient_storage
+                    .remove(&key)
+                    .expect("collected transient storage key must exist");
+                (key.key(), value)
+            })
             .collect()
     }
 

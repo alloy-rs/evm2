@@ -254,11 +254,8 @@ pub unsafe fn __revmc_builtin_codecopy<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
-    let code = ecx.interpreter().original_bytecode_slice();
-    // SAFETY: The slice points into the frame's `Bytecode`, which outlives the frame and which
-    // charging gas and writing memory leave untouched.
-    let code = unsafe { core::slice::from_raw_parts(code.as_ptr(), code.len()) };
-    unsafe { copy_operation(ecx, sp, code) }
+    let bytecode = ecx.bytecode();
+    unsafe { copy_operation(ecx, sp, bytecode.as_ref()) }
 }
 
 #[inline]
@@ -967,18 +964,8 @@ pub unsafe fn __revmc_builtin_do_return<T: EvmTypesHost>(
 ) -> BuiltinResult {
     let rev![offset, len] = sp;
     let len = word_to_usize(len.to_u256())?;
-    let output = if len != 0 {
-        let offset = word_to_usize(offset.to_u256())?;
-        let Some(end) = offset.checked_add(len) else {
-            return Err(InstrStop::MemoryOOG.into());
-        };
-        ensure_memory(ecx, offset, len)?;
-        offset as u32..end as u32
-    } else {
-        0..0
-    };
-    ecx.interpreter_mut().set_output(output);
-    Err(result.into())
+    let offset = if len != 0 { word_to_usize(offset.to_u256())? } else { 0 };
+    do_return_range(ecx, offset, len, result)
 }
 
 #[inline]
@@ -988,8 +975,16 @@ pub unsafe fn __revmc_builtin_do_return_cc<T: EvmTypesHost>(
     len: u64,
     result: InstrStop,
 ) -> BuiltinResult {
-    let offset = offset as usize;
-    let len = len as usize;
+    do_return_range(ecx, offset as usize, len as usize, result)
+}
+
+#[inline]
+fn do_return_range<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    offset: usize,
+    len: usize,
+    result: InstrStop,
+) -> BuiltinResult {
     let output = if len != 0 {
         let Some(end) = offset.checked_add(len) else {
             return Err(InstrStop::MemoryOOG.into());

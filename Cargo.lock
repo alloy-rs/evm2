@@ -2703,7 +2703,6 @@ dependencies = [
  "anstyle",
  "boa_engine",
  "boa_gc",
- "codspeed-criterion-compat",
  "colorchoice",
  "evm2",
  "num-bigint 0.5.1",
@@ -2806,7 +2805,6 @@ name = "evm2-jit-runtime"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
- "codspeed-criterion-compat",
  "crossbeam-channel",
  "crossbeam-queue",
  "dashmap",

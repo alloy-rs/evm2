@@ -6,7 +6,7 @@
 //! - Background JIT compilation for hot keys (threshold-based promotion).
 
 use crate::eyre::{self, WrapErr};
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::B256;
 use backend::{
     Command, CompileJitRequest, EventQueue, JitObjectLinker, LookupEvent, PrepareAotRequest,
     ResidentMap,
@@ -291,21 +291,6 @@ impl JitBackend {
     /// In normal mode this never blocks. In [`blocking`](RuntimeConfig::blocking) mode,
     /// a miss triggers synchronous JIT compilation and the call blocks until it completes.
     pub fn lookup(&self, req: LookupRequest) -> LookupDecision {
-        let LookupRequest { key, code } = req;
-        self.lookup_with(key, &code, || code.clone())
-    }
-
-    /// Like [`lookup`](Self::lookup), for a caller that holds `code` borrowed.
-    ///
-    /// `owned_code` returns the same bytes as `code`, owned; it is only called when the
-    /// lookup misses and the bytecode may be compiled, so a hit takes no reference to it.
-    #[inline]
-    pub fn lookup_with(
-        &self,
-        key: RuntimeCacheKey,
-        code: &[u8],
-        owned_code: impl FnOnce() -> Bytes,
-    ) -> LookupDecision {
         let inner = &*self.inner;
         let shared = &*inner.shared;
 
@@ -315,20 +300,20 @@ impl JitBackend {
         }
         if inner.blocking {
             cold_path();
-            return self.lookup_blocking(LookupRequest { key, code: owned_code() });
+            return self.lookup_blocking(req);
         }
-        if !inner.tuning.should_compile(code) {
+        if !inner.tuning.should_compile(&req.code) {
             cold_path();
             return LookupDecision::Unavailable(LookupMissReason::Ineligible);
         }
 
+        let key = req.key;
         let (decision, event) =
             if let Some(program_ref) = shared.resident.try_get(&key).try_unwrap() {
                 let program = Arc::clone(&program_ref);
                 drop(program_ref);
                 (LookupDecision::Compiled(program), LookupEvent::Hit(key))
             } else {
-                let req = LookupRequest { key, code: owned_code() };
                 (LookupDecision::Unavailable(LookupMissReason::NotReady), LookupEvent::Miss(req))
             };
 
