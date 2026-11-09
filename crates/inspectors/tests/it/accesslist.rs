@@ -1,11 +1,16 @@
 //! Accesslist tests
 
-use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, TransactTo, TxEnv};
+use crate::utils::{AccountInfo, Bytecode, Context, TransactTo, TxEnv, a};
 use alloy_consensus::{TxEip7702, crypto::secp256k1::sign_message};
 use alloy_eip2930::{AccessList, AccessListItem};
 use alloy_eips::eip7702::Authorization;
-use alloy_primitives::{Address, B256, Signature, U256, address, b256, hex};
-use evm2::ethereum::TxEnvelope;
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address, bytes, hex};
+use evm2::{
+    BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SpecId, Version,
+    ethereum::{TxEnvelope, ethereum_tx_registry, execute_initial_frame, prepare_initial_frame},
+    evm::InMemoryDB,
+    interpreter::GasTracker,
+};
 use evm2_inspectors::access_list::AccessListInspector;
 
 #[test]
@@ -22,17 +27,16 @@ fn initial_access_list_is_normalized_and_pruned() {
         item(lower, vec![]),
     ]);
 
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(
-                &callee,
-                AccountInfo {
-                    // Read slot 1 so it is re-added after pruning the callee's stale seeded slot.
-                    code: Some(Bytecode::new_raw(hex!("60015400").into())),
-                    ..Default::default()
-                },
-            );
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(
+            &callee,
+            AccountInfo {
+                // Read slot 1 so it is re-added after pruning the callee's stale seeded slot.
+                code: Some(Bytecode::new_raw(bytes!("60015400"))),
+                ..Default::default()
+            },
+        );
+    });
     let mut inspector = AccessListInspector::new(initial);
     let mut evm = context.build_mainnet().with_inspector(&mut inspector);
     let result = evm
@@ -71,13 +75,12 @@ fn test_access_list_precompile() {
     let account = address!("341348115259a8bf69f1f50101c227fced83bac6");
     let caller = address!("341348115259a8bf69f1f50101c227fced83bac5");
 
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(
-                &account,
-                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
-            );
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(
+            &account,
+            AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+        );
+    });
 
     let mut accesslist = AccessListInspector::default();
     let mut evm = context.build_mainnet().with_inspector(&mut accesslist);
@@ -86,14 +89,14 @@ fn test_access_list_precompile() {
             caller,
             gas_limit: 1000000,
             kind: TransactTo::Call(account),
-            data: hex!("a5399705").into(),
+            data: bytes!("a5399705"),
             nonce: 0,
             ..Default::default()
         })
         .unwrap();
     assert!(res.result.is_success(), "{res:#?}");
 
-    let erecover = address!("0x0000000000000000000000000000000000000001");
+    let erecover = Address::with_last_byte(1);
     assert!(accesslist.excluded().contains(&erecover));
     assert!(accesslist.into_access_list().is_empty());
 }
@@ -139,16 +142,53 @@ fn test_access_list_authorization_exclusions() {
     assert_eq!(excluded.len(), 2);
 }
 
-const fn a(n: u64) -> Address {
-    let mut bytes = [0; 20];
-    let (_, low) = bytes.split_at_mut(12);
-    let n = n.to_be_bytes();
-    let mut i = 0;
-    while i < 8 {
-        low[i] = n[i];
-        i += 1;
+#[test]
+fn later_top_level_call_keeps_slots_touched_by_earlier_calls() {
+    let caller = Address::repeat_byte(0xaa);
+    // Calls `token` with no input.
+    let router = Address::with_last_byte(0x42);
+    // Reads the slot keyed by its caller.
+    let token = Address::with_last_byte(0x43);
+    let mut db = InMemoryDB::default();
+    let code = |code: &[u8]| AccountInfo {
+        code: Some(Bytecode::new_raw(Bytes::copy_from_slice(code))),
+        ..Default::default()
+    };
+    db.insert_account_info(&router, code(&hex!("5f5f5f5f5f60435af100")));
+    db.insert_account_info(&token, code(&hex!("335400")));
+    let mut inspector = AccessListInspector::default();
+    let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::CANCUN, Version::new(SpecId::CANCUN)),
+        SpecId::CANCUN,
+        Default::default(),
+        ethereum_tx_registry(SpecId::CANCUN),
+        db,
+        Precompiles::base(SpecId::CANCUN),
+    );
+    evm.set_inspector(&mut inspector);
+
+    // Two top-level calls of one transaction, as in an account-abstraction batch.
+    for to in [router, token] {
+        let mut gas = GasTracker::new(100_000);
+        let frame = prepare_initial_frame(
+            &mut evm,
+            caller,
+            0,
+            TxKind::Call(to),
+            &Bytes::new(),
+            U256::ZERO,
+            &mut gas,
+        )
+        .unwrap();
+        assert!(execute_initial_frame(&mut evm, frame, &mut gas, 100_000, 0).unwrap().is_success());
     }
-    Address::new(bytes)
+    drop(evm);
+
+    // The slot `token` read under `router` stays after the second call targets `token`.
+    assert_eq!(
+        inspector.into_access_list(),
+        access_list(&[(token, &[router.into_word(), caller.into_word()])])
+    );
 }
 
 /// A call run through `go-ethereum`'s `eth_createAccessList`, and the list it returned.
@@ -181,7 +221,7 @@ fn access_list(items: &[(Address, &[B256])]) -> AccessList {
 fn access_list_matches_geth() {
     let sender = a(0x1001);
     for case in CASES {
-        let mut db = CacheDB::<EmptyDB>::default();
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &sender,
             AccountInfo { balance: U256::from(10u128.pow(18)), ..Default::default() },
@@ -372,10 +412,7 @@ const CASES: &[AccessListCase] = &[
         input: &hex!(""),
         gas_limit: 5000000,
         seed: &[],
-        expected: &[(
-            a(0xc1),
-            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000005")],
-        )],
+        expected: &[(a(0xc1), &[B256::with_last_byte(5)])],
     },
     AccessListCase {
         name: "sstore_underflow",
@@ -384,10 +421,7 @@ const CASES: &[AccessListCase] = &[
         input: &hex!(""),
         gas_limit: 5000000,
         seed: &[],
-        expected: &[(
-            a(0xc1),
-            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000007")],
-        )],
+        expected: &[(a(0xc1), &[B256::with_last_byte(7)])],
     },
     AccessListCase {
         name: "balance_oog",
@@ -405,10 +439,7 @@ const CASES: &[AccessListCase] = &[
         input: &hex!(""),
         gas_limit: 25353,
         seed: &[],
-        expected: &[(
-            a(0xc1),
-            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000005")],
-        )],
+        expected: &[(a(0xc1), &[B256::with_last_byte(5)])],
     },
     AccessListCase {
         name: "sstore_oog_sentry",
@@ -417,10 +448,7 @@ const CASES: &[AccessListCase] = &[
         input: &hex!(""),
         gas_limit: 27300,
         seed: &[],
-        expected: &[(
-            a(0xc1),
-            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000009")],
-        )],
+        expected: &[(a(0xc1), &[B256::with_last_byte(9)])],
     },
     AccessListCase {
         name: "call_oog",
@@ -449,10 +477,7 @@ const CASES: &[AccessListCase] = &[
         input: &hex!(""),
         gas_limit: 5000000,
         seed: &[],
-        expected: &[(
-            a(0xc2),
-            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000003")],
-        )],
+        expected: &[(a(0xc2), &[B256::with_last_byte(3)])],
     },
     AccessListCase {
         name: "delegatecall_sload",
@@ -468,13 +493,7 @@ const CASES: &[AccessListCase] = &[
         input: &hex!(""),
         gas_limit: 5000000,
         seed: &[],
-        expected: &[
-            (
-                a(0xc1),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000004")],
-            ),
-            (a(0xc2), &[]),
-        ],
+        expected: &[(a(0xc1), &[B256::with_last_byte(4)]), (a(0xc2), &[])],
     },
     AccessListCase {
         name: "callcode_sload",
@@ -490,13 +509,7 @@ const CASES: &[AccessListCase] = &[
         input: &hex!(""),
         gas_limit: 5000000,
         seed: &[],
-        expected: &[
-            (
-                a(0xc1),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000004")],
-            ),
-            (a(0xc2), &[]),
-        ],
+        expected: &[(a(0xc1), &[B256::with_last_byte(4)]), (a(0xc2), &[])],
     },
     AccessListCase {
         name: "selfdestruct",
@@ -553,7 +566,7 @@ const CASES: &[AccessListCase] = &[
         seed: &[],
         expected: &[(
             address!("0x3817e247023b4f489352758397040b1fd33b300a"),
-            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000005")],
+            &[B256::with_last_byte(5)],
         )],
     },
     AccessListCase {
@@ -569,7 +582,7 @@ const CASES: &[AccessListCase] = &[
         seed: &[],
         expected: &[(
             address!("0x724572a7f7b8eb3aa9763a66f2511269ec3764d5"),
-            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000005")],
+            &[B256::with_last_byte(5)],
         )],
     },
     AccessListCase {
@@ -579,30 +592,12 @@ const CASES: &[AccessListCase] = &[
         input: &hex!(""),
         gas_limit: 5000000,
         seed: &[
-            (
-                a(0xd1),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000009")],
-            ),
-            (
-                a(0xc1),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000007")],
-            ),
-            (
-                a(0x1001),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000001")],
-            ),
+            (a(0xd1), &[B256::with_last_byte(9)]),
+            (a(0xc1), &[B256::with_last_byte(7)]),
+            (a(0x1001), &[B256::with_last_byte(1)]),
             (a(0x2), &[]),
         ],
-        expected: &[
-            (
-                a(0xc1),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000005")],
-            ),
-            (
-                a(0xd1),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000009")],
-            ),
-        ],
+        expected: &[(a(0xc1), &[B256::with_last_byte(5)]), (a(0xd1), &[B256::with_last_byte(9)])],
     },
     AccessListCase {
         name: "reverted_frame_touch",
@@ -618,13 +613,7 @@ const CASES: &[AccessListCase] = &[
         input: &hex!(""),
         gas_limit: 5000000,
         seed: &[],
-        expected: &[
-            (
-                a(0xc2),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000006")],
-            ),
-            (a(0xb001), &[]),
-        ],
+        expected: &[(a(0xc2), &[B256::with_last_byte(6)]), (a(0xb001), &[])],
     },
     AccessListCase {
         name: "extcode_ops",

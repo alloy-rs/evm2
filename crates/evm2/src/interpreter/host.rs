@@ -3,6 +3,7 @@ use crate::{
     BaseEvmTypes, DatabaseError, EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    utils::address_to_word,
 };
 use alloc::borrow::Cow;
 use alloy_primitives::{Address, B256, Bytes};
@@ -60,7 +61,7 @@ impl<E> MessageResultExt<E> {
     pub fn created_address_for_parent(&self) -> Word {
         self.created_address
             .filter(|_| self.stop.is_success())
-            .map(|address| Word::from_be_slice(address.as_slice()))
+            .map(|address| address_to_word(&address))
             .unwrap_or_default()
     }
 
@@ -116,7 +117,8 @@ pub trait Host<T: EvmTypesHost> {
     /// Returns the active execution configuration.
     ///
     /// The interpreter keeps a reference to the returned version for the whole run, so the host
-    /// must not replace or mutate it while the interpreter runs.
+    /// must not replace or mutate it while the interpreter runs. An inspected run reads the config
+    /// again when its inspector changes the opcodes it steps.
     fn execution_config(&self) -> &ExecutionConfig<T>;
 
     /// Returns the block environment.
