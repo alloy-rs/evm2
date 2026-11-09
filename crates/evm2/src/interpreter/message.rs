@@ -212,8 +212,9 @@ pub fn create_preaccess_failure(
 /// an owned one, as in `message.input = bytes.into()`. A kept clone of such an input is only the
 /// range, so copy it out with [`to_bytes`](Self::to_bytes) to keep the bytes.
 ///
-/// A running frame reads its own input with [`Interpreter::input`](crate::Interpreter::input), and
-/// only [`Evm`](crate::Evm) resolves a borrowed input when it enters a frame.
+/// A running frame reads its own input with
+/// [`Interpreter::input`](crate::interpreter::Interpreter::input), and only [`Evm`](crate::Evm)
+/// resolves a borrowed input when it enters a frame.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MessageInput(Repr);
 
