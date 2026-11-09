@@ -11,51 +11,55 @@ use evm2::{
 
 #[derive(Clone, Copy, Debug)]
 struct PendingOpcodeGas {
-    opcode: Option<OpCode>,
+    opcode: u8,
     gas_remaining: u64,
     child_gas_used: u64,
 }
 
 /// An Inspector that counts opcodes and measures gas usage per opcode.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct OpcodeGasInspector {
-    /// Map of opcode counts per transaction.
-    opcode_counts: HashMap<OpCode, u64>,
-    /// Map of total gas used per opcode.
-    opcode_gas: HashMap<OpCode, u64>,
+    /// Count of each opcode byte per transaction, indexed by the byte.
+    opcode_counts: [u64; 256],
+    /// Total gas used by each opcode byte, indexed by the byte.
+    opcode_gas: [u64; 256],
     /// Tracks opcodes waiting for `step_end`.
     pending_steps: Vec<PendingOpcodeGas>,
 }
 
+impl Default for OpcodeGasInspector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OpcodeGasInspector {
     /// Creates a new instance of the inspector.
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self { opcode_counts: [0; 256], opcode_gas: [0; 256], pending_steps: Vec::new() }
     }
 
     /// Returns the opcode counts collected during transaction execution.
-    pub const fn opcode_counts(&self) -> &HashMap<OpCode, u64> {
-        &self.opcode_counts
+    pub fn opcode_counts(&self) -> HashMap<OpCode, u64> {
+        self.counted_opcodes().collect()
     }
 
     /// Returns the opcode gas usage collected during transaction execution.
-    pub const fn opcode_gas(&self) -> &HashMap<OpCode, u64> {
-        &self.opcode_gas
+    pub fn opcode_gas(&self) -> HashMap<OpCode, u64> {
+        self.opcode_iter().map(|(opcode, (_, gas))| (opcode, gas)).collect()
     }
 
     /// Returns an iterator over all opcodes with their count and combined gas usage.
     ///
-    /// Note: this returns in no particular order.
+    /// Note: this returns opcodes in ascending byte order.
     pub fn opcode_iter(&self) -> impl Iterator<Item = (OpCode, (u64, u64))> + '_ {
-        self.opcode_counts.iter().map(move |(&opcode, &count)| {
-            let gas = self.opcode_gas.get(&opcode).copied().unwrap_or_default();
-            (opcode, (count, gas))
-        })
+        self.counted_opcodes()
+            .map(|(opcode, count)| (opcode, (count, self.opcode_gas[usize::from(opcode.get())])))
     }
 
     /// Returns an iterator over all opcodes with their count and combined gas usage.
     ///
-    /// Note: this returns in no particular order.
+    /// Note: this returns opcodes in ascending byte order.
     pub fn opcode_gas_iter(&self) -> impl Iterator<Item = OpcodeGas> + '_ {
         self.opcode_iter().map(|(opcode, (count, gas_used))| OpcodeGas {
             opcode: opcode.to_string(),
@@ -64,14 +68,22 @@ impl OpcodeGasInspector {
         })
     }
 
+    /// Returns the defined opcodes that ran with their counts.
+    fn counted_opcodes(&self) -> impl Iterator<Item = (OpCode, u64)> + '_ {
+        (0..=u8::MAX).filter_map(|byte| {
+            let count = self.opcode_counts[usize::from(byte)];
+            if count == 0 {
+                return None;
+            }
+            Some((OpCode::new(byte)?, count))
+        })
+    }
+
     /// Helper function to exclude child gas from opcode gas tracking.
     /// This prevents call/create opcodes from including the gas consumed within the call/create.
-    fn exclude_child_gas(&mut self, opcode_value: u8, child_gas_used: u64) {
-        let Some(opcode) = OpCode::new(opcode_value) else {
-            return;
-        };
+    fn exclude_child_gas(&mut self, opcode: u8, child_gas_used: u64) {
         if let Some(pending) = self.pending_steps.last_mut()
-            && pending.opcode == Some(opcode)
+            && pending.opcode == opcode
         {
             pending.child_gas_used = pending.child_gas_used.saturating_add(child_gas_used);
         }
@@ -80,12 +92,9 @@ impl OpcodeGasInspector {
 
 impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        let opcode_value = interp.opcode();
-        let opcode = OpCode::new(opcode_value);
-        if let Some(opcode) = opcode {
-            // keep track of opcode counts
-            *self.opcode_counts.entry(opcode).or_default() += 1;
-        }
+        let opcode = interp.opcode();
+        // Undefined opcodes are counted too, but the getters leave them out.
+        self.opcode_counts[usize::from(opcode)] += 1;
 
         // Undefined opcodes also receive step_end and must not pop a parent's step.
         self.pending_steps.push(PendingOpcodeGas {
@@ -97,9 +106,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // update gas usage for the last opcode
-        if let Some(pending) = self.pending_steps.pop()
-            && let Some(opcode) = pending.opcode
-        {
+        if let Some(pending) = self.pending_steps.pop() {
             // An out-of-gas step consumes the whole remainder it started with, except the
             // reentrancy sentry, which rejects SSTORE before charging gas.
             let gas_cost = match interp.result() {
@@ -108,7 +115,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
                 _ => pending.gas_remaining.saturating_sub(interp.gas().remaining()),
             }
             .saturating_sub(pending.child_gas_used);
-            *self.opcode_gas.entry(opcode).or_default() += gas_cost;
+            self.opcode_gas[usize::from(pending.opcode)] += gas_cost;
         }
     }
 

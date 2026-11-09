@@ -2703,6 +2703,7 @@ dependencies = [
  "anstyle",
  "boa_engine",
  "boa_gc",
+ "codspeed-criterion-compat",
  "colorchoice",
  "evm2",
  "num-bigint 0.5.1",
