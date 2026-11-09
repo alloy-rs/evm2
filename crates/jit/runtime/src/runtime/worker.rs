@@ -416,34 +416,6 @@ fn compile_job(
     }
 }
 
-#[cfg(not(feature = "llvm"))]
-fn compile_job(
-    job: CompileJob,
-    _config: &RuntimeConfig,
-    _helper: OutOfProcessHelper,
-) -> WorkerResult {
-    let CompileJob {
-        kind,
-        key,
-        bytecode: _,
-        symbol_name: _,
-        opt_level: _,
-        sync_notifier,
-        generation,
-    } = job;
-
-    WorkerResult {
-        key,
-        outcome: Err("LLVM backend not available".into()),
-        kind,
-        sync_notifier,
-        generation,
-        compile_duration: Duration::ZERO,
-        timings: CompileTimings::default(),
-        transient: false,
-    }
-}
-
 #[cfg(all(feature = "llvm", unix))]
 fn compile_out_of_process_job(
     job: CompileJob,
@@ -772,6 +744,34 @@ fn compile_aot_artifact(
         object_bytes,
         bytecode_len: job.bytecode.len(),
     }))
+}
+
+#[cfg(not(feature = "llvm"))]
+fn compile_job(
+    job: CompileJob,
+    _config: &RuntimeConfig,
+    _helper: OutOfProcessHelper,
+) -> WorkerResult {
+    let CompileJob {
+        kind,
+        key,
+        bytecode: _,
+        symbol_name: _,
+        opt_level: _,
+        sync_notifier,
+        generation,
+    } = job;
+
+    WorkerResult {
+        key,
+        outcome: Err("LLVM backend not available".into()),
+        kind,
+        sync_notifier,
+        generation,
+        compile_duration: Duration::ZERO,
+        timings: CompileTimings::default(),
+        transient: false,
+    }
 }
 
 #[cfg(test)]
