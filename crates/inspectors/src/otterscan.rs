@@ -5,7 +5,7 @@ use alloy_primitives::{Address, U256};
 use alloy_rpc_types_trace::otterscan::{InternalOperation, OperationType};
 use evm2::{
     EvmTypesHost, Inspector, InspectorConfig,
-    interpreter::{Interpreter, Message, MessageKind, MessageResult},
+    interpreter::{Host, Interpreter, Message, MessageKind, MessageResult},
 };
 
 /// Records attempted internal operations for Otterscan's `ots_getInternalOperations`.
@@ -61,7 +61,7 @@ impl<T: EvmTypesHost> Inspector<T> for InternalOperationsInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_operation::<T>(message, interp.version().initial_call_depth);
+        self.on_operation::<T>(message, interp.host().initial_call_depth());
         None
     }
 
@@ -70,7 +70,7 @@ impl<T: EvmTypesHost> Inspector<T> for InternalOperationsInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_operation::<T>(message, interp.version().initial_call_depth);
+        self.on_operation::<T>(message, interp.host().initial_call_depth());
         None
     }
 
