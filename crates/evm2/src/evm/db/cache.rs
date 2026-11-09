@@ -273,6 +273,11 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     type Error = Infallible;
 
     #[inline]
+    fn code_adopted(&mut self, address: Address) -> Result<(), Self::Error> {
+        self.bal_context.code_adopted(address)
+    }
+
+    #[inline]
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
         self.bal_context.bytecode(code_hash, code)?;
         self.cache.contracts.insert(code_hash, code.clone());

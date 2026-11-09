@@ -5,12 +5,51 @@ use crate::{
     evm::{PrewarmSet, precompile::PrecompileProvider},
     interpreter::{GasTracker, Message},
 };
-#[cfg(feature = "std")]
-use alloc::boxed::Box;
 use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
+use arrayref as _;
+
+#[cfg(feature = "std")]
+use alloc::boxed::Box;
 #[cfg(feature = "std")]
 use core::any::{Any, TypeId};
+
+// Silence backend dependency lints when another backend takes precedence.
+core::cfg_select! {
+    feature = "bn" => {
+        use ark_bn254 as _;
+        use ark_ec as _;
+        use ark_ff as _;
+        use ark_serialize as _;
+        use bn as _;
+    }
+    _ => {}
+}
+
+// silence arkworks-bls12-381 lint as blst will be used as default if both are enabled.
+core::cfg_select! {
+    feature = "blst" => {
+        use ark_bls12_381 as _;
+        use ark_ec as _;
+        use ark_ff as _;
+        use ark_serialize as _;
+    }
+    _ => {}
+}
+
+// silence aurora-engine-modexp if gmp is enabled
+#[cfg(feature = "gmp")]
+use aurora_engine_modexp as _;
+
+// silence p256 lint as aws-lc-rs will be used if both are enabled.
+#[cfg(feature = "p256-aws-lc-rs")]
+use p256 as _;
+
+pub(crate) use crate::{
+    evm::precompile::PrecompileOutput,
+    once_lock::OnceLock,
+    utils::{calc_linear_cost, u64_to_address},
+};
 
 pub mod blake2;
 pub mod bls12_381;
@@ -33,53 +72,15 @@ pub use id::PrecompileId;
 mod table;
 pub use table::*;
 
-/// EIP-7823 constants.
 pub(crate) mod eip7823 {
+    //! EIP-7823 constants.
+
     /// Each of the modexp length inputs must be less than or equal to 1024 bytes.
     pub(crate) const INPUT_SIZE_LIMIT: usize = 1024;
 }
 
 mod result;
 pub use result::{PrecompileError, PrecompileHalt, PrecompileResult};
-
-pub(crate) use crate::{
-    evm::precompile::PrecompileOutput,
-    once_lock::OnceLock,
-    utils::{calc_linear_cost, u64_to_address},
-};
-
-// Silence backend dependency lints when another backend takes precedence.
-core::cfg_select! {
-    feature = "bn" => {
-        use ark_bn254 as _;
-        use ark_ec as _;
-        use ark_ff as _;
-        use ark_serialize as _;
-        use bn as _;
-    }
-    _ => {}
-}
-
-use arrayref as _;
-
-// silence arkworks-bls12-381 lint as blst will be used as default if both are enabled.
-core::cfg_select! {
-    feature = "blst" => {
-        use ark_bls12_381 as _;
-        use ark_ec as _;
-        use ark_ff as _;
-        use ark_serialize as _;
-    }
-    _ => {}
-}
-
-// silence aurora-engine-modexp if gmp is enabled
-#[cfg(feature = "gmp")]
-use aurora_engine_modexp as _;
-
-// silence p256 lint as aws-lc-rs will be used if both are enabled.
-#[cfg(feature = "p256-aws-lc-rs")]
-use p256 as _;
 
 /// Default precompile provider.
 #[derive(Clone, Debug)]
@@ -213,7 +214,7 @@ fn cached_base_precompiles<T: EvmTypesHost>(spec: SpecId) -> &'static Precompile
         SpecId::BERLIN | SpecId::LONDON | SpecId::MERGE | SpecId::SHANGHAI => 3,
         SpecId::CANCUN => 4,
         SpecId::PRAGUE => 5,
-        SpecId::OSAKA | SpecId::AMSTERDAM => 6,
+        SpecId::OSAKA | SpecId::AMSTERDAM | SpecId::BOGOTA => 6,
     };
 
     shared_base_precompiles::<T>()

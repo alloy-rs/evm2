@@ -336,7 +336,7 @@ impl<'a> State<'a> {
     /// Once enabled, every committed transaction is folded into the builder at the current block
     /// access index. Bump the index once per transaction with [`Self::bump_bal_index`]. The BAL
     /// state lives in the accepted-overlay [`CacheDB`]'s
-    /// [`BalContext`](crate::evm::BalContext).
+    /// [`BalContext`].
     #[inline]
     pub fn enable_bal_builder(&mut self) {
         self.inner.database.bal_context.enable_bal_builder();
@@ -505,6 +505,16 @@ impl<'a> State<'a> {
         self.inner.prewarm_set.warm(address);
     }
 
+    /// Checks account warmth without loading the account or recording a BAL access.
+    #[inline]
+    pub(crate) fn is_account_warm(&self, address: &Address) -> bool {
+        self.inner.prewarm_set.is_warm(address)
+            || self
+                .accounts
+                .get(address)
+                .is_some_and(|account| account.flags.contains(AccountFlags::WARM))
+    }
+
     /// Marks an address and a set of storage slots as warm in the pre-warmed set. See
     /// [`PrewarmSet::warm_storage`].
     #[inline]
@@ -536,6 +546,42 @@ impl<'a> State<'a> {
         prewarm_set.clear();
         journal.clear();
         logs.clear();
+    }
+
+    /// Discards transient storage at a top-level frame boundary without finalizing the transaction.
+    pub fn clear_transient_storage(&mut self) {
+        self.transient_storage.clear();
+    }
+
+    /// Captures runtime warmth independently of persistent state and BAL read evidence.
+    pub(crate) fn frame_warmth_snapshot(&self) -> Vec<(Address, Vec<Word>)> {
+        self.accounts
+            .iter()
+            .filter(|(_, account)| account.flags.contains(AccountFlags::WARM))
+            .map(|(address, account)| {
+                let slots = account
+                    .storage
+                    .slots
+                    .iter()
+                    .filter_map(|(key, slot)| slot.is_warm.then_some(*key))
+                    .collect();
+                (*address, slots)
+            })
+            .collect()
+    }
+
+    /// Reinstates accesses that were warm before an atomic group was checkpointed.
+    pub(crate) fn restore_frame_warmth(&mut self, snapshot: &[(Address, Vec<Word>)]) {
+        for (address, keys) in snapshot {
+            if let Some(account) = self.accounts.get_mut(address) {
+                account.flags.insert(AccountFlags::WARM);
+                for key in keys {
+                    if let Some(slot) = account.storage.slots.get_mut(key) {
+                        slot.is_warm = true;
+                    }
+                }
+            }
+        }
     }
 
     /// Loads an account without skipping cold accesses.
@@ -645,6 +691,17 @@ impl<'a> State<'a> {
         }
         let discards_storage = account.discards_storage();
         Ok(StorageHandle::new(address, &mut account.storage, discards_storage, inner))
+    }
+
+    /// Checks slot warmth without loading its account or recording a BAL access.
+    #[cfg(test)]
+    pub(crate) fn is_storage_warm(&self, address: &Address, key: &Word) -> bool {
+        self.inner.prewarm_set.is_storage_warm(address, key)
+            || self
+                .accounts
+                .get(address)
+                .and_then(|account| account.storage.slots.get(key))
+                .is_some_and(|slot| slot.is_warm)
     }
 
     /// Loads a single persistent storage slot and returns a journaled mutation handle.

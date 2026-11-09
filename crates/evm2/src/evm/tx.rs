@@ -6,7 +6,8 @@ use super::{
 };
 use crate::{EvmTypesHost, interpreter::InstrStop};
 use alloc::vec::Vec;
-use alloy_primitives::{Address, Bytes, Log};
+use alloy_eips::eip8141::{FrameReceipt, FrameReceiptPayload};
+use alloy_primitives::{Address, Bytes, Log, U256};
 use core::fmt;
 use derive_where::derive_where;
 
@@ -44,8 +45,12 @@ pub struct TxResultExt<E = ()> {
     pub created_address: Option<Address>,
     /// Logs emitted by the transaction.
     ///
-    /// Empty when [`EvmFeatures::LOG_COLLECTION`](crate::EvmFeatures::LOG_COLLECTION) is disabled.
+    /// Ordinary results omit logs when
+    /// [`EvmFeatures::LOG_COLLECTION`](crate::EvmFeatures::LOG_COLLECTION) is disabled. Frame
+    /// results always retain the canonical consensus events.
     pub logs: Vec<Log>,
+    /// Ordered frame outcomes.
+    pub frame: Option<FrameTransactionResult>,
     /// EVM type-specific extension data.
     pub ext: E,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -72,6 +77,7 @@ impl<E> TxResultExt<E> {
             output,
             created_address,
             logs,
+            frame,
             ext,
             _non_exhaustive,
         } = self;
@@ -85,6 +91,7 @@ impl<E> TxResultExt<E> {
             output,
             created_address,
             logs,
+            frame,
             ext: f(ext),
             _non_exhaustive,
         }
@@ -112,10 +119,21 @@ impl<E> TxResultExt<E> {
         !self.status && !self.is_revert()
     }
 
-    /// Returns the receipt gas-used value: `max(total_gas_spent - refunded, floor_gas)`.
+    /// Returns receipt gas, applying the calldata floor to the execution component of frames.
+    ///
+    /// Ordinary transactions use `max(total_gas_spent - refunded, floor_gas)`. Frames use
+    /// `max(total_gas_spent - refunded - state_gas_spent, floor_gas) + state_gas_spent`.
     #[inline]
     pub const fn tx_gas_used(&self) -> u64 {
         // `max(spent - refunded, floor_gas)`, spelled out because `Ord::max` is not const-stable.
+        if self.frame.is_some() {
+            let execution = self
+                .total_gas_spent
+                .saturating_sub(self.refunded)
+                .saturating_sub(self.state_gas_spent);
+            return (if execution > self.floor_gas { execution } else { self.floor_gas })
+                .saturating_add(self.state_gas_spent);
+        }
         let spent_sub_refunded = self.total_gas_spent.saturating_sub(self.refunded);
         if spent_sub_refunded > self.floor_gas { spent_sub_refunded } else { self.floor_gas }
     }
@@ -151,10 +169,44 @@ impl<E> TxResultExt<E> {
     /// value is [`Self::tx_gas_used`].
     #[inline]
     pub const fn final_refunded(&self) -> u64 {
-        if self.total_gas_spent.saturating_sub(self.refunded) < self.floor_gas {
-            0
+        let spent = if self.frame.is_some() {
+            self.total_gas_spent.saturating_sub(self.state_gas_spent)
         } else {
-            self.refunded
+            self.total_gas_spent
+        };
+        if spent.saturating_sub(self.refunded) < self.floor_gas { 0 } else { self.refunded }
+    }
+}
+
+/// Native execution facts used to build a frame receipt at block scope.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FrameTransactionResult {
+    /// Account that approved payment.
+    pub payer: Address,
+    /// Amount collected at approval, before final settlement.
+    pub precharge: U256,
+    /// Transaction-wide lower bound returned by GASPRICE, before final fee settlement.
+    pub gas_price: U256,
+    /// Ordered consensus frame receipts.
+    pub receipts: Vec<FrameReceipt>,
+    /// Index of the failed assertion, if the execution body was rolled back.
+    pub assertion_failure: Option<usize>,
+    /// Whether each executed frame belongs to a rolled-back group or assertion body.
+    pub rolled_back: Vec<bool>,
+    /// Per-frame native stop reasons; skipped entries use `Stop` and status 2.
+    pub stops: Vec<InstrStop>,
+    /// Return or revert bytes, including empty entries for skipped frames.
+    pub outputs: Vec<Bytes>,
+}
+
+impl FrameTransactionResult {
+    /// Builds the consensus receipt payload with the block executor's cumulative fee gas.
+    /// Execution outputs and rollback diagnostics are not part of its encoding.
+    pub fn into_receipt(self, cumulative_gas_used: u64) -> FrameReceiptPayload {
+        FrameReceiptPayload {
+            cumulative_gas_used,
+            payer: self.payer,
+            frame_receipts: self.receipts,
         }
     }
 }

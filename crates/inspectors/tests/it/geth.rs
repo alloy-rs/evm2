@@ -3348,6 +3348,433 @@ fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
     );
 }
 
+mod frames {
+    use super::*;
+    use crate::utils::frames::*;
+    use alloy_consensus::transaction::Recovered;
+    use alloy_eips::eip8141::{ENTRY_POINT, FrameMode, FrameStatus};
+    use evm2::{
+        ExecutionConfig, Precompiles, Version,
+        ethereum::{TxEnvelope, ethereum_tx_registry},
+        interpreter::Host,
+    };
+
+    #[test]
+    fn native_finalization_reconciles_assertion_rollback_and_skipped_frames() {
+        let sender = Address::with_last_byte(0xa0);
+        let body = Address::with_last_byte(0xb0);
+        let assertion = Address::with_last_byte(0xc0);
+        let mut evm = evm(&[(sender, APPROVE_BOTH), (body, STORE_AND_LOG), (assertion, REVERT)]);
+        evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Eip8141(payload(
+                sender,
+                vec![
+                    frame(FrameMode::Verify, sender, 3),
+                    frame(FrameMode::Sender, body, 0),
+                    frame(FrameMode::Assert, assertion, 0),
+                    frame(FrameMode::Assert, assertion, 0),
+                ],
+            )),
+            Address::ZERO,
+        );
+        let result = evm.transact(&tx).unwrap().discard();
+        let inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+        let nodes = inspector.traces().nodes();
+        assert_eq!(nodes[0].children.len(), 4);
+        assert_eq!(nodes[0].trace.gas_used, result.tx_gas_used());
+        assert!(!nodes[0].trace.success);
+        let body_node = &nodes[nodes[0].children[1]];
+        assert_eq!(body_node.trace.frame_index, Some(1));
+        assert_eq!(body_node.trace.depth, 1);
+        assert!(body_node.trace.success);
+        assert!(body_node.trace.rolled_back);
+        assert_eq!(body_node.trace.state_gas_used, 0);
+        assert!(body_node.logs.is_empty());
+        let skipped = &nodes[nodes[0].children[3]];
+        assert!(skipped.trace.skipped);
+        assert_eq!(skipped.trace.gas_used, 0);
+        assert_eq!(skipped.trace.state_gas_used, 0);
+
+        let geth = inspector.geth_builder().geth_call_traces_with_result_gas(
+            CallConfig { with_log: Some(true), ..Default::default() },
+            &result,
+        );
+        assert_eq!(geth.calls.len(), 4);
+        assert_eq!(geth.calls[3].gas_used, U256::ZERO);
+        assert_eq!(geth.calls[3].error.as_deref(), Some("frame skipped"));
+        assert!(geth.calls[1].logs.is_empty());
+        let steps = inspector.geth_builder().geth_traces_with_result_gas(
+            &result,
+            Bytes::new(),
+            GethDefaultTracingOptions::default(),
+        );
+        assert!(!steps.struct_logs.is_empty());
+        assert!(steps.struct_logs.iter().all(|step| step.depth == 1));
+
+        let vm = inspector.into_parity_builder().vm_trace();
+        assert_eq!(vm.ops.len(), 3);
+        assert_eq!(vm.ops.iter().map(|op| op.pc).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert!(vm.ops.iter().all(|op| !op.sub.as_ref().unwrap().ops.is_empty()));
+    }
+
+    #[test]
+    fn native_default_account_verification_is_visible_in_debug_and_mux_results() {
+        for (mux, initial_call_depth) in [(false, 0), (true, 0), (false, 7), (true, 7)] {
+            let (sender, tx) = default_verification_transaction(Bytes::new());
+            let mut evm = evm(&[(sender, &[])]);
+            let spec = evm2::SpecId::BOGOTA;
+            let mut version = Version::new(spec);
+            version.initial_call_depth = initial_call_depth;
+            evm.set_execution_config(
+                ExecutionConfig::for_spec_and_version(spec, version),
+                spec,
+                ethereum_tx_registry(spec),
+                Precompiles::base(spec),
+            );
+            let opts = if mux {
+                serde_json::json!({ "tracer": "muxTracer", "tracerConfig": { "callTracer": { "onlyTopCall": true } } })
+            } else {
+                serde_json::json!({ "tracer": "callTracer", "tracerConfig": { "onlyTopCall": true } })
+            };
+            evm.set_inspector(DebugInspector::new(serde_json::from_value(opts).unwrap()).unwrap());
+            let result = evm.transact(&tx).unwrap().detach();
+            let mut inspector = evm.clear_inspector_as::<DebugInspector>().unwrap();
+            let block = *evm.block_env();
+            let trace =
+                inspector.get_result(None, &tx, &block, &result, evm.database_mut()).unwrap();
+            let calls = match trace {
+                GethTrace::CallTracer(calls) => calls,
+                GethTrace::MuxTracer(mut result) => {
+                    let GethTrace::CallTracer(calls) = result
+                        .0
+                        .remove(&GethDebugTracerType::BuiltInTracer(
+                            GethDebugBuiltInTracerType::CallTracer,
+                        ))
+                        .unwrap()
+                    else {
+                        panic!("mux call tracer")
+                    };
+                    calls
+                }
+                _ => panic!("call tracer result"),
+            };
+            assert_eq!(calls.from, sender);
+            assert_eq!(calls.calls.len(), 1);
+            assert_eq!(calls.calls[0].to, Some(sender));
+            assert_eq!(
+                calls.calls[0].gas_used,
+                U256::from(result.result.frame.as_ref().unwrap().receipts[0].gas_used.execution)
+            );
+            assert!(calls.calls[0].error.is_none());
+        }
+    }
+
+    #[test]
+    fn native_atomic_failure_keeps_receipt_gas_and_skips_only_its_group() {
+        let sender = Address::with_last_byte(0xa0);
+        let body = Address::with_last_byte(0xb0);
+        let revert = Address::with_last_byte(0xc0);
+        let mut evm = evm(&[(sender, APPROVE_BOTH), (body, STORE_AND_LOG), (revert, REVERT)]);
+        evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
+        let result = evm
+            .transact(&transaction(vec![
+                frame(FrameMode::Verify, sender, 3),
+                frame(FrameMode::Sender, body, 4),
+                frame(FrameMode::Sender, revert, 4),
+                frame(FrameMode::Sender, body, 0),
+                frame(FrameMode::Sender, body, 0),
+            ]))
+            .unwrap()
+            .discard();
+        let inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+        let nodes = inspector.traces().nodes();
+        assert_eq!(nodes[0].children.len(), 5);
+        let outcome = result.frame.as_ref().unwrap();
+        for (index, child) in nodes[0].children.iter().enumerate() {
+            let trace = &nodes[*child].trace;
+            assert_eq!(trace.gas_used, outcome.receipts[index].gas_used.execution);
+            assert_eq!(trace.state_gas_used, outcome.receipts[index].gas_used.state);
+            assert_eq!(trace.rolled_back, outcome.rolled_back[index]);
+        }
+        assert!(result.status);
+        assert!(!nodes[0].trace.success);
+        assert!(nodes[0].trace.is_error());
+        assert!(nodes[nodes[0].children[1]].logs.is_empty());
+        assert!(nodes[nodes[0].children[3]].trace.skipped);
+        assert_eq!(nodes[nodes[0].children[4]].logs.len(), 1);
+        let calls = inspector.geth_builder().geth_call_traces_with_result_gas(
+            CallConfig { with_log: Some(true), ..Default::default() },
+            &result,
+        );
+        assert_eq!(calls.error.as_deref(), Some("frame transaction failed"));
+        assert_eq!(calls.gas_used, U256::from(result.tx_gas_used()));
+        assert_eq!(calls.execution_gas_used, Some(U256::from(result.execution_gas_spent())));
+        assert_eq!(calls.state_gas_used, Some(U256::from(result.state_gas_spent())));
+        assert_eq!(calls.calls[3].gas_used, U256::ZERO);
+        assert_eq!(calls.calls[4].logs.len(), 1);
+        assert_eq!(calls.calls[4].logs[0].index, Some(0));
+        let final_frame_gas = &outcome.receipts[4].gas_used;
+        assert!(final_frame_gas.state > 0);
+        assert_eq!(calls.calls[4].gas, U256::from(100_000));
+        assert_eq!(calls.calls[4].gas_used, U256::from(final_frame_gas.execution));
+        assert_eq!(calls.calls[4].execution_gas_used, Some(U256::from(final_frame_gas.execution)));
+        assert_eq!(calls.calls[4].state_gas_used, Some(U256::from(final_frame_gas.state)));
+        let parity = inspector.into_parity_builder();
+        let traces = parity.clone().into_transaction_traces();
+        assert_eq!(
+            traces.iter().map(|trace| trace.trace_address.clone()).collect::<Vec<_>>(),
+            vec![vec![], vec![0], vec![1], vec![2], vec![3], vec![4]]
+        );
+        assert_eq!(traces[0].error.as_deref(), Some("frame transaction failed"));
+        assert_eq!(traces[0].result.as_ref().unwrap().gas_used(), result.tx_gas_used());
+        assert_eq!(traces[4].error.as_deref(), Some("frame skipped"));
+        assert!(traces[4].result.is_none());
+        assert_eq!(traces[5].action.as_call().unwrap().gas, 100_000);
+        assert_eq!(traces[5].result.as_ref().unwrap().gas_used(), final_frame_gas.execution);
+        let vm = parity.vm_trace();
+        assert!(vm.code.is_empty());
+        assert_eq!(vm.ops.iter().map(|op| op.pc).collect::<Vec<_>>(), vec![0, 1, 2, 4]);
+    }
+
+    #[test]
+    fn native_debug_context_preserves_payload_sender_and_all_frame_entry_outcomes() {
+        let sender = Address::with_last_byte(0xa0);
+        let identity = Address::with_last_byte(4);
+        let mut evm = evm(&[(sender, APPROVE_BOTH)]);
+        let mut precompile = frame(FrameMode::Sender, identity, 0);
+        precompile.data = Bytes::from_static(&[1, 2, 3]);
+        let mut unaffordable = frame(FrameMode::Sender, Address::with_last_byte(0xb0), 0);
+        unaffordable.value = U256::from(2_000_000_000u64);
+        let tx = transaction(vec![frame(FrameMode::Verify, sender, 3), precompile, unaffordable]);
+        let config = CallConfig { only_top_call: Some(true), with_log: Some(true) };
+        evm.set_inspector(DebugInspector::CallTracer(
+            TracingInspector::new(TracingInspectorConfig {
+                record_precompile_calls: true,
+                ..TracingInspectorConfig::all()
+            }),
+            config,
+        ));
+        let result = evm.transact(&tx).unwrap().detach();
+        let outcome = result.result.frame.as_ref().unwrap();
+        let mut inspector = evm.clear_inspector_as::<DebugInspector>().unwrap();
+        let block = *evm.block_env();
+        let GethTrace::CallTracer(calls) =
+            inspector.get_result(None, &tx, &block, &result, evm.database_mut()).unwrap()
+        else {
+            panic!("call tracer result")
+        };
+        assert_eq!(calls.from, sender);
+        assert_eq!(calls.to, Some(ENTRY_POINT));
+        assert_eq!(calls.calls.len(), 3);
+        assert_eq!(calls.calls[1].to, Some(identity));
+        assert_eq!(calls.calls[1].output, Some(Bytes::from_static(&[1, 2, 3])));
+        assert_eq!(calls.calls[2].gas_used, U256::from(outcome.receipts[2].gas_used.execution));
+        assert!(calls.calls[2].gas_used < U256::from(100_000));
+        assert_eq!(outcome.receipts[2].status, FrameStatus::Failure);
+    }
+
+    #[test]
+    fn prefix_inspection_finalizes_only_executed_frames_and_can_be_fused() {
+        let sender = Address::with_last_byte(0xa0);
+        let mut evm = evm(&[(sender, APPROVE_BOTH)]);
+        evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
+        let tx = transaction(vec![
+            frame(FrameMode::Verify, sender, 3),
+            frame(FrameMode::Sender, sender, 0),
+        ]);
+        evm.validate_frame_prefix(&tx, 1).unwrap();
+        let mut inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+        assert_eq!(inspector.traces().nodes()[0].children.len(), 1);
+        assert!(inspector.traces().nodes()[0].trace.success);
+        inspector.fuse();
+        evm.set_inspector(*inspector);
+        let _ = evm.transact(&tx).unwrap().discard();
+        let inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+        assert_eq!(inspector.traces().nodes()[0].children.len(), 2);
+    }
+
+    #[test]
+    fn synthetic_roots_keep_nested_steps_and_global_structlog_limits() {
+        let sender = Address::with_last_byte(0xa0);
+        let body = Address::with_last_byte(0xb0);
+        let child = Address::with_last_byte(0xd0);
+        let mut evm = evm(&[
+            (sender, APPROVE_BOTH),
+            (body, &[0x5f, 0x5f, 0x5f, 0x5f, 0x5f, 0x60, 0xd0, 0x61, 0xff, 0xff, 0xf1, 0x00]),
+            (child, &[0x60, 42, 0x50, 0x00]),
+        ]);
+        evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
+        let result = evm
+            .transact(&transaction(vec![
+                frame(FrameMode::Verify, sender, 3),
+                frame(FrameMode::Sender, body, 0),
+            ]))
+            .unwrap()
+            .discard();
+        let inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+        let full = inspector.geth_builder().geth_traces(
+            result.tx_gas_used(),
+            Bytes::new(),
+            GethDefaultTracingOptions::default(),
+        );
+        let expected =
+            inspector.traces().nodes().iter().map(|node| node.trace.steps.len()).sum::<usize>();
+        assert_eq!(full.struct_logs.len(), expected);
+        assert_eq!(full.struct_logs.iter().map(|step| step.depth).max(), Some(2));
+        assert_eq!(full.struct_logs.iter().map(|step| step.depth).min(), Some(1));
+        let bytes_before_sixth = full.struct_logs[..5]
+            .iter()
+            .map(|log| serde_json::to_vec(log).unwrap().len() as u64)
+            .sum();
+        for (limit, count) in [(1, 1), (bytes_before_sixth, 6)] {
+            let limited = inspector.geth_builder().geth_traces(
+                result.tx_gas_used(),
+                Bytes::new(),
+                GethDefaultTracingOptions { limit: Some(limit), ..Default::default() },
+            );
+            assert_eq!(limited.struct_logs, full.struct_logs[..count]);
+        }
+        let vm = inspector.into_parity_builder().vm_trace();
+        assert_eq!(vm.ops.len(), 2);
+        let body = vm.ops[1].sub.as_ref().unwrap();
+        assert_eq!(body.ops.iter().filter(|op| op.sub.is_some()).count(), 1);
+        assert_eq!(body.ops.iter().find_map(|op| op.sub.as_ref()).unwrap().ops.len(), 3);
+    }
+
+    #[test]
+    fn assertion_failure_preserves_payment_prefix_logs_and_the_block_log_offset() {
+        let sender = Address::with_last_byte(0xa0);
+        let body = Address::with_last_byte(0xb0);
+        let assertion = Address::with_last_byte(0xc0);
+        let mut evm = evm(&[
+            (sender, &[0x5f, 0x5f, 0xa0, 0x60, 3, 0x5f, 0x5f, 0xaa]),
+            (body, &[0x5f, 0x5f, 0xa0, 0x00]),
+            (assertion, REVERT),
+        ]);
+        let mut inspector = TracingInspector::new(TracingInspectorConfig::all());
+        inspector.set_next_log_index(7);
+        evm.set_inspector(inspector);
+        let result = evm
+            .transact(&transaction(vec![
+                frame(FrameMode::Default, sender, 3),
+                frame(FrameMode::Sender, body, 0),
+                frame(FrameMode::Assert, assertion, 0),
+            ]))
+            .unwrap()
+            .discard();
+        assert!(!result.status);
+        let outcome = result.frame.as_ref().unwrap();
+        assert_eq!(outcome.receipts[0].logs.len(), 1);
+        assert!(outcome.receipts[1].logs.is_empty());
+        let inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+        let calls = inspector.geth_builder().geth_call_traces(
+            CallConfig { with_log: Some(true), ..Default::default() },
+            result.tx_gas_used(),
+        );
+        assert_eq!(calls.calls[0].logs.len(), 1);
+        assert_eq!(calls.calls[0].logs[0].index, Some(7));
+        assert!(calls.calls[1].logs.is_empty());
+        let erc7562 = inspector
+            .geth_builder()
+            .geth_erc7562_traces(
+                Erc7562Config { with_log: Some(true), ..Default::default() },
+                result.tx_gas_used(),
+                evm.database_mut(),
+            )
+            .unwrap();
+        assert_eq!(erc7562.calls[0].logs.len(), 1);
+        assert_eq!(erc7562.calls[0].logs[0].index, Some(7));
+        assert!(erc7562.calls[1].logs.is_empty());
+    }
+
+    #[test]
+    fn pre_evm_frame_failures_keep_receipt_gas_and_later_frame_traces() {
+        let sender = Address::with_last_byte(0xa0);
+        let failed = Address::with_last_byte(0xb0);
+        let later = Address::with_last_byte(0xc0);
+        for (execution, value, geth_error, parity_error) in [
+            (1, U256::ZERO, "out of gas", "Out of gas"),
+            (
+                100_000,
+                U256::from(2_000_000_000u64),
+                "insufficient balance for transfer",
+                "Insufficient balance for transfer",
+            ),
+        ] {
+            let mut evm = evm(&[
+                (sender, APPROVE_BOTH),
+                (failed, &[0x00]),
+                (later, &[0x60, 42, 0x5f, 0x53, 0x60, 1, 0x5f, 0xf3]),
+            ]);
+            evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
+            let mut failed_frame = frame(FrameMode::Sender, failed, 0);
+            failed_frame.limits.execution = execution;
+            failed_frame.value = value;
+            let result = evm
+                .transact(&transaction(vec![
+                    frame(FrameMode::Verify, sender, 3),
+                    failed_frame,
+                    frame(FrameMode::Sender, later, 0),
+                ]))
+                .unwrap()
+                .discard();
+            let outcome = result.frame.as_ref().unwrap();
+            assert!(result.status);
+            assert_eq!(outcome.receipts[1].status, FrameStatus::Failure);
+            assert_eq!(outcome.receipts[2].status, FrameStatus::Success);
+            let inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+            let nodes = inspector.traces().nodes();
+            assert!(!nodes[0].trace.success);
+            assert!(nodes[0].trace.is_error());
+            assert!(!nodes[nodes[0].children[1]].trace.entered_evm);
+            let steps = inspector.geth_builder().geth_traces(
+                result.tx_gas_used(),
+                Bytes::new(),
+                GethDefaultTracingOptions::default(),
+            );
+            assert!(steps.failed);
+            for only_top_call in [false, true] {
+                let calls = inspector.geth_builder().geth_call_traces(
+                    CallConfig { only_top_call: Some(only_top_call), ..Default::default() },
+                    result.tx_gas_used(),
+                );
+                assert_eq!(calls.from, sender);
+                assert_eq!(calls.to, Some(ENTRY_POINT));
+                assert_eq!(calls.error.as_deref(), Some("frame transaction failed"));
+                assert_eq!(calls.gas_used, U256::from(result.tx_gas_used()));
+                assert!(calls.output.is_none());
+                assert_eq!(calls.calls.len(), 3);
+                let call = &calls.calls[1];
+                assert_eq!(call.to, Some(failed));
+                assert_eq!(call.error.as_deref(), Some(geth_error));
+                assert_eq!(call.gas, U256::from(execution));
+                assert_eq!(call.gas_used, U256::from(outcome.receipts[1].gas_used.execution));
+                assert!(call.calls.is_empty());
+                assert!(call.output.is_none());
+                assert_eq!(calls.calls[2].output, Some(Bytes::from_static(&[42])));
+            }
+            let parity = inspector.into_parity_builder();
+            let traces = parity.clone().into_transaction_traces();
+            assert_eq!(traces.len(), 4);
+            assert_eq!(traces[0].error.as_deref(), Some("frame transaction failed"));
+            assert_eq!(traces[0].result.as_ref().unwrap().gas_used(), result.tx_gas_used());
+            assert_eq!(traces[2].trace_address, vec![1]);
+            assert_eq!(traces[2].error.as_deref(), Some(parity_error));
+            assert!(traces[2].result.is_none());
+            assert_eq!(traces[2].subtraces, 0);
+            assert_eq!(traces[3].trace_address, vec![2]);
+            let vm = parity.vm_trace();
+            assert!(vm.code.is_empty());
+            assert_eq!(vm.ops.iter().map(|op| op.pc).collect::<Vec<_>>(), vec![0, 2]);
+            assert_eq!(
+                vm.ops[1].sub.as_ref().unwrap().code.as_ref(),
+                &[0x60, 42, 0x5f, 0x53, 0x60, 1, 0x5f, 0xf3]
+            );
+        }
+    }
+}
+
 /// geth reads a slot before the transaction runs, so the pre state of a contract that selfdestructs
 /// reports the value the slot held, not the zero its storage wipe leaves behind.
 #[test]

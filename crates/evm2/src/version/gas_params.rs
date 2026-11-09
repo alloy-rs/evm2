@@ -190,6 +190,8 @@ gas_ids! {
     Custom6;
     /// Reserved custom gas parameter slot 7.
     Custom7;
+    /// SETCODEFROM account write charge.
+    SetCodeFromWrite;
 }
 
 /// Dynamic gas parameter table.
@@ -474,6 +476,19 @@ impl GasParams {
         )
     }
 
+    /// Counts calldata tokens and floor tokens, returning `None` if either total overflows.
+    pub(crate) fn checked_tx_calldata_tokens(&self, input: &[u8]) -> Option<(u64, u64)> {
+        let zero_bytes = count_zero_bytes(input);
+        let non_zero_tokens = (input.len() as u64 - zero_bytes)
+            .checked_mul(self.get(GasId::TxTokenNonZeroByteMultiplier))?;
+        Some((
+            zero_bytes.checked_add(non_zero_tokens)?,
+            zero_bytes
+                .checked_mul(self.get(GasId::TxFloorZeroByteMultiplier))?
+                .checked_add(non_zero_tokens)?,
+        ))
+    }
+
     /// Returns the EIP-7623 calldata floor gas: `TxFloorCostBase` plus `TxFloorCostPerToken` for
     /// each of `floor_tokens` (see [`tx_calldata_tokens`](Self::tx_calldata_tokens)) and for the
     /// access list's bytes, weighted by `TxAccessListFloorByteMultiplier`.
@@ -547,7 +562,7 @@ mod tests {
     fn gas_id_roundtrips_values() {
         assert_eq!(GasId::from_usize(0), Some(GasId::ExpByte));
         assert_eq!(GasId::ExpByte.as_usize(), 0);
-        assert_eq!(GasId::from_usize(GasId::MAX.as_usize()), Some(GasId::Custom7));
+        assert_eq!(GasId::from_usize(GasId::MAX.as_usize()), Some(GasId::MAX));
         assert_eq!(GasId::from_usize(GasId::COUNT), None);
     }
 

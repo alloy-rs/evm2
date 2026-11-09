@@ -349,6 +349,13 @@ impl ReusableCallFrame {
             }
             .into())
         });
+        let get_frame_index = state_fn(ctx, state.clone(), 0, |state, _, _| {
+            Ok(state
+                .borrow()
+                .frame_index
+                .map(|index| JsValue::from(index as u64))
+                .unwrap_or_else(JsValue::undefined))
+        });
 
         object.set(js_string!("getFrom"), get_from, false, ctx)?;
         object.set(js_string!("getTo"), get_to, false, ctx)?;
@@ -356,12 +363,13 @@ impl ReusableCallFrame {
         object.set(js_string!("getInput"), get_input, false, ctx)?;
         object.set(js_string!("getGas"), get_gas, false, ctx)?;
         object.set(js_string!("getType"), get_type, false, ctx)?;
+        object.set(js_string!("getFrameIndex"), get_frame_index, false, ctx)?;
 
         Ok(Self { state, object })
     }
 
     pub(crate) fn update(&self, frame: CallFrame) {
-        let CallFrame { contract, kind, gas } = frame;
+        let CallFrame { contract, kind, gas, frame_index } = frame;
         let mut state = self.state.borrow_mut();
         state.caller = contract.caller;
         state.contract = contract.contract;
@@ -369,6 +377,7 @@ impl ReusableCallFrame {
         state.input = contract.input;
         state.gas = gas;
         state.kind = kind;
+        state.frame_index = frame_index;
     }
 
     pub(crate) fn value(&self) -> JsValue {
@@ -401,20 +410,29 @@ impl ReusableFrameResult {
                 .map(|error| JsValue::from(js_string!(error.as_str())))
                 .unwrap_or_else(JsValue::undefined))
         });
+        let get_frame_index = state_fn(ctx, state.clone(), 0, |state, _, _| {
+            Ok(state
+                .borrow()
+                .frame_index
+                .map(|index| JsValue::from(index as u64))
+                .unwrap_or_else(JsValue::undefined))
+        });
 
         object.set(js_string!("getGasUsed"), get_gas_used, false, ctx)?;
         object.set(js_string!("getOutput"), get_output, false, ctx)?;
         object.set(js_string!("getError"), get_error, false, ctx)?;
+        object.set(js_string!("getFrameIndex"), get_frame_index, false, ctx)?;
 
         Ok(Self { state, object })
     }
 
     pub(crate) fn update(&self, frame: FrameResult) {
-        let FrameResult { gas_used, output, error } = frame;
+        let FrameResult { gas_used, output, error, frame_index } = frame;
         let mut state = self.state.borrow_mut();
         state.gas_used = gas_used;
         state.output = output;
         state.error = error;
+        state.frame_index = frame_index;
     }
 
     pub(crate) fn value(&self) -> JsValue {
@@ -856,6 +874,7 @@ fn memory_write_range(op: u8, stack: &[U256]) -> Option<(usize, usize)> {
 
 #[derive(Debug, Default)]
 struct CallFrameState {
+    frame_index: Option<usize>,
     caller: Address,
     contract: Address,
     value: U256,
@@ -866,6 +885,7 @@ struct CallFrameState {
 
 #[derive(Debug, Default)]
 struct FrameResultState {
+    frame_index: Option<usize>,
     gas_used: u64,
     output: Bytes,
     error: Option<String>,
@@ -1003,6 +1023,7 @@ pub(crate) struct Contract {
 
 /// Represents the call frame object for exit functions
 pub(crate) struct FrameResult {
+    pub(crate) frame_index: Option<usize>,
     pub(crate) gas_used: u64,
     pub(crate) output: Bytes,
     pub(crate) error: Option<String>,
@@ -1010,6 +1031,7 @@ pub(crate) struct FrameResult {
 
 /// Represents the call frame object for enter functions
 pub(crate) struct CallFrame {
+    pub(crate) frame_index: Option<usize>,
     pub(crate) contract: Contract,
     pub(crate) kind: FrameKind,
     pub(crate) gas: u64,
@@ -1030,7 +1052,7 @@ impl Default for FrameKind {
 
 /// The `ctx` object that represents the context in which the transaction is executed.
 pub(crate) struct JsEvmContext {
-    /// String, one of the two values CALL and CREATE
+    /// String, CALL, CREATE, or the synthetic FRAME transaction root.
     pub(crate) r#type: String,
     /// Sender of the transaction
     pub(crate) from: Address,

@@ -43,6 +43,8 @@ pub struct AccountChanges<'a> {
     pub created: bool,
     /// Whether the account was selfdestructed during the transaction.
     pub selfdestructed: bool,
+    /// Whether the last code change adopted an existing hash.
+    pub code_adopted: bool,
     /// Whether the account was touched by the transaction, even if [`Self::is_changed`] is false.
     ///
     /// Loaded-only accounts are not touched. Reverted touches are excluded, except for the
@@ -100,7 +102,14 @@ impl<'a> AccountChanges<'a> {
                 current: self.current,
                 created: self.created,
                 selfdestructed: self.selfdestructed,
-            })
+            })?;
+            if self.code_adopted
+                && self.original.map(|info| info.code_hash)
+                    != self.current.map(|info| info.code_hash)
+            {
+                sink.code_adopted(address)?;
+            }
+            Ok(())
         } else {
             sink.account_read(address, self.current)
         }
@@ -135,6 +144,12 @@ pub trait StateChangeSink {
     /// Observes an account change.
     #[inline]
     fn account(&mut self, _change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Observes that the account's last code change adopted an existing hash.
+    #[inline]
+    fn code_adopted(&mut self, _address: Address) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -222,6 +237,12 @@ where
     B: StateChangeSink<Error = A::Error>,
 {
     type Error = A::Error;
+
+    #[inline]
+    fn code_adopted(&mut self, address: Address) -> Result<(), Self::Error> {
+        self.a.code_adopted(address)?;
+        self.b.code_adopted(address)
+    }
 
     #[inline]
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {

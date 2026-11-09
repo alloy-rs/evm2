@@ -9,7 +9,10 @@ use crate::tracing::{
             ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog, StepInfo,
             StepSnapshot,
         },
-        builtins::{PrecompileList, register_builtins, to_serde_value},
+        builtins::{
+            PrecompileList, address_to_uint8_array, register_builtins, to_serde_value,
+            to_uint8_array,
+        },
     },
     types::CallKind,
     utils,
@@ -20,7 +23,8 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use alloy_consensus::{Transaction, transaction::Recovered};
+use alloy_consensus::{Transaction, TxEip8141, transaction::Recovered};
+use alloy_eips::eip8141::{ENTRY_POINT, Frame, FrameMode, FrameReceipt, FrameStatus};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use boa_engine::{
     Context, JsError, JsNativeError, JsObject, JsResult, JsValue, Script, Source,
@@ -31,6 +35,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, ExecutionError, Inspector, TxResultWithState,
     env::BlockEnv,
+    ethereum::eip8141::FrameGas,
     evm::DynDatabase,
     interpreter::{InstrStop, Interpreter, Message, MessageKind, MessageResult, opcode::op},
 };
@@ -68,9 +73,25 @@ struct PendingStep {
     active: bool,
 }
 
+#[derive(Debug)]
+struct FrameTransactionContext {
+    payload: Arc<TxEip8141>,
+    gas: FrameGas,
+    active: usize,
+    observed: bool,
+}
+
 /// A javascript inspector that will delegate inspector functions to javascript functions
 ///
 /// See also <https://geth.ethereum.org/docs/developers/evm-tracing/custom-tracer#custom-javascript-tracing>
+///
+/// Frame transactions expose a synthetic `FRAME` root and balanced `enter`/`exit` callbacks for
+/// every ordered frame, including default-account verification, entry failures and skipped frames.
+/// `getFrameIndex()` identifies top-level frames; nested calls return `undefined`. Notifications
+/// observe live execution. The result context's `frames` array supplies canonical final statuses,
+/// execution/state gas, output, logs, rollback and skip flags after atomic/assertion
+/// reconciliation. Errors from frame completion notifications are returned by result collection.
+/// Call [`Self::fuse`] before reusing the inspector, including after prefix simulation.
 pub struct JsInspector {
     ctx: Context,
     /// The original javascript code used to create this inspector.
@@ -129,6 +150,8 @@ pub struct JsInspector {
     hook_error: Option<JsError>,
     /// Optional cancellation signal shared with the caller.
     interrupt: Option<JsInspectorInterrupt>,
+    /// Frame metadata retained for result collection after the EVM releases its runtime.
+    frame_transaction: Option<FrameTransactionContext>,
 }
 
 impl core::fmt::Debug for JsInspector {
@@ -226,6 +249,7 @@ impl JsInspector {
             root_depth: 0,
             hook_error: None,
             interrupt: None,
+            frame_transaction: None,
         })
     }
 
@@ -278,6 +302,7 @@ impl JsInspector {
         self.step_fn = step_fn;
         self.call_stack.clear();
         self.pending_steps.clear();
+        self.frame_transaction = None;
         self.root_depth = 0;
         self.hook_error = None;
 
@@ -355,7 +380,7 @@ impl JsInspector {
         let base_fee = block.basefee.saturating_to::<u64>();
         let gas_tip = tx.effective_tip_per_gas(base_fee).unwrap_or_default();
 
-        let ctx = JsEvmContext {
+        let mut ctx = JsEvmContext {
             r#type: match kind {
                 TxKind::Call(_) => "CALL",
                 TxKind::Create => "CREATE",
@@ -374,7 +399,110 @@ impl JsInspector {
             transaction_ctx: self.transaction_context,
             error,
         };
+        if let Some(frame) = &self.frame_transaction {
+            // The frame envelope has an explicit sender, independent of Recovered metadata.
+            ctx.r#type = "FRAME".to_string();
+            ctx.from = frame.payload.sender;
+            ctx.to = Some(ENTRY_POINT);
+            ctx.input = Bytes::new();
+            ctx.value = U256::ZERO;
+            ctx.gas = frame.gas.maximum;
+            ctx.gas_price = result.frame.as_ref().map_or(U256::ZERO, |frame| frame.gas_price);
+        }
         let ctx = ctx.into_js_object(&mut self.ctx)?;
+        if let Some(frame) = &self.frame_transaction {
+            ctx.set(js_string!("intrinsicGas"), frame.gas.intrinsic, false, &mut self.ctx)?;
+        }
+        if let Some(frame) = &self.frame_transaction
+            && let Some(outcome) = &result.frame
+        {
+            let mut frames = Vec::with_capacity(outcome.receipts.len());
+            for (index, receipt) in outcome.receipts.iter().enumerate() {
+                let item = JsObject::with_object_proto(self.ctx.intrinsics());
+                item.set(js_string!("index"), index as u64, false, &mut self.ctx)?;
+                item.set(
+                    js_string!("mode"),
+                    u8::from(frame.payload.frames[index].mode),
+                    false,
+                    &mut self.ctx,
+                )?;
+                item.set(
+                    js_string!("target"),
+                    address_to_uint8_array(
+                        frame.payload.frames[index].resolved_target(frame.payload.sender),
+                        &mut self.ctx,
+                    )?,
+                    false,
+                    &mut self.ctx,
+                )?;
+                item.set(js_string!("status"), u8::from(receipt.status), false, &mut self.ctx)?;
+                item.set(js_string!("gasUsed"), receipt.gas_used.execution, false, &mut self.ctx)?;
+                item.set(js_string!("stateGasUsed"), receipt.gas_used.state, false, &mut self.ctx)?;
+                item.set(
+                    js_string!("output"),
+                    to_uint8_array(outcome.outputs[index].clone(), &mut self.ctx)?,
+                    false,
+                    &mut self.ctx,
+                )?;
+                item.set(
+                    js_string!("rolledBack"),
+                    outcome.rolled_back[index],
+                    false,
+                    &mut self.ctx,
+                )?;
+                item.set(
+                    js_string!("skipped"),
+                    receipt.status == FrameStatus::SkippedAtomicBatch,
+                    false,
+                    &mut self.ctx,
+                )?;
+                let mut logs = Vec::with_capacity(receipt.logs.len());
+                for log in &receipt.logs {
+                    let item = JsObject::with_object_proto(self.ctx.intrinsics());
+                    item.set(
+                        js_string!("address"),
+                        address_to_uint8_array(log.address, &mut self.ctx)?,
+                        false,
+                        &mut self.ctx,
+                    )?;
+                    item.set(
+                        js_string!("data"),
+                        to_uint8_array(log.data.data.clone(), &mut self.ctx)?,
+                        false,
+                        &mut self.ctx,
+                    )?;
+                    let topics = log
+                        .data
+                        .topics()
+                        .iter()
+                        .map(|topic| {
+                            to_uint8_array(Bytes::copy_from_slice(topic.as_slice()), &mut self.ctx)
+                                .map(JsValue::from)
+                        })
+                        .collect::<JsResult<Vec<_>>>()?;
+                    item.set(
+                        js_string!("topics"),
+                        JsArray::from_iter(topics, &mut self.ctx),
+                        false,
+                        &mut self.ctx,
+                    )?;
+                    logs.push(JsValue::from(item));
+                }
+                item.set(
+                    js_string!("logs"),
+                    JsArray::from_iter(logs, &mut self.ctx),
+                    false,
+                    &mut self.ctx,
+                )?;
+                frames.push(JsValue::from(item));
+            }
+            ctx.set(
+                js_string!("frames"),
+                JsArray::from_iter(frames, &mut self.ctx),
+                false,
+                &mut self.ctx,
+            )?;
+        }
         let result = self.reusable_db.with_changes_scope(pending_state, db, || {
             self.result_fn.call(&self.this, &[ctx.into(), self.reusable_db.value()], &mut self.ctx)
         });
@@ -443,8 +571,17 @@ impl JsInspector {
         }
         let enclosing_refund =
             self.call_stack.last().map_or(0, |parent| parent.enclosing_refund + frame_refund);
-        let call =
-            CallStackItem { id: self.next_call_id, contract, kind, gas_limit, enclosing_refund };
+        let call = CallStackItem {
+            frame_index: self
+                .frame_transaction
+                .as_ref()
+                .and_then(|frame| (self.call_stack.len() == 1).then_some(frame.active)),
+            id: self.next_call_id,
+            contract,
+            kind,
+            gas_limit,
+            enclosing_refund,
+        };
         self.next_call_id += 1;
         self.call_stack.push(call);
         self.active_call()
@@ -648,6 +785,102 @@ impl JsInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for JsInspector {
+    fn frame_transaction_start(
+        &mut self,
+        tx: &Arc<TxEip8141>,
+        gas: &FrameGas,
+        host: &mut T::Host<'_>,
+    ) {
+        self.call_stack.clear();
+        self.pending_steps.clear();
+        self.register_precompiles(host);
+        self.frame_transaction = Some(FrameTransactionContext {
+            payload: Arc::clone(tx),
+            gas: *gas,
+            active: 0,
+            observed: false,
+        });
+        self.push_call(
+            host.version().initial_call_depth,
+            Contract {
+                caller: tx.sender,
+                contract: ENTRY_POINT,
+                value: U256::ZERO,
+                input: Bytes::new(),
+            },
+            CallKind::Call,
+            gas.maximum,
+            0,
+        );
+    }
+
+    fn frame_start(&mut self, index: usize, _frame: &Frame, _host: &mut T::Host<'_>) {
+        let frame = self.frame_transaction.as_mut().expect("frame transaction started");
+        frame.active = index;
+        frame.observed = false;
+    }
+
+    fn frame_end(
+        &mut self,
+        index: usize,
+        receipt: &FrameReceipt,
+        output: &Bytes,
+        stop: InstrStop,
+        _host: &mut T::Host<'_>,
+    ) {
+        if self.is_interrupted() || self.hook_errored() {
+            return;
+        }
+        let frames = self.frame_transaction.as_ref().expect("frame transaction started");
+        if !frames.observed || frames.active != index {
+            // Default-account verification, entry failures and skips never enter call().
+            let frame = &frames.payload.frames[index];
+            let call = CallFrame {
+                frame_index: Some(index),
+                contract: Contract {
+                    caller: if frame.mode == FrameMode::Sender {
+                        frames.payload.sender
+                    } else {
+                        ENTRY_POINT
+                    },
+                    contract: frame.resolved_target(frames.payload.sender),
+                    value: frame.value,
+                    input: frame.data.clone(),
+                },
+                kind: FrameKind::Call(
+                    if matches!(frame.mode, FrameMode::Verify | FrameMode::Assert) {
+                        CallKind::StaticCall
+                    } else {
+                        CallKind::Call
+                    },
+                ),
+                gas: frame.limits.execution,
+            };
+            if let Err(error) = self.try_enter(call) {
+                self.record_hook_error("enter", error);
+                return;
+            }
+        }
+        let frame = FrameResult {
+            frame_index: Some(index),
+            gas_used: receipt.gas_used.execution,
+            output: output.clone(),
+            error: if receipt.status == FrameStatus::SkippedAtomicBatch {
+                Some("frame skipped".to_string())
+            } else {
+                utils::fmt_error_msg(stop, TraceStyle::Geth)
+            },
+        };
+        if let Err(error) = self.try_exit(frame) {
+            self.record_hook_error("exit", error);
+        }
+    }
+
+    fn frame_transaction_end(&mut self, _result: &evm2::TxResult<T>, _host: &mut T::Host<'_>) {
+        self.call_stack.clear();
+        self.pending_steps.clear();
+    }
+
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.check_and_halt(interp) || self.hook_errored() {
             return;
@@ -712,6 +945,11 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         }
         self.register_precompiles(interp.host());
         self.end_call_step(interp, message);
+        if message.depth == self.root_depth
+            && let Some(frame) = &mut self.frame_transaction
+        {
+            frame.observed = true;
+        }
 
         // determine contract and caller based on the call scheme
         let (caller, contract) = match message.kind {
@@ -721,11 +959,16 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             _ => (message.caller, message.destination),
         };
 
+        let gas_limit = self
+            .frame_transaction
+            .as_ref()
+            .filter(|_| message.depth == self.root_depth)
+            .map_or(message.gas_limit, |frame| frame.payload.frames[frame.active].limits.execution);
         self.push_call(
             message.depth,
             Contract { caller, contract, value: message.value, input: message.input.to_bytes() },
             message.kind.into(),
-            message.gas_limit,
+            gas_limit,
             interp.gas().refunded(),
         );
 
@@ -735,6 +978,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 contract: call.contract.clone(),
                 kind: FrameKind::Call(call.kind),
                 gas: call.gas_limit,
+                frame_index: call.frame_index,
             };
             if let Err(err) = self.try_enter(frame) {
                 self.record_hook_error("enter", err);
@@ -748,14 +992,17 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
     fn call_end(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
-        _message: &Message<T>,
+        message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
         if self.check_interrupt(interp) {
             return;
         }
-        if self.can_call_exit() {
+        if self.can_call_exit()
+            && !(message.depth == self.root_depth && self.frame_transaction.is_some())
+        {
             let frame_result = FrameResult {
+                frame_index: self.active_call().frame_index,
                 gas_used: result.gas.spent(),
                 output: result.output.clone(),
                 error: utils::fmt_error_msg(result.stop, TraceStyle::Geth),
@@ -798,6 +1045,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 contract: call.contract.clone(),
                 kind: FrameKind::Call(call.kind),
                 gas: call.gas_limit,
+                frame_index: call.frame_index,
             };
             if let Err(err) = self.try_enter(frame) {
                 self.record_hook_error("enter", err);
@@ -819,6 +1067,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         }
         if self.can_call_exit() {
             let frame_result = FrameResult {
+                frame_index: self.active_call().frame_index,
                 gas_used: result.gas.spent(),
                 output: result.output.clone(),
                 error: utils::fmt_error_msg(result.stop, TraceStyle::Geth),
@@ -846,6 +1095,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         // new scope that is entered and immediately exited.
         if self.enter_fn.is_some() {
             let frame = CallFrame {
+                frame_index: None,
                 contract: Contract {
                     caller: *contract,
                     contract: *target,
@@ -862,7 +1112,8 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
 
         // exit with empty frame result ref <https://github.com/ethereum/go-ethereum/blob/0004c6b229b787281760b14fb9460ffd9c2496f1/core/vm/instructions.go#L829-L829>
         if !self.is_interrupted() && !self.hook_errored() && self.exit_fn.is_some() {
-            let frame = FrameResult { gas_used: 0, output: Bytes::new(), error: None };
+            let frame =
+                FrameResult { gas_used: 0, output: Bytes::new(), error: None, frame_index: None };
             if let Err(err) = self.try_exit(frame) {
                 self.record_hook_error("exit", err);
             }
@@ -997,6 +1248,7 @@ impl JsTracerObject {
 /// Represents an active call
 #[derive(Debug)]
 struct CallStackItem {
+    frame_index: Option<usize>,
     /// Unique across calls and transaction resets.
     id: u64,
     contract: Contract,
@@ -2104,6 +2356,36 @@ mod tests {
             let native = error.as_native().unwrap();
             assert_eq!(format!("{}: {}", native.kind(), native.message()), expected);
         }
+    }
+
+    #[test]
+    fn frame_start_shares_prepared_payload_and_gas() {
+        let tx = Arc::new(TxEip8141::default());
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::BOGOTA,
+            evm2::env::BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::BOGOTA),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::BOGOTA),
+        );
+        let mut gas = FrameGas::calculate(&tx, evm.version()).unwrap();
+        gas.maximum += 1;
+        let mut inspector = JsInspector::new(
+            "{ fault: function() {}, result: function() {} }".into(),
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        <JsInspector as Inspector<BaseEvmTypes>>::frame_transaction_start(
+            &mut inspector,
+            &tx,
+            &gas,
+            &mut evm,
+        );
+        let retained = inspector.frame_transaction.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&retained.payload, &tx));
+        assert_eq!(retained.gas, gas);
+        inspector.fuse().unwrap();
+        assert_eq!(Arc::strong_count(&tx), 1);
     }
 
     #[test]

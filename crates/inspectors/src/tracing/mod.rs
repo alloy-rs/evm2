@@ -7,12 +7,15 @@ use crate::{
         TraceMemberOrder,
     },
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloy_consensus::TxEip8141;
+use alloy_eips::eip8141::{ENTRY_POINT, Frame, FrameMode, FrameReceipt, FrameStatus};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use alloy_rpc_types_trace::{geth::FlatCallConfig, parity::StorageDelta};
 use core::{mem, ops::Range};
 use evm2::{
     EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId,
+    ethereum::eip8141::FrameGas,
     interpreter::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
@@ -106,10 +109,20 @@ pub struct TracingInspector {
     ///
     /// This is filled during execution.
     features: EvmFeatures,
+    /// Active frame-transaction trace bookkeeping.
+    frame_transaction: Option<FrameTracing>,
     /// Pool of reusable _empty_ step vectors to reduce allocations.
     ///
     /// All `Vec<CallTraceStep>` are always empty but may have capacity.
     reusable_step_vecs: Vec<Vec<CallTraceStep>>,
+}
+
+#[derive(Clone, Debug)]
+struct FrameTracing {
+    payload: Arc<TxEip8141>,
+    active: usize,
+    nodes: Vec<Option<usize>>,
+    log_start: usize,
 }
 
 impl TracingInspector {
@@ -148,6 +161,7 @@ impl TracingInspector {
             recorded_steps,
             spec_id,
             features,
+            frame_transaction,
             // kept
             config,
             budget,
@@ -161,10 +175,15 @@ impl TracingInspector {
                 let mut steps = mem::take(&mut node.trace.steps);
                 // ensure steps are cleared
                 steps.clear();
-                reusable_step_vecs.push(steps);
+                // Synthetic roots and entries without interpreter steps allocate no buffer.
+                // Caching those empty Vec headers would grow this pool on every frame reset.
+                if steps.capacity() != 0 {
+                    reusable_step_vecs.push(steps);
+                }
             }
         }
 
+        *frame_transaction = None;
         traces.clear();
         trace_stack.clear();
         *log_count = 0;
@@ -237,7 +256,9 @@ impl TracingInspector {
     /// This allows setting it manually by consuming the execution result's gas for example.
     #[inline]
     pub fn set_transaction_gas_limit(&mut self, gas_limit: u64) {
-        if let Some(node) = self.traces.arena.first_mut() {
+        if let Some(node) = self.traces.arena.first_mut()
+            && !node.trace.frame_transaction_root
+        {
             node.trace.gas_limit = gas_limit;
         }
     }
@@ -273,7 +294,9 @@ impl TracingInspector {
     /// EVM's call entry point may not reflect the actual transaction sender.
     #[inline]
     pub fn set_transaction_caller(&mut self, caller: Address) {
-        if let Some(node) = self.traces.arena.first_mut() {
+        if let Some(node) = self.traces.arena.first_mut()
+            && !node.trace.frame_transaction_root
+        {
             node.trace.caller = caller;
         }
     }
@@ -361,15 +384,25 @@ impl TracingInspector {
         gas_limit: u64,
         maybe_precompile: Option<bool>,
     ) {
+        let frame_index = self.frame_transaction.as_ref().and_then(|frames| {
+            (depth == self.traces.arena[0].trace.depth).then_some(frames.active)
+        });
+        let depth = depth + usize::from(self.frame_transaction.is_some());
+
         // find an empty steps vec or create a new one
         let steps = self.reusable_step_vecs.pop().unwrap_or_default();
 
         // the currently active call is the parent of the new call
-        let parent = self.trace_stack.last().map(|entry| entry.trace_idx);
+        let parent = self
+            .trace_stack
+            .last()
+            .map(|entry| entry.trace_idx)
+            .or_else(|| self.frame_transaction.as_ref().map(|_| 0));
 
         let trace_idx = self.traces.push_trace(
             parent,
             CallTrace {
+                frame_index,
                 depth,
                 address,
                 kind,
@@ -383,6 +416,9 @@ impl TracingInspector {
                 ..Default::default()
             },
         );
+        if let Some(index) = frame_index {
+            self.frame_transaction.as_mut().unwrap().nodes[index] = Some(trace_idx);
+        }
         self.trace_stack.push(TraceStackEntry { trace_idx, log_count: self.log_count });
     }
 
@@ -664,8 +700,135 @@ impl TracingInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for TracingInspector {
+    fn frame_transaction_start(
+        &mut self,
+        tx: &Arc<TxEip8141>,
+        gas: &FrameGas,
+        host: &mut T::Host<'_>,
+    ) {
+        self.frame_transaction = Some(FrameTracing {
+            payload: Arc::clone(tx),
+            active: 0,
+            nodes: alloc::vec![None; tx.frames.len()],
+            log_start: self.log_count,
+        });
+        self.spec_id = Some(host.spec_id());
+        self.features = host.version().features;
+        self.traces.arena[0].trace = CallTrace {
+            frame_transaction_root: true,
+            depth: usize::from(host.version().initial_call_depth),
+            address: ENTRY_POINT,
+            caller: tx.sender,
+            gas_limit: gas.maximum,
+            ..Default::default()
+        };
+    }
+
+    fn frame_start(&mut self, index: usize, _frame: &Frame, _host: &mut T::Host<'_>) {
+        self.frame_transaction.as_mut().unwrap().active = index;
+    }
+
+    fn frame_end(
+        &mut self,
+        index: usize,
+        receipt: &FrameReceipt,
+        output: &Bytes,
+        stop: InstrStop,
+        host: &mut T::Host<'_>,
+    ) {
+        let frames = self.frame_transaction.as_mut().unwrap();
+        frames.active = index;
+        let frame = frames.payload.frames[index].clone();
+        let sender = frames.payload.sender;
+        let node = if let Some(node) = frames.nodes[index] {
+            node
+        } else {
+            self.start_trace_on_call(
+                usize::from(host.version().initial_call_depth),
+                frame.resolved_target(sender),
+                if self.config.record_inputs { frame.data.clone() } else { Bytes::new() },
+                frame.value,
+                if matches!(frame.mode, FrameMode::Verify | FrameMode::Assert) {
+                    CallKind::StaticCall
+                } else {
+                    CallKind::Call
+                },
+                if frame.mode == FrameMode::Sender { sender } else { ENTRY_POINT },
+                frame.limits.execution,
+                None,
+            );
+            self.pop_trace().trace_idx
+        };
+        let trace = &mut self.traces.arena[node].trace;
+        trace.frame_index = Some(index);
+        trace.frame_mode = Some(frame.mode.into());
+        trace.gas_limit = frame.limits.execution;
+        trace.gas_used = receipt.gas_used.execution;
+        trace.state_gas_used = receipt.gas_used.state;
+        trace.output = output.clone();
+        trace.status = Some(stop);
+        trace.success = receipt.status == FrameStatus::Success;
+        trace.skipped = receipt.status == FrameStatus::SkippedAtomicBatch;
+    }
+
+    fn frame_transaction_end(&mut self, result: &evm2::TxResult<T>, _host: &mut T::Host<'_>) {
+        let outcome = result.frame.as_ref().expect("native frame outcome");
+        let frames = self.frame_transaction.take().unwrap();
+        for (index, receipt) in outcome.receipts.iter().enumerate() {
+            let node = frames.nodes[index].expect("every frame has a trace node");
+            let end = frames.nodes[index + 1..]
+                .iter()
+                .flatten()
+                .next()
+                .copied()
+                .unwrap_or(self.traces.arena.len());
+            let trace = &mut self.traces.arena[node].trace;
+            trace.state_gas_used = receipt.gas_used.state;
+            trace.gas_used = receipt.gas_used.execution;
+            trace.output = outcome.outputs[index].clone();
+            trace.success = receipt.status == FrameStatus::Success;
+            trace.skipped = receipt.status == FrameStatus::SkippedAtomicBatch;
+            trace.status = Some(outcome.stops[index]);
+            trace.rolled_back = outcome.rolled_back[index];
+            if trace.rolled_back {
+                for child in &mut self.traces.arena[node..end] {
+                    child.trace.rolled_back = true;
+                    child.logs.clear();
+                    child.ordering.retain(|member| !matches!(member, TraceMemberOrder::Log(_)));
+                }
+            }
+        }
+        // Atomic rollback can remove earlier logs after later calls have assigned their indices.
+        // Reindex surviving logs in emission order, retaining the caller's block-wide offset.
+        let mut visible = alloc::vec![true; self.traces.arena.len()];
+        let mut logs = Vec::new();
+        for node in self.traces.arena.iter().skip(1) {
+            visible[node.idx] = node.trace.success
+                && !node.trace.rolled_back
+                && node.parent.is_none_or(|parent| visible[parent]);
+            if visible[node.idx] {
+                logs.extend(
+                    node.logs.iter().enumerate().map(|(index, log)| (log.index, node.idx, index)),
+                );
+            }
+        }
+        logs.sort_unstable();
+        for (index, (_, node, log)) in logs.into_iter().enumerate() {
+            self.traces.arena[node].logs[log].index = (frames.log_start + index) as u64;
+        }
+        self.log_count = frames.log_start
+            + outcome.receipts.iter().map(|receipt| receipt.logs.len()).sum::<usize>();
+        let root = &mut self.traces.arena[0].trace;
+        root.gas_used = result.tx_gas_used();
+        root.state_gas_used = result.state_gas_spent;
+        root.success =
+            outcome.receipts.iter().all(|receipt| receipt.status == FrameStatus::Success);
+        root.status = Some(result.stop);
+    }
+
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        self.last_trace().trace.entered_evm = true;
         if self.spec_id.is_none() {
             self.spec_id = Some(interp.spec());
         }
@@ -939,6 +1102,226 @@ const fn storage_write(op: u8, stack: &[U256]) -> Option<StorageDelta> {
 struct TraceStackEntry {
     trace_idx: usize,
     log_count: usize,
+}
+
+#[cfg(test)]
+mod frame_tests {
+    //! Repeated tracing releases transaction owners and retains only reusable step allocations.
+
+    use super::*;
+    use alloc::{
+        sync::{Arc, Weak},
+        vec,
+    };
+    use alloy_consensus::transaction::Recovered;
+    use alloy_eips::eip8141::FrameLimits;
+    use core::ops::Deref;
+    use evm2::{
+        BaseEvmTypes, Evm, Precompiles,
+        bytecode::Bytecode,
+        env::BlockEnvExt,
+        ethereum::{TxEnvelope, ethereum_tx_registry},
+        evm::{AccountInfo, InMemoryDB},
+    };
+
+    const SENDER: Address = Address::with_last_byte(0xa0);
+    const BODY: Address = Address::with_last_byte(0xb0);
+
+    fn transaction(data: Bytes) -> Recovered<TxEnvelope> {
+        Recovered::new_unchecked(
+            TxEnvelope::Eip8141(TxEip8141 {
+                chain_id: 1,
+                sender: SENDER,
+                nonce_keys: Some(vec![]),
+                frames: [
+                    (FrameMode::Verify, SENDER, 3, Bytes::new()),
+                    (FrameMode::Sender, BODY, 0, data),
+                ]
+                .into_iter()
+                .map(|(mode, target, flags, data)| Frame {
+                    mode,
+                    target: target.into(),
+                    flags,
+                    data,
+                    limits: FrameLimits { execution: 100_000, state: 300_000 },
+                    ..Default::default()
+                })
+                .collect(),
+                ..Default::default()
+            }),
+            Address::ZERO,
+        )
+    }
+
+    fn evm() -> Evm<'static, BaseEvmTypes> {
+        let mut db = InMemoryDB::default();
+        for (address, code) in [(SENDER, &[0x60, 3, 0x5f, 0x5f, 0xaa][..]), (BODY, &[0x00][..])] {
+            db.insert_account_info(
+                &address,
+                AccountInfo::default()
+                    .with_balance(U256::from(1_000_000_000))
+                    .with_code(Bytecode::new_legacy(Bytes::copy_from_slice(code))),
+            );
+        }
+        Evm::new(
+            SpecId::BOGOTA,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::BOGOTA),
+            db,
+            Precompiles::base(SpecId::BOGOTA),
+        )
+    }
+
+    #[test]
+    fn repeated_frame_and_prefix_resets_bound_the_step_buffer_pool() {
+        let mut evm = evm();
+        let tx = transaction(Bytes::new());
+        let mut inspector = TracingInspector::new(TracingInspectorConfig::all());
+        for iteration in 0..128 {
+            evm.set_inspector(inspector);
+            if iteration % 2 == 0 {
+                evm.validate_frame_prefix(&tx, 1).unwrap();
+            } else {
+                assert!(evm.call_tx(&tx).unwrap().status);
+            }
+            inspector = *evm.clear_inspector_as::<TracingInspector>().unwrap();
+            inspector.fuse();
+            assert!(inspector.frame_transaction.is_none());
+            assert!(inspector.trace_stack.is_empty());
+            assert_eq!(inspector.traces.nodes().len(), 1);
+            assert!(inspector.reusable_step_vecs.len() <= 2, "iteration {iteration}");
+            assert!(inspector.reusable_step_vecs.iter().all(|steps| steps.capacity() != 0));
+        }
+        let pool_len = inspector.reusable_step_vecs.len();
+        for _ in 0..128 {
+            inspector.fuse();
+            assert_eq!(inspector.reusable_step_vecs.len(), pool_len);
+        }
+    }
+
+    #[derive(Debug)]
+    struct OwnedPayload {
+        bytes: Vec<u8>,
+        _alive: Arc<()>,
+    }
+
+    impl AsRef<[u8]> for OwnedPayload {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+
+    fn tracked_data() -> (Bytes, Weak<()>) {
+        type InnerBytes = <Bytes as Deref>::Target;
+        let alive = Arc::new(());
+        let weak = Arc::downgrade(&alive);
+        let data =
+            Bytes(InnerBytes::from_owner(OwnedPayload { bytes: vec![42; 16_384], _alive: alive }));
+        (data, weak)
+    }
+
+    #[test]
+    fn native_traces_release_frame_payloads_on_completion_or_reset() {
+        for failed in [false, true] {
+            for prefix in [false, true] {
+                let (data, weak) = tracked_data();
+                let tx = transaction(data);
+                let mut evm = evm();
+                if failed {
+                    evm.database_as_mut::<InMemoryDB>().unwrap().insert_account_info(
+                        &SENDER,
+                        AccountInfo::default().with_balance(U256::from(1_000_000_000)).with_code(
+                            Bytecode::new_legacy(Bytes::from_static(&[0x5f, 0x5f, 0xfd])),
+                        ),
+                    );
+                }
+                evm.set_inspector(TracingInspector::new(TracingInspectorConfig::none()));
+                if prefix {
+                    assert_eq!(evm.validate_frame_prefix(&tx, 1).is_err(), failed);
+                } else if failed {
+                    assert!(evm.call_tx(&tx).is_err());
+                } else {
+                    assert!(evm.call_tx(&tx).unwrap().status);
+                }
+                let mut inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+                drop(tx);
+                assert_eq!(inspector.frame_transaction.is_some(), failed);
+                assert_eq!(weak.upgrade().is_some(), failed, "failed={failed}, prefix={prefix}");
+                if !failed {
+                    assert!(
+                        inspector.traces().nodes().iter().all(|node| node.trace.data.is_empty())
+                    );
+                }
+                inspector.fuse();
+                assert!(weak.upgrade().is_none(), "failed={failed}, prefix={prefix}");
+            }
+        }
+    }
+
+    #[cfg(feature = "js-tracer")]
+    mod js {
+        use super::*;
+        use crate::tracing::js::JsInspector;
+
+        #[test]
+        fn fused_js_tracers_release_frame_payload_and_callback_owners() {
+            let mut evm = evm();
+            let mut inspector = JsInspector::new(
+                r#"{
+                step: function(log) { this.log = log; },
+                enter: function(frame) { this.frame = frame; },
+                exit: function(result) { this.exitResult = result; },
+                fault: function() {}, result: function() { return 1; }
+            }"#
+                .into(),
+                serde_json::Value::Null,
+            )
+            .unwrap();
+            for iteration in 0..32 {
+                let (data, weak) = tracked_data();
+                let tx = transaction(data);
+                evm.set_inspector(inspector);
+                if iteration % 2 == 0 {
+                    evm.validate_frame_prefix(&tx, 1).unwrap();
+                } else {
+                    let result = evm.transact(&tx).unwrap().detach();
+                    inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
+                    let block = *evm.block();
+                    assert_eq!(
+                        inspector.json_result(&result, &tx, &block, evm.database_mut()).unwrap(),
+                        serde_json::json!(1)
+                    );
+                    evm.set_inspector(inspector);
+                }
+                inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
+                drop(tx);
+                // Result collection still needs the original envelope until the inspector is reset.
+                assert!(weak.upgrade().is_some());
+                inspector.fuse().unwrap();
+                boa_gc::force_collect();
+                assert!(weak.upgrade().is_none(), "iteration {iteration}");
+            }
+        }
+    }
+
+    #[test]
+    fn frame_start_shares_prepared_payload_and_gas() {
+        let tx = Arc::new(TxEip8141::default());
+        let mut evm = evm();
+        let mut gas = FrameGas::calculate(&tx, evm.version()).unwrap();
+        gas.maximum += 1;
+        let mut inspector = TracingInspector::new(TracingInspectorConfig::none());
+        <TracingInspector as Inspector<BaseEvmTypes>>::frame_transaction_start(
+            &mut inspector,
+            &tx,
+            &gas,
+            &mut evm,
+        );
+        assert!(Arc::ptr_eq(&inspector.frame_transaction.as_ref().unwrap().payload, &tx));
+        assert_eq!(inspector.traces.nodes()[0].trace.gas_limit, gas.maximum);
+        inspector.fuse();
+        assert_eq!(Arc::strong_count(&tx), 1);
+    }
 }
 
 /// A step waiting for `step_end`.
