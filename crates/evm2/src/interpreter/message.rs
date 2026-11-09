@@ -270,7 +270,7 @@ impl MessageInput {
     pub fn as_bytes<'a>(&'a self, memory: &'a Memory) -> &'a [u8] {
         match &self.0 {
             Repr::Owned(bytes) => bytes,
-            Repr::Borrowed(range) => memory.slice(range.start, range.len()),
+            Repr::Borrowed(range) => &memory.as_slice()[range.clone()],
         }
     }
 
@@ -375,5 +375,14 @@ mod tests {
         assert_eq!(input.to_bytes(&memory)[..], [7, 3]);
         assert_eq!(owned.as_bytes(&memory), [9]);
         assert_eq!(MessageInput::default().len(), 0);
+    }
+
+    #[test]
+    #[should_panic = "range end index 3 out of range for slice of length 2"]
+    fn caller_memory_input_out_of_bounds_panics() {
+        let mut memory = Memory::new();
+        memory.resize(0, 2).unwrap();
+
+        MessageInput::borrowed(1..3).as_bytes(&memory);
     }
 }
