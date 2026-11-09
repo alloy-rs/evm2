@@ -143,7 +143,7 @@ impl DebugInfoBuilder {
         scope: Metadata,
     ) -> DILocation {
         DILocation(unsafe {
-            LLVMDIBuilderCreateDebugLocation(cx.raw(), line, column, scope.0, ptr::null_mut())
+            LLVMDIBuilderCreateDebugLocation(cx.raw(), line, column, scope.raw(), ptr::null_mut())
         })
     }
 

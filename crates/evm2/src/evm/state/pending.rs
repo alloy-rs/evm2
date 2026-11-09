@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn inserts_account_and_storage() {
         let address = Address::with_last_byte(0xaa);
-        let key = Word::from(1);
+        let key = Word::ONE;
         let original = AccountInfo { nonce: 1, ..AccountInfo::default() };
         let current = AccountInfo { nonce: 2, ..AccountInfo::default() };
         let mut state = PendingState::default();

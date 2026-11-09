@@ -1,12 +1,15 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrStop, Memory, Message, Pc, Result, StackBacking, StackMut,
-    StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageInput, Pc, Result, StackBacking,
+    StackMut, StackRef, Word,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
-    evm::inspector::Inspector,
-    interpreter::{dispatch, opcode::OpCode},
+    evm::inspector::{Inspector, OpcodeSet},
+    interpreter::{
+        dispatch::{self, InstrTable},
+        opcode::OpCode,
+    },
     trustme,
     version::{EvmFeatures, GasParams},
 };
@@ -14,6 +17,15 @@ use alloc::{boxed::Box, format, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes};
 use core::{fmt, hint::cold_path, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
+
+/// Instruction table for a sparse set of stepped opcodes.
+struct SparseTable<T: EvmTypesHost> {
+    /// The stepped opcodes.
+    steps: OpcodeSet,
+    /// The config's inspect table the entries at `steps` came from.
+    source: *const InstrTable<T>,
+    instructions: InstrTable<T>,
+}
 
 /// EVM interpreter.
 #[derive_where(Debug)]
@@ -34,21 +46,29 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
+    /// Opcodes the inspector steps on the table this frame runs on.
+    steps: OpcodeSet,
+    /// Whether the inspector's config changed while the last `hooked` instruction ran. The frame
+    /// leaves the dispatch after the instruction and continues on the table for the new config.
+    reload: bool,
+    /// The last sparse inspected run's step set, the config table it was built from, and the
+    /// table.
+    #[derive_where(skip)]
+    inspect_table: Option<Box<SparseTable<T>>>,
     pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
     pub(in crate::interpreter) stack: Box<StackBacking>,
 
     pub(in crate::interpreter) gas: Gas,
-    /// Remaining gas plus spilled state gas at the start of the current inspected step.
-    step_gas_before: u64,
-    /// Remaining gas plus spilled state gas once the current step finished charging, if it
-    /// marked that point.
-    step_gas_after_charge: Option<u64>,
     pub(in crate::interpreter) result: Result,
     error: Option<ExecutionError>,
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
+    /// Whether [`Self::call_input`] borrows memory. Set only for frames that [`Evm`](crate::Evm)
+    /// runs, whose host keeps a borrowed input from being read after the call or while the memory
+    /// changes.
+    lends_memory: bool,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
@@ -83,17 +103,19 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             bytecode_ref: None,
             stack_len: 0,
             gas: Gas::new(0),
-            step_gas_before: 0,
-            step_gas_after_charge: None,
             memory: Memory::new(),
             result: Ok(()),
             error: None,
             output: 0..0,
             message: None,
             is_static: false,
+            lends_memory: false,
             return_data: Bytes::new(),
             host: None,
             inspector: None,
+            steps: OpcodeSet::EMPTY,
+            reload: false,
+            inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
@@ -114,6 +136,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.output = 0..0;
         self.message = Some(message);
         self.is_static = is_static;
+        self.lends_memory = false;
         self.return_data = Bytes::new();
     }
 
@@ -236,26 +259,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.gas = gas;
     }
 
-    /// Returns the execution gas the current step charged, before its effects.
-    ///
-    /// This is the gas remaining at the start of the step minus the gas remaining once the step
-    /// finished charging, leaving out state gas that spills into the remaining gas because the
-    /// reservoir was short or is refilled from it. State gas is not part of the execution cost;
-    /// [`Gas::state_gas_spent`] reports it. Call and create steps finish charging right before
-    /// they hand gas to the child, so their cost includes the forwarded gas for calls and
-    /// excludes it for creates. Any other step finishes charging when it ends, which makes its
-    /// cost the execution gas it consumed.
-    ///
-    /// Only meaningful in [`Inspector::step_end`](crate::inspector::Inspector::step_end).
-    #[inline]
-    pub const fn step_cost(&self) -> u64 {
-        let after = match self.step_gas_after_charge {
-            Some(after) => after,
-            None => self.gas.remaining_excluding_state_spill(),
-        };
-        self.step_gas_before.saturating_sub(after)
-    }
-
     /// Returns the current linear memory.
     #[inline]
     pub const fn memory(&self) -> &Memory {
@@ -266,6 +269,39 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn memory_mut(&mut self) -> &mut Memory {
         &mut self.memory
+    }
+
+    /// Returns `len` bytes of memory at `offset` as the input of a call message, borrowed when
+    /// this frame is run by [`Evm`](crate::Evm) and copied otherwise.
+    ///
+    /// # Safety
+    ///
+    /// The input must only be read as the input of a message passed to this frame's
+    /// [`Host::execute_message`](crate::interpreter::Host::execute_message), and memory must not
+    /// change and no other code may access this frame in between. It must not be read after
+    /// `execute_message` returns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bytes are out of bounds of memory.
+    #[inline]
+    #[doc(hidden)]
+    pub unsafe fn call_input(&self, offset: usize, len: usize) -> MessageInput {
+        let bytes = self.memory.slice(offset, len);
+        if !self.lends_memory {
+            return Bytes::copy_from_slice(bytes).into();
+        }
+        // SAFETY: The caller keeps memory unchanged until the host returns, and the host is
+        // `Evm`, which copies the input before any inspector hook can reach this frame or the
+        // message. Otherwise it only reads the message through shared references, which cannot
+        // move the input out, and cloning copies it.
+        unsafe { MessageInput::borrowed(bytes) }
+    }
+
+    /// Lets [`Self::call_input`] borrow memory for the rest of this frame.
+    #[inline]
+    pub(crate) const fn lend_memory(&mut self) {
+        self.lends_memory = true;
     }
 
     /// Returns the current interpreter result.
@@ -446,6 +482,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.features = version.features;
         self.host = Some(NonNull::from(host));
         self.inspector = None;
+        self.reload = false;
     }
 
     /// Runs the host's instruction implementation for the opcode at `pc` on the interpreter
@@ -532,13 +569,94 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         } else {
             // Load the table only after setup: passing it in keeps it in a callee-saved register
             // across setup, which makes the dispatch loop spill the stack pointer.
-            // SAFETY: `prepare_run` initialized the host, and the config is only read here.
-            let config = unsafe { self.execution_config_detached() };
-            let instructions =
-                if inspector.is_some() { config.inspect_instructions } else { config.instructions };
-            dispatch::run(self, instructions)
+            match inspector {
+                Some(_) => self.run_inspected(),
+                None => {
+                    // SAFETY: `prepare_run` initialized the host, and the config is only read
+                    // here.
+                    let config = unsafe { self.execution_config_detached() };
+                    dispatch::run(self, config.instructions)
+                }
+            }
         };
         self.finish_run(stop)
+    }
+
+    /// Runs the frame on the table for its inspector's config, and again on the table for the new
+    /// config each time a child message changes it.
+    ///
+    /// Only `self` is live across the dispatch call, which recurses once per nested frame.
+    #[inline(always)]
+    fn run_inspected(&mut self) -> InstrStop {
+        loop {
+            // A hook before the run, such as `initialize_interp`, may have stopped the frame.
+            if let Err(stop) = self.result {
+                cold_path();
+                return stop;
+            }
+            let instructions = self.select_inspect_table();
+            // SAFETY: The table is a static one, or the one `self` holds until the next selection.
+            let instructions = unsafe { &*instructions };
+            let stop = if self.steps == OpcodeSet::ALL {
+                dispatch::run(self, instructions)
+            } else {
+                self.run_inspected_table(instructions)
+            };
+            if stop != InstrStop::Reload {
+                return stop;
+            }
+            cold_path();
+            self.result = Ok(());
+            self.reload = false;
+        }
+    }
+
+    /// Runs a frame that steps some opcodes, or none. Behind a call, so that its loops are not
+    /// copies inlined into `run_inner`, where they compile worse than the loop for no inspector.
+    #[inline(never)]
+    fn run_inspected_table(&mut self, instructions: &InstrTable<T>) -> InstrStop {
+        dispatch::run(self, instructions)
+    }
+
+    /// Records the opcodes the inspector steps now and returns the table for them. Not inlined, so
+    /// that its temporaries stay out of the frame of `run_inspected`.
+    #[inline(never)]
+    fn select_inspect_table(&mut self) -> *const InstrTable<T> {
+        // SAFETY: `prepare_run` initialized the host. The config is read again on each reload and
+        // only its static tables are used, so nothing outlives a replaced config.
+        let config = unsafe { self.execution_config_detached() };
+        // SAFETY: `run_inner` installed the inspector, which is valid for this run.
+        let inspector = unsafe { self.inspector.unwrap_unchecked().as_ref() };
+        self.steps = inspector.inspector_config().steps();
+        if self.steps == OpcodeSet::EMPTY {
+            return config.instructions;
+        }
+        if self.steps == OpcodeSet::ALL {
+            return config.inspect_instructions;
+        }
+        // A sparse set runs the plain handlers, with the inspect table's at the opcodes in the
+        // set. The table lives in this interpreter and is rebuilt when the set or the config
+        // differs from the previous run's, so the pooled interpreters of a deep call stack mostly
+        // reuse theirs.
+        let source = core::ptr::from_ref(config.inspect_instructions);
+        let table = self.inspect_table.get_or_insert_with(|| {
+            Box::new(SparseTable {
+                steps: OpcodeSet::EMPTY,
+                source: core::ptr::null(),
+                instructions: *config.instructions,
+            })
+        });
+        if table.steps != self.steps || table.source != source {
+            table.steps = self.steps;
+            table.source = source;
+            table.instructions = *config.instructions;
+            for op in 0..=u8::MAX {
+                if self.steps.contains(op) {
+                    table.instructions[op as usize] = config.inspect_instructions[op as usize];
+                }
+            }
+        }
+        &raw const table.instructions
     }
 
     /// Takes an owned error recorded by an instruction or inspector hook.
@@ -602,6 +720,38 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.inspector.is_some()
     }
 
+    /// Returns the opcodes the inspector steps in this frame.
+    #[inline]
+    #[cfg(not(tco))]
+    pub(crate) const fn steps(&self) -> OpcodeSet {
+        self.0.steps
+    }
+
+    /// Requests a reload if the inspector's config no longer matches the table this frame runs on.
+    /// The dispatch calls it after each `hooked` instruction returns, and leaves for the reload.
+    #[inline(always)]
+    pub(crate) fn note_inspector_config_change(&mut self) {
+        if self.0.inspector.is_some() {
+            self.reload_if_config_changed();
+        }
+    }
+
+    #[inline(never)]
+    fn reload_if_config_changed(&mut self) {
+        if let Some(inspector) = self.0.inspector
+            // SAFETY: The inspector pointer is valid while the frame executes.
+            && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
+        {
+            self.0.reload = true;
+        }
+    }
+
+    /// Returns whether the running instruction requested a reload.
+    #[inline]
+    pub(crate) const fn reload_requested(&self) -> bool {
+        self.0.reload
+    }
+
     #[inline]
     pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
         self.0.pc = pc;
@@ -625,10 +775,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     /// Returns the host implementation.
     #[inline]
     pub const fn host(&mut self) -> &mut T::Host<'host> {
-        // SAFETY: `host` is initialized at the beginning of `run` and cleared before the
-        // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
-        // `run` host borrow.
-        unsafe { self.0.host.unwrap_unchecked().as_mut() }
+        self.0.host()
     }
 
     /// Returns the active runtime version data.
@@ -725,10 +872,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
-        self.0.pc = pc.as_ptr();
-        self.0.stack_len = stack_len;
-        self.0.step_gas_before = self.0.gas.remaining_excluding_state_spill();
-        self.0.step_gas_after_charge = None;
+        self.set_pc_stack_len(pc.as_ptr(), stack_len);
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
@@ -737,24 +881,23 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
-        self.0.pc = pc.as_ptr();
-        self.0.stack_len = stack_len;
-        if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
+        self.set_pc_stack_len(pc.as_ptr(), stack_len);
+        if self.0.result.is_err() {
             cold_path();
-            // Failed charges may leave a wrapped counter until frame settlement.
-            self.0.gas.set_remaining(0);
+            if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
+                // An out-of-gas frame has burned all its gas, so 0 is the real remaining gas.
+                self.0.gas.set_remaining(0);
+            }
         }
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step_end(&mut self.0);
         }
-    }
-
-    /// Marks that the current step finished charging gas, so [`Interpreter::step_cost`] stops
-    /// counting gas after this point.
-    #[inline]
-    pub(crate) const fn finish_step_charge(&mut self, gas: &Gas) {
-        self.0.step_gas_after_charge = Some(gas.remaining_excluding_state_spill());
+        // A stop the hook set wins over the reload.
+        if self.0.reload && self.0.result.is_ok() {
+            cold_path();
+            self.set_result(Err(InstrStop::Reload));
+        }
     }
 
     #[inline]

@@ -1,8 +1,10 @@
-use crate::tx::{AccessListItem, TestAuthorization};
+use crate::{
+    blockchaintest::{ChainConfig, ForkSpec},
+    tx::{AccessListItem, TestAuthorization},
+};
 use alloy_primitives::{Address, B256, Bytes, U256};
-use evm2::SpecId;
 use serde::{Deserialize, Deserializer, de};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 /// Top-level state test suite.
 #[derive(Debug, Deserialize)]
@@ -19,12 +21,16 @@ pub struct TestUnit {
     /// Pre-state accounts.
     pub pre: BTreeMap<Address, AccountInfo>,
     /// Expected post-state roots by fork.
-    pub post: BTreeMap<SpecName, Vec<Test>>,
+    #[serde(deserialize_with = "deserialize_post")]
+    pub post: BTreeMap<ForkSpec, Vec<Test>>,
     /// Transaction parts indexed by each post entry.
     pub transaction: TransactionParts,
     /// Expected output.
     #[serde(default)]
     pub out: Option<Bytes>,
+    /// Chain configuration the test ran under.
+    #[serde(default)]
+    pub config: Option<ChainConfig>,
 }
 
 /// State test block environment.
@@ -126,91 +132,6 @@ pub struct TransactionParts {
     pub max_fee_per_blob_gas: Option<U256>,
 }
 
-/// State test fork name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Hash)]
-pub enum SpecName {
-    /// Frontier.
-    Frontier,
-    /// Frontier to Homestead transition.
-    FrontierToHomesteadAt5,
-    /// Homestead.
-    Homestead,
-    /// Homestead to DAO transition.
-    HomesteadToDaoAt5,
-    /// Homestead to EIP-150 transition.
-    HomesteadToEIP150At5,
-    /// EIP-150 aka Tangerine Whistle.
-    #[serde(alias = "TangerineWhistle")]
-    EIP150,
-    /// EIP-158 aka Spurious Dragon.
-    #[serde(alias = "SpuriousDragon")]
-    EIP158,
-    /// EIP-158 to Byzantium transition.
-    EIP158ToByzantiumAt5,
-    /// Byzantium.
-    Byzantium,
-    /// Skipped Constantinople transition.
-    ByzantiumToConstantinopleAt5,
-    /// Byzantium to Petersburg transition.
-    ByzantiumToConstantinopleFixAt5,
-    /// Skipped Constantinople.
-    Constantinople,
-    /// Petersburg.
-    ConstantinopleFix,
-    /// Istanbul.
-    Istanbul,
-    /// Berlin.
-    Berlin,
-    /// Berlin to London transition.
-    BerlinToLondonAt5,
-    /// London.
-    London,
-    /// Paris.
-    Paris,
-    /// Merge.
-    Merge,
-    /// Shanghai.
-    Shanghai,
-    /// Cancun.
-    Cancun,
-    /// Prague.
-    Prague,
-    /// Osaka.
-    Osaka,
-    /// Amsterdam.
-    Amsterdam,
-}
-
-impl SpecName {
-    /// Converts the state test fork name to the local spec ID.
-    #[inline]
-    pub const fn to_spec_id(self) -> Option<SpecId> {
-        match self {
-            Self::Frontier => Some(SpecId::FRONTIER),
-            Self::FrontierToHomesteadAt5 | Self::Homestead => Some(SpecId::HOMESTEAD),
-            Self::HomesteadToDaoAt5 | Self::HomesteadToEIP150At5 | Self::EIP150 => {
-                Some(SpecId::TANGERINE)
-            }
-            Self::EIP158 => Some(SpecId::SPURIOUS_DRAGON),
-            Self::EIP158ToByzantiumAt5 | Self::Byzantium => Some(SpecId::BYZANTIUM),
-            Self::ByzantiumToConstantinopleAt5
-            | Self::ByzantiumToConstantinopleFixAt5
-            | Self::ConstantinopleFix => Some(SpecId::PETERSBURG),
-            Self::Istanbul => Some(SpecId::ISTANBUL),
-            Self::Berlin => Some(SpecId::BERLIN),
-            Self::BerlinToLondonAt5 | Self::London => Some(SpecId::LONDON),
-            Self::Paris | Self::Merge => Some(SpecId::MERGE),
-            Self::Shanghai => Some(SpecId::SHANGHAI),
-            Self::Cancun => Some(SpecId::CANCUN),
-            Self::Prague => Some(SpecId::PRAGUE),
-            Self::Osaka => Some(SpecId::OSAKA),
-            Self::Amsterdam => Some(SpecId::AMSTERDAM),
-            // Skip Constantinople due to the pre-Petersburg reentrancy bug.
-            Self::Constantinople => None,
-        }
-    }
-}
-
 /// State test post entry.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -288,9 +209,54 @@ where
         .collect()
 }
 
+/// Deserializes the post entries, rejecting two keys that name the same fork, such as `Paris` and
+/// its alias `Merge`.
+fn deserialize_post<'de, D>(deserializer: D) -> Result<BTreeMap<ForkSpec, Vec<Test>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct PostVisitor;
+
+    impl<'de> de::Visitor<'de> for PostVisitor {
+        type Value = BTreeMap<ForkSpec, Vec<Test>>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a map of fork names to post entries")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: de::MapAccess<'de>,
+        {
+            let mut post = BTreeMap::new();
+            while let Some((fork, tests)) = map.next_entry::<ForkSpec, Vec<Test>>()? {
+                if post.insert(fork, tests).is_some() {
+                    return Err(de::Error::custom(format!("duplicate post entry for {fork:?}")));
+                }
+            }
+            Ok(post)
+        }
+    }
+
+    deserializer.deserialize_map(PostVisitor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Deserialize)]
+    struct Post(#[serde(deserialize_with = "deserialize_post")] BTreeMap<ForkSpec, Vec<Test>>);
+
+    #[test]
+    fn post_rejects_two_keys_for_one_fork() {
+        assert!(serde_json::from_str::<Post>(r#"{"Paris": [], "Merge": []}"#).is_err());
+        assert!(serde_json::from_str::<Post>(r#"{"Merge": [], "Paris": []}"#).is_err());
+        assert_eq!(
+            serde_json::from_str::<Post>(r#"{"Paris": [], "Cancun": []}"#).unwrap().0.len(),
+            2
+        );
+    }
 
     #[test]
     fn transaction_value_allows_bigint_marker() {

@@ -31,7 +31,7 @@ fn recovery_ignores_crypto_provider() {
     let key = SigningKey::from_slice(&[0x11; 32]).unwrap();
     let signer =
         Address::from_raw_public_key(&key.verifying_key().to_sec1_point(false).as_bytes()[1..]);
-    let inner = Authorization { chain_id: U256::from(1), address: Address::ZERO, nonce: 7 };
+    let inner = Authorization { chain_id: U256::ONE, address: Address::ZERO, nonce: 7 };
     let (sig, recid) = key.sign_prehash_recoverable(inner.signature_hash().as_slice());
     let r = U256::from_be_slice(&sig.r().to_bytes());
     let s = U256::from_be_slice(&sig.s().to_bytes());

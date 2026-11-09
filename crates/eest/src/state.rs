@@ -6,7 +6,7 @@ use evm2::{
 
 /// Parses fixture bytecode into evm2 bytecode.
 pub(crate) fn parse_bytecode(code: alloy_primitives::Bytes) -> Bytecode {
-    Bytecode::new_raw_checked(code.clone()).unwrap_or_else(|_| Bytecode::new_legacy(code))
+    Bytecode::from_stored(code)
 }
 
 /// Inserts an account and its storage into an in-memory database.
@@ -20,17 +20,6 @@ pub(crate) fn insert_account_with_storage(
     for (key, value) in storage {
         database.insert_account_storage(&address, &key, &value);
     }
-}
-
-/// Returns whether the given system contract exists with non-empty code.
-pub(crate) fn system_contract_has_code(database: &InMemoryDB, address: Address) -> bool {
-    database
-        .cache
-        .accounts
-        .get(&address)
-        .and_then(Option::as_ref)
-        .and_then(|info| database.cache.contracts.get(&info.code_hash))
-        .is_some_and(|code| !code.is_empty())
 }
 
 /// Returns persistent storage values for trie-root calculation.
