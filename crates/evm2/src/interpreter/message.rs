@@ -209,8 +209,9 @@ pub fn create_preaccess_failure(
 /// the inspector hooks that hold the message read it with [`as_bytes`](Self::as_bytes) and the
 /// caller's memory, which is the `interp.memory()` of the hook, and a precompile reads it with
 /// [`Evm::message_input`](crate::Evm::message_input). To change an input, copy it out and assign
-/// an owned one, as in `message.input = bytes.into()`. A kept clone of such an input is only the
-/// range, so copy it out with [`to_bytes`](Self::to_bytes) to keep the bytes.
+/// an owned one, as in `message.input = bytes.into()`. A clone of such an input is only the range,
+/// and does not record whose memory it names: copy the bytes out with
+/// [`to_bytes`](Self::to_bytes) to keep or forward them.
 ///
 /// A running frame reads its own input with
 /// [`Interpreter::input`](crate::interpreter::Interpreter::input), and only [`Evm`](crate::Evm)
