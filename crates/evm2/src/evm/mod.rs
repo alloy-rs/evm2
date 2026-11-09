@@ -1228,9 +1228,9 @@ enum RunnerSlot<T: EvmTypesHost> {
 impl<T: EvmTypesHost> RunnerSlot<T> {
     /// Returns the runner if it supports the active execution config.
     #[inline]
-    fn active(&self) -> Option<&dyn InterpreterRunner<T>> {
+    fn active(&self) -> Option<&Arc<dyn InterpreterRunner<T>>> {
         match self {
-            Self::Active(runner) => Some(&**runner),
+            Self::Active(runner) => Some(runner),
             Self::Empty | Self::Unsupported(_) => None,
         }
     }
@@ -1856,11 +1856,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         });
         guard.evm.current_frame =
             Some(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
-        let runner = guard.evm.interpreter_runner.active().map(|runner| {
-            // SAFETY: The runner is stored in `self`; the frame guard sets `running`, which
-            // prevents replacing the runner or the execution config while the frame runs.
-            unsafe { trustme::decouple_lt(runner) }
-        });
+        let runner = guard.evm.interpreter_runner.active().cloned();
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(guard.evm, inspector)
         } else if let Some(runner) = runner
