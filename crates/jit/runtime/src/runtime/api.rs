@@ -14,7 +14,50 @@ pub struct LookupRequest<'a> {
     /// The cache key (code hash + spec).
     pub key: RuntimeCacheKey,
     /// The contract bytecode.
-    pub code: &'a Bytecode,
+    pub code: LookupCode<'a>,
+}
+
+/// The contract bytecode of a [`LookupRequest`], borrowed from the caller.
+///
+/// A [`Bytecode`] avoids a copy of the code when the lookup hits.
+#[derive(Clone, Copy, Debug)]
+pub enum LookupCode<'a> {
+    /// A [`Bytecode`], such as the one an interpreter frame runs.
+    Bytecode(&'a Bytecode),
+    /// The raw contract bytes.
+    Bytes(&'a [u8]),
+}
+
+impl<'a> From<&'a Bytecode> for LookupCode<'a> {
+    fn from(code: &'a Bytecode) -> Self {
+        Self::Bytecode(code)
+    }
+}
+
+impl<'a> From<&'a [u8]> for LookupCode<'a> {
+    fn from(code: &'a [u8]) -> Self {
+        Self::Bytes(code)
+    }
+}
+
+impl LookupCode<'_> {
+    /// Returns the contract bytes.
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Bytecode(code) => code.original_byte_slice(),
+            Self::Bytes(code) => code,
+        }
+    }
+
+    /// Returns the contract bytes as owned [`Bytes`].
+    #[inline]
+    pub fn to_bytes(&self) -> Bytes {
+        match self {
+            Self::Bytecode(code) => code.original_bytes(),
+            Self::Bytes(code) => Bytes::copy_from_slice(code),
+        }
+    }
 }
 
 /// Result of a lookup.

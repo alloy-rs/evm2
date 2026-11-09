@@ -92,7 +92,8 @@ fn run_supported<'frame, 'host, T: EvmTypesHost>(
         code_hash: interpreter.original_bytecode_hash(),
         spec_id: host.execution_config().base_spec_id(),
     };
-    let decision = backend.lookup(LookupRequest { key, code: interpreter.active_bytecode() });
+    let decision =
+        backend.lookup(LookupRequest { key, code: interpreter.active_bytecode().into() });
 
     let program = match decision {
         LookupDecision::Compiled(program) => program,
@@ -873,7 +874,7 @@ mod tests {
                 assert!(matches!(
                     backend.lookup(LookupRequest {
                         key: RuntimeCacheKey { code_hash: code.hash_slow(), spec_id: spec },
-                        code: &code,
+                        code: (&code).into(),
                     }),
                     LookupDecision::Compiled(_)
                 ));

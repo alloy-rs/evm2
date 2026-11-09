@@ -4,7 +4,7 @@ use super::*;
 #[cfg(feature = "llvm")]
 use alloy_primitives::B256;
 use alloy_primitives::Bytes;
-use evm2::{SpecId, bytecode::Bytecode};
+use evm2::SpecId;
 use std::sync::Arc;
 #[cfg(feature = "llvm")]
 use std::sync::Mutex;
@@ -86,16 +86,15 @@ impl TestBackend {
     }
 
     /// Builds a [`LookupRequest`] for the given bytecode and spec.
-    fn req(bytecode: &[u8], spec_id: SpecId) -> LookupRequest<'static> {
+    fn req(bytecode: &[u8], spec_id: SpecId) -> LookupRequest<'_> {
         LookupRequest {
             key: RuntimeCacheKey { code_hash: alloy_primitives::keccak256(bytecode), spec_id },
-            // Leaked so that the request is `'static`, which a short-lived test can afford.
-            code: Box::leak(Box::new(Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)))),
+            code: bytecode.into(),
         }
     }
 
     /// Builds a [`LookupRequest`] with [`SpecId::CANCUN`].
-    fn req_cancun(bytecode: &[u8]) -> LookupRequest<'static> {
+    fn req_cancun(bytecode: &[u8]) -> LookupRequest<'_> {
         Self::req(bytecode, SpecId::CANCUN)
     }
 
@@ -1618,7 +1617,7 @@ fn failed_aot_persist_allows_jit_retry() {
         let req = TestBackend::req_cancun(BYTECODE_RET42);
         tb.prepare_aot_sync(AotRequest {
             code_hash: req.key.code_hash,
-            code: req.code.original_bytes(),
+            code: req.code.to_bytes(),
             spec_id: req.key.spec_id,
         })
         .unwrap();
@@ -2014,7 +2013,7 @@ fn prepare_aot_preserves_jit_resident_on_failure() {
     // EmptyStore accepts writes but cannot return the artifact for loading.
     tb.prepare_aot_sync(AotRequest {
         code_hash: req.key.code_hash,
-        code: req.code.original_bytes(),
+        code: req.code.to_bytes(),
         spec_id: req.key.spec_id,
     })
     .unwrap();

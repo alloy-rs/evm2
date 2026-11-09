@@ -28,7 +28,8 @@ use worker::SyncNotifier;
 
 mod api;
 pub use api::{
-    AotRequest, CompiledProgram, LookupDecision, LookupMissReason, LookupRequest, ProgramKind,
+    AotRequest, CompiledProgram, LookupCode, LookupDecision, LookupMissReason, LookupRequest,
+    ProgramKind,
 };
 
 mod config;
@@ -306,7 +307,7 @@ impl JitBackend {
             cold_path();
             return self.lookup_blocking(req);
         }
-        if !inner.tuning.should_compile(code.original_byte_slice()) {
+        if !inner.tuning.should_compile(code.as_slice()) {
             cold_path();
             return LookupDecision::Unavailable(LookupMissReason::Ineligible);
         }
@@ -318,7 +319,7 @@ impl JitBackend {
             drop(program_ref);
             LookupDecision::Compiled(program)
         } else {
-            event.code = code.original_bytes();
+            event.code = code.to_bytes();
             LookupDecision::Unavailable(LookupMissReason::NotReady)
         };
 
@@ -368,7 +369,7 @@ impl JitBackend {
     }
 
     fn lookup_blocking_inner(&self, req: LookupRequest<'_>) -> LookupDecision {
-        if !self.inner.tuning.should_compile(req.code.original_byte_slice()) {
+        if !self.inner.tuning.should_compile(req.code.as_slice()) {
             return LookupDecision::Unavailable(LookupMissReason::Ineligible);
         }
         let code_hash = req.key.code_hash;
@@ -395,7 +396,7 @@ impl JitBackend {
         }
         let cmd = Command::CompileJit(CompileJitRequest {
             key: req.key,
-            bytecode: req.code.original_bytes(),
+            bytecode: req.code.to_bytes(),
             sync_notifier: SyncNotifier::none(),
         });
         let _ = self.inner.tx.send(cmd);
@@ -411,7 +412,7 @@ impl JitBackend {
         let (tx, rx) = chan::bounded(1);
         let cmd = Command::CompileJit(CompileJitRequest {
             key: req.key,
-            bytecode: req.code.original_bytes(),
+            bytecode: req.code.to_bytes(),
             sync_notifier: SyncNotifier::new(tx),
         });
         self.inner.tx.send(cmd).map_err(|_| eyre::eyre!("backend channel closed"))?;
