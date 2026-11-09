@@ -547,7 +547,7 @@ mod tests {
         }
 
         fn get_block_hash(&mut self, _number: &Word) -> DbResult<B256> {
-            Ok(B256::from([*self.value; 32]))
+            Ok(B256::repeat_byte(*self.value))
         }
     }
 
@@ -556,7 +556,7 @@ mod tests {
         let value = 1;
         let mut erased = boxed_dyn_database(BorrowingDb { value: &value });
 
-        assert_eq!(erased.get_block_hash(&Word::ZERO).unwrap(), B256::from([value; 32]));
+        assert_eq!(erased.get_block_hash(&Word::ZERO).unwrap(), B256::repeat_byte(value));
     }
 
     #[test]

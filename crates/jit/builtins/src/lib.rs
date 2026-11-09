@@ -18,7 +18,10 @@ use evm2::{
     BaseEvmTypes, EvmTypesHost,
     bytecode::Bytecode,
     constants::BLOCK_HASH_HISTORY,
-    interpreter::{Host, MessageExt, MessageKind, Word, derive_create_destination, i256},
+    interpreter::{
+        Host, MessageExt, MessageKind, Word, create_preaccess_failure, derive_create_destination,
+        i256,
+    },
     utils::read_word_padded,
     version::{EvmFeatures, GasId},
 };
@@ -207,7 +210,7 @@ pub unsafe fn __revmc_builtin_calldataload<T: EvmTypesHost>(
     ecx: &EvmContext<'_, '_, '_, T>,
     offset_ptr: &mut EvmWord,
 ) {
-    do_calldataload(ecx, offset_ptr, word_to_usize_saturated(offset_ptr.to_u256()));
+    do_calldataload(ecx, offset_ptr, offset_ptr.to_u256().saturating_to::<usize>());
 }
 
 #[inline]
@@ -238,8 +241,8 @@ pub unsafe fn __revmc_builtin_calldatacopy<T: EvmTypesHost>(
         ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
         let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
-        let data_offset = word_to_usize_saturated(data_offset.to_u256());
-        let input = ecx.input().as_ref();
+        let data_offset = data_offset.to_u256().saturating_to::<usize>();
+        let input = ecx.input();
         let input = unsafe { core::slice::from_raw_parts(input.as_ptr(), input.len()) };
         ecx.memory_mut().set_data(memory_offset, data_offset, len, input);
     }
@@ -284,7 +287,7 @@ pub unsafe fn __revmc_builtin_extcodecopy<T: EvmTypesHost>(
     let code = account.code.original_bytes();
 
     let code_offset_usize =
-        core::cmp::min(word_to_usize_saturated(code_offset.to_u256()), code.len());
+        core::cmp::min(code_offset.to_u256().saturating_to::<usize>(), code.len());
     ecx.memory_mut().set_data(memory_offset_usize, code_offset_usize, len, &code);
     Ok(())
 }
@@ -296,7 +299,7 @@ pub unsafe fn __revmc_builtin_returndatacopy<T: EvmTypesHost>(
 ) -> BuiltinResult {
     let rev![memory_offset, offset, len] = sp;
     let len = word_to_usize(len.to_u256())?;
-    let data_offset = word_to_usize_saturated(offset.to_u256());
+    let data_offset = offset.to_u256().saturating_to::<usize>();
 
     // Bounds check before charging gas.
     let data_end = data_offset.saturating_add(len);
@@ -341,7 +344,7 @@ pub unsafe fn __revmc_builtin_blockhash<T: EvmTypesHost>(
         return Ok(());
     };
 
-    let diff = word_to_u64_saturated(diff);
+    let diff = diff.saturating_to::<u64>();
 
     // Current block returns 0
     if diff == 0 {
@@ -395,7 +398,7 @@ pub unsafe fn __revmc_builtin_blob_hash<T: EvmTypesHost>(
     index_ptr: &mut EvmWord,
 ) {
     let index = index_ptr.to_u256();
-    let index_usize = word_to_usize_saturated(index);
+    let index_usize = index.saturating_to::<usize>();
     *index_ptr = ecx.tx_env().blob_hashes.get(index_usize).copied().unwrap_or_default().into();
 }
 
@@ -522,7 +525,7 @@ pub unsafe fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
     ecx.interpreter_mut().set_gas(gas);
     let result = unsafe { ecx.interpreter_mut().run_external_instruction(pc, len) };
     ecx.gas = ecx.interpreter().gas();
-    ecx.return_data_len = ecx.interpreter().return_data().len();
+    ecx.return_data_len = ecx.return_data().len();
     ecx.refresh_memory_cache();
     let new_len = result?;
     // Compiled code relies on the opcode's stack effect, and on memory never shrinking.
@@ -681,9 +684,14 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     if ecx.enables(EvmFeatures::EIP8037) {
         // `caller_info` is always `Some` when EIP-8037 is enabled.
         if let Some(caller_info) = caller_info.as_ref()
-            && (caller_info.balance < value
-                || caller_info.nonce == u64::MAX
-                || depth > ecx.version().max_call_depth())
+            && create_preaccess_failure(
+                caller_info.balance,
+                caller_info.nonce,
+                value,
+                depth,
+                ecx.version(),
+            )
+            .is_some()
         {
             unsafe {
                 sp.write(EvmWord::ZERO);
@@ -720,7 +728,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(code.clone()),
-        input: code,
+        input: code.into(),
         value,
         code_address: destination,
         caller_is_static: false,
@@ -738,17 +746,14 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     ecx.gas.merge_child_gas(result.gas, result.stop);
     // EIP-8037: refund the conditional create state gas when the create fails
     // to deploy (no new account leaf is created).
-    let create_failed = result.created_address.is_none() || !result.stop.is_success();
+    let create_failed = result.created_address.is_none() || !result.is_success();
     if charged_create_state_gas && create_failed {
         ecx.gas.refill_reservoir(version.gas_params.create_state_gas());
     }
 
     let address = EvmWord::from(result.created_address_for_parent());
-    let return_data = if result.stop == InstrStop::Revert {
-        core::mem::take(&mut result.output)
-    } else {
-        Bytes::new()
-    };
+    let return_data =
+        if result.stop.is_revert() { core::mem::take(&mut result.output) } else { Bytes::new() };
     unsafe {
         sp.write(address);
     }
@@ -772,30 +777,30 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
     let local_gas_limit = local_gas_limit.to_u256();
     let to = to.to_address();
 
-    let local_gas_limit = word_to_u64_saturated(local_gas_limit);
+    let local_gas_limit = local_gas_limit.saturating_to::<u64>();
 
     let value = match call_kind {
         CallKind::Call | CallKind::CallCode => {
             pop!(sp; value);
             let value = value.to_u256();
-            if call_kind == CallKind::Call && ecx.is_static() && value != U256::ZERO {
+            if call_kind == CallKind::Call && ecx.is_static() && !value.is_zero() {
                 return Err(InstrStop::CallNotAllowedInsideStatic.into());
             }
             value
         }
         CallKind::DelegateCall | CallKind::StaticCall => U256::ZERO,
     };
-    let transfers_value = value != U256::ZERO;
+    let transfers_value = !value.is_zero();
 
     pop!(sp; in_offset, in_len, out_offset, out_len);
 
     let in_len = word_to_usize(in_len.to_u256())?;
-    let input = if in_len != 0 {
+    let in_offset = if in_len != 0 {
         let in_offset = word_to_usize(in_offset.to_u256())?;
         ensure_memory(ecx, in_offset, in_len)?;
-        Bytes::copy_from_slice(ecx.memory().slice(in_offset, in_len))
+        in_offset
     } else {
-        Bytes::new()
+        0
     };
 
     let out_len = word_to_usize(out_len.to_u256())?;
@@ -815,6 +820,8 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
             call_kind == CallKind::Call,
             local_gas_limit,
         )?;
+    // SAFETY: The message goes straight to the host, and nothing reads it after the host returns.
+    let input = unsafe { ecx.interpreter().call_input(in_offset, in_len) };
 
     let current = ecx.message();
     let (destination, caller, call_value, code_address) = match call_kind {
@@ -853,7 +860,7 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
         return Err(result.stop.into());
     }
     ecx.gas.merge_child_gas(result.gas, result.stop);
-    if new_account_state_gas != 0 && !result.stop.is_success() {
+    if new_account_state_gas != 0 && !result.is_success() {
         ecx.gas.refill_reservoir(new_account_state_gas);
     }
 
@@ -861,7 +868,7 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
     if copy_len != 0 {
         ecx.memory_mut().set(out_offset, &result.output[..copy_len]);
     }
-    let success = EvmWord::from(Word::from(u8::from(result.stop.is_success())));
+    let success = EvmWord::from(Word::from(u8::from(result.is_success())));
     unsafe {
         sp.write(success);
     }
@@ -1018,7 +1025,7 @@ pub unsafe fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
 
     // State gas for new account creation (EIP-8037).
     if ecx.enables(EvmFeatures::EIP8037) && should_charge_topup {
-        ecx.gas.spend_state(ecx.gas_params().get(GasId::NewAccountState))?;
+        ecx.gas.spend_state(ecx.gas_params().new_account_state_gas())?;
     }
 
     if !res.previously_destroyed {
@@ -1225,8 +1232,8 @@ mod tests {
 
     #[test]
     fn call_builtin_executes_message() {
-        let target = Address::from([0x22; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let caller = Address::repeat_byte(0x11);
         let child_output = Bytes::from_static(&[0xaa, 0xbb, 0xcc]);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector {
@@ -1261,7 +1268,7 @@ mod tests {
             let sp = frame.stack.as_mut_ptr();
             unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::Call) };
 
-            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
             assert_eq!(frame.ecx.return_data(), child_output.as_ref());
             assert_eq!(frame.ecx.memory().slice(8, 2), &[0xaa, 0xbb]);
             let output = b"frame-output";
@@ -1283,9 +1290,9 @@ mod tests {
 
     #[test]
     fn callcode_builtin_maps_message_fields() {
-        let target = Address::from([0x22; 20]);
-        let destination = Address::from([0x33; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let destination = Address::repeat_byte(0x33);
+        let caller = Address::repeat_byte(0x11);
         let stack_value = Word::from(0x12);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
@@ -1306,7 +1313,7 @@ mod tests {
             let sp = frame.stack.as_mut_ptr();
             unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::CallCode) };
 
-            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
         }
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
@@ -1321,9 +1328,9 @@ mod tests {
 
     #[test]
     fn delegatecall_builtin_maps_message_fields() {
-        let target = Address::from([0x22; 20]);
-        let destination = Address::from([0x33; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let destination = Address::repeat_byte(0x33);
+        let caller = Address::repeat_byte(0x11);
         let current_value = Word::from(0x99);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
@@ -1344,7 +1351,7 @@ mod tests {
             let sp = frame.stack.as_mut_ptr();
             unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::DelegateCall) };
 
-            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
         }
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
@@ -1359,9 +1366,9 @@ mod tests {
 
     #[test]
     fn staticcall_builtin_maps_message_fields() {
-        let target = Address::from([0x22; 20]);
-        let destination = Address::from([0x33; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let destination = Address::repeat_byte(0x33);
+        let caller = Address::repeat_byte(0x11);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
         let message = MessageExt {
@@ -1381,7 +1388,7 @@ mod tests {
             let sp = frame.stack.as_mut_ptr();
             unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::StaticCall) };
 
-            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
         }
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
@@ -1396,7 +1403,7 @@ mod tests {
 
     #[test]
     fn create_builtin_executes_message() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let initcode = [op::STOP];
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector {
@@ -1438,7 +1445,7 @@ mod tests {
 
     #[test]
     fn create2_builtin_maps_salt() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let initcode = [op::STOP];
         let salt = EvmWord::from(Word::from(0xabcdu64));
         let mut host = base_evm(SpecId::CANCUN);
@@ -1483,10 +1490,10 @@ mod tests {
 
     #[test]
     fn create_builtin_preaccess_failure_skips_child_message() {
-        let contract = Address::from([0x11; 20]);
+        let contract = Address::repeat_byte(0x11);
         for create_kind in [CreateKind::Create, CreateKind::Create2] {
             for (balance, nonce, value, depth) in [
-                (Word::ZERO, 0, Word::from(1), 0),
+                (Word::ZERO, 0, Word::ONE, 0),
                 (Word::MAX, u64::MAX, Word::ZERO, 0),
                 (Word::MAX, 0, Word::ZERO, CALL_DEPTH_LIMIT),
             ] {

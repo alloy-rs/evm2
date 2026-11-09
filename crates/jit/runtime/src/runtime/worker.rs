@@ -586,7 +586,7 @@ struct CompilerProfile {
     layout: evm2_jit_codegen::HostLayout,
     resolver: Option<usize>,
     symbol_suffix: Option<usize>,
-    opcode_view: Option<std::sync::Arc<evm2::OpcodeView>>,
+    opcode_view: Option<Arc<evm2::OpcodeView>>,
     opt_level: crate::OptimizationLevel,
     gas_params: Option<evm2::version::GasParams>,
     debug_assertions: bool,
@@ -707,15 +707,7 @@ pub(super) fn compile_jit_object_artifact(
     compiler: &mut EvmCompiler<EvmLlvmBackend>,
 ) -> Result<WorkerSuccess, String> {
     let object_bytes = compile_object(job, compiler)?;
-    let mut builtin_symbols: Vec<String> = compiler
-        .backend()
-        .pending_symbol_names()
-        .into_iter()
-        .map(|name| name.to_string_lossy().into_owned())
-        .collect();
-    if builtin_symbols.is_empty() {
-        builtin_symbols = builtin_symbol_names(compiler.builtin_symbol_suffix());
-    }
+    let builtin_symbols = builtin_symbol_names(compiler.builtin_symbol_suffix());
 
     debug!(
         bytecode_len = job.bytecode.len(),

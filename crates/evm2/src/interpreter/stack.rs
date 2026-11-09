@@ -11,6 +11,12 @@ use core::{
 /// EVM stack word.
 pub type Word = U256;
 
+/// Units of [`RawStack`]'s stored length per stack word: the word size in bytes for the tail-call
+/// dispatch on x86-64, where an address scale stops at 8 and a word index costs a shift, and 1
+/// elsewhere, where the scale is free or the table dispatch only reads the length at its entry.
+const RAW_LEN_SCALE: usize =
+    if cfg!(all(tco, target_arch = "x86_64")) { size_of::<Word>() } else { 1 };
+
 /// Operand stack storage.
 ///
 /// Aligned to the word size so that no word crosses a cache line. Loads and stores that cross a
@@ -35,6 +41,7 @@ pub struct Stack<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct RawStack<'a> {
     stack: *mut StackBacking,
+    /// Length in units of [`RAW_LEN_SCALE`] per word.
     len: usize,
     marker: PhantomData<&'a mut StackBacking>,
 }
@@ -203,19 +210,31 @@ impl<'a> RawStack<'a> {
     #[inline(always)]
     pub(crate) const fn new(stack: *mut StackBacking, len: usize) -> Self {
         debug_assert!(len <= Stack::CAPACITY);
-        Self { stack, len, marker: PhantomData }
+        Self { stack, len: len * RAW_LEN_SCALE, marker: PhantomData }
     }
 
     #[inline(always)]
     pub(crate) const fn len(self) -> usize {
-        self.len
+        let raw = self.len;
+        // Only the scaled length gets these facts, so that the table backends compile unchanged.
+        if RAW_LEN_SCALE > 1 {
+            // SAFETY: Type invariant.
+            unsafe {
+                core::hint::assert_unchecked(raw.is_multiple_of(RAW_LEN_SCALE));
+                core::hint::assert_unchecked(raw <= Stack::CAPACITY * RAW_LEN_SCALE);
+            }
+        }
+        raw / RAW_LEN_SCALE
     }
 
     #[inline(always)]
     #[cfg(tco)]
     pub(crate) const fn set_len(&mut self, len: usize) {
         debug_assert!(len <= Stack::CAPACITY);
-        self.len = len;
+        // Add the word delta to the stored length instead of scaling `len`, so that a push or pop
+        // compiles to `stored ± RAW_LEN_SCALE` rather than `(stored / RAW_LEN_SCALE ± 1) *
+        // RAW_LEN_SCALE`.
+        self.len = self.len.wrapping_add(len.wrapping_sub(self.len()).wrapping_mul(RAW_LEN_SCALE));
     }
 
     /// Borrows the stack backing.
@@ -226,7 +245,7 @@ impl<'a> RawStack<'a> {
     #[inline(always)]
     pub(crate) unsafe fn borrow(&mut self) -> Stack<'_> {
         // SAFETY: The caller upholds exclusive access to the stack backing.
-        Stack::new(unsafe { &mut *self.stack }, self.len)
+        Stack::new(unsafe { &mut *self.stack }, self.len())
     }
 }
 
@@ -252,8 +271,8 @@ impl<'a> StackMut<'a> {
     /// The caller must keep the length at or below [`STACK_LIMIT`] and ensure the first `len`
     /// words are initialized before creating another stack view.
     #[inline]
-    pub const unsafe fn into_raw_parts(self) -> (*mut Word, &'a mut usize) {
-        (self.stack.0.as_mut_ptr().cast(), self.len)
+    pub const unsafe fn into_raw_parts(mut self) -> (*mut Word, &'a mut usize) {
+        (self.as_word_mut_ptr(), self.len)
     }
 
     #[inline]
@@ -645,11 +664,11 @@ mod tests {
     #[test]
     fn push_and_pop() {
         run(|stack| {
-            stack.push(Word::from(1)).unwrap();
+            stack.push(Word::ONE).unwrap();
             stack.push(Word::from(2)).unwrap();
-            assert_eq!(stack.as_slice(), [Word::from(1), Word::from(2)]);
+            assert_eq!(stack.as_slice(), [Word::ONE, Word::from(2)]);
             assert_eq!(stack.pop().unwrap(), Word::from(2));
-            assert_eq!(stack.popn::<1>().unwrap(), [Word::from(1)]);
+            assert_eq!(stack.popn::<1>().unwrap(), [Word::ONE]);
             assert_matches!(stack.pop(), Err(InstrStop::StackUnderflow));
         });
 
@@ -662,8 +681,8 @@ mod tests {
     fn popn_top() {
         run_with_len(3, |stack| {
             let (popped, top) = stack.popn_top::<2>().unwrap();
-            assert_eq!(popped, [Word::from(2), Word::from(1)]);
-            assert_eq!(*top, Word::from(0));
+            assert_eq!(popped, [Word::from(2), Word::ONE]);
+            assert_eq!(*top, Word::ZERO);
             *top = Word::from(9);
             assert_eq!(stack.as_slice(), [Word::from(9)]);
         });
@@ -677,13 +696,13 @@ mod tests {
     fn popn_dyn() {
         run_with_len(4, |stack| {
             let popped = stack.popn_dyn(3).unwrap().collect::<alloc::vec::Vec<_>>();
-            assert_eq!(popped, [Word::from(3), Word::from(2), Word::from(1)]);
-            assert_eq!(stack.as_slice(), [Word::from(0)]);
+            assert_eq!(popped, [Word::from(3), Word::from(2), Word::ONE]);
+            assert_eq!(stack.as_slice(), [Word::ZERO]);
         });
 
         run_with_len(2, |stack| {
             assert_matches!(stack.popn_dyn(3).map(|_| ()), Err(InstrStop::StackUnderflow));
-            assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1)]);
+            assert_eq!(stack.as_slice(), [Word::ZERO, Word::ONE]);
         });
     }
 
@@ -691,10 +710,10 @@ mod tests {
     fn peekn() {
         run_with_len(3, |stack| {
             assert_eq!(stack.peek(0), Some(Word::from(2)));
-            assert_eq!(stack.peek(1), Some(Word::from(1)));
-            assert_eq!(stack.peekn::<2>(), Some([Word::from(2), Word::from(1)]));
+            assert_eq!(stack.peek(1), Some(Word::ONE));
+            assert_eq!(stack.peekn::<2>(), Some([Word::from(2), Word::ONE]));
             assert_eq!(stack.peekn::<4>(), None);
-            assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1), Word::from(2)]);
+            assert_eq!(stack.as_slice(), [Word::ZERO, Word::ONE, Word::from(2)]);
         });
 
         let mut backing = StackBacking([MaybeUninit::new(Word::ZERO); StackRef::CAPACITY]);
@@ -702,7 +721,7 @@ mod tests {
             word.write(Word::from(i));
         }
         let stack = StackRef::new(&backing, 3);
-        assert_eq!(stack.peekn::<3>(), Some([Word::from(2), Word::from(1), Word::from(0)]));
+        assert_eq!(stack.peekn::<3>(), Some([Word::from(2), Word::ONE, Word::ZERO]));
         assert_eq!(stack.peekn::<4>(), None);
     }
 
@@ -728,19 +747,19 @@ mod tests {
             stack.dup(2).unwrap();
             assert_eq!(
                 stack.as_slice(),
-                [Word::from(0), Word::from(1), Word::from(2), Word::from(3), Word::from(2)]
+                [Word::ZERO, Word::ONE, Word::from(2), Word::from(3), Word::from(2)]
             );
 
             stack.swap(3).unwrap();
             assert_eq!(
                 stack.as_slice(),
-                [Word::from(0), Word::from(2), Word::from(2), Word::from(3), Word::from(1)]
+                [Word::ZERO, Word::from(2), Word::from(2), Word::from(3), Word::ONE]
             );
 
             stack.exchange(1, 4).unwrap();
             assert_eq!(
                 stack.as_slice(),
-                [Word::from(3), Word::from(2), Word::from(2), Word::from(0), Word::from(1)]
+                [Word::from(3), Word::from(2), Word::from(2), Word::ZERO, Word::ONE]
             );
         });
 
