@@ -627,6 +627,32 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.refresh_runner_support();
     }
 
+    /// Sets [`Version::initial_call_depth`](crate::Version::initial_call_depth), the depth of the
+    /// next top-level message.
+    ///
+    /// The call depth limit, the nested-create nonce check, and inspectors all measure depth from
+    /// this value. A transaction handler can use it to run its top-level messages below an
+    /// implicit parent, such as the calls of a batch transaction, while keeping the full
+    /// [`CALL_DEPTH_LIMIT`](crate::constants::CALL_DEPTH_LIMIT) budget below each of them. The
+    /// value stays until it is set again, so a handler that changes it should restore it before
+    /// returning.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from inside a running interpreter frame, or if `depth` is invalid; see
+    /// [`Version::assert_valid`](crate::Version::assert_valid).
+    #[inline]
+    pub fn set_initial_call_depth(&mut self, depth: u16) {
+        assert!(
+            self.current_frame.is_none(),
+            "initial call depth cannot be modified while a frame is running"
+        );
+        let mut version = self.execution_config.version;
+        version.initial_call_depth = depth;
+        version.assert_valid();
+        self.execution_config.version = version;
+    }
+
     #[inline]
     fn replace_execution_config(
         &mut self,
@@ -2151,6 +2177,7 @@ mod tests {
     use crate::{
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
+        constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
         ethereum::{TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
@@ -5055,5 +5082,140 @@ mod tests {
         );
 
         let _ = evm.transact_with_inspector(&test_tx(0), &mut CallCounter::default());
+    }
+
+    #[test]
+    fn set_initial_call_depth_offsets_message_depths_and_limit() {
+        #[derive(Default)]
+        struct DepthInspector(Vec<u16>);
+
+        impl Inspector<BaseEvmTypes> for DepthInspector {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                self.0.push(message.depth);
+                None
+            }
+        }
+
+        let target = Address::repeat_byte(0x11);
+        let child = Address::repeat_byte(0x22);
+        let mut code = vec![op::PUSH0; 5];
+        push_address(&mut code, &child);
+        code.extend([op::GAS, op::CALL, op::POP, op::STOP]);
+        let mut database = InMemoryDB::default();
+        database
+            .insert_account_info(&target, AccountInfo::default().with_code(legacy_bytecode(code)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        evm.set_initial_call_depth(7);
+        assert_eq!(evm.version().initial_call_depth, 7);
+
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(target),
+                gas_limit: 100_000,
+                ..Default::default()
+            }),
+            Address::repeat_byte(0xaa),
+        );
+        let mut inspector = DepthInspector::default();
+        let executed = evm.transact_with_inspector(&tx, &mut inspector).unwrap();
+        assert!(executed.result().is_success());
+        drop(executed);
+        assert_eq!(inspector.0, [7, 8]);
+
+        // The full call depth budget remains below the new initial depth.
+        for (depth, stop) in [
+            (7 + CALL_DEPTH_LIMIT, InstrStop::Stop),
+            (7 + CALL_DEPTH_LIMIT + 1, InstrStop::CallTooDeep),
+        ] {
+            let mut message = MessageExt {
+                depth,
+                gas_limit: 50_000,
+                code: legacy_bytecode(vec![op::STOP]),
+                ..MessageExt::default()
+            };
+            let result = Host::execute_message(&mut evm, &mut message).unwrap();
+            assert_eq!(result.stop, stop);
+        }
+    }
+
+    #[test]
+    fn set_initial_call_depth_from_transaction_handler() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    req.host.set_initial_call_depth(1);
+                    let depth = req.host.version().initial_call_depth;
+                    req.host.set_initial_call_depth(0);
+                    Ok(TxResultExt {
+                        status: true,
+                        total_gas_spent: depth.into(),
+                        ..TxResultExt::default()
+                    })
+                },
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let executed = evm.transact(&test_tx(0)).unwrap();
+        assert_eq!(executed.discard().tx_gas_used(), 1);
+        assert_eq!(evm.version().initial_call_depth, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "initial call depth cannot be modified while a frame is running")]
+    fn set_initial_call_depth_panics_while_frame_is_running() {
+        struct DepthSettingInspector;
+
+        impl Inspector<BaseEvmTypes> for DepthSettingInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                interp.host().set_initial_call_depth(1);
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(DepthSettingInspector);
+        let message = MessageExt {
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..MessageExt::default()
+        };
+        let _ = evm.run_interpreter(&message);
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_initial_call_depth_rejects_invalid_depth() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_initial_call_depth(u16::MAX - CALL_DEPTH_LIMIT);
     }
 }
