@@ -47,6 +47,11 @@ use core::{
 };
 use derive_where::derive_where;
 
+/// Capacity of the first log buffer allocation, which `Vec` rounds small requests up to.
+const LOG_BUFFER_MIN_CAP: usize = 4;
+/// Largest log buffer left for the next transaction, in logs.
+const LOG_BUFFER_MAX_HINT: usize = 16384;
+
 /// Mutable EVM state with an accepted-state cache, transaction layer, and reversible journal.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -467,9 +472,24 @@ impl<'a> State<'a> {
     }
 
     /// Takes logs emitted by the current in-flight transaction.
+    ///
+    /// A transaction that emitted more than the first buffer holds leaves a buffer sized for that
+    /// many logs for the next one, which would otherwise regrow it by doubling and copying.
     #[inline]
     pub(crate) fn take_logs(&mut self) -> Vec<Log> {
-        mem::take(&mut self.inner.logs)
+        let logs = mem::take(&mut self.inner.logs);
+        if logs.len() > LOG_BUFFER_MIN_CAP {
+            self.reserve_log_buffer(logs.len());
+        }
+        logs
+    }
+
+    /// Reserves the log buffer out of line, keeping [`Self::take_logs`] small on the
+    /// per-transaction path.
+    #[cold]
+    #[inline(never)]
+    fn reserve_log_buffer(&mut self, logs: usize) {
+        self.inner.logs.reserve_exact(logs.min(LOG_BUFFER_MAX_HINT));
     }
 
     /// Records a transaction log.
