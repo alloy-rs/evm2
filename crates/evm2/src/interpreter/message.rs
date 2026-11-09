@@ -242,12 +242,12 @@ impl MessageInput {
         Self(Repr::Borrowed { range, frame })
     }
 
-    /// Returns the entry number of the caller frame whose memory a borrowed input is a range of.
+    /// Returns the range and the caller frame's entry number of a borrowed input.
     #[inline]
-    pub(crate) const fn caller_frame(&self) -> Option<u64> {
+    pub(crate) const fn borrowed_range(&self) -> Option<(&Range<usize>, u64)> {
         match &self.0 {
             Repr::Owned(_) => None,
-            Repr::Borrowed { frame, .. } => Some(*frame),
+            Repr::Borrowed { range, frame } => Some((range, *frame)),
         }
     }
 

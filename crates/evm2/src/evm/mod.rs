@@ -123,8 +123,8 @@ use crate::{
     constants::EIP7708_TRANSFER_TOPIC,
     env::{BlockEnv, TxEnv},
     interpreter::{
-        Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
-        MessageResult, MessageResultExt, Word, create_preaccess_failure,
+        Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Memory, Message,
+        MessageKind, MessageResult, MessageResultExt, Word, create_preaccess_failure,
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
@@ -1777,10 +1777,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
-        if message.input.as_owned().is_none() {
+        if let Some((range, frame)) = message.input.borrowed_range() {
+            let memory = guard.evm.caller_memory(frame);
             // SAFETY: The caller frame is suspended until this frame returns, and `current_frame`
             // becomes this one below, so nothing can reach the caller's memory in between.
-            interp_ref.set_input(unsafe { trustme::decouple_lt(guard.evm.message_input(message)) });
+            interp_ref
+                .set_input(unsafe { trustme::decouple_lt(&memory.as_slice()[range.clone()]) });
         }
         interp_ref.lend_memory();
         guard.evm.frames_entered += 1;
@@ -1858,18 +1860,25 @@ impl<T: EvmTypesHost> Evm<'_, T> {
     /// with [`MessageInput::to_bytes`] before forwarding it.
     #[inline]
     pub fn message_input<'m>(&'m self, message: &'m Message<T>) -> &'m [u8] {
-        if let Some(input) = message.input.as_owned() {
-            return input;
+        match message.input.borrowed_range() {
+            None => message.input.as_owned().map_or(&[][..], |input| &input[..]),
+            Some((range, frame)) => &self.caller_memory(frame).as_slice()[range.clone()],
         }
+    }
+
+    /// Returns the memory of the running frame, which must be the frame with the entry number
+    /// `frame`.
+    #[inline]
+    fn caller_memory(&self, frame: u64) -> &Memory {
         let caller = self.current_frame.expect("a call input must come from a running frame");
         // SAFETY: The running frame is suspended on this call stack.
         let caller = unsafe { caller.as_ref() };
         assert_eq!(
-            message.input.caller_frame(),
-            Some(caller.frame()),
+            caller.frame(),
+            frame,
             "a call input must be resolved against the frame that made it",
         );
-        message.input.as_bytes(caller.memory())
+        caller.memory()
     }
 }
 
