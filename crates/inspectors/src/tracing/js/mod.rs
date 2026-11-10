@@ -672,6 +672,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 gas_remaining: pending.instruction.gas,
                 stack: interp.stack().as_slice(),
                 memory: interp.memory().as_slice(),
+                code: interp.original_bytecode_slice(),
             });
         }
     }

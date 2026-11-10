@@ -36,6 +36,7 @@ use evm2::{
     evm::{AccountInfo, DbResult, DynDatabase, PendingState, State},
     interpreter::{
         Word,
+        instructions::{decode_pair, decode_single},
         opcode::{
             OpCode, op as opcode,
             op::{PUSH0, PUSH32},
@@ -246,6 +247,8 @@ pub(crate) struct PreStep<'a> {
     pub(crate) stack: &'a [U256],
     /// Memory before step execution
     pub(crate) memory: &'a [u8],
+    /// Unpadded bytecode of the executing frame
+    pub(crate) code: &'a [u8],
 }
 
 /// Post-execution data of a step, see [`ReusableStepLog::with_scope`].
@@ -647,12 +650,12 @@ pub(crate) struct StepSnapshot {
 impl StepSnapshot {
     /// Records everything about a step that must be captured before the opcode executes.
     pub(crate) fn record(&mut self, step: PreStep<'_>) {
-        let PreStep { pc, op, gas_remaining, stack, memory } = step;
+        let PreStep { pc, op, gas_remaining, stack, memory, code } = step;
         let state = self;
         state.pc = pc;
         state.op = op;
         state.gas_remaining = gas_remaining;
-        state.stack.record(op, stack);
+        state.stack.record(pc, op, code, stack);
         state.memory.record(op, stack, memory);
     }
 }
@@ -728,7 +731,8 @@ impl OpcodeNames {
 ///
 /// An opcode only touches its top `inputs` items, so the pre-execution stack is the post-execution
 /// stack below those items followed by the saved inputs. This holds for halted opcodes too, which
-/// pop at most `inputs` items.
+/// pop at most `inputs` items. `SWAPN` and `EXCHANGE` declare no inputs in the opcode table, their
+/// inputs are the items down to the deepest one their immediate selects.
 #[derive(Debug, Default)]
 struct StackView {
     /// Pre-execution length.
@@ -740,9 +744,19 @@ struct StackView {
 }
 
 impl StackView {
-    fn record(&mut self, op: u8, stack: &[U256]) {
+    fn record(&mut self, pc: u64, op: u8, code: &[u8], stack: &[U256]) {
         self.len = stack.len();
-        let inputs = OpCode::new(op).map_or(0, |op| op.inputs() as usize).min(stack.len());
+        // Past the end of the code, the interpreter reads the zero padding as the immediate. An
+        // invalid immediate halts before the stack is touched.
+        let immediate = || code.get(pc as usize + 1).copied().unwrap_or_default();
+        let inputs = match op {
+            opcode::SWAPN => decode_single(immediate()).map_or(0, |n| usize::from(n) + 1),
+            opcode::EXCHANGE => {
+                decode_pair(immediate()).map_or(0, |(n, m)| usize::from(n.max(m)) + 1)
+            }
+            _ => OpCode::new(op).map_or(0, |op| op.inputs() as usize),
+        }
+        .min(stack.len());
         self.saved.clear();
         self.saved.extend_from_slice(&stack[stack.len() - inputs..]);
     }
@@ -1131,7 +1145,14 @@ mod tests {
         f: impl FnOnce() -> R,
     ) -> R {
         let mut snapshot = StepSnapshot::default();
-        snapshot.record(PreStep { pc: 0, op, gas_remaining: 0, stack, memory: &memory.borrow() });
+        snapshot.record(PreStep {
+            pc: 0,
+            op,
+            gas_remaining: 0,
+            stack,
+            memory: &memory.borrow(),
+            code: &[],
+        });
         log.with_scope(
             &mut snapshot,
             stack,
@@ -1591,7 +1612,7 @@ mod tests {
             (opcode::STOP, pre.to_vec()),
         ] {
             let mut view = StackView::default();
-            view.record(op, &pre);
+            view.record(0, op, &[], &pre);
             let post: &'static [U256] = post.leak();
             view.post = Some(post);
             assert_eq!(view.len(), 3);
