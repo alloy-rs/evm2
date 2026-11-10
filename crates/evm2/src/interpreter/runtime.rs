@@ -44,8 +44,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     output: Range<u32>,
     #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
-    /// Input bytes resolved once when the frame starts.
-    pub(in crate::interpreter) input: &'frame [u8],
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
@@ -108,7 +106,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             error: None,
             output: 0..0,
             message: None,
-            input: &[],
             is_static: false,
             lends_memory: false,
             return_data: Bytes::new(),
@@ -136,7 +133,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.error = None;
         self.output = 0..0;
         self.message = Some(message);
-        self.input = message.input.as_owned().map_or(&[][..], |input| &input[..]);
         self.is_static = is_static;
         self.lends_memory = false;
         self.return_data = Bytes::new();
@@ -153,7 +149,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.bytecode = Default::default();
         self.bytecode_ref = None;
         self.message = None;
-        self.input = &[];
         self.host = None;
         self.inspector = None;
     }
@@ -313,14 +308,16 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Returns the active message's input bytes.
     #[inline]
-    pub const fn input(&self) -> &[u8] {
-        self.input
-    }
-
-    /// Sets the resolved input bytes for this frame.
-    #[inline]
-    pub(crate) const fn set_input(&mut self, input: &'frame [u8]) {
-        self.input = input;
+    pub fn input(&self) -> &'frame [u8] {
+        let message = self.message();
+        if let Some(input) = message.input.as_owned() {
+            return input;
+        }
+        let memory = message
+            .previous_frame_memory
+            .as_ref()
+            .expect("range input requires previous frame memory");
+        message.input_bytes(memory)
     }
 
     /// Lets [`Self::call_input`] return ranges of this frame's memory.
@@ -706,7 +703,7 @@ impl<T: EvmTypesHost> fmt::Debug for InterpreterState<'_, '_, T> {
 impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     /// Returns the active message's input bytes.
     #[inline]
-    pub const fn input(&self) -> &[u8] {
+    pub fn input(&self) -> &'frame [u8] {
         self.0.input()
     }
 

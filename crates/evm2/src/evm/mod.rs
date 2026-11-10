@@ -1860,12 +1860,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
         if message.input.as_range().is_some() {
-            let memory = message
-                .previous_frame_memory
-                .as_ref()
-                .expect("range input requires previous frame memory");
-            // SAFETY: The message and its previous frame memory outlive the child interpreter.
-            interp_ref.set_input(unsafe { trustme::decouple_lt(message.input_bytes(memory)) });
+            assert!(
+                message.previous_frame_memory.is_some(),
+                "range input requires previous frame memory"
+            );
         }
         interp_ref.lend_memory();
         let inspector = guard.evm.active_inspector().map(|inspector| {
