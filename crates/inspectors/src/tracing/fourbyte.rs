@@ -61,7 +61,7 @@ impl<T: EvmTypes> Inspector<T> for FourByteInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // Skip precompile invocations, matching geth's 4byteTracer.
-        if let Some((selector, calldata)) = message.input.split_first_chunk()
+        if message.input.len() >= 4
             && !self
                 .precompiles
                 .get_or_insert_with(|| {
@@ -70,6 +70,8 @@ impl<T: EvmTypes> Inspector<T> for FourByteInspector {
                     precompiles
                 })
                 .is_warm(&message.call_target)
+            && let Some((selector, calldata)) =
+                message.input.as_bytes(interp.memory()).split_first_chunk()
         {
             let selector = Selector::from(*selector);
             let calldata_size = calldata.len();
