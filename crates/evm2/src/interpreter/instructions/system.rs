@@ -12,7 +12,7 @@ use crate::{
     version::GasId,
 };
 use alloy_primitives::{Address, B256, Bytes};
-use core::{cmp::min, num::NonZeroUsize, ops::Range};
+use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
@@ -138,12 +138,8 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     Ok((gas_limit, new_account_state_gas, code, code_address))
 }
 
-/// # Safety
-///
-/// The message must be passed to the host as in
-/// [`Interpreter::call_input`](crate::interpreter::Interpreter::call_input).
 #[inline(never)]
-unsafe fn prepare_call<T: EvmTypesHost>(
+fn prepare_call<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
@@ -183,11 +179,7 @@ unsafe fn prepare_call<T: EvmTypesHost>(
             kind == MessageKind::Call,
             local_gas_limit,
         )?;
-    // SAFETY: Upheld by the caller.
-    let input = unsafe { state.0.call_input(input_range.start, input_range.len()) };
-    let previous_frame_input_offset = input.is_borrowed().then(|| {
-        NonZeroUsize::new(if input_range.is_empty() { 1 } else { input_range.start + 1 }).unwrap()
-    });
+    let input = state.0.call_input(input_range.start, input_range.len());
 
     let current = state.message();
     let (destination, caller, call_value, code_address) = match kind {
@@ -210,7 +202,6 @@ unsafe fn prepare_call<T: EvmTypesHost>(
         call_target: to,
         caller,
         input,
-        previous_frame_input_offset,
         previous_frame_memory: None,
         value: call_value,
         code: loaded_code,
@@ -257,8 +248,7 @@ fn call_inner<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
 ) -> Result {
-    // SAFETY: The hooks do nothing.
-    unsafe { call_impl(stack, gas, state, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(())) }
+    call_impl(stack, gas, state, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
 }
 
 /// Executes a call opcode of `kind` with hooks around its child message.
@@ -294,38 +284,12 @@ pub fn call_with<T: EvmTypesHost>(
         &MessageResult<T>,
     ) -> Result,
 ) -> Result {
-    let before =
-        |gas: &mut Gas, state: &mut InterpreterState<'_, '_, T>, message: &mut Message<T>| {
-            let original_input = message.input.to_bytes();
-            message.input = original_input.clone().into();
-            let original_input_ptr = message.input.as_ptr();
-            before(gas, state, message)?;
-            if let Some(offset) = message.previous_frame_input_offset {
-                if message.input.as_ptr() == original_input_ptr
-                    && message.input.len() == original_input.len()
-                {
-                    message.input = Bytes::copy_from_slice(
-                        state.0.memory().slice(offset.get() - 1, message.input.len()),
-                    )
-                    .into();
-                } else {
-                    message.previous_frame_input_offset = None;
-                }
-            }
-            Ok(())
-        };
-    // SAFETY: `before` copies the input before the hooks can reach it.
-    unsafe { call_impl(stack, gas, state, kind, before, after) }
+    call_impl(stack, gas, state, kind, before, after)
 }
 
-/// Body of [`call_with`]. The child message may borrow its input from memory.
-///
-/// # Safety
-///
-/// `before` and `after` must not read a borrowed input after changing memory, or let it outlive
-/// the call.
+/// Body of [`call_with`].
 #[inline]
-unsafe fn call_impl<T: EvmTypesHost>(
+fn call_impl<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
@@ -340,11 +304,8 @@ unsafe fn call_impl<T: EvmTypesHost>(
 ) -> Result {
     let mut message = Message::<T>::default();
     let mut return_memory_range = 0..0;
-    // SAFETY: Upheld by the caller for the hooks. Nothing else reads the message after the host
-    // returns.
-    let new_account_state_gas = unsafe {
-        prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)
-    }?;
+    let new_account_state_gas =
+        prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
     before(gas, state, &mut message)?;
 
     state.0.move_memory_to_message(&mut message);
@@ -510,7 +471,6 @@ pub fn create_with<T: EvmTypesHost>(
         caller,
         code: Bytecode::new_legacy(input.clone()),
         input: input.into(),
-        previous_frame_input_offset: None,
         previous_frame_memory: None,
         value,
         code_address: destination,

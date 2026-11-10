@@ -3,10 +3,9 @@ use crate::{
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     interpreter::{InstrStop, Memory, Word},
-    trustme,
 };
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
-use core::{fmt, num::NonZeroUsize, ops::Deref};
+use core::ops::Range;
 
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -39,7 +38,7 @@ impl MessageKind {
 pub type Message<T = BaseEvmTypes> = MessageExt<<T as EvmTypesHost>::MessageExt>;
 
 /// Frame-local EVM call/create message, parameterized by extension data.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MessageExt<E = ()> {
     /// Message kind.
     pub kind: MessageKind,
@@ -72,11 +71,8 @@ pub struct MessageExt<E = ()> {
     pub caller: Address,
     /// Call input data, or initcode for create messages.
     pub input: MessageInput,
-    /// Call input offset in the previous frame's memory, plus one when borrowed.
-    /// The input length is [`input`](Self::input)'s length.
-    pub previous_frame_input_offset: Option<NonZeroUsize>,
     /// Memory of the frame that sent this message, returned to that frame after execution.
-    /// A borrowed [`input`](Self::input) reads its bytes from this memory while the child runs.
+    /// A range [`input`](Self::input) reads its bytes from this memory while the child runs.
     pub previous_frame_memory: Option<Memory>,
     /// Value transferred with the message.
     pub value: U256,
@@ -100,32 +96,6 @@ pub struct MessageExt<E = ()> {
     pub _non_exhaustive: (),
 }
 
-impl<E: Clone> Clone for MessageExt<E> {
-    fn clone(&self) -> Self {
-        Self {
-            kind: self.kind,
-            depth: self.depth,
-            gas_limit: self.gas_limit,
-            reservoir: self.reservoir,
-            destination: self.destination,
-            call_target: self.call_target,
-            caller: self.caller,
-            input: self.input.clone(),
-            // MessageInput::clone owns borrowed bytes, so the clone does not resolve its input
-            // against a running frame.
-            previous_frame_input_offset: None,
-            previous_frame_memory: self.previous_frame_memory.clone(),
-            value: self.value,
-            code: self.code.clone(),
-            code_address: self.code_address,
-            caller_is_static: self.caller_is_static,
-            salt: self.salt,
-            ext: self.ext.clone(),
-            _non_exhaustive: (),
-        }
-    }
-}
-
 impl<E> MessageExt<E> {
     /// Replaces the extension, preserving all other message fields.
     #[inline]
@@ -145,7 +115,6 @@ impl<E> MessageExt<E> {
             call_target,
             caller,
             input,
-            previous_frame_input_offset,
             previous_frame_memory,
             value,
             code,
@@ -164,7 +133,6 @@ impl<E> MessageExt<E> {
             call_target,
             caller,
             input,
-            previous_frame_input_offset,
             previous_frame_memory,
             value,
             code,
@@ -193,6 +161,18 @@ impl<E> MessageExt<E> {
     #[inline]
     pub fn is_direct_call(&self) -> bool {
         self.destination == self.call_target
+    }
+
+    /// Returns the input bytes, using `memory` for an input that names a caller-memory range.
+    ///
+    /// `memory` must be the previous frame's memory. An owned input does not use it.
+    /// Panics if a range is out of bounds.
+    #[inline]
+    pub fn input_bytes<'a>(&'a self, memory: &'a Memory) -> &'a [u8] {
+        match &self.input {
+            MessageInput::Owned(bytes) => bytes,
+            MessageInput::Range { range, .. } => memory.slice(range.start, range.len()),
+        }
     }
 }
 
@@ -243,88 +223,67 @@ pub fn create_preaccess_failure(
 
 /// The input of a message: call data, or initcode for create messages.
 ///
-/// It derefs to the input bytes. When [`Evm`](crate::Evm) runs without an inspector, the child of
-/// a call instruction reads its input from the caller's memory instead of a copy, since the caller
-/// waits for the call to return. [`Clone`] and [`to_bytes`](Self::to_bytes) copy borrowed bytes, so
-/// a kept input always owns them.
-#[derive(Default)]
-pub struct MessageInput {
-    /// The owned bytes, or the borrowed bytes with their lifetime erased.
-    bytes: Bytes,
-    /// Whether `bytes` borrows. If set, `bytes` must never be cloned.
-    borrowed: bool,
+/// A call instruction can name a range of the previous frame's memory without copying it. Use
+/// [`MessageExt::input_bytes`] with that frame's memory to read either variant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MessageInput {
+    /// Bytes owned by the message.
+    Owned(Bytes),
+    /// A range of the previous frame's memory, identified by its frame number.
+    Range {
+        /// Byte range in the caller's memory.
+        range: Range<usize>,
+        /// Entry number of the frame that owns the memory.
+        frame: u64,
+    },
+}
+
+impl Default for MessageInput {
+    #[inline]
+    fn default() -> Self {
+        Self::Owned(Bytes::new())
+    }
 }
 
 impl MessageInput {
-    /// Returns whether this input borrows its bytes from a running frame.
+    /// Returns the length of the input.
     #[inline]
-    pub const fn is_borrowed(&self) -> bool {
-        self.borrowed
-    }
-
-    /// Borrows `bytes` without copying.
-    ///
-    /// # Safety
-    ///
-    /// `bytes` must stay valid and unchanged for as long as the input is read.
-    #[inline]
-    pub(crate) unsafe fn borrowed(bytes: &[u8]) -> Self {
-        // SAFETY: The caller keeps the bytes alive while they are read, and `borrowed` keeps
-        // them from being cloned out.
-        Self { bytes: Bytes::from_static(unsafe { trustme::decouple_lt(bytes) }), borrowed: true }
-    }
-
-    /// Returns the input as owned bytes, copying borrowed ones.
-    #[inline]
-    pub fn to_bytes(&self) -> Bytes {
-        if self.borrowed { Bytes::copy_from_slice(&self.bytes) } else { self.bytes.clone() }
-    }
-
-    /// Copies borrowed bytes into an owned buffer.
-    #[inline]
-    pub(crate) fn make_owned(&mut self) {
-        if self.borrowed {
-            *self = Self::from(Bytes::copy_from_slice(&self.bytes));
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Owned(bytes) => bytes.len(),
+            Self::Range { range, .. } => range.len(),
         }
     }
-}
 
-impl Clone for MessageInput {
+    /// Returns whether the input is empty.
     #[inline]
-    fn clone(&self) -> Self {
-        Self::from(self.to_bytes())
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
-}
 
-impl fmt::Debug for MessageInput {
+    /// Returns the owned bytes, if present.
     #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.bytes.fmt(f)
+    pub const fn as_owned(&self) -> Option<&Bytes> {
+        match self {
+            Self::Owned(bytes) => Some(bytes),
+            Self::Range { .. } => None,
+        }
     }
-}
 
-impl PartialEq for MessageInput {
+    /// Returns the caller-memory range and the frame that owns it, if present.
     #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.bytes == other.bytes
-    }
-}
-
-impl Eq for MessageInput {}
-
-impl Deref for MessageInput {
-    type Target = [u8];
-
-    #[inline]
-    fn deref(&self) -> &[u8] {
-        &self.bytes
+    pub const fn as_range(&self) -> Option<(&Range<usize>, u64)> {
+        match self {
+            Self::Owned(_) => None,
+            Self::Range { range, frame } => Some((range, *frame)),
+        }
     }
 }
 
 impl From<Bytes> for MessageInput {
     #[inline]
     fn from(bytes: Bytes) -> Self {
-        Self { bytes, borrowed: false }
+        Self::Owned(bytes)
     }
 }
 
@@ -404,38 +363,32 @@ mod tests {
     }
 
     #[test]
-    fn kept_borrowed_input_owns_its_bytes() {
-        let mut memory = [1, 2, 3];
-        // SAFETY: `memory` is unchanged until `input` is dropped.
-        let input = unsafe { MessageInput::borrowed(&memory) };
-        let clone = input.clone();
-        let bytes = input.to_bytes();
-        // SAFETY: `memory` is unchanged until `owned` owns its bytes.
-        let mut owned = unsafe { MessageInput::borrowed(&memory) };
-        owned.make_owned();
-        drop(input);
-        memory.fill(0);
+    fn range_input_reads_previous_frame_memory() {
+        let mut memory = Memory::new();
+        memory.resize(0, 3).unwrap();
+        memory.set(0, &[1, 2, 3]);
+        let message = MessageExt::<()> {
+            input: MessageInput::Range { range: 1..3, frame: 1 },
+            ..Default::default()
+        };
 
-        assert_eq!(&*clone, [1, 2, 3]);
-        assert_eq!(bytes[..], [1, 2, 3]);
-        assert_eq!(&*owned, [1, 2, 3]);
+        assert_eq!(message.input.len(), 2);
+        assert_eq!(message.input.as_owned(), None);
+        assert_eq!(message.input_bytes(&memory), [2, 3]);
+        memory.set(1, &[7]);
+        assert_eq!(message.input_bytes(&memory), [7, 3]);
     }
 
     #[test]
-    fn cloned_borrowed_message_owns_input() {
-        let mut memory = [1, 2, 3];
-        // SAFETY: `memory` stays unchanged until the message has been cloned.
-        let input = unsafe { MessageInput::borrowed(&memory) };
+    #[should_panic(expected = "slice OOB")]
+    fn range_input_out_of_bounds_panics() {
+        let mut memory = Memory::new();
+        memory.resize(0, 2).unwrap();
         let message = MessageExt::<()> {
-            input,
-            previous_frame_input_offset: NonZeroUsize::new(1),
+            input: MessageInput::Range { range: 1..3, frame: 1 },
             ..Default::default()
         };
-        let cloned = message.clone();
-        drop(message);
-        memory.fill(0);
 
-        assert_eq!(cloned.input.to_bytes()[..], [1, 2, 3]);
-        assert!(cloned.previous_frame_input_offset.is_none());
+        message.input_bytes(&memory);
     }
 }

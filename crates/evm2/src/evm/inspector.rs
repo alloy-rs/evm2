@@ -455,8 +455,8 @@ mod tests {
         ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
-            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageKind,
-            MessageResult, MessageResultExt, Word, instructions as instr, op,
+            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageInput,
+            MessageKind, MessageResult, MessageResultExt, Word, instructions as instr, op,
         },
         registry::TxRegistry,
         test_utils::{
@@ -1875,8 +1875,8 @@ mod tests {
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.depth > 0 {
-                    assert_eq!(message.input.to_bytes()[..], [0xaa; 32]);
-                    assert!(message.previous_frame_input_offset.is_some());
+                    assert_eq!(message.input_bytes(interp.memory()), [0xaa; 32]);
+                    assert!(message.input.as_range().is_some());
                     interp.memory_mut().set(0, &[0xbb; 32]);
                 }
                 None
@@ -1884,12 +1884,12 @@ mod tests {
 
             fn call_end(
                 &mut self,
-                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &Message<BaseEvmTypes>,
                 _result: &mut MessageResult<BaseEvmTypes>,
             ) {
                 if message.depth > 0 {
-                    assert_eq!(message.input.to_bytes()[..], [0xbb; 32]);
+                    assert_eq!(message.input_bytes(interp.memory()), [0xbb; 32]);
                 }
             }
         }
@@ -1909,17 +1909,98 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "range input belongs to a different frame")]
+    fn forwarding_range_input_from_child_frame_panics() {
+        struct ForwardInput;
+
+        impl Inspector<BaseEvmTypes> for ForwardInput {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.message().depth == 1 {
+                    let mut message = MessageExt {
+                        depth: 2,
+                        gas_limit: 1_000,
+                        input: interp.message().input.clone(),
+                        code: legacy_bytecode([op::STOP]),
+                        ..Default::default()
+                    };
+                    let _ = Host::execute_message(interp.host(), &mut message);
+                }
+            }
+        }
+
+        run_evm_with_inspector_db(
+            echo_db(),
+            memory_input_call_code(ECHO, op::CALL),
+            &MessageExt::default(),
+            100_000,
+            ForwardInput,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "range input belongs to a different frame")]
+    fn forwarding_range_input_from_sibling_frame_panics() {
+        #[derive(Default)]
+        struct ForwardSiblingInput(Option<MessageInput>);
+
+        impl Inspector<BaseEvmTypes> for ForwardSiblingInput {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.message().depth != 1 {
+                    return;
+                }
+                match self.0.take() {
+                    None => self.0 = Some(interp.message().input.clone()),
+                    Some(input) => {
+                        let mut message = MessageExt {
+                            depth: 2,
+                            gas_limit: 1_000,
+                            input,
+                            code: legacy_bytecode([op::STOP]),
+                            ..Default::default()
+                        };
+                        let _ = Host::execute_message(interp.host(), &mut message);
+                    }
+                }
+            }
+        }
+
+        let mut code = memory_input_call_code(ECHO, op::CALL);
+        code.truncate(code.len() - 5);
+        push_all(
+            &mut code,
+            [
+                Word::from(32),
+                Word::from(32),
+                Word::from(32),
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(&ECHO),
+                Word::from(50_000),
+            ],
+        );
+        code.extend([op::CALL, op::POP, op::STOP]);
+
+        run_evm_with_inspector_db(
+            echo_db(),
+            code,
+            &MessageExt::default(),
+            100_000,
+            ForwardSiblingInput::default(),
+        );
+    }
+
+    #[test]
     fn call_hook_replacing_input_keeps_caller_memory() {
         struct ReplaceInput;
 
         impl Inspector<BaseEvmTypes> for ReplaceInput {
             fn call(
                 &mut self,
-                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.depth > 0 {
-                    let mut input = message.input.to_bytes().to_vec();
+                    let mut input = message.input_bytes(interp.memory()).to_vec();
                     input[..16].fill(0xcc);
                     message.input = Bytes::from(input).into();
                 }
@@ -1934,8 +2015,8 @@ mod tests {
             ) {
                 if message.depth > 0 {
                     assert_eq!(interp.memory().slice(0, 32), [0xaa; 32]);
-                    assert_eq!(message.input.to_bytes()[..16], [0xcc; 16]);
-                    assert!(message.previous_frame_input_offset.is_none());
+                    assert_eq!(message.input_bytes(interp.memory())[..16], [0xcc; 16]);
+                    assert!(message.input.as_range().is_none());
                 }
             }
         }
@@ -1966,7 +2047,8 @@ mod tests {
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.depth > 0 {
-                    message.input = Bytes::copy_from_slice(&message.input).into();
+                    message.input =
+                        Bytes::copy_from_slice(message.input_bytes(interp.memory())).into();
                     interp.memory_mut().set(0, &[0xbb; 32]);
                 }
                 None
@@ -1979,7 +2061,7 @@ mod tests {
                 _result: &mut MessageResult<BaseEvmTypes>,
             ) {
                 if message.depth > 0 {
-                    assert!(message.previous_frame_input_offset.is_none());
+                    assert!(message.input.as_range().is_none());
                 }
             }
         }

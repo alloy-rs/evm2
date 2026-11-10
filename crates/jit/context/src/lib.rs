@@ -180,8 +180,8 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
 
     /// Returns calldata bytes.
     #[inline]
-    pub fn input(&self) -> &[u8] {
-        &self.message().input
+    pub const fn input(&self) -> &[u8] {
+        self.interpreter().input()
     }
 
     /// Returns the current block environment.

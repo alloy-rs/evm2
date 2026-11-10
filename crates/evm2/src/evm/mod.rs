@@ -248,6 +248,8 @@ pub struct Evm<'a, T: EvmTypesHost> {
     /// This is passed to the inspector call and create hooks as the parent frame.
     #[derive_where(skip)]
     current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
+    /// Monotonic entry number used to identify the frame that owns range input.
+    frames_entered: u64,
     /// The checkpoint the currently running interpreter frame rolls back to if it fails.
     #[derive_where(skip)]
     frame_checkpoint: Option<StateCheckpoint>,
@@ -379,6 +381,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_runner: None,
             runner_supported: false,
             current_frame: None,
+            frames_entered: 0,
             frame_checkpoint: None,
             running: false,
             #[cfg(feature = "async")]
@@ -1404,8 +1407,9 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
 }
 
 impl<'a, T: EvmTypes> Evm<'a, T> {
-    /// The input of a call message may borrow the caller's memory (see
-    /// [`Interpreter::call_input`]), so this must not keep or clone out a borrowed input.
+    /// A call message may carry a range in its caller's memory (see
+    /// [`Interpreter::call_input`]). Forwarding that range from another frame requires
+    /// resolving it to owned bytes first.
     #[inline]
     fn execute_message_impl(
         &mut self,
@@ -1521,35 +1525,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         inspector: &mut dyn Inspector<T>,
         is_create: bool,
     ) -> Option<MessageResult<T>> {
-        // Hooks may resize the caller's memory, invalidating a borrowed byte slice. Keep a safe
-        // snapshot during the hook and refresh it afterward if the hook did not replace it.
-        let original_input = message.previous_frame_input_offset.map(|_| message.input.to_bytes());
-        if let Some(input) = &original_input {
-            message.input = input.clone().into();
-        } else {
-            message.input.make_owned();
-        }
-        let original_input_ptr = message.input.as_ptr();
         let memory_moved_to_frame = frame.move_memory_from_message(message);
         let inspected = if is_create {
             inspector.create(frame, message)
         } else {
             inspector.call(frame, message)
         };
-        if let Some(original_input) = original_input
-            && let Some(offset) = message.previous_frame_input_offset
-        {
-            if message.input.as_ptr() == original_input_ptr
-                && message.input.len() == original_input.len()
-            {
-                message.input = Bytes::copy_from_slice(
-                    frame.memory().slice(offset.get() - 1, message.input.len()),
-                )
-                .into();
-            } else {
-                message.previous_frame_input_offset = None;
-            }
-        }
         if memory_moved_to_frame {
             frame.move_memory_to_message(message);
         }
@@ -1881,8 +1862,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
+        if let Some((_, frame)) = message.input.as_range() {
+            let caller =
+                guard.evm.current_frame.expect("a range input must come from a running frame");
+            // SAFETY: The caller is suspended for the duration of the child frame.
+            let caller = unsafe { caller.as_ref() };
+            assert_eq!(frame, caller.frame(), "range input belongs to a different frame");
+            let memory = message.previous_frame_memory.as_ref().unwrap_or_else(|| caller.memory());
+            // SAFETY: The message and its previous frame memory outlive the child interpreter.
+            interp_ref.set_input(unsafe { trustme::decouple_lt(message.input_bytes(memory)) });
+        }
         interp_ref.lend_memory();
-        guard.evm.inspect_initialize_interp(interp_ref);
+        guard.evm.frames_entered += 1;
+        interp_ref.set_frame(guard.evm.frames_entered);
         let inspector = guard.evm.active_inspector().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // interpreter run.
@@ -1892,6 +1884,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
+        guard.evm.inspect_initialize_interp(interp_ref);
         let runner =
             guard.evm.interpreter_runner.as_ref().filter(|_| guard.evm.runner_supported).cloned();
         let stop = if let Some(inspector) = inspector {
@@ -1939,20 +1932,21 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 }
 
 impl<T: EvmTypesHost> Evm<'_, T> {
-    /// Returns a message's input, resolving a borrowed call input against its caller's memory.
+    /// Returns a message's input, resolving a range against its caller's memory.
     ///
     /// The returned slice borrows the EVM, so a precompile must release it before sending a
     /// nested message whose hooks may change the caller's memory.
     #[inline]
     pub fn message_input<'m>(&'m self, message: &'m Message<T>) -> &'m [u8] {
-        let Some(offset) = message.previous_frame_input_offset else {
-            return &message.input;
+        let Some((_, frame)) = message.input.as_range() else {
+            return message.input.as_owned().expect("owned message input");
         };
         let caller = self.current_frame.expect("a call input must come from a running frame");
         // SAFETY: The caller is suspended while its child message runs.
         let caller = unsafe { caller.as_ref() };
+        assert_eq!(frame, caller.frame(), "range input belongs to a different frame");
         let memory = message.previous_frame_memory.as_ref().unwrap_or_else(|| caller.memory());
-        memory.slice(offset.get() - 1, message.input.len())
+        message.input_bytes(memory)
     }
 }
 
@@ -2428,7 +2422,6 @@ mod tests {
             call_target: address,
             caller: Address::ZERO,
             input: Default::default(),
-            previous_frame_input_offset: None,
             previous_frame_memory: None,
             value: U256::ZERO,
             code: Bytecode::default(),
@@ -2492,7 +2485,7 @@ mod tests {
             test_precompile(TEST_PRECOMPILE, |evm, message, _| {
                 let mut child = precompile_message(INNER_TEST_PRECOMPILE);
                 child.depth = message.depth + 1;
-                child.input = message.input.clone();
+                child.input = Bytes::copy_from_slice(evm.message_input(message)).into();
                 Host::execute_message(evm, &mut child)?;
                 evm.log(Log { address: TEST_PRECOMPILE, data: LogData::default() });
                 Ok(PrecompileOutput::new(Bytes::new()))
@@ -3363,7 +3356,7 @@ mod tests {
             assert_eq!(message.depth, 67);
             assert_eq!(message.destination, TEST_PRECOMPILE);
             assert_eq!(message.caller, Address::with_last_byte(0x7a));
-            assert_eq!(&*message.input, b"message input");
+            assert_eq!(message.input.as_owned().unwrap().as_ref(), b"message input");
             assert_eq!(message.value, U256::from(99));
             assert_eq!(message.code_address, TEST_PRECOMPILE);
             Ok(PrecompileOutput::new(Bytes::from(evm.block.number.to_be_bytes::<32>())))
@@ -3384,7 +3377,6 @@ mod tests {
             call_target: address,
             caller: Address::with_last_byte(0x7a),
             input: Bytes::from_static(b"message input").into(),
-            previous_frame_input_offset: None,
             previous_frame_memory: None,
             value: U256::from(99),
             code: Bytecode::default(),

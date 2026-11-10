@@ -61,7 +61,10 @@ impl<T: EvmTypes> Inspector<T> for FourByteInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // Skip precompile invocations, matching geth's 4byteTracer.
-        if let Some((selector, calldata)) = message.input.split_first_chunk()
+        if let Some((selector, calldata_size)) = message
+            .input_bytes(interp.memory())
+            .split_first_chunk()
+            .map(|(selector, calldata)| (*selector, calldata.len()))
             && !self
                 .precompiles
                 .get_or_insert_with(|| {
@@ -71,8 +74,7 @@ impl<T: EvmTypes> Inspector<T> for FourByteInspector {
                 })
                 .is_warm(&message.call_target)
         {
-            let selector = Selector::from(*selector);
-            let calldata_size = calldata.len();
+            let selector = Selector::from(selector);
             *self.inner.entry((selector, calldata_size)).or_default() += 1;
         }
         None

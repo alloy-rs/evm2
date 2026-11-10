@@ -44,6 +44,10 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     output: Range<u32>,
     #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
+    /// Input bytes resolved once when the frame starts.
+    pub(in crate::interpreter) input: &'frame [u8],
+    /// Entry number assigned by the EVM; zero outside an EVM-managed frame.
+    frame: u64,
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
@@ -65,9 +69,7 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
-    /// Whether [`Self::call_input`] borrows memory. Set only for frames that [`Evm`](crate::Evm)
-    /// runs, whose host keeps a borrowed input from being read after the call or while the memory
-    /// changes.
+    /// Whether [`Self::call_input`] returns a memory range. Set for EVM-managed frames.
     lends_memory: bool,
 }
 
@@ -108,6 +110,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             error: None,
             output: 0..0,
             message: None,
+            input: &[],
+            frame: 0,
             is_static: false,
             lends_memory: false,
             return_data: Bytes::new(),
@@ -135,6 +139,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.error = None;
         self.output = 0..0;
         self.message = Some(message);
+        self.input = message.input.as_owned().map_or(&[][..], |input| &input[..]);
+        self.frame = 0;
         self.is_static = is_static;
         self.lends_memory = false;
         self.return_data = Bytes::new();
@@ -151,6 +157,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.bytecode = Default::default();
         self.bytecode_ref = None;
         self.message = None;
+        self.input = &[];
         self.host = None;
         self.inspector = None;
     }
@@ -289,34 +296,50 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         true
     }
 
-    /// Returns `len` bytes of memory at `offset` as the input of a call message, borrowed when
-    /// this frame is run by [`Evm`](crate::Evm) and copied otherwise.
-    ///
-    /// # Safety
-    ///
-    /// The input must only be read as the input of a message passed to this frame's
-    /// [`Host::execute_message`](crate::interpreter::Host::execute_message), and memory must not
-    /// change and no other code may access this frame in between. It must not be read after
-    /// `execute_message` returns.
+    /// Returns a range of this frame's memory for an EVM-managed frame, or copied input bytes for
+    /// other hosts.
     ///
     /// # Panics
     ///
     /// Panics if the bytes are out of bounds of memory.
     #[inline]
     #[doc(hidden)]
-    pub unsafe fn call_input(&self, offset: usize, len: usize) -> MessageInput {
-        let bytes = self.memory.slice(offset, len);
-        if !self.lends_memory {
-            return Bytes::copy_from_slice(bytes).into();
+    pub fn call_input(&self, offset: usize, len: usize) -> MessageInput {
+        if len == 0 {
+            return MessageInput::default();
         }
-        // SAFETY: The caller keeps memory unchanged until the host returns, and the host is
-        // `Evm`, which copies the input before any inspector hook can reach this frame or the
-        // message. Otherwise it only reads the message through shared references, which cannot
-        // move the input out, and cloning copies it.
-        unsafe { MessageInput::borrowed(bytes) }
+        if !self.lends_memory {
+            return Bytes::copy_from_slice(self.memory.slice(offset, len)).into();
+        }
+        self.memory.slice(offset, len);
+        MessageInput::Range { range: offset..offset + len, frame: self.frame }
     }
 
-    /// Lets [`Self::call_input`] borrow memory for the rest of this frame.
+    /// Returns the active message's input bytes.
+    #[inline]
+    pub const fn input(&self) -> &[u8] {
+        self.input
+    }
+
+    /// Returns this frame's entry number.
+    #[inline]
+    pub(crate) const fn frame(&self) -> u64 {
+        self.frame
+    }
+
+    /// Sets this frame's entry number.
+    #[inline]
+    pub(crate) const fn set_frame(&mut self, frame: u64) {
+        self.frame = frame;
+    }
+
+    /// Sets the resolved input bytes for this frame.
+    #[inline]
+    pub(crate) const fn set_input(&mut self, input: &'frame [u8]) {
+        self.input = input;
+    }
+
+    /// Lets [`Self::call_input`] return ranges of this frame's memory.
     #[inline]
     pub(crate) const fn lend_memory(&mut self) {
         self.lends_memory = true;
@@ -697,6 +720,12 @@ impl<T: EvmTypesHost> fmt::Debug for InterpreterState<'_, '_, T> {
 }
 
 impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
+    /// Returns the active message's input bytes.
+    #[inline]
+    pub const fn input(&self) -> &[u8] {
+        self.0.input()
+    }
+
     /// Converts a host failure into an instruction stop in this frame.
     #[inline]
     pub fn fail(&mut self, error: impl Into<HostError>) -> InstrStop {
