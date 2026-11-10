@@ -315,7 +315,8 @@ impl TracingInspector {
     /// Consumes the Inspector and returns a [GethTraceBuilder].
     #[inline]
     pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
-        GethTraceBuilder::new(self.traces.arena).with_features(self.features)
+        let CallTraceArena { arena, nested } = self.traces;
+        GethTraceBuilder::new(arena).with_features(self.features).with_nested_root(nested)
     }
 
     /// Returns the  [GethTraceBuilder] for the recorded traces without consuming the type.
@@ -325,7 +326,9 @@ impl TracingInspector {
     /// starting a new transaction: [`Self::fuse`]
     #[inline]
     pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
-        GethTraceBuilder::new_borrowed(self.traces.nodes()).with_features(self.features)
+        GethTraceBuilder::new_borrowed(self.traces.nodes())
+            .with_features(self.features)
+            .with_nested_root(self.traces.nested)
     }
 
     /// Returns the last trace [CallTrace] index from the stack.

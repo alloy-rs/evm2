@@ -27,6 +27,8 @@ pub struct ParityTraceBuilder {
     /// Marks the calls to precompiles left out of the traces, and everything they called; their
     /// parents no longer list them as children.
     excluded: Vec<bool>,
+    /// Whether the root is the synthetic root of a batch.
+    nested: bool,
 }
 
 impl ParityTraceBuilder {
@@ -52,7 +54,7 @@ impl ParityTraceBuilder {
             );
         }
         if !excluded.contains(&true) {
-            return Self { nodes, excluded };
+            return Self { nodes, excluded, nested };
         }
 
         for node in &mut nodes {
@@ -70,7 +72,7 @@ impl ParityTraceBuilder {
             node.children.retain(|&child| !excluded[child]);
         }
 
-        Self { nodes, excluded }
+        Self { nodes, excluded, nested }
     }
 
     /// Returns a list of all addresses that appeared as callers.
@@ -317,8 +319,8 @@ impl ParityTraceBuilder {
 
     /// Creates a VM trace by walking over `CallTraceNode`s
     ///
-    /// Bytecode is included if it was recorded by the inspector. A subcall hangs on the instruction
-    /// that made it, and a batch root runs none, so its trace stays empty.
+    /// Bytecode is included if it was recorded by the inspector. A batch root runs no opcodes, so
+    /// it lists one instruction without an opcode per top-level call, holding that call's trace.
     pub fn vm_trace(&self) -> VmTrace {
         self.nodes.first().map(|node| self.make_vm_trace(node)).unwrap_or_default()
     }
@@ -389,6 +391,18 @@ impl ParityTraceBuilder {
                         };
 
                         instructions.push(self.make_instruction(step, delta, maybe_sub_call));
+                    }
+                    if self.nested && current.parent.is_none() {
+                        instructions.extend(children.into_iter().flatten().map(|sub| {
+                            VmInstruction {
+                                pc: 0,
+                                cost: 0,
+                                ex: None,
+                                sub: Some(sub),
+                                op: None,
+                                idx: None,
+                            }
+                        }));
                     }
 
                     match current.parent {

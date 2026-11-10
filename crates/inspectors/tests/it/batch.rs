@@ -75,10 +75,10 @@ fn batch_calls_share_a_synthetic_root() {
     let calls: Vec<_> =
         frame.calls.iter().map(|call| (call.typ.as_str(), call.to, call.calls.len())).collect();
     assert_eq!(calls, [("CALL", Some(OUTER), 1), ("CREATE", Some(CALLER.create(0)), 0)]);
-    // Both calls' opcodes run one level under the root.
+    // The opcodes keep the depth the EVM runs them at.
     let logs = tracer.geth_builder().geth_traces(0, Bytes::new(), Default::default()).struct_logs;
-    let depths = (logs.first().map(|log| log.depth), logs.iter().map(|log| log.depth).max());
-    assert_eq!(depths, (Some(2), Some(3)));
+    let depths: Vec<_> = logs.iter().map(|log| log.depth).collect();
+    assert_eq!(depths, [1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1]);
     let addresses: Vec<_> = tracer
         .clone()
         .into_parity_builder()
@@ -127,14 +127,16 @@ fn parity_traces_keep_a_batch_of_precompile_calls() {
 }
 
 #[test]
-fn vm_trace_of_a_batch_is_empty() {
-    let call = TxKind::Call(OUTER);
+fn vm_trace_of_a_batch_lists_every_call() {
     let mut tracer = TracingInspector::new(TracingInspectorConfig::parity_vm_trace());
-    run_batch(&mut tracer, &[call]);
-    assert!(!tracer.clone().into_parity_builder().vm_trace().ops.is_empty());
-    tracer.fuse();
-    run_batch(&mut tracer, &[call; 2]);
-    assert!(tracer.into_parity_builder().vm_trace().ops.is_empty());
+    run_batch(&mut tracer, &[OUTER, INNER].map(TxKind::Call));
+    let trace = tracer.into_parity_builder().vm_trace();
+    let calls: Vec<_> = trace
+        .ops
+        .iter()
+        .map(|entry| (entry.op.clone(), entry.sub.as_ref().map(|sub| sub.ops.len())))
+        .collect();
+    assert_eq!(calls, [(None, Some(9)), (None, Some(1))]);
 }
 
 #[test]
