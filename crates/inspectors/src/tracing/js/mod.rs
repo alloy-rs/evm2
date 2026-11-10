@@ -669,6 +669,11 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             pending.snapshot.record(PreStep {
                 pc: pending.instruction.pc,
                 op: pending.instruction.op,
+                immediate: interp
+                    .original_bytecode_slice()
+                    .get(interp.pc() + 1)
+                    .copied()
+                    .unwrap_or_default(),
                 gas_remaining: pending.instruction.gas,
                 stack: interp.stack().as_slice(),
                 memory: interp.memory().as_slice(),
