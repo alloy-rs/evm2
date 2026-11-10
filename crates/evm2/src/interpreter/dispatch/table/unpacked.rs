@@ -88,3 +88,30 @@ extern_table! {
         Cursor::new(pc, stack.len)
     }
 }
+
+extern_table! {
+    /// Runs the instructions `A`, `B`, `D` and `E`, of which the first `N` are real, like their
+    /// own handlers would, and returns to the dispatch loop once.
+    pub(in crate::interpreter::dispatch) fn dispatch_fused<
+        T: EvmTypesHost,
+        C: EvmConfig<T>,
+        const N: usize,
+        const A: u8,
+        const B: u8,
+        const D: u8,
+        const E: u8,
+    >(
+        pc: Pc,
+        mut stack: Stack<'_>,
+        state: &mut InterpreterState<'_, '_, T>,
+    ) -> InstrFnRet {
+        if state.gas_mut().remaining() < const { super::fused_entry_gas::<T, C>([A, B, D, E], N) } {
+            // One of the instructions runs out of gas. Their own handlers find which one.
+            core::hint::cold_path();
+            return dispatch::<T, C, super::NoInspector, A>(pc, stack, state);
+        }
+        let (pc, ()) =
+            super::dispatch_fused_inner::<T, C, (), N, A, B, D, E>(pc, stack.as_mut(), (), state);
+        Cursor::new(pc, stack.len)
+    }
+}

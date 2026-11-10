@@ -2,13 +2,17 @@
 
 use crate::{
     constants::{EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
-    interpreter::op,
+    interpreter::{fusion, op},
     once_lock::OnceLock,
 };
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::pad_legacy;
-use core::{cmp::Ordering, fmt, hash};
+use core::{
+    cmp::Ordering,
+    fmt, hash,
+    sync::atomic::{self, AtomicUsize},
+};
 use thiserror::Error;
 
 mod analysis;
@@ -64,6 +68,11 @@ struct BytecodeInner {
     original_len: usize,
     /// Lazily initialized jump table for legacy bytecode.
     jump_table: OnceLock<JumpTable>,
+    /// Lazily initialized copy of `bytecode` with superinstructions, for legacy bytecode.
+    fused: OnceLock<Box<[u8]>>,
+    /// Bytes of code that the runs without the fused copy have paid for, which get the copy made
+    /// once they cover the code. See [`fusion::BYTES_PER_RUN`].
+    heat: AtomicUsize,
     /// Cached hash of the original bytecode.
     hash: OnceLock<B256>,
 }
@@ -145,6 +154,8 @@ impl Bytecode {
             bytecode: Bytes::from_static(&[op::STOP]),
             original_len: 0,
             jump_table: OnceLock::new(),
+            fused: OnceLock::new(),
+            heat: AtomicUsize::new(0),
             hash: {
                 let hash = OnceLock::new();
                 let _ = hash.set(KECCAK256_EMPTY);
@@ -178,6 +189,8 @@ impl Bytecode {
             original_len,
             bytecode,
             jump_table: OnceLock::new(),
+            fused: OnceLock::new(),
+            heat: AtomicUsize::new(0),
             hash: OnceLock::new(),
         })))
     }
@@ -256,6 +269,8 @@ impl Bytecode {
             original_len: bytes.len(),
             bytecode: bytes,
             jump_table: OnceLock::new(),
+            fused: OnceLock::new(),
+            heat: AtomicUsize::new(0),
             hash: OnceLock::new(),
         })))
     }
@@ -300,6 +315,8 @@ impl Bytecode {
                 let _ = cached.set(jump_table);
                 cached
             },
+            fused: OnceLock::new(),
+            heat: AtomicUsize::new(0),
             hash: OnceLock::new(),
         })))
     }
@@ -347,6 +364,64 @@ impl Bytecode {
                 JumpTable::default()
             }
         })
+    }
+
+    /// Returns the copy of [`Self::bytes_slice`] that the interpreter runs superinstructions on,
+    /// if the code has one. See [`fusion`].
+    ///
+    /// It has the length of the padded bytecode, and differs from it only in the first opcode of
+    /// each superinstruction. It is created once the runs of the code have paid for it, which
+    /// this call, one run, counts towards. Bytecode that is not legacy never has one.
+    #[inline]
+    pub(crate) fn fused_slice(&self) -> Option<&[u8]> {
+        match self.inner().fused.get() {
+            Some(fused) => Some(fused),
+            None => self.count_run(),
+        }
+    }
+
+    /// Counts one run of code that has no fused copy, and creates the copy if the runs have paid
+    /// for it.
+    #[inline(never)]
+    fn count_run(&self) -> Option<&[u8]> {
+        let inner = self.inner();
+        if inner.kind != BytecodeKind::Legacy {
+            return None;
+        }
+        // A lost update between threads only delays the copy.
+        let heat = inner.heat.load(atomic::Ordering::Relaxed).saturating_add(fusion::BYTES_PER_RUN);
+        if heat < inner.original_len {
+            inner.heat.store(heat, atomic::Ordering::Relaxed);
+            return None;
+        }
+        Some(self.fuse())
+    }
+
+    /// Counts the gas that a run without the fused copy used towards creating the copy.
+    #[inline]
+    pub(crate) fn count_gas(&self, gas: u64) {
+        let inner = self.inner();
+        if inner.fused.get().is_none() {
+            let paid = usize::try_from(gas / fusion::GAS_PER_BYTE).unwrap_or(usize::MAX);
+            let heat = inner.heat.load(atomic::Ordering::Relaxed).saturating_add(paid);
+            inner.heat.store(heat, atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Returns the fused copy of legacy bytecode, creating it now.
+    fn fuse(&self) -> &[u8] {
+        let inner = self.inner();
+        debug_assert!(inner.kind == BytecodeKind::Legacy);
+        inner.fused.get_or_init(|| fusion::fuse(&inner.bytecode, inner.original_len))
+    }
+
+    /// Creates the fused copy now, so that the interpreter runs the code with superinstructions
+    /// from its first run.
+    #[cfg(test)]
+    pub(crate) fn fuse_now(&self) {
+        if self.is_legacy() {
+            self.fuse();
+        }
     }
 
     /// Calculates or returns cached hash of the bytecode.
@@ -414,7 +489,11 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use crate::interpreter::op;
+    use crate::{
+        BaseEvmConfigSelector, ExecutionConfig, SpecId,
+        interpreter::{InstrStop, Interpreter, Message, op},
+        test_utils::{TestHost, TestTypes, test_message},
+    };
     use alloc::format;
     use alloy_primitives::{Address, Bytes};
     use std::hash::{BuildHasher, RandomState};
@@ -663,5 +742,80 @@ mod tests {
         let _ = empty.hash_slow();
         let _ = empty.jump_table();
         assert_eq!(format!("{empty:?}"), format!("Bytecode({shared:?})"));
+    }
+
+    #[test]
+    fn fused_copy_waits_for_enough_runs() {
+        const N: usize = fusion::BYTES_PER_RUN;
+        // One run for each `BYTES_PER_RUN` bytes of code, rounded up.
+        for (len, runs) in [(1, 1), (N, 1), (N + 1, 2), (3 * N, 3), (3 * N + 1, 4)] {
+            let bytecode = Bytecode::new_legacy(Bytes::from(vec![op::JUMPDEST; len]));
+            for _ in 1..runs {
+                assert!(bytecode.fused_slice().is_none());
+            }
+            let fused = bytecode.fused_slice().unwrap();
+            assert_eq!(fused.len(), bytecode.bytes_slice().len());
+            assert!(bytecode.fused_slice().is_some());
+        }
+        assert!(Bytecode::new().fused_slice().is_some());
+        assert!(Bytecode::new_eip7702(Address::ZERO).fused_slice().is_none());
+    }
+
+    #[test]
+    fn fused_copy_waits_for_enough_gas() {
+        const N: usize = fusion::BYTES_PER_RUN;
+        let gas = (3 * N) as u64 * fusion::GAS_PER_BYTE;
+        for (gas, runs) in [(gas, 2), (gas - 1, 3), (0, 5)] {
+            let bytecode = Bytecode::new_legacy(Bytes::from(vec![op::JUMPDEST; 5 * N]));
+            assert!(bytecode.fused_slice().is_none());
+            bytecode.count_gas(gas);
+            for _ in 2..runs {
+                assert!(bytecode.fused_slice().is_none());
+            }
+            assert!(bytecode.fused_slice().is_some());
+        }
+    }
+
+    #[test]
+    fn interpreter_fuses_code_that_paid_for_it() {
+        fn run(bytecode: &Bytecode) {
+            let message = Message::<TestTypes> {
+                code: bytecode.clone(),
+                gas_limit: 100_000,
+                ..test_message()
+            };
+            let mut interpreter = Interpreter::<TestTypes>::new(&message);
+            let mut host = TestHost {
+                execution_config: ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(
+                    SpecId::OSAKA,
+                ),
+                ..TestHost::default()
+            };
+            assert_eq!(interpreter.run(&mut host), Ok(InstrStop::Stop));
+        }
+
+        // Counts down from the pushed value, 26 gas a round, in code that three runs pay for.
+        let code = |rounds: u16| {
+            let [high, low] = rounds.to_be_bytes();
+            let mut code = vec![op::PUSH2, high, low, op::JUMPDEST, op::PUSH1, 1, op::SWAP1];
+            code.extend([op::SUB, op::DUP1, op::PUSH1, 3, op::JUMPI, op::STOP]);
+            code.resize(3 * fusion::BYTES_PER_RUN, op::JUMPDEST);
+            Bytecode::new_legacy(Bytes::from(code))
+        };
+
+        let cold = code(1);
+        run(&cold);
+        run(&cold);
+        assert!(cold.inner().fused.get().is_none());
+        run(&cold);
+        assert!(cold.inner().fused.get().is_some());
+        run(&cold);
+
+        // The first run uses the gas that pays for as much code as a run does.
+        let hot = code(2_600);
+        run(&hot);
+        assert!(hot.inner().fused.get().is_none());
+        run(&hot);
+        assert!(hot.inner().fused.get().is_some());
     }
 }

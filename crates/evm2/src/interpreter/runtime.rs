@@ -41,6 +41,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) return_data: Bytes,
 
     pub(in crate::interpreter) pc: *const u8,
+    /// Start of the fused code while the dispatch runs on it, when `pc` points into it instead of
+    /// the bytecode. Null otherwise.
+    fused_base: *const u8,
     output: Range<u32>,
     #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
@@ -99,6 +102,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let bytecode = <&Bytecode>::default();
         Self {
             pc: bytecode.original_byte_slice().as_ptr(),
+            fused_base: core::ptr::null(),
             bytecode,
             bytecode_ref: None,
             stack_len: 0,
@@ -143,8 +147,45 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Points the interpreter at `bytecode` and resets the program counter and the cached view.
     pub(crate) fn set_bytecode(&mut self, bytecode: &'frame Bytecode) {
         self.pc = bytecode.bytes_slice().as_ptr();
+        self.fused_base = core::ptr::null();
         self.bytecode_ref = None;
         self.bytecode = bytecode;
+    }
+
+    /// Moves the program counter and the bytecode view to the fused code, which the dispatch is
+    /// about to run on with the table for superinstructions. Returns `false`, changing nothing, if
+    /// the bytecode has no fused code.
+    #[inline]
+    fn enter_fused(&mut self) -> bool {
+        debug_assert!(self.fused_base.is_null());
+        let Some(fused) = self.bytecode.fused_slice() else {
+            return false;
+        };
+        let fused = fused.as_ptr();
+        let pc = self.pc();
+        // SAFETY: The fused code has the length of the bytecode, which `pc` is in bounds of.
+        self.pc = unsafe { fused.add(pc) };
+        self.fused_base = fused;
+        if let Some(bytecode) = self.bytecode_ref {
+            // SAFETY: A slice pointer is not null.
+            let base = unsafe { NonNull::new_unchecked(fused.cast_mut()) };
+            self.bytecode_ref = Some(bytecode.with_base(base));
+        }
+        true
+    }
+
+    /// Moves the program counter and the bytecode view back to the bytecode.
+    #[inline]
+    fn leave_fused(&mut self) {
+        debug_assert!(!self.fused_base.is_null());
+        let code = self.bytecode.bytes_slice();
+        let pc = self.pc();
+        self.fused_base = core::ptr::null();
+        // SAFETY: `pc` is in bounds of the fused code, which has the length of the bytecode.
+        self.pc = unsafe { code.as_ptr().add(pc) };
+        if let Some(bytecode) = self.bytecode_ref {
+            self.bytecode_ref = Some(bytecode.with_base(NonNull::from(code).cast()));
+        }
     }
 
     pub(crate) fn clear_frame_refs(&mut self) {
@@ -182,8 +223,13 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Returns the current bytecode-relative program counter.
     #[inline]
     pub fn pc(&self) -> usize {
-        // SAFETY: `pc` is always in bounds of `bytecode`.
-        unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
+        let base = if self.fused_base.is_null() {
+            self.bytecode.original_byte_slice().as_ptr()
+        } else {
+            self.fused_base
+        };
+        // SAFETY: `pc` is always in bounds of the code it points into.
+        unsafe { self.pc.offset_from(base) as usize }
     }
 
     /// Sets the current bytecode-relative program counter.
@@ -195,14 +241,19 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     pub fn set_pc(&mut self, pc: usize) {
         let bytecode = self.bytecode.bytes_slice();
         assert!(pc < bytecode.len());
-        self.pc = unsafe { bytecode.as_ptr().add(pc) };
+        let base = if self.fused_base.is_null() { bytecode.as_ptr() } else { self.fused_base };
+        self.pc = unsafe { base.add(pc) };
     }
 
     /// Returns the current opcode.
     #[inline]
-    pub const fn opcode(&self) -> u8 {
-        // SAFETY: `pc` is always in bounds of `bytecode`.
-        unsafe { *self.pc }
+    pub fn opcode(&self) -> u8 {
+        if self.fused_base.is_null() {
+            // SAFETY: `pc` is always in bounds of `bytecode`.
+            return unsafe { *self.pc };
+        }
+        // The fused code holds a superinstruction's id in place of its first opcode.
+        self.bytecode.bytes_slice()[self.pc()]
     }
 
     /// Returns the active bytecode.
@@ -575,7 +626,23 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
                     // SAFETY: `prepare_run` initialized the host, and the config is only read
                     // here.
                     let config = unsafe { self.execution_config_detached() };
-                    dispatch::run(self, config.instructions)
+                    match config.fused_instructions {
+                        Some(instructions) if self.enter_fused() => {
+                            let stop = dispatch::run(self, instructions);
+                            self.leave_fused();
+                            stop
+                        }
+                        Some(_) => {
+                            let stop = dispatch::run(self, config.instructions);
+                            if matches!(stop, InstrStop::Stop | InstrStop::Return) {
+                                // The run counts towards fusing the code for the later ones.
+                                let gas = self.gas.limit().saturating_sub(self.gas.remaining());
+                                self.bytecode.count_gas(gas);
+                            }
+                            stop
+                        }
+                        None => dispatch::run(self, config.instructions),
+                    }
                 }
             }
         };
@@ -750,6 +817,12 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     pub(crate) const fn reload_requested(&self) -> bool {
         self.0.reload
+    }
+
+    /// Returns the opcode of the bytecode at `pc`, which may point into the fused code.
+    #[inline]
+    pub(crate) fn original_opcode(&self, pc: Pc) -> u8 {
+        self.0.bytecode.bytes_slice()[self.bytecode().pc_offset(pc)]
     }
 
     #[inline]

@@ -1,6 +1,6 @@
 use crate::{
     BaseEvmConfigSelector, BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig,
-    SpecId, TxResult, TxResultExt,
+    NoopInspector, SpecId, TxResult, TxResultExt,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, BlockEnvExt, TxEnv, TxEnvExt},
@@ -358,16 +358,33 @@ pub(crate) fn test_host(block: BlockEnv<TestTypes>) -> TestHost {
 }
 
 pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
+    let execution_config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(config.spec_id);
+    run_with(config, execution_config, false)
+}
+
+/// Runs the code with `execution_config`, under a no-op inspector if `inspect` is set.
+pub(crate) fn run_with(
+    config: RunConfig<'_>,
+    execution_config: ExecutionConfig<TestTypes>,
+    inspect: bool,
+) -> TestInterpreter {
     let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data } = config;
     let message = Message::<TestTypes> { code: legacy_bytecode(code), gas_limit, ..message };
+    // Superinstructions from the first run, whatever the size of the code.
+    message.code.fuse_now();
     let mut inner = Interpreter::<TestTypes>::new(&message);
     *inner.return_data_mut() = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
     host.tx_env = tx_env;
     host.spec_id = spec_id;
-    host.execution_config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id);
-    let (err, execution_error) = match inner.run(host) {
+    host.execution_config = execution_config;
+    let result = if inspect {
+        inner.run_inspect(host, &mut NoopInspector::default())
+    } else {
+        inner.run(host)
+    };
+    let (err, execution_error) = match result {
         Ok(stop) => (stop, None),
         Err(error) => (InstrStop::FatalExternalError, Some(error)),
     };

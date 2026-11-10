@@ -87,6 +87,20 @@ impl super::DispatchGas for RemainingGas {
             self.set(state.gas_mut().remaining());
         }
     }
+
+    #[inline(always)]
+    fn has<T: EvmTypesHost>(&self, _state: &mut InterpreterState<'_, '_, T>, gas: u64) -> bool {
+        self.get() >= gas
+    }
+
+    #[inline(always)]
+    fn spend_unchecked<T: EvmTypesHost>(
+        &mut self,
+        _state: &mut InterpreterState<'_, '_, T>,
+        gas: u64,
+    ) {
+        self.set(self.get().wrapping_sub(gas));
+    }
 }
 
 extern_table! {
@@ -110,6 +124,44 @@ extern_table! {
                 remaining_gas,
                 state,
                 OP,
+            );
+        if next_pc.as_ptr().is_null() {
+            return (PackedPc(stack.len), remaining_gas);
+        }
+        (packed.update(pc, next_pc, stack_len, stack.len), remaining_gas)
+    }
+}
+
+extern_table! {
+    /// Runs the instructions `A`, `B`, `D` and `E`, of which the first `N` are real, like their
+    /// own handlers would, and returns to the dispatch loop once.
+    pub(in crate::interpreter::dispatch) fn dispatch_fused<
+        T: EvmTypesHost,
+        C: EvmConfig<T>,
+        const N: usize,
+        const A: u8,
+        const B: u8,
+        const D: u8,
+        const E: u8,
+    >(
+        packed: PackedPc,
+        stack: &mut StackBacking,
+        remaining_gas: RemainingGas,
+        state: &mut InterpreterState<'_, '_, T>,
+    ) -> InstrFnRet {
+        if remaining_gas.get() < const { super::fused_entry_gas::<T, C>([A, B, D, E], N) } {
+            // One of the instructions runs out of gas. Their own handlers find which one.
+            core::hint::cold_path();
+            return dispatch::<T, C, super::NoInspector, A>(packed, stack, remaining_gas, state);
+        }
+        let (pc, stack_len) = (packed.pc(), packed.stack_len());
+        let mut stack = Stack::new(stack, stack_len);
+        let (next_pc, remaining_gas) =
+            super::dispatch_fused_inner::<T, C, RemainingGas, N, A, B, D, E>(
+                pc,
+                stack.as_mut(),
+                remaining_gas,
+                state,
             );
         if next_pc.as_ptr().is_null() {
             return (PackedPc(stack.len), remaining_gas);
