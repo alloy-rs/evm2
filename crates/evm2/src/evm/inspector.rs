@@ -107,7 +107,7 @@ impl Default for InspectorConfig {
 /// EVM execution inspector.
 ///
 /// In `call`, `call_end`, `create`, and `create_end`, `interp` is the caller's interpreter
-/// (or a temporary interpreter for a top-level message). Its
+/// (or a temporary interpreter when no bytecode frame sent the message). Its
 /// [memory](Interpreter::memory) contains the caller's memory during the hook. When that memory
 /// was carried by [`Message::previous_frame_memory`], the field is temporarily `None`.
 /// Read the input with [`Message::input_bytes`](crate::interpreter::MessageExt::input_bytes),
@@ -154,8 +154,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Called before a call message executes.
     ///
-    /// The interpreter is the currently running frame whose instruction produced the message; for
-    /// the top-level message it is a frame initialized with the message itself.
+    /// The interpreter is the currently running frame whose instruction produced the message; if
+    /// no bytecode frame sent it, the interpreter is initialized with the message itself.
     /// The caller's memory and message input are available as described on [`Inspector`].
     ///
     /// A first frame that runs out of gas in the transaction's runtime gas phase halts without
@@ -188,8 +188,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Called before a create message executes.
     ///
-    /// The interpreter is the currently running frame whose instruction produced the message; for
-    /// the top-level message it is a frame initialized with the message itself.
+    /// The interpreter is the currently running frame whose instruction produced the message; if
+    /// no bytecode frame sent it, the interpreter is initialized with the message itself.
     /// The caller's memory and message input are available as described on [`Inspector`].
     ///
     /// A first frame that runs out of gas in the transaction's runtime gas phase halts without

@@ -174,6 +174,21 @@ impl<E> MessageExt<E> {
             MessageInput::Range(range) => memory.slice(range.start, range.len()),
         }
     }
+
+    /// Returns the input if its bytes are available in this message.
+    ///
+    /// A range input is unavailable while the caller's memory has been moved into its
+    /// interpreter for an inspector hook. Use [`Self::input_bytes`] with that interpreter's
+    /// memory in the hook.
+    #[inline]
+    pub fn input_bytes_in_message(&self) -> Option<&[u8]> {
+        match &self.input {
+            MessageInput::Owned(bytes) => Some(bytes),
+            MessageInput::Range(_) => {
+                self.previous_frame_memory.as_ref().map(|memory| self.input_bytes(memory))
+            }
+        }
+    }
 }
 
 /// Derives the contract address a create message deploys to, i.e. its
@@ -369,6 +384,23 @@ mod tests {
         assert_eq!(message.input_bytes(&memory), [2, 3]);
         memory.set(1, &[7]);
         assert_eq!(message.input_bytes(&memory), [7, 3]);
+    }
+
+    #[test]
+    fn range_input_is_unavailable_while_memory_is_taken() {
+        let mut memory = Memory::new();
+        memory.resize(0, 2).unwrap();
+        memory.set(0, &[1, 2]);
+        let mut message = MessageExt::<()> {
+            input: MessageInput::Range(0..2),
+            previous_frame_memory: Some(memory),
+            ..Default::default()
+        };
+
+        assert_eq!(message.input_bytes_in_message(), Some(&[1, 2][..]));
+        let memory = message.previous_frame_memory.take().unwrap();
+        assert_eq!(message.input_bytes_in_message(), None);
+        assert_eq!(message.input_bytes(&memory), [1, 2]);
     }
 
     #[test]

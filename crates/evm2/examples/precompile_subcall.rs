@@ -77,7 +77,10 @@ fn staticcall_precompile(
         destination: SUBCALL_TARGET,
         call_target: SUBCALL_TARGET,
         caller: message.destination,
-        input: Bytes::copy_from_slice(evm.message_input(message)).into(),
+        input: Bytes::copy_from_slice(
+            message.input_bytes_in_message().expect("precompile input memory is missing"),
+        )
+        .into(),
         value: U256::ZERO,
         code: loaded.code,
         code_address: SUBCALL_TARGET,

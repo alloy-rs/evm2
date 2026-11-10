@@ -310,14 +310,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub fn input(&self) -> &'frame [u8] {
         let message = self.message();
-        if let Some(input) = message.input.as_owned() {
-            return input;
-        }
-        let memory = message
-            .previous_frame_memory
-            .as_ref()
-            .expect("range input requires previous frame memory");
-        message.input_bytes(memory)
+        message.input_bytes_in_message().expect("range input requires previous frame memory")
     }
 
     /// Lets [`Self::call_input`] return ranges of this frame's memory.

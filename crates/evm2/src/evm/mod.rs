@@ -1756,20 +1756,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ) -> Result<MessageResult<T>, ExecutionError> {
         let mut gas =
             GasTracker::new_with_execution_gas_and_reservoir(message.gas_limit, message.reservoir);
-        let memory_moved_to_caller = if let Some(mut caller) = self.current_frame {
-            // SAFETY: The caller is suspended while the precompile runs. A nested inspector hook
-            // can inspect or modify its memory while the precompile holds this message.
-            unsafe { caller.as_mut() }.move_memory_from_message(message)
-        } else {
-            false
-        };
+        // A custom precompile may execute another message. That message supplies its own caller
+        // memory; it must not inherit the interpreter that called this precompile.
+        let caller_frame = self.current_frame.take();
         let execution = self.execute_precompile(message, &mut gas);
-        if let Some(mut caller) = self.current_frame
-            && memory_moved_to_caller
-        {
-            // SAFETY: The same caller remains suspended until this precompile returns.
-            unsafe { caller.as_mut() }.move_memory_to_message(message);
-        }
+        self.current_frame = caller_frame;
         let (stop, output) = match execution {
             Ok(_) | Err(PrecompileError::Revert(_)) if gas.remaining() > message.gas_limit => {
                 (InstrStop::PrecompileOOG, Bytes::new())
@@ -1859,12 +1850,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
-        if message.input.as_range().is_some() {
-            assert!(
-                message.previous_frame_memory.is_some(),
-                "range input requires previous frame memory"
-            );
-        }
+        assert!(
+            message.input_bytes_in_message().is_some(),
+            "range input requires previous frame memory"
+        );
         interp_ref.lend_memory();
         let inspector = guard.evm.active_inspector().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
@@ -1919,25 +1908,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return self.execute_message_inspected(message, Some(result));
         }
         Ok(result)
-    }
-}
-
-impl<T: EvmTypesHost> Evm<'_, T> {
-    /// Returns a message's input, resolving a range against its caller's memory.
-    ///
-    /// The returned slice borrows the EVM, so a precompile must release it before sending a
-    /// nested message whose hooks may change the caller's memory.
-    #[inline]
-    pub fn message_input<'m>(&'m self, message: &'m Message<T>) -> &'m [u8] {
-        if let Some(input) = message.input.as_owned() {
-            return input;
-        }
-        let memory = message.previous_frame_memory.as_ref().unwrap_or_else(|| {
-            let caller = self.current_frame.expect("a call input must come from a running frame");
-            // SAFETY: The caller is suspended while its child message runs.
-            unsafe { caller.as_ref() }.memory()
-        });
-        message.input_bytes(memory)
     }
 }
 
@@ -2476,7 +2446,8 @@ mod tests {
             test_precompile(TEST_PRECOMPILE, |evm, message, _| {
                 let mut child = precompile_message(INNER_TEST_PRECOMPILE);
                 child.depth = message.depth + 1;
-                child.input = Bytes::copy_from_slice(evm.message_input(message)).into();
+                child.input =
+                    Bytes::copy_from_slice(message.input_bytes_in_message().unwrap()).into();
                 Host::execute_message(evm, &mut child)?;
                 evm.log(Log { address: TEST_PRECOMPILE, data: LogData::default() });
                 Ok(PrecompileOutput::new(Bytes::new()))
@@ -5306,16 +5277,17 @@ mod tests {
     }
 
     #[test]
-    fn hook_resizing_caller_memory_keeps_precompile_input_readable() {
-        struct OverwriteCallerMemory;
+    fn nested_precompile_hook_does_not_change_outer_input() {
+        struct ResizeNestedMemory;
 
-        impl Inspector<BaseEvmTypes> for OverwriteCallerMemory {
+        impl Inspector<BaseEvmTypes> for ResizeNestedMemory {
             fn call(
                 &mut self,
                 interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.destination == INNER_TEST_PRECOMPILE {
+                    assert!(interp.memory().as_slice().is_empty());
                     let memory = interp.memory_mut();
                     memory.resize(0, 1 << 20).unwrap();
                     memory.set(0, &[0xbb; 32]);
@@ -5326,11 +5298,11 @@ mod tests {
 
         let precompiles = precompiles_with([
             test_precompile(TEST_PRECOMPILE, |evm, message, _| {
-                let input = Bytes::copy_from_slice(evm.message_input(message));
+                let input = Bytes::copy_from_slice(message.input_bytes_in_message().unwrap());
                 let mut child = precompile_message(INNER_TEST_PRECOMPILE);
                 child.depth = message.depth + 1;
                 Host::execute_message(evm, &mut child)?;
-                assert_eq!(evm.message_input(message), [0xbb; 32]);
+                assert_eq!(message.input_bytes_in_message().unwrap(), [0xaa; 32]);
                 Ok(PrecompileOutput::new(input))
             }),
             test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
@@ -5344,7 +5316,7 @@ mod tests {
             InMemoryDB::default(),
             precompiles,
         );
-        evm.set_inspector(OverwriteCallerMemory);
+        evm.set_inspector(ResizeNestedMemory);
         let code = memory_input_call_code(TEST_PRECOMPILE, op::CALL);
         let mut message =
             MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
