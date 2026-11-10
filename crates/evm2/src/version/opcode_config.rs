@@ -187,10 +187,11 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
     /// scanning the code as the jump destination analysis does, where only `PUSH1..=PUSH32`,
     /// `DUPN`, `SWAPN` and `EXCHANGE` are followed by immediate bytes.
     ///
-    /// They are on by default for a config that only changes opcodes of its base spec. A config
-    /// that adds opcodes turns them on here, which is correct only if none of its instructions
-    /// reads immediate bytes from the code. They stay off for a config that defines an opcode in
-    /// `0xa5..=0xdf`, which the interpreter uses for the superinstructions.
+    /// They are on by default for a config with the instructions of its base spec, whatever
+    /// their static gas. A config that adds or overrides instructions turns them on here, which
+    /// is correct only if none of its instructions reads immediate bytes from the code. They
+    /// stay off for a config that defines an opcode in `0xa5..=0xdf`, which the interpreter uses
+    /// for the superinstructions.
     #[inline]
     pub const fn set_superinstructions(&mut self, enabled: bool) {
         self.superinstructions = Some(enabled);

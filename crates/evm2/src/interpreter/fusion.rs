@@ -239,8 +239,9 @@ const fn is_fusable_opcode(opcode: u8) -> bool {
 ///
 /// It may not when the config defines an opcode in the reserved range, or when
 /// [`OpcodeConfig::set_superinstructions`] turned them off. A config that adds opcodes to `base`,
-/// the base config of its spec, has to turn them on itself: [`fuse`] assumes that only
-/// `PUSH1..=PUSH32`, `DUPN`, `SWAPN` and `EXCHANGE` are followed by immediate bytes.
+/// the base config of its spec, or overrides instructions of it has to turn them on itself:
+/// [`fuse`] assumes that only `PUSH1..=PUSH32`, `DUPN`, `SWAPN` and `EXCHANGE` are followed by
+/// immediate bytes, which an instruction of its own may not keep to.
 pub(crate) const fn enabled<T: EvmTypesHost>(
     config: &OpcodeConfig<T>,
     base: &OpcodeConfig<T>,
@@ -248,14 +249,14 @@ pub(crate) const fn enabled<T: EvmTypesHost>(
     if config.origin_spec() as u8 != base.origin_spec() as u8 {
         return false;
     }
-    let mut adds_opcodes = false;
+    let mut own_instructions = false;
     let mut opcode = 0;
     loop {
         if config.is_defined(opcode) {
             if opcode >= RESERVED_FIRST && opcode <= RESERVED_LAST {
                 return false;
             }
-            adds_opcodes |= !base.is_defined(opcode);
+            own_instructions |= !base.is_defined(opcode) || config.is_overridden(base, opcode);
         }
         if opcode == u8::MAX {
             break;
@@ -264,7 +265,7 @@ pub(crate) const fn enabled<T: EvmTypesHost>(
     }
     match config.superinstructions() {
         Some(enabled) => enabled,
-        None => !adds_opcodes,
+        None => !own_instructions,
     }
 }
 
@@ -495,7 +496,8 @@ pub(crate) fn fuse(code: &[u8], original_len: usize) -> Box<[u8]> {
     let mut pc = 0;
     // The byte after `DUPN`, `SWAPN` or `EXCHANGE` is their immediate on the forks that define
     // them. It is never a `PUSH` or a `JUMPDEST` when valid, so it cannot start a run, and it
-    // stays as it is for the instruction to read.
+    // stays as it is for the instruction to read. An immediate that is one of these three bytes
+    // has no immediate of its own: the byte after it is the next opcode.
     let mut immediate = false;
     while let Some(&opcode) = code.get(pc) {
         let class = if immediate { 0 } else { M.classes[opcode as usize] };
@@ -513,7 +515,7 @@ pub(crate) fn fuse(code: &[u8], original_len: usize) -> Box<[u8]> {
         } else if !immediate && (RESERVED_FIRST..=RESERVED_LAST).contains(&opcode) {
             fused[pc] = ESCAPE;
         }
-        immediate = matches!(opcode, DUPN | SWAPN | EXCHANGE);
+        immediate = !immediate && matches!(opcode, DUPN | SWAPN | EXCHANGE);
         count += 1;
         pc += scan_len(opcode);
     }
@@ -593,6 +595,34 @@ mod tests {
     }
 
     #[test]
+    fn immediate_has_no_immediate() {
+        for opcode in [DUPN, SWAPN, EXCHANGE] {
+            for immediate in [DUPN, SWAPN, EXCHANGE] {
+                // The immediate spells an opcode with an immediate, and the byte after it is a
+                // reserved opcode that runs next.
+                let code = [opcode, immediate, RESERVED_LAST, POP, POP];
+                let fused = fuse(&pad(&code), code.len());
+                assert_eq!(fused[..4], [opcode, immediate, ESCAPE, id(&[POP, POP])]);
+            }
+        }
+    }
+
+    #[test]
+    fn reserved_opcode_after_immediate_is_undefined() {
+        // `EXCHANGE` with the immediate `0xe6` swaps two items, and `0xb0` after it is undefined.
+        let mut code = [PUSH0; 12].to_vec();
+        code.extend([EXCHANGE, DUPN, 0xb0, STOP]);
+        let execution_config =
+            ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::AMSTERDAM);
+        for inspect in [false, true] {
+            let config = RunConfig::new(code.clone()).spec(SpecId::AMSTERDAM);
+            let interp = run_with(config, execution_config.clone(), inspect);
+            assert_eq!(interp.err, InstrStop::OpcodeNotFound);
+            assert_eq!(interp.stack().len(), 12);
+        }
+    }
+
+    #[test]
     fn does_not_match_into_padding() {
         let code = [PUSH2, 0x00];
         let padded = pad(&code);
@@ -654,6 +684,30 @@ mod tests {
         0x0c,
     ];
 
+    /// Immediates of `DUPN`, `SWAPN` and `EXCHANGE`: valid and invalid ones, the three opcodes
+    /// themselves, reserved bytes and starts of patterns.
+    const IMMEDIATES: &[u8] = &[
+        0x00,
+        0x01,
+        0x10,
+        0x5a,
+        JUMPDEST,
+        PUSH1,
+        PUSH2,
+        0x80,
+        0x81,
+        0x8f,
+        POP,
+        SWAP1,
+        RESERVED_FIRST,
+        0xb0,
+        RESERVED_LAST,
+        DUPN,
+        SWAPN,
+        EXCHANGE,
+        0xff,
+    ];
+
     /// Appends `opcode` with random immediate bytes. A two-byte immediate often is a destination.
     fn emit(code: &mut Vec<u8>, pushes: &mut Vec<usize>, opcode: u8, rng: &mut StdRng) {
         code.push(opcode);
@@ -675,7 +729,7 @@ mod tests {
         let mut code = Vec::new();
         let mut pushes = Vec::new();
         // Operands for the first instructions, so that most programs run past them.
-        for _ in 0..rng.random_range(0..8) {
+        for _ in 0..rng.random_range(0..24) {
             emit(&mut code, &mut pushes, PUSH1, rng);
         }
         for _ in 0..rng.random_range(1..40) {
@@ -683,6 +737,14 @@ mod tests {
                 let pattern = &PATTERNS[rng.random_range(0..PATTERNS.len())];
                 for &opcode in &pattern.ops[..pattern.len()] {
                     emit(&mut code, &mut pushes, opcode, rng);
+                }
+            } else if rng.random_ratio(1, 8) {
+                // An instruction with an immediate, which may itself spell one, a reserved
+                // opcode or the start of a pattern.
+                code.push([DUPN, SWAPN, EXCHANGE][rng.random_range(0..3)]);
+                code.push(IMMEDIATES[rng.random_range(0..IMMEDIATES.len())]);
+                if rng.random_ratio(1, 2) {
+                    code.push(rng.random_range(RESERVED_FIRST..=RESERVED_LAST));
                 }
             } else {
                 emit(&mut code, &mut pushes, FILLER[rng.random_range(0..FILLER.len())], rng);
@@ -777,7 +839,7 @@ mod tests {
                     }
                 }
             }
-            immediate = matches!(opcode, DUPN | SWAPN | EXCHANGE);
+            immediate = !immediate && matches!(opcode, DUPN | SWAPN | EXCHANGE);
             pc += scan_len(opcode);
         }
         fused
@@ -853,6 +915,10 @@ mod tests {
     test_config!(OverriddenAdd, |config| {
         config.set_instruction::<add_one_more<TestTypes>>(ADD, 3)
     });
+    test_config!(OverriddenAddOptIn, |config| {
+        config.set_instruction::<add_one_more<TestTypes>>(ADD, 3);
+        config.set_superinstructions(true)
+    });
     test_config!(RepricedAdd, |config| config.set_static_gas(ADD, 11));
 
     fn fuses<C: EvmConfig<TestTypes>>() -> bool {
@@ -877,13 +943,14 @@ mod tests {
         assert!(!fuses::<AddedOpcode>());
         assert!(fuses::<AddedOpcodeOptIn>());
         assert!(!fuses::<OptOut>());
-        assert!(fuses::<OverriddenAdd>());
+        assert!(!fuses::<OverriddenAdd>());
+        assert!(fuses::<OverriddenAddOptIn>());
         assert!(fuses::<RepricedAdd>());
     }
 
     #[test]
     fn overridden_instruction_is_not_fused() {
-        let (base, config) = (&osaka(), OverriddenAdd::OPCODE_CONFIG);
+        let (base, config) = (&osaka(), OverriddenAddOptIn::OPCODE_CONFIG);
         for pattern in &PATTERNS {
             let has_add = pattern.ops[..pattern.len()].contains(&ADD);
             assert_eq!(fusable(config, base, pattern), !has_add, "{pattern:?}");
@@ -893,7 +960,7 @@ mod tests {
         let code = [PUSH1, 2, PUSH1, 3, ADD, PUSH1, 4, DUP2, ADD, STOP];
         let fused = fuse(&pad(&code), code.len());
         assert_eq!((fused[2], fused[7]), (id(&[PUSH1, ADD]), id(&[DUP2, ADD])));
-        let execution_config = ExecutionConfig::<TestTypes>::for_config::<OverriddenAdd>();
+        let execution_config = ExecutionConfig::<TestTypes>::for_config::<OverriddenAddOptIn>();
         for inspect in [false, true] {
             let interp = run_with(RunConfig::new(code), execution_config.clone(), inspect);
             assert_eq!(interp.stack(), [Word::from(6), Word::from(11)]);
@@ -925,7 +992,7 @@ mod tests {
     fn superinstructions_match_plain_handlers_of_custom_configs() {
         assert_matches_plain_handlers(0xc0f1, 1_500, |round| {
             let config = match round % 3 {
-                0 => ExecutionConfig::for_config::<OverriddenAdd>(),
+                0 => ExecutionConfig::for_config::<OverriddenAddOptIn>(),
                 1 => ExecutionConfig::for_config::<RepricedAdd>(),
                 _ => ExecutionConfig::for_config::<AddedOpcodeOptIn>(),
             };
