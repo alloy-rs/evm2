@@ -2,9 +2,12 @@
 
 use crate::{
     opcode::immediate_size,
-    tracing::types::{
-        CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
-        TraceMemberOrder,
+    tracing::{
+        types::{
+            CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
+            TraceMemberOrder,
+        },
+        utils::step_cost,
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -13,6 +16,7 @@ use alloy_rpc_types_trace::{geth::FlatCallConfig, parity::StorageDelta};
 use core::{mem, ops::Range};
 use evm2::{
     EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId,
+    evm::PrewarmSet,
     interpreter::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
@@ -53,7 +57,7 @@ pub use opcount::OpcodeCountInspector;
 pub mod types;
 use types::{CallLog, CallTrace, CallTraceStep};
 
-mod utils;
+pub(crate) mod utils;
 
 #[cfg(feature = "std")]
 mod writer;
@@ -110,6 +114,11 @@ pub struct TracingInspector {
     ///
     /// All `Vec<CallTraceStep>` are always empty but may have capacity.
     reusable_step_vecs: Vec<Vec<CallTraceStep>>,
+    /// The precompiles the host warms, read on the first call that records precompile calls.
+    ///
+    /// Addresses a provider only dispatches to on demand, such as Tempo's token precompiles,
+    /// trace like contracts, as with revm-inspectors' warm precompile set.
+    precompiles: Option<PrewarmSet>,
 }
 
 impl TracingInspector {
@@ -148,6 +157,7 @@ impl TracingInspector {
             recorded_steps,
             spec_id,
             features,
+            precompiles,
             // kept
             config,
             budget,
@@ -172,6 +182,7 @@ impl TracingInspector {
         *recorded_steps = 0;
         spec_id.take();
         *features = EvmFeatures::empty();
+        precompiles.take();
         budget.recorded = 0;
         budget.exceeded = false;
     }
@@ -415,8 +426,8 @@ impl TracingInspector {
             trace.address = address;
         }
 
-        // Only a top-level call of a batch ends with an empty stack while not being the root.
-        if trace_idx != 0 && self.trace_stack.is_empty() {
+        // Under a synthetic root every call that empties the stack is one of the batch's own.
+        if self.traces.nested && self.trace_stack.is_empty() {
             self.traces.settle_batch_call(trace_idx);
         }
     }
@@ -613,19 +624,18 @@ impl TracingInspector {
         }
 
         // A call or create step is charged once its message starts, which includes the gas
-        // forwarded by a call and excludes it for a create. An out-of-gas step consumes the whole
-        // remainder it started with, except the reentrancy sentry, which halts before any charge.
-        // Any other step is charged when it ends. State gas that spills into the remaining gas is
-        // not part of the cost.
+        // forwarded by a call and excludes it for a create. Any other step is charged when it
+        // ends. State gas that spills into the remaining gas is not part of the cost.
         let result = interp.result();
-        step.gas_cost = if result == Err(InstrStop::ReentrancySentryOOG) {
-            0
-        } else if let Some(after) = gas_after_charge {
-            gas_before.saturating_sub(after)
-        } else if result.is_err_and(InstrStop::is_out_of_gas) {
-            step.gas_remaining
-        } else {
-            gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill())
+        step.gas_cost = match gas_after_charge {
+            Some(after) if result != Err(InstrStop::ReentrancySentryOOG) => {
+                gas_before.saturating_sub(after)
+            }
+            _ => step_cost(
+                result,
+                step.gas_remaining,
+                gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill()),
+            ),
         };
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
@@ -716,6 +726,11 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         if self.config.record_logs {
             let log_count = self.log_count;
             self.log_count += 1;
+            // Embedders can emit logs outside any call, before the first or after the last. They
+            // still take a log index but have no trace to attach to.
+            if self.trace_stack.is_empty() {
+                return;
+            }
             let trace = self.last_trace();
             trace.ordering.push(TraceMemberOrder::Log(trace.logs.len()));
             trace.logs.push(
@@ -746,13 +761,20 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         };
 
         // Builders decide whether to leave out calls to precompiles, so record which calls are.
-        let maybe_precompile =
-            self.config.record_precompile_calls.then(|| interp.host().precompiles().contains(&to));
+        let maybe_precompile = self.config.record_precompile_calls.then(|| {
+            self.precompiles
+                .get_or_insert_with(|| {
+                    let mut precompiles = PrewarmSet::new();
+                    interp.host().precompiles().warm_addresses(&mut precompiles);
+                    precompiles
+                })
+                .is_warm(&to)
+        });
 
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
         {
-            message.input.clone()
+            message.input.to_bytes()
         } else {
             Bytes::new()
         };
@@ -795,7 +817,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
         {
-            message.input.clone()
+            message.input.to_bytes()
         } else {
             Bytes::new()
         };
@@ -829,6 +851,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         value: &U256,
         _host: &mut T::Host<'_>,
     ) {
+        if self.trace_stack.is_empty() {
+            return;
+        }
         let node = self.last_trace();
         node.trace.selfdestruct_address = Some(*contract);
         node.trace.selfdestruct_refund_target = Some(*target);
@@ -955,5 +980,40 @@ struct PendingStep {
 impl PendingStep {
     const fn new(trace_idx: usize, step_idx: usize, gas_before: u64) -> Self {
         Self { trace_idx, step_idx, gas_before, gas_after_charge: None }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use evm2::{BaseEvmTypes, Evm, Precompiles, ethereum::ethereum_tx_registry, evm::InMemoryDB};
+
+    #[test]
+    fn log_and_selfdestruct_without_active_frame() {
+        let mut inspector = TracingInspector::new(TracingInspectorConfig::none().record_logs());
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            Default::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let traces = inspector.traces.clone();
+
+        Inspector::<BaseEvmTypes>::log(&mut inspector, &Log::default(), &mut host);
+
+        assert_eq!(inspector.log_count, 1);
+        assert!(inspector.traces.nodes().iter().all(|node| node.logs.is_empty()));
+        assert_eq!(inspector.traces, traces);
+
+        Inspector::<BaseEvmTypes>::selfdestruct(
+            &mut inspector,
+            &Address::ZERO,
+            &Address::ZERO,
+            &U256::ZERO,
+            &mut host,
+        );
+
+        assert_eq!(inspector.traces, traces);
     }
 }

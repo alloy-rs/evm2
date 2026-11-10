@@ -27,6 +27,8 @@ mod test_native_bigint;
 #[cfg(feature = "std")]
 mod transfer;
 #[cfg(feature = "std")]
+mod unlisted_precompiles;
+#[cfg(feature = "std")]
 mod writer;
 
 mod compat;

@@ -32,12 +32,6 @@ impl OpcodeSet {
         self.0.set_bit(opcode as usize, true);
     }
 
-    /// Removes `opcode` from the set.
-    #[inline]
-    pub const fn remove(&mut self, opcode: u8) {
-        self.0.set_bit(opcode as usize, false);
-    }
-
     /// Returns the opcodes in `self` or `other`.
     #[inline]
     pub fn union(self, other: Self) -> Self {
@@ -58,8 +52,8 @@ impl FromIterator<u8> for OpcodeSet {
 /// What an [`Inspector`] observes of execution.
 ///
 /// Returned by [`Inspector::inspector_config`]. The EVM reads it when a frame starts and after each
-/// child message returns into the frame, and runs the frame so that it only pays for what the
-/// config observes. The default observes everything.
+/// `hooked` instruction of the frame, such as a CALL or CREATE, and runs the frame so that it only
+/// pays for what the config observes. The default observes everything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InspectorConfig {
     steps: OpcodeSet,
@@ -121,9 +115,10 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Returns what this inspector observes, as an [`InspectorConfig`].
     ///
-    /// Read when a frame starts and when a child message of the frame returns, so a child message
-    /// may change the answer. A change that a hook makes itself, such as in [`Self::step`], takes
-    /// effect when the next child message of the frame returns. The default observes everything.
+    /// Read when a frame starts and after each `hooked` instruction of the frame returns, such as a
+    /// CALL or CREATE, so a child message may change the answer. A change that a hook makes
+    /// itself, such as in [`Self::step`], takes effect after the next `hooked` instruction of the
+    /// frame. The default observes everything.
     #[inline]
     fn inspector_config(&self) -> InspectorConfig {
         InspectorConfig::new()
@@ -453,7 +448,7 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmConfig, BaseEvmTypes, DatabaseError, Evm, EvmConfig, EvmTypesHost, ExecutionConfig,
-        OpcodeConfig, Precompiles, SpecId, Version,
+        OpcodeConfig, Precompiles, SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
@@ -468,7 +463,7 @@ mod tests {
             TestHost, TestTypes, call_code, create_code, legacy_bytecode, push, push_all,
             return_top_word,
         },
-        utils::address_to_word,
+        utils::{WordExt, address_to_word},
     };
     use alloc::{boxed::Box, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -1109,28 +1104,93 @@ mod tests {
         };
     }
 
-    /// A call that is not `hooked`, so a config reload would resume from a stale pc.
-    #[instruction(no_stack_preamble, dynamic_gas, EvmTypes = BaseEvmTypes)]
-    fn unflagged_call(cx: _) -> Result {
+    /// A hooked call that pushes a word after `call_with`.
+    #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
+    fn call_then_push(cx: _) -> Result {
         instr::call_with(
-            stack,
+            stack.reborrow(),
             cx.gas,
             cx.state,
             MessageKind::Call,
             |_, _, _| Ok(()),
             |_, _, _, _| Ok(()),
-        )
+        )?;
+        stack.push_u64(0x77)?;
+        Ok(())
     }
 
-    /// The base config with the call without the flag installed at [`CUSTOM_CALL`].
-    struct UnflaggedCallConfig;
+    /// The base config with the call that pushes a word installed at [`CUSTOM_CALL`].
+    struct CallThenPushConfig;
 
-    impl EvmConfig<BaseEvmTypes> for UnflaggedCallConfig {
+    impl EvmConfig<BaseEvmTypes> for CallThenPushConfig {
         const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
         const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
             let mut config =
                 OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
-            config.set_instruction::<unflagged_call>(CUSTOM_CALL, 100);
+            config.set_instruction::<call_then_push>(CUSTOM_CALL, 100);
+            config
+        };
+    }
+
+    /// A hooked call that runs its child message through the host instead of `call_with`.
+    #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
+    fn host_call(cx: _) -> Result {
+        let [_, to, _, _, _, _, _] = stack.popn::<7>()?;
+        let to = to.to_address();
+        let current = cx.state.message();
+        let mut message = MessageExt {
+            kind: MessageKind::Call,
+            depth: current.depth + 1,
+            gas_limit: 10_000,
+            destination: to,
+            call_target: to,
+            caller: current.destination,
+            code_address: to,
+            ..Default::default()
+        };
+        let result =
+            cx.state.host().execute_message(&mut message).map_err(|error| cx.state.fail(error))?;
+        stack.push_u64(result.stop.is_success() as u64)
+    }
+
+    /// The base config with the call through the host installed at [`CUSTOM_CALL`].
+    struct HostCallConfig;
+
+    impl EvmConfig<BaseEvmTypes> for HostCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<host_call>(CUSTOM_CALL, 100);
+            config
+        };
+    }
+
+    /// A call whose `before` hook overwrites the caller's memory.
+    #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
+    fn overwriting_call(cx: _) -> Result {
+        instr::call_with(
+            stack,
+            cx.gas,
+            cx.state,
+            MessageKind::Call,
+            |_, state, _| {
+                state.memory().set(0, &[0xbb; 32]);
+                Ok(())
+            },
+            |_, _, _, _| Ok(()),
+        )
+    }
+
+    /// The base config with [`overwriting_call`] installed at [`CUSTOM_CALL`].
+    struct OverwritingCallConfig;
+
+    impl EvmConfig<BaseEvmTypes> for OverwritingCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<overwriting_call>(CUSTOM_CALL, 100);
             config
         };
     }
@@ -1161,16 +1221,14 @@ mod tests {
         (result, *evm.clear_inspector_as::<ConfigInspector>().unwrap())
     }
 
-    #[test]
-    fn custom_call_opcode_rereads_the_steps() {
-        let (expected, full) = run_custom_call::<CustomCallConfig>(
-            ConfigInspector::new(OpcodeSet::ALL),
-            CUSTOM_CALL,
-            &[],
-        );
+    /// Asserts that the frame steps the set that the child message of [`CUSTOM_CALL`] switches to,
+    /// from the opcode after it.
+    fn assert_custom_call_rereads_the_steps<C: EvmConfig<BaseEvmTypes>>() {
+        let (expected, full) =
+            run_custom_call::<C>(ConfigInspector::new(OpcodeSet::ALL), CUSTOM_CALL, &[]);
 
         // The child message of the custom opcode switches the steps to `GAS`, and no steps before.
-        let (result, inspector) = run_custom_call::<CustomCallConfig>(
+        let (result, inspector) = run_custom_call::<C>(
             ConfigInspector::new(OpcodeSet::EMPTY).switching_to(opcode_set([op::GAS])),
             CUSTOM_CALL,
             &[],
@@ -1181,13 +1239,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "an instruction that runs a message must be `hooked`")]
-    fn message_instruction_that_is_not_hooked_is_rejected() {
-        run_custom_call::<UnflaggedCallConfig>(
-            ConfigInspector::new(OpcodeSet::EMPTY),
-            CUSTOM_CALL,
-            &[],
-        );
+    fn custom_call_opcode_rereads_the_steps() {
+        assert_custom_call_rereads_the_steps::<CustomCallConfig>();
+    }
+
+    #[test]
+    fn hooked_opcode_that_runs_a_message_through_the_host_rereads_the_steps() {
+        assert_custom_call_rereads_the_steps::<HostCallConfig>();
     }
 
     #[test]
@@ -1232,38 +1290,37 @@ mod tests {
         assert_eq!(inspector.logs.len(), 1);
     }
 
-    #[test]
-    fn answered_call_can_change_the_parent_steps() {
+    /// Runs a `CALL` followed by `GAS`, `POP` and `STOP` through inspectors that switch their steps
+    /// when the child message starts, with the call answered by `answer` in the hook if given.
+    /// Asserts that the caller steps the new set from the opcode after the `CALL`, and returns the
+    /// result and the inspector of the run that steps every opcode.
+    fn assert_steps_follow_the_child(
+        answer: Option<MessageResult<BaseEvmTypes>>,
+    ) -> (MessageResult<BaseEvmTypes>, ConfigInspector) {
         let mut code = call_code(Address::repeat_byte(0x66));
         code.extend([op::CALL, op::GAS, op::POP, op::STOP]);
-        let answer = MessageResultExt {
-            stop: InstrStop::Return,
-            output: Bytes::from_static(&[0xaa]),
-            ..Default::default()
-        };
         let run = |inspector: ConfigInspector| {
-            run_evm_with_inspector(
-                code.clone(),
-                &MessageExt::default(),
-                100_000,
-                inspector.answering_calls(answer.clone()),
-            )
+            let inspector = match &answer {
+                Some(answer) => inspector.answering_calls(answer.clone()),
+                None => inspector,
+            };
+            run_evm_with_inspector(code.clone(), &MessageExt::default(), 100_000, inspector)
         };
         let (expected, full, _) = run(ConfigInspector::new(OpcodeSet::ALL));
-        // The hook answers the call, so every step belongs to the caller.
-        assert_eq!(full.calls, 2);
         let call = full.steps.iter().position(|record| record.0 == op::CALL).unwrap();
         let end = full.steps.len();
 
         for (before, after, range, kept) in [
+            // Starts stepping after the CALL.
             (OpcodeSet::EMPTY, OpcodeSet::ALL, call + 1..end, OpcodeSet::ALL),
+            // Stops stepping after the CALL.
+            (OpcodeSet::ALL, OpcodeSet::EMPTY, 0..call + 1, OpcodeSet::ALL),
             (
                 OpcodeSet::EMPTY,
                 opcode_set([op::GAS, op::STOP]),
                 call + 1..end,
                 opcode_set([op::GAS, op::STOP]),
             ),
-            (OpcodeSet::ALL, OpcodeSet::EMPTY, 0..call + 1, OpcodeSet::ALL),
             (
                 opcode_set([op::CALL]),
                 opcode_set([op::POP]),
@@ -1280,52 +1337,52 @@ mod tests {
             assert_eq!(inspector.steps, keep(&full.steps), "{before:?} {after:?}");
             assert_eq!(inspector.step_ends, keep(&full.step_ends), "{before:?} {after:?}");
         }
+        // The first step after the CALL sees its success flag on the stack.
+        let (_, inspector, _) =
+            run(ConfigInspector::new(OpcodeSet::EMPTY).switching_to(OpcodeSet::ALL));
+        assert_eq!(inspector.steps[0], (op::GAS, full.steps[call + 1].1, vec![Word::ONE]));
+        (expected, *full)
     }
 
     #[test]
     fn child_message_can_change_the_parent_steps() {
         let mut code = call_code(Address::repeat_byte(0x66));
         code.extend([op::CALL, op::GAS, op::POP, op::STOP]);
-        let run = |inspector| {
-            run_evm_with_inspector(code.clone(), &MessageExt::default(), 100_000, inspector)
-        };
-        let (expected, _) = run_evm_uninspected(InMemoryDB::default(), code.clone(), 100_000);
-        let (result, full, _) = run(ConfigInspector::new(OpcodeSet::ALL));
-        assert_eq!(result, expected);
-        let call = full.steps.iter().position(|record| record.0 == op::CALL).unwrap();
+        let (uninspected, _) = run_evm_uninspected(InMemoryDB::default(), code, 100_000);
+        let (result, _) = assert_steps_follow_the_child(None);
+        assert_eq!(result, uninspected);
+    }
 
-        let all = 0..full.steps.len();
-        for (before, after, range, kept) in [
-            // Starts stepping after the CALL.
-            (OpcodeSet::EMPTY, OpcodeSet::ALL, call + 1..all.end, OpcodeSet::ALL),
-            // Stops stepping after the CALL.
-            (OpcodeSet::ALL, OpcodeSet::EMPTY, 0..call + 1, OpcodeSet::ALL),
-            (
-                OpcodeSet::EMPTY,
-                opcode_set([op::GAS, op::STOP]),
-                call + 1..all.end,
-                opcode_set([op::GAS, op::STOP]),
-            ),
-            (
-                opcode_set([op::CALL]),
-                opcode_set([op::POP]),
-                call..all.end,
-                opcode_set([op::CALL, op::POP]),
-            ),
-        ] {
-            let (result, inspector, _) = run(ConfigInspector::new(before).switching_to(after));
-            assert_eq!(result, expected, "{before:?} {after:?}");
-            let keep = |records: &[(u8, u64, Vec<Word>)]| {
-                let records = records[range.clone()].iter();
-                records.filter(|record| kept.contains(record.0)).cloned().collect::<Vec<_>>()
-            };
-            assert_eq!(inspector.steps, keep(&full.steps));
-            assert_eq!(inspector.step_ends, keep(&full.step_ends));
-        }
-        // The first step after the CALL sees its success flag on the stack.
-        let (_, inspector, _) =
-            run(ConfigInspector::new(OpcodeSet::EMPTY).switching_to(OpcodeSet::ALL));
-        assert_eq!(inspector.steps[0], (op::GAS, full.steps[call + 1].1, vec![Word::ONE]));
+    #[test]
+    fn answered_call_can_change_the_parent_steps() {
+        let answer = MessageResultExt {
+            stop: InstrStop::Return,
+            output: Bytes::from_static(&[0xaa]),
+            ..Default::default()
+        };
+        let (_, full) = assert_steps_follow_the_child(Some(answer));
+        // The hook answers the call, so every step belongs to the caller.
+        assert_eq!(full.calls, 2);
+    }
+
+    #[test]
+    fn code_after_call_with_runs_when_the_steps_change() {
+        let (expected, full) = run_custom_call::<CallThenPushConfig>(
+            ConfigInspector::new(OpcodeSet::ALL),
+            CUSTOM_CALL,
+            &[],
+        );
+        let gas = full.steps.iter().find(|record| record.0 == op::GAS).unwrap();
+        // The instruction pushes a word after `call_with`, below the one that `GAS` pushes.
+        assert_eq!(gas.2, [Word::ONE, Word::from(0x77)]);
+
+        let (result, inspector) = run_custom_call::<CallThenPushConfig>(
+            ConfigInspector::new(OpcodeSet::EMPTY).switching_to(opcode_set([op::GAS])),
+            CUSTOM_CALL,
+            &[],
+        );
+        assert_eq!(result, expected);
+        assert_eq!(inspector.steps, core::slice::from_ref(gas));
     }
 
     #[test]
@@ -1596,16 +1653,14 @@ mod tests {
         code.extend([op::CALL, op::STOP]);
 
         for initial_call_depth in [0, 7] {
-            let mut version = Version::new(SpecId::OSAKA);
-            version.initial_call_depth = initial_call_depth;
-            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-                ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            let mut evm = Evm::<BaseEvmTypes>::new(
                 SpecId::OSAKA,
                 BlockEnvExt::default(),
                 TxRegistry::new(),
                 InMemoryDB::default(),
                 Precompiles::base(SpecId::OSAKA),
             );
+            evm.set_initial_call_depth(initial_call_depth);
             evm.set_inspector(HookInspector::default());
             let depth = initial_call_depth + CALL_DEPTH_LIMIT;
             let mut message = MessageExt {
@@ -1786,6 +1841,101 @@ mod tests {
         assert_matches!(result.stop, InstrStop::Return);
         // `call_end` upgraded the override from a revert to a 2-byte return.
         assert_eq!(Word::from_be_slice(&result.output), Word::from(2));
+    }
+
+    /// An account that returns its call data in [`echo_db`].
+    const ECHO: Address = Address::repeat_byte(0x22);
+
+    /// Returns a database with an account at [`ECHO`] that returns its call data.
+    fn echo_db() -> InMemoryDB {
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &ECHO,
+            AccountInfo::default().with_code(legacy_bytecode(vec![
+                op::CALLDATASIZE,
+                op::PUSH0,
+                op::PUSH0,
+                op::CALLDATACOPY,
+                op::CALLDATASIZE,
+                op::PUSH0,
+                op::RETURN,
+            ])),
+        );
+        db
+    }
+
+    /// Calls `target` through `call_op` with memory 0..32 as input and returns its 32-byte output.
+    fn memory_input_call_code(target: Address, call_op: u8) -> Vec<u8> {
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
+        code.push(op::MSTORE);
+        push_all(
+            &mut code,
+            [
+                Word::from(32),
+                Word::from(32),
+                Word::from(32),
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(&target),
+                Word::from(50_000),
+            ],
+        );
+        code.extend([call_op, op::POP]);
+        push_all(&mut code, [Word::from(32), Word::from(32)]);
+        code.push(op::RETURN);
+        code
+    }
+
+    #[test]
+    fn call_hook_overwriting_caller_memory_keeps_child_input() {
+        struct OverwriteCallerMemory;
+
+        impl Inspector<BaseEvmTypes> for OverwriteCallerMemory {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    interp.memory_mut().set(0, &[0xbb; 32]);
+                }
+                None
+            }
+        }
+
+        for target in [ECHO, Address::with_last_byte(4)] {
+            let (result, _, _) = run_evm_with_inspector_db(
+                echo_db(),
+                memory_input_call_code(target, op::CALL),
+                &MessageExt::default(),
+                100_000,
+                OverwriteCallerMemory,
+            );
+
+            assert_matches!(result.stop, InstrStop::Return);
+            assert_eq!(result.output[..], [0xaa; 32], "{target}");
+        }
+    }
+
+    #[test]
+    fn call_with_hook_overwriting_caller_memory_keeps_child_input() {
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_config::<OverwritingCallConfig>(),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            echo_db(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let code = memory_input_call_code(ECHO, CUSTOM_CALL);
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
+
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
+
+        assert_matches!(result.stop, InstrStop::Return);
+        assert_eq!(result.output[..], [0xaa; 32]);
     }
 
     #[test]

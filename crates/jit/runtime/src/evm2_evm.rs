@@ -617,7 +617,7 @@ mod tests {
             gas_limit: 0xcd79195900 - 21_368,
             destination: outer,
             caller,
-            input: Bytes::from(input),
+            input: Bytes::from(input).into(),
             value: Word::from(10),
             code: Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code)),
             code_address: outer,
@@ -709,7 +709,7 @@ mod tests {
                     call_target: parent,
                     code_address: parent,
                     caller,
-                    input: bytes!("01020304"),
+                    input: bytes!("01020304").into(),
                     code: Bytecode::new_legacy(code.into()),
                     ..Default::default()
                 };
@@ -887,16 +887,14 @@ mod tests {
                         database
                             .insert_account_info(&creator, AccountInfo::default().with_nonce(1));
                         database.insert_account_info(&callee, AccountInfo::default().with_nonce(1));
-                        let mut version = Version::new(spec);
-                        version.initial_call_depth = initial_call_depth;
-                        let mut host = Evm::<BaseEvmTypes>::new_with_execution_config(
-                            ExecutionConfig::for_spec_and_version(spec, version),
+                        let mut host = Evm::<BaseEvmTypes>::new(
                             spec,
                             BlockEnvExt::default(),
                             ethereum_tx_registry(spec),
                             database,
                             Precompiles::base(spec),
                         );
+                        host.set_initial_call_depth(initial_call_depth);
                         if with_jit {
                             host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
                         }
@@ -1005,7 +1003,7 @@ mod custom_host_tests {
             destination: Address::repeat_byte(0x11),
             caller: Address::repeat_byte(0x22),
             value: U256::from(0x33),
-            input: Bytes::from_static(&[0x44; 32]),
+            input: Bytes::from_static(&[0x44; 32]).into(),
             code: Bytecode::new_legacy(Bytes::from_static(&[
                 op::ADDRESS,
                 op::PUSH0,

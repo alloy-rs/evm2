@@ -47,7 +47,8 @@ use evm2::{
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountInfo as EvmAccountInfo, Bal, CONSOLIDATION_REQUEST_ADDRESS, DbStats, DbStatsCounts,
+        AccountInfo as EvmAccountInfo, BUILDER_DEPOSIT_REQUEST_ADDRESS,
+        BUILDER_EXIT_REQUEST_ADDRESS, Bal, CONSOLIDATION_REQUEST_ADDRESS, DbStats, DbStatsCounts,
         InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
     },
 };
@@ -673,6 +674,34 @@ fn execute_block<'a>(
                     return Ok(BlockResolution::Discard);
                 }
                 return Err(TestError::case(path, name, err));
+            }
+        }
+
+        // A request system contract without code makes the block invalid (execution-specs
+        // `SYSTEM_CONTRACT_EMPTY`); the executor runs the call as a no-op.
+        if spec.enables(SpecId::PRAGUE) {
+            let request_contracts: &[Address] = if spec.enables(SpecId::AMSTERDAM) {
+                &[
+                    WITHDRAWAL_REQUEST_ADDRESS,
+                    CONSOLIDATION_REQUEST_ADDRESS,
+                    BUILDER_DEPOSIT_REQUEST_ADDRESS,
+                    BUILDER_EXIT_REQUEST_ADDRESS,
+                ]
+            } else {
+                &[WITHDRAWAL_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS]
+            };
+            for address in request_contracts {
+                let info = executor.evm.read_account_info(address).map_err(|err| {
+                    TestError::case(path, name, TestErrorKind::UnexpectedFailure(err.to_string()))
+                })?;
+                if info.is_none_or(|info| info.is_empty_code_hash()) {
+                    return reject_block(
+                        should_fail,
+                        path,
+                        name,
+                        format!("system contract {address} has no code"),
+                    );
+                }
             }
         }
 

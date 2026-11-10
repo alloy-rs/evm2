@@ -149,8 +149,9 @@ impl<'a> GethTraceBuilder<'a> {
         // call depth rather than step count, and a trace without subcalls needs no allocation.
         let mut steps = main_trace_node.steps_with_children();
         let mut parents = Vec::new();
-        // A batch root runs no opcodes itself, so its calls follow one another instead.
-        if main_trace_node.trace.steps.is_empty() {
+        // A batch root runs no opcodes itself, so its calls follow one another instead. An empty
+        // placeholder root, which has no status, keeps no struct logs, as in revm-inspectors.
+        if main_trace_node.trace.steps.is_empty() && main_trace_node.trace.status.is_some() {
             let children = main_trace_node.children.iter().rev();
             parents.extend(children.map(|&child| self.nodes[child].steps_with_children()));
         }
