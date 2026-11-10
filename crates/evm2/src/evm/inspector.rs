@@ -105,6 +105,13 @@ impl Default for InspectorConfig {
 }
 
 /// EVM execution inspector.
+///
+/// In `call`, `call_end`, `create`, and `create_end`, `interp` is the caller's interpreter
+/// (or a temporary interpreter for a top-level message). Its
+/// [memory](Interpreter::memory) contains the caller's memory during the hook. When that memory
+/// was carried by [`Message::previous_frame_memory`], the field is temporarily `None`.
+/// Read the input with [`Message::input_bytes`](crate::interpreter::MessageExt::input_bytes),
+/// passing `interp.memory()`; a range input refers to this caller memory.
 #[auto_impl(&mut, Box)]
 pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called after a frame interpreter has been initialized.
@@ -149,6 +156,7 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
     /// the top-level message it is a frame initialized with the message itself.
+    /// The caller's memory and message input are available as described on [`Inspector`].
     ///
     /// A first frame that runs out of gas in the transaction's runtime gas phase halts without
     /// executing: this hook still fires for it, with a message that carries no bytecode, a
@@ -164,7 +172,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
         None
     }
 
-    /// Called after a call message executes.
+    /// Called after a call message executes. The caller's memory and message input are available
+    /// as described on [`Inspector`].
     #[inline]
     fn call_end(
         &mut self,
@@ -181,6 +190,7 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
     /// the top-level message it is a frame initialized with the message itself.
+    /// The caller's memory and message input are available as described on [`Inspector`].
     ///
     /// A first frame that runs out of gas in the transaction's runtime gas phase halts without
     /// executing: this hook still fires for it, with a message that carries no bytecode, a
@@ -196,7 +206,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
         None
     }
 
-    /// Called after a create message executes.
+    /// Called after a create message executes. The caller's memory and message input are available
+    /// as described on [`Inspector`].
     #[inline]
     fn create_end(
         &mut self,
