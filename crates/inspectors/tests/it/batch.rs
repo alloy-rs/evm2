@@ -6,29 +6,33 @@ use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{CallConfig, FlatCallConfig};
 use evm2::{
-    BaseEvmTypes, Evm, ExecutionConfig, Precompiles, Version,
+    BaseEvmTypes, Evm, ExecutionConfig, Inspector, Precompiles, Version,
     ethereum::{ethereum_tx_registry, execute_initial_frame, prepare_initial_frame},
     evm::InMemoryDB,
-    interpreter::GasTracker,
+    interpreter::{GasTracker, InstrStop},
 };
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig, types::CallKind};
 
 const CALLER: Address = Address::repeat_byte(0xaa);
+/// Calls `INNER`, then stops.
 const OUTER: Address = Address::with_last_byte(0x42);
+/// Stops.
 const INNER: Address = Address::with_last_byte(0x43);
+/// Destroys itself.
+const DESTRUCTOR: Address = Address::with_last_byte(0x45);
 
-/// Runs each of `calls` as a top-level call of one transaction under `tracer`.
-fn run_batch(tracer: &mut TracingInspector, calls: &[(TxKind, Bytes)]) {
+/// Runs each of `calls` as a top-level call of one transaction under `inspector`. A creation
+/// deploys a contract that stops.
+fn run_batch(inspector: &mut impl Inspector<BaseEvmTypes>, calls: &[TxKind]) {
     let mut db = InMemoryDB::default();
-    // `OUTER` calls `INNER`, which stops.
-    db.insert_account_info(
-        &OUTER,
-        AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f5f5f5f60435af100").into())),
-    );
-    db.insert_account_info(
-        &INNER,
-        AccountInfo::default().with_code(Bytecode::new_raw(hex!("00").into())),
-    );
+    for (address, code) in [
+        (OUTER, &hex!("5f5f5f5f5f60435af100")[..]),
+        (INNER, &hex!("00")),
+        (DESTRUCTOR, &hex!("5fff")),
+    ] {
+        let code = Bytecode::new_raw(Bytes::copy_from_slice(code));
+        db.insert_account_info(&address, AccountInfo::default().with_code(code));
+    }
     let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
         ExecutionConfig::for_spec_and_version(SpecId::CANCUN, Version::new(SpecId::CANCUN)),
         SpecId::CANCUN,
@@ -37,11 +41,12 @@ fn run_batch(tracer: &mut TracingInspector, calls: &[(TxKind, Bytes)]) {
         db,
         Precompiles::base(SpecId::CANCUN),
     );
-    evm.set_inspector(tracer);
-    for (to, input) in calls {
+    evm.set_inspector(inspector);
+    for &to in calls {
+        let input = if to.is_create() { Bytes::from_static(&hex!("00")) } else { Bytes::new() };
         let mut gas = GasTracker::new(100_000);
         let frame =
-            prepare_initial_frame(&mut evm, CALLER, 0, *to, input, U256::ZERO, &mut gas).unwrap();
+            prepare_initial_frame(&mut evm, CALLER, 0, to, &input, U256::ZERO, &mut gas).unwrap();
         let result = execute_initial_frame(&mut evm, frame, &mut gas, 100_000, 0).unwrap();
         assert!(result.is_success(), "{:?}", result.stop);
     }
@@ -50,10 +55,7 @@ fn run_batch(tracer: &mut TracingInspector, calls: &[(TxKind, Bytes)]) {
 #[test]
 fn batch_calls_share_a_synthetic_root() {
     let mut tracer = TracingInspector::new(TracingInspectorConfig::default_geth());
-    run_batch(
-        &mut tracer,
-        &[(TxKind::Call(OUTER), Bytes::new()), (TxKind::Create, Bytes::from_static(&hex!("00")))],
-    );
+    run_batch(&mut tracer, &[TxKind::Call(OUTER), TxKind::Create]);
 
     let nodes = tracer.traces().nodes();
     let shape: Vec<_> =
@@ -88,7 +90,7 @@ fn batch_calls_share_a_synthetic_root() {
 
     // A single call keeps the root to itself.
     tracer.fuse();
-    run_batch(&mut tracer, &[(TxKind::Call(OUTER), Bytes::new())]);
+    run_batch(&mut tracer, &[TxKind::Call(OUTER)]);
     let nodes = tracer.traces().nodes();
     assert_eq!(nodes.len(), 2);
     assert_eq!((nodes[0].parent, nodes[0].trace.address, nodes[1].parent), (None, OUTER, Some(0)));
@@ -97,8 +99,7 @@ fn batch_calls_share_a_synthetic_root() {
 #[test]
 fn every_top_level_call_is_a_child_of_one_root() {
     let mut tracer = TracingInspector::new(TracingInspectorConfig::default_geth());
-    let call = (TxKind::Call(OUTER), Bytes::new());
-    run_batch(&mut tracer, &[call.clone(), call.clone(), call]);
+    run_batch(&mut tracer, &[TxKind::Call(OUTER); 3]);
 
     let nodes = tracer.traces().nodes();
     let calls: Vec<_> = nodes[0]
@@ -112,9 +113,9 @@ fn every_top_level_call_is_a_child_of_one_root() {
 #[test]
 fn parity_traces_keep_a_batch_of_precompile_calls() {
     // Zero-value calls to the identity precompile, which Parity-style traces hide below the root.
-    let call = (TxKind::Call(Address::with_last_byte(4)), Bytes::new());
+    let call = TxKind::Call(Address::with_last_byte(4));
     let mut tracer = TracingInspector::new(TracingInspectorConfig::default_parity());
-    run_batch(&mut tracer, &[call.clone(), call]);
+    run_batch(&mut tracer, &[call; 2]);
 
     let parity = tracer.clone().into_parity_builder();
     let flat = tracer.into_flat_call_builder(&FlatCallConfig::default());
@@ -127,11 +128,20 @@ fn parity_traces_keep_a_batch_of_precompile_calls() {
 
 #[test]
 fn vm_trace_of_a_batch_is_empty() {
-    let call = (TxKind::Call(OUTER), Bytes::new());
+    let call = TxKind::Call(OUTER);
     let mut tracer = TracingInspector::new(TracingInspectorConfig::parity_vm_trace());
-    run_batch(&mut tracer, core::slice::from_ref(&call));
+    run_batch(&mut tracer, &[call]);
     assert!(!tracer.clone().into_parity_builder().vm_trace().ops.is_empty());
     tracer.fuse();
-    run_batch(&mut tracer, &[call.clone(), call]);
+    run_batch(&mut tracer, &[call; 2]);
     assert!(tracer.into_parity_builder().vm_trace().ops.is_empty());
+}
+
+#[test]
+fn batch_root_does_not_destroy_itself() {
+    let mut tracer = TracingInspector::new(TracingInspectorConfig::default_parity());
+    run_batch(&mut tracer, &[INNER, DESTRUCTOR].map(TxKind::Call));
+    let nodes = tracer.traces().nodes();
+    assert_eq!((nodes[0].trace.status, nodes[0].is_selfdestruct()), (Some(InstrStop::Stop), false));
+    assert!(nodes[2].is_selfdestruct());
 }

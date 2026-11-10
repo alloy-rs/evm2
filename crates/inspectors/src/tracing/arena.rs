@@ -1,6 +1,7 @@
 use super::types::{CallTrace, CallTraceNode, TraceMemberOrder};
 use alloc::vec::Vec;
 use alloy_primitives::Address;
+use evm2::interpreter::InstrStop;
 
 /// An arena of recorded traces.
 ///
@@ -133,13 +134,17 @@ impl CallTraceArena {
     }
 
     /// Folds a finished top-level call into the synthetic root: the gas of every call, the
-    /// outcome of the last one.
+    /// outcome of the last one. The root destroys nothing itself, so a self-destruct counts as a
+    /// stop.
     pub(crate) fn settle_batch_call(&mut self, idx: usize) {
         let (root, calls) = self.arena.split_at_mut(1);
         let (root, call) = (&mut root[0].trace, &calls[idx - 1].trace);
         root.gas_used += call.gas_used;
         root.success = call.success;
-        root.status = call.status;
+        root.status = call.status.map(|status| match status {
+            InstrStop::SelfDestruct => InstrStop::Stop,
+            status => status,
+        });
         root.output = call.output.clone();
     }
 }
