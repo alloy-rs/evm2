@@ -460,8 +460,8 @@ mod tests {
         },
         registry::TxRegistry,
         test_utils::{
-            TestHost, TestTypes, call_code, create_code, legacy_bytecode, push, push_all,
-            return_top_word,
+            TestHost, TestTypes, call_code, create_code, legacy_bytecode, memory_input_call_code,
+            push, push_all, return_top_word,
         },
         utils::{WordExt, address_to_word},
     };
@@ -1864,31 +1864,8 @@ mod tests {
         db
     }
 
-    /// Calls `target` through `call_op` with memory 0..32 as input and returns its 32-byte output.
-    fn memory_input_call_code(target: Address, call_op: u8) -> Vec<u8> {
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::from_be_bytes([0xaa; 32]), Word::ZERO]);
-        code.push(op::MSTORE);
-        push_all(
-            &mut code,
-            [
-                Word::from(32),
-                Word::from(32),
-                Word::from(32),
-                Word::ZERO,
-                Word::ZERO,
-                address_to_word(&target),
-                Word::from(50_000),
-            ],
-        );
-        code.extend([call_op, op::POP]);
-        push_all(&mut code, [Word::from(32), Word::from(32)]);
-        code.push(op::RETURN);
-        code
-    }
-
     #[test]
-    fn call_hook_overwriting_caller_memory_keeps_child_input() {
+    fn call_hook_overwriting_caller_memory_changes_child_input() {
         struct OverwriteCallerMemory;
 
         impl Inspector<BaseEvmTypes> for OverwriteCallerMemory {
@@ -1898,9 +1875,22 @@ mod tests {
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.depth > 0 {
+                    assert_eq!(message.input.to_bytes()[..], [0xaa; 32]);
+                    assert!(message.previous_frame_input_offset.is_some());
                     interp.memory_mut().set(0, &[0xbb; 32]);
                 }
                 None
+            }
+
+            fn call_end(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                _result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth > 0 {
+                    assert_eq!(message.input.to_bytes()[..], [0xbb; 32]);
+                }
             }
         }
 
@@ -1914,12 +1904,100 @@ mod tests {
             );
 
             assert_matches!(result.stop, InstrStop::Return);
-            assert_eq!(result.output[..], [0xaa; 32], "{target}");
+            assert_eq!(result.output[..], [0xbb; 32], "{target}");
         }
     }
 
     #[test]
-    fn call_with_hook_overwriting_caller_memory_keeps_child_input() {
+    fn call_hook_replacing_input_keeps_caller_memory() {
+        struct ReplaceInput;
+
+        impl Inspector<BaseEvmTypes> for ReplaceInput {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    let mut input = message.input.to_bytes().to_vec();
+                    input[..16].fill(0xcc);
+                    message.input = Bytes::from(input).into();
+                }
+                None
+            }
+
+            fn call_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                _result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth > 0 {
+                    assert_eq!(interp.memory().slice(0, 32), [0xaa; 32]);
+                    assert_eq!(message.input.to_bytes()[..16], [0xcc; 16]);
+                    assert!(message.previous_frame_input_offset.is_none());
+                }
+            }
+        }
+
+        for target in [ECHO, Address::with_last_byte(4)] {
+            let (result, _, _) = run_evm_with_inspector_db(
+                echo_db(),
+                memory_input_call_code(target, op::CALL),
+                &MessageExt::default(),
+                100_000,
+                ReplaceInput,
+            );
+
+            assert_matches!(result.stop, InstrStop::Return);
+            assert_eq!(result.output[..16], [0xcc; 16], "{target}");
+            assert_eq!(result.output[16..], [0xaa; 16], "{target}");
+        }
+    }
+
+    #[test]
+    fn call_hook_replacing_input_with_same_bytes_detaches_caller_memory() {
+        struct ReplaceInput;
+
+        impl Inspector<BaseEvmTypes> for ReplaceInput {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    message.input = Bytes::copy_from_slice(&message.input).into();
+                    interp.memory_mut().set(0, &[0xbb; 32]);
+                }
+                None
+            }
+
+            fn call_end(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                _result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth > 0 {
+                    assert!(message.previous_frame_input_offset.is_none());
+                }
+            }
+        }
+
+        let (result, _, _) = run_evm_with_inspector_db(
+            echo_db(),
+            memory_input_call_code(ECHO, op::CALL),
+            &MessageExt::default(),
+            100_000,
+            ReplaceInput,
+        );
+
+        assert_matches!(result.stop, InstrStop::Return);
+        assert_eq!(result.output[..], [0xaa; 32]);
+    }
+
+    #[test]
+    fn call_with_hook_overwriting_caller_memory_changes_child_input() {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_config::<OverwritingCallConfig>(),
             SpecId::OSAKA,
@@ -1935,7 +2013,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_matches!(result.stop, InstrStop::Return);
-        assert_eq!(result.output[..], [0xaa; 32]);
+        assert_eq!(result.output[..], [0xbb; 32]);
     }
 
     #[test]

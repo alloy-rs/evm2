@@ -12,7 +12,7 @@ use crate::{
     version::GasId,
 };
 use alloy_primitives::{Address, B256, Bytes};
-use core::{cmp::min, ops::Range};
+use core::{cmp::min, num::NonZeroUsize, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
@@ -185,6 +185,9 @@ unsafe fn prepare_call<T: EvmTypesHost>(
         )?;
     // SAFETY: Upheld by the caller.
     let input = unsafe { state.0.call_input(input_range.start, input_range.len()) };
+    let previous_frame_input_offset = input.is_borrowed().then(|| {
+        NonZeroUsize::new(if input_range.is_empty() { 1 } else { input_range.start + 1 }).unwrap()
+    });
 
     let current = state.message();
     let (destination, caller, call_value, code_address) = match kind {
@@ -207,6 +210,8 @@ unsafe fn prepare_call<T: EvmTypesHost>(
         call_target: to,
         caller,
         input,
+        previous_frame_input_offset,
+        previous_frame_memory: None,
         value: call_value,
         code: loaded_code,
         code_address,
@@ -291,8 +296,23 @@ pub fn call_with<T: EvmTypesHost>(
 ) -> Result {
     let before =
         |gas: &mut Gas, state: &mut InterpreterState<'_, '_, T>, message: &mut Message<T>| {
-            message.input.make_owned();
-            before(gas, state, message)
+            let original_input = message.input.to_bytes();
+            message.input = original_input.clone().into();
+            let original_input_ptr = message.input.as_ptr();
+            before(gas, state, message)?;
+            if let Some(offset) = message.previous_frame_input_offset {
+                if message.input.as_ptr() == original_input_ptr
+                    && message.input.len() == original_input.len()
+                {
+                    message.input = Bytes::copy_from_slice(
+                        state.0.memory().slice(offset.get() - 1, message.input.len()),
+                    )
+                    .into();
+                } else {
+                    message.previous_frame_input_offset = None;
+                }
+            }
+            Ok(())
         };
     // SAFETY: `before` copies the input before the hooks can reach it.
     unsafe { call_impl(stack, gas, state, kind, before, after) }
@@ -327,8 +347,10 @@ unsafe fn call_impl<T: EvmTypesHost>(
     }?;
     before(gas, state, &mut message)?;
 
-    let mut result =
-        state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
+    state.0.move_memory_to_message(&mut message);
+    let result = state.host().execute_message(&mut message);
+    state.0.move_memory_from_message(&mut message);
+    let mut result = result.map_err(|error| state.fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
@@ -488,6 +510,8 @@ pub fn create_with<T: EvmTypesHost>(
         caller,
         code: Bytecode::new_legacy(input.clone()),
         input: input.into(),
+        previous_frame_input_offset: None,
+        previous_frame_memory: None,
         value,
         code_address: destination,
         // CREATE is rejected in a static context (see `require_non_staticcall`).
@@ -497,8 +521,10 @@ pub fn create_with<T: EvmTypesHost>(
         _non_exhaustive: (),
     };
     before(gas, state, &mut message)?;
-    let mut result =
-        state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
+    state.0.move_memory_to_message(&mut message);
+    let result = state.host().execute_message(&mut message);
+    state.0.move_memory_from_message(&mut message);
+    let mut result = result.map_err(|error| state.fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
@@ -578,6 +604,8 @@ mod tests {
         let caller = Address::repeat_byte(0x11);
         let mut host = TestHost::default();
         let mut code = Vec::new();
+        push_all(&mut code, [Word::from(0xab), Word::ZERO]);
+        code.push(op::MSTORE8);
         push_all(
             &mut code,
             [
@@ -592,7 +620,7 @@ mod tests {
         );
         code.extend([op::CALL, op::STOP]);
 
-        let interp = run(RunConfig::new(code).host(&mut host).message(MessageExt {
+        let mut interp = run(RunConfig::new(code).host(&mut host).message(MessageExt {
             destination: caller,
             gas_limit: 10_000,
             ..Default::default()
@@ -603,6 +631,8 @@ mod tests {
         assert_eq!(host.calls[0].kind, MessageKind::Call);
         assert_eq!(host.calls[0].destination, target);
         assert_eq!(host.calls[0].caller, caller);
+        assert_eq!(host.calls[0].previous_frame_memory.as_ref().unwrap().as_slice()[0], 0xab);
+        assert_eq!(interp.memory(0, 1), [0xab]);
     }
 
     #[test]

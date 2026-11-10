@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use core::{cmp::min, fmt, hint::cold_path, ops::Range};
 
 /// Linear EVM memory.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Memory {
     data: Vec<u8>,
     memory_limit: u64,

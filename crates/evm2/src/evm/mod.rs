@@ -1448,10 +1448,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
         // replacement while the hooks are running.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
-        // The hooks can change the caller's memory and keep the message, so the input must not
-        // borrow that memory.
-        message.input.make_owned();
-
         // `destination` already holds the create's contract address (set when the message was
         // constructed), so the create hook observes it directly.
         let is_create = message.kind.is_create();
@@ -1485,11 +1481,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // SAFETY: The frame outlives the hook invocations below.
         let frame = unsafe { trustme::decouple_lt_mut(frame) };
 
-        let inspected = if is_create {
-            inspector.create(frame, message)
-        } else {
-            inspector.call(frame, message)
-        };
+        let inspected = Self::inspect_message_start(frame, message, inspector, is_create);
 
         let mut result = if let Some(error) = frame.take_error() {
             Err(error)
@@ -1500,10 +1492,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         };
 
         if let Ok(result) = &mut result {
+            let memory_moved_to_frame = frame.move_memory_from_message(message);
             if is_create {
                 inspector.create_end(frame, message, result);
             } else {
                 inspector.call_end(frame, message, result);
+            }
+            if memory_moved_to_frame {
+                frame.move_memory_to_message(message);
             }
         }
 
@@ -1516,6 +1512,48 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
 
         result
+    }
+
+    #[inline(never)]
+    fn inspect_message_start(
+        frame: &mut Interpreter<'_, '_, T>,
+        message: &mut Message<T>,
+        inspector: &mut dyn Inspector<T>,
+        is_create: bool,
+    ) -> Option<MessageResult<T>> {
+        // Hooks may resize the caller's memory, invalidating a borrowed byte slice. Keep a safe
+        // snapshot during the hook and refresh it afterward if the hook did not replace it.
+        let original_input = message.previous_frame_input_offset.map(|_| message.input.to_bytes());
+        if let Some(input) = &original_input {
+            message.input = input.clone().into();
+        } else {
+            message.input.make_owned();
+        }
+        let original_input_ptr = message.input.as_ptr();
+        let memory_moved_to_frame = frame.move_memory_from_message(message);
+        let inspected = if is_create {
+            inspector.create(frame, message)
+        } else {
+            inspector.call(frame, message)
+        };
+        if let Some(original_input) = original_input
+            && let Some(offset) = message.previous_frame_input_offset
+        {
+            if message.input.as_ptr() == original_input_ptr
+                && message.input.len() == original_input.len()
+            {
+                message.input = Bytes::copy_from_slice(
+                    frame.memory().slice(offset.get() - 1, message.input.len()),
+                )
+                .into();
+            } else {
+                message.previous_frame_input_offset = None;
+            }
+        }
+        if memory_moved_to_frame {
+            frame.move_memory_to_message(message);
+        }
+        inspected
     }
 
     #[inline(never)]
@@ -1736,11 +1774,24 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     fn execute_call_precompile(
         &mut self,
         checkpoint: StateCheckpoint,
-        message: &Message<T>,
+        message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let mut gas =
             GasTracker::new_with_execution_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let memory_moved_to_caller = if let Some(mut caller) = self.current_frame {
+            // SAFETY: The caller is suspended while the precompile runs. A nested inspector hook
+            // can inspect or modify its memory while the precompile holds this message.
+            unsafe { caller.as_mut() }.move_memory_from_message(message)
+        } else {
+            false
+        };
         let execution = self.execute_precompile(message, &mut gas);
+        if let Some(mut caller) = self.current_frame
+            && memory_moved_to_caller
+        {
+            // SAFETY: The same caller remains suspended until this precompile returns.
+            unsafe { caller.as_mut() }.move_memory_to_message(message);
+        }
         let (stop, output) = match execution {
             Ok(_) | Err(PrecompileError::Revert(_)) if gas.remaining() > message.gas_limit => {
                 (InstrStop::PrecompileOOG, Bytes::new())
@@ -1884,6 +1935,24 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return self.execute_message_inspected(message, Some(result));
         }
         Ok(result)
+    }
+}
+
+impl<T: EvmTypesHost> Evm<'_, T> {
+    /// Returns a message's input, resolving a borrowed call input against its caller's memory.
+    ///
+    /// The returned slice borrows the EVM, so a precompile must release it before sending a
+    /// nested message whose hooks may change the caller's memory.
+    #[inline]
+    pub fn message_input<'m>(&'m self, message: &'m Message<T>) -> &'m [u8] {
+        let Some(offset) = message.previous_frame_input_offset else {
+            return &message.input;
+        };
+        let caller = self.current_frame.expect("a call input must come from a running frame");
+        // SAFETY: The caller is suspended while its child message runs.
+        let caller = unsafe { caller.as_ref() };
+        let memory = message.previous_frame_memory.as_ref().unwrap_or_else(|| caller.memory());
+        memory.slice(offset.get() - 1, message.input.len())
     }
 }
 
@@ -2214,7 +2283,9 @@ mod tests {
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
         registry::{HandlerError, TxRequest, handler},
-        test_utils::{handle_test_tx, legacy_bytecode, push_address, test_tx},
+        test_utils::{
+            handle_test_tx, legacy_bytecode, memory_input_call_code, push_address, test_tx,
+        },
         utils::address_to_word,
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
@@ -2357,6 +2428,8 @@ mod tests {
             call_target: address,
             caller: Address::ZERO,
             input: Default::default(),
+            previous_frame_input_offset: None,
+            previous_frame_memory: None,
             value: U256::ZERO,
             code: Bytecode::default(),
             code_address: address,
@@ -3311,6 +3384,8 @@ mod tests {
             call_target: address,
             caller: Address::with_last_byte(0x7a),
             input: Bytes::from_static(b"message input").into(),
+            previous_frame_input_offset: None,
+            previous_frame_memory: None,
             value: U256::from(99),
             code: Bytecode::default(),
             code_address: address,
@@ -5245,5 +5320,117 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_initial_call_depth(u16::MAX - CALL_DEPTH_LIMIT);
+    }
+
+    #[test]
+    fn hook_resizing_caller_memory_keeps_precompile_input_readable() {
+        struct OverwriteCallerMemory;
+
+        impl Inspector<BaseEvmTypes> for OverwriteCallerMemory {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.destination == INNER_TEST_PRECOMPILE {
+                    let memory = interp.memory_mut();
+                    memory.resize(0, 1 << 20).unwrap();
+                    memory.set(0, &[0xbb; 32]);
+                }
+                None
+            }
+        }
+
+        let precompiles = precompiles_with([
+            test_precompile(TEST_PRECOMPILE, |evm, message, _| {
+                let input = Bytes::copy_from_slice(evm.message_input(message));
+                let mut child = precompile_message(INNER_TEST_PRECOMPILE);
+                child.depth = message.depth + 1;
+                Host::execute_message(evm, &mut child)?;
+                assert_eq!(evm.message_input(message), [0xbb; 32]);
+                Ok(PrecompileOutput::new(input))
+            }),
+            test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
+                Ok(PrecompileOutput::new(Bytes::new()))
+            }),
+        ]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        evm.set_inspector(OverwriteCallerMemory);
+        let code = memory_input_call_code(TEST_PRECOMPILE, op::CALL);
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
+
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
+
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(result.output[..], [0xaa; 32]);
+    }
+
+    #[test]
+    fn initialize_hook_message_keeps_caller_memory() {
+        const CALLEE: Address = Address::with_last_byte(0xca);
+
+        struct SendOnInitialize;
+
+        impl Inspector<BaseEvmTypes> for SendOnInitialize {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.message().destination == CALLEE {
+                    let mut message = precompile_message(INNER_TEST_PRECOMPILE);
+                    message.depth = interp.message().depth + 1;
+                    Host::execute_message(interp.host(), &mut message).unwrap();
+                }
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.destination == INNER_TEST_PRECOMPILE {
+                    let memory = interp.memory_mut();
+                    memory.resize(0, 1 << 20).unwrap();
+                    memory.set(0, &[0xbb; 64]);
+                }
+                None
+            }
+        }
+
+        let precompiles = precompiles_with([test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
+            Ok(PrecompileOutput::new(Bytes::new()))
+        })]);
+        let mut database = InMemoryDB::default();
+        let echo = [
+            op::CALLDATASIZE,
+            op::PUSH0,
+            op::PUSH0,
+            op::CALLDATACOPY,
+            op::CALLDATASIZE,
+            op::PUSH0,
+            op::RETURN,
+        ];
+        database
+            .insert_account_info(&CALLEE, AccountInfo::default().with_code(legacy_bytecode(echo)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            precompiles,
+        );
+        evm.set_inspector(SendOnInitialize);
+        let code = memory_input_call_code(CALLEE, op::CALL);
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
+
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
+
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(result.output[..], [0xaa; 32]);
     }
 }

@@ -2,11 +2,11 @@ use crate::{
     BaseEvmTypes, EvmTypesHost,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
-    interpreter::{InstrStop, Word},
+    interpreter::{InstrStop, Memory, Word},
     trustme,
 };
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
-use core::{fmt, ops::Deref};
+use core::{fmt, num::NonZeroUsize, ops::Deref};
 
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -39,7 +39,7 @@ impl MessageKind {
 pub type Message<T = BaseEvmTypes> = MessageExt<<T as EvmTypesHost>::MessageExt>;
 
 /// Frame-local EVM call/create message, parameterized by extension data.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct MessageExt<E = ()> {
     /// Message kind.
     pub kind: MessageKind,
@@ -72,6 +72,12 @@ pub struct MessageExt<E = ()> {
     pub caller: Address,
     /// Call input data, or initcode for create messages.
     pub input: MessageInput,
+    /// Call input offset in the previous frame's memory, plus one when borrowed.
+    /// The input length is [`input`](Self::input)'s length.
+    pub previous_frame_input_offset: Option<NonZeroUsize>,
+    /// Memory of the frame that sent this message, returned to that frame after execution.
+    /// A borrowed [`input`](Self::input) reads its bytes from this memory while the child runs.
+    pub previous_frame_memory: Option<Memory>,
     /// Value transferred with the message.
     pub value: U256,
     /// Bytecode resolved for this frame: the code at [`MessageExt::code_address`] (the resolved
@@ -94,6 +100,32 @@ pub struct MessageExt<E = ()> {
     pub _non_exhaustive: (),
 }
 
+impl<E: Clone> Clone for MessageExt<E> {
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind,
+            depth: self.depth,
+            gas_limit: self.gas_limit,
+            reservoir: self.reservoir,
+            destination: self.destination,
+            call_target: self.call_target,
+            caller: self.caller,
+            input: self.input.clone(),
+            // MessageInput::clone owns borrowed bytes, so the clone does not resolve its input
+            // against a running frame.
+            previous_frame_input_offset: None,
+            previous_frame_memory: self.previous_frame_memory.clone(),
+            value: self.value,
+            code: self.code.clone(),
+            code_address: self.code_address,
+            caller_is_static: self.caller_is_static,
+            salt: self.salt,
+            ext: self.ext.clone(),
+            _non_exhaustive: (),
+        }
+    }
+}
+
 impl<E> MessageExt<E> {
     /// Replaces the extension, preserving all other message fields.
     #[inline]
@@ -113,6 +145,8 @@ impl<E> MessageExt<E> {
             call_target,
             caller,
             input,
+            previous_frame_input_offset,
+            previous_frame_memory,
             value,
             code,
             code_address,
@@ -130,6 +164,8 @@ impl<E> MessageExt<E> {
             call_target,
             caller,
             input,
+            previous_frame_input_offset,
+            previous_frame_memory,
             value,
             code,
             code_address,
@@ -220,6 +256,12 @@ pub struct MessageInput {
 }
 
 impl MessageInput {
+    /// Returns whether this input borrows its bytes from a running frame.
+    #[inline]
+    pub const fn is_borrowed(&self) -> bool {
+        self.borrowed
+    }
+
     /// Borrows `bytes` without copying.
     ///
     /// # Safety
@@ -377,5 +419,23 @@ mod tests {
         assert_eq!(&*clone, [1, 2, 3]);
         assert_eq!(bytes[..], [1, 2, 3]);
         assert_eq!(&*owned, [1, 2, 3]);
+    }
+
+    #[test]
+    fn cloned_borrowed_message_owns_input() {
+        let mut memory = [1, 2, 3];
+        // SAFETY: `memory` stays unchanged until the message has been cloned.
+        let input = unsafe { MessageInput::borrowed(&memory) };
+        let message = MessageExt::<()> {
+            input,
+            previous_frame_input_offset: NonZeroUsize::new(1),
+            ..Default::default()
+        };
+        let cloned = message.clone();
+        drop(message);
+        memory.fill(0);
+
+        assert_eq!(cloned.input.to_bytes()[..], [1, 2, 3]);
+        assert!(cloned.previous_frame_input_offset.is_none());
     }
 }

@@ -271,6 +271,24 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         &mut self.memory
     }
 
+    /// Moves this frame's memory into a child message.
+    #[inline]
+    pub fn move_memory_to_message(&mut self, message: &mut Message<T>) {
+        message.previous_frame_memory =
+            Some(core::mem::replace(&mut self.memory, Memory::with_capacity(0)));
+    }
+
+    /// Moves memory from a message into this interpreter, returning whether any was moved.
+    // Keep the recursive EVM call frame small enough for 1024 nested calls with inspectors.
+    #[inline(never)]
+    pub fn move_memory_from_message(&mut self, message: &mut Message<T>) -> bool {
+        let Some(memory) = message.previous_frame_memory.take() else {
+            return false;
+        };
+        self.memory = memory;
+        true
+    }
+
     /// Returns `len` bytes of memory at `offset` as the input of a call message, borrowed when
     /// this frame is run by [`Evm`](crate::Evm) and copied otherwise.
     ///

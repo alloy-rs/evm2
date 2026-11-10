@@ -729,6 +729,8 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         caller,
         code: Bytecode::new_legacy(code.clone()),
         input: code.into(),
+        previous_frame_input_offset: None,
+        previous_frame_memory: None,
         value,
         code_address: destination,
         caller_is_static: false,
@@ -736,10 +738,11 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
-    let mut result = ecx
-        .host()
-        .execute_message(&mut message)
-        .map_err(|error| ecx.interpreter_mut().fail(error))?;
+    ecx.interpreter_mut().move_memory_to_message(&mut message);
+    let result = ecx.host().execute_message(&mut message);
+    ecx.interpreter_mut().move_memory_from_message(&mut message);
+    ecx.refresh_memory_cache();
+    let mut result = result.map_err(|error| ecx.interpreter_mut().fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop.into());
     }
@@ -822,6 +825,9 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
         )?;
     // SAFETY: The message goes straight to the host, and nothing reads it after the host returns.
     let input = unsafe { ecx.interpreter().call_input(in_offset, in_len) };
+    let previous_frame_input_offset = input.is_borrowed().then(|| {
+        core::num::NonZeroUsize::new(if in_len == 0 { 1 } else { in_offset + 1 }).unwrap()
+    });
 
     let current = ecx.message();
     let (destination, caller, call_value, code_address) = match call_kind {
@@ -843,6 +849,8 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
         call_target: to,
         caller,
         input,
+        previous_frame_input_offset,
+        previous_frame_memory: None,
         value: call_value,
         code: loaded_code,
         code_address,
@@ -852,10 +860,11 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
         _non_exhaustive: (),
     };
 
-    let mut result = ecx
-        .host()
-        .execute_message(&mut message)
-        .map_err(|error| ecx.interpreter_mut().fail(error))?;
+    ecx.interpreter_mut().move_memory_to_message(&mut message);
+    let result = ecx.host().execute_message(&mut message);
+    ecx.interpreter_mut().move_memory_from_message(&mut message);
+    ecx.refresh_memory_cache();
+    let mut result = result.map_err(|error| ecx.interpreter_mut().fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop.into());
     }
