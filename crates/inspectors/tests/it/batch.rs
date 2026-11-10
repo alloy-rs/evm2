@@ -1,17 +1,22 @@
 //! A transaction that runs several top-level calls (an account-abstraction batch) traces every one
 //! of them: the recorded root moves under a synthetic root that the later calls join.
 
-use crate::utils::{AccountInfo, Bytecode, SpecId};
+use crate::utils::{AccountInfo, Bytecode, SpecId, TxEnv};
 use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
 use alloy_rpc_types_eth::TransactionInfo;
-use alloy_rpc_types_trace::geth::{CallConfig, FlatCallConfig};
+use alloy_rpc_types_trace::geth::{
+    CallConfig, FlatCallConfig,
+    erc7562::{Erc7562Config, Erc7562Frame},
+};
 use evm2::{
-    BaseEvmTypes, Evm, ExecutionConfig, Inspector, Precompiles, Version,
+    BaseEvmTypes, Evm, ExecutionConfig, Inspector, Precompiles, TxResultExt, Version,
     ethereum::{ethereum_tx_registry, execute_initial_frame, prepare_initial_frame},
     evm::InMemoryDB,
-    interpreter::{GasTracker, InstrStop},
+    interpreter::{GasTracker, InstrStop, op},
 };
-use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig, types::CallKind};
+use evm2_inspectors::tracing::{
+    Erc7562Inspector, TracingInspector, TracingInspectorConfig, types::CallKind,
+};
 
 const CALLER: Address = Address::repeat_byte(0xaa);
 /// Calls `INNER`, then stops.
@@ -146,4 +151,21 @@ fn batch_root_does_not_destroy_itself() {
     let nodes = tracer.traces().nodes();
     assert_eq!((nodes[0].trace.status, nodes[0].is_selfdestruct()), (Some(InstrStop::Stop), false));
     assert!(nodes[2].is_selfdestruct());
+}
+
+#[test]
+fn erc7562_counters_follow_a_nested_root() {
+    let mut inspector = Erc7562Inspector::new(Erc7562Config::default());
+    run_batch(&mut inspector, &[OUTER, INNER].map(TxKind::Call));
+    let tx = TxEnv { kind: TxKind::Call(OUTER), ..Default::default() }.envelope();
+    let root = inspector.frame(&tx, &TxResultExt::<()>::default()).unwrap();
+    let opcodes = |frame: &Erc7562Frame| {
+        let mut opcodes: Vec<_> = frame.used_opcodes.keys().copied().collect();
+        opcodes.sort_unstable();
+        opcodes
+    };
+    assert!(root.used_opcodes.is_empty());
+    assert_eq!(opcodes(&root.calls[0]), [op::STOP, op::CALL]);
+    assert_eq!(opcodes(&root.calls[0].calls[0]), [op::STOP]);
+    assert_eq!(opcodes(&root.calls[1]), [op::STOP]);
 }

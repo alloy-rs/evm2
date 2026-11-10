@@ -225,6 +225,10 @@ impl Erc7562Inspector {
 
     /// Adds the counters of the call a hook started.
     fn push_frame(&mut self) {
+        // A call that adds two nodes moved the recorded ones under the synthetic root of a batch.
+        if self.calls.traces().nodes().len() > self.frames.len() + 1 {
+            self.frames.insert(0, FrameCounters::default());
+        }
         let idx = self.calls.last_trace_idx();
         if self.frames.len() <= idx {
             self.frames.resize_with(idx + 1, FrameCounters::default);

@@ -169,6 +169,10 @@ impl TracingInspector {
             for node in traces.nodes_mut() {
                 // move out and store the reusable steps vec
                 let mut steps = mem::take(&mut node.trace.steps);
+                // Only allocations are worth keeping; the synthetic root of a batch never took one.
+                if steps.capacity() == 0 {
+                    continue;
+                }
                 // ensure steps are cleared
                 steps.clear();
                 reusable_step_vecs.push(steps);
