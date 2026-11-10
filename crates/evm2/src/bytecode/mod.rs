@@ -494,7 +494,7 @@ mod tests {
         interpreter::{InstrStop, Interpreter, Message, op},
         test_utils::{TestHost, TestTypes, test_message},
     };
-    use alloc::format;
+    use alloc::{format, vec};
     use alloy_primitives::{Address, Bytes};
     use std::hash::{BuildHasher, RandomState};
 
