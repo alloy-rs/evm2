@@ -1920,8 +1920,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "range input belongs to a different frame")]
-    fn forwarding_range_input_from_child_frame_panics() {
+    #[should_panic(expected = "range input requires previous frame memory")]
+    fn forwarding_range_without_memory_from_child_frame_panics() {
         struct ForwardInput;
 
         impl Inspector<BaseEvmTypes> for ForwardInput {
@@ -1949,8 +1949,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "range input belongs to a different frame")]
-    fn forwarding_range_input_from_sibling_frame_panics() {
+    #[should_panic(expected = "range input requires previous frame memory")]
+    fn forwarding_range_without_memory_from_sibling_frame_panics() {
         #[derive(Default)]
         struct ForwardSiblingInput(Option<MessageInput>);
 

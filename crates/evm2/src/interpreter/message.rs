@@ -171,7 +171,7 @@ impl<E> MessageExt<E> {
     pub fn input_bytes<'a>(&'a self, memory: &'a Memory) -> &'a [u8] {
         match &self.input {
             MessageInput::Owned(bytes) => bytes,
-            MessageInput::Range { range, .. } => memory.slice(range.start, range.len()),
+            MessageInput::Range(range) => memory.slice(range.start, range.len()),
         }
     }
 }
@@ -229,13 +229,8 @@ pub fn create_preaccess_failure(
 pub enum MessageInput {
     /// Bytes owned by the message.
     Owned(Bytes),
-    /// A range of the previous frame's memory, identified by its frame number.
-    Range {
-        /// Byte range in the caller's memory.
-        range: Range<usize>,
-        /// Entry number of the frame that owns the memory.
-        frame: u64,
-    },
+    /// A byte range in the previous frame's memory.
+    Range(Range<usize>),
 }
 
 impl Default for MessageInput {
@@ -251,7 +246,7 @@ impl MessageInput {
     pub fn len(&self) -> usize {
         match self {
             Self::Owned(bytes) => bytes.len(),
-            Self::Range { range, .. } => range.len(),
+            Self::Range(range) => range.len(),
         }
     }
 
@@ -266,16 +261,16 @@ impl MessageInput {
     pub const fn as_owned(&self) -> Option<&Bytes> {
         match self {
             Self::Owned(bytes) => Some(bytes),
-            Self::Range { .. } => None,
+            Self::Range(_) => None,
         }
     }
 
-    /// Returns the caller-memory range and the frame that owns it, if present.
+    /// Returns the caller-memory range, if present.
     #[inline]
-    pub const fn as_range(&self) -> Option<(&Range<usize>, u64)> {
+    pub const fn as_range(&self) -> Option<&Range<usize>> {
         match self {
             Self::Owned(_) => None,
-            Self::Range { range, frame } => Some((range, *frame)),
+            Self::Range(range) => Some(range),
         }
     }
 }
@@ -367,10 +362,7 @@ mod tests {
         let mut memory = Memory::new();
         memory.resize(0, 3).unwrap();
         memory.set(0, &[1, 2, 3]);
-        let message = MessageExt::<()> {
-            input: MessageInput::Range { range: 1..3, frame: 1 },
-            ..Default::default()
-        };
+        let message = MessageExt::<()> { input: MessageInput::Range(1..3), ..Default::default() };
 
         assert_eq!(message.input.len(), 2);
         assert_eq!(message.input.as_owned(), None);
@@ -384,10 +376,7 @@ mod tests {
     fn range_input_out_of_bounds_panics() {
         let mut memory = Memory::new();
         memory.resize(0, 2).unwrap();
-        let message = MessageExt::<()> {
-            input: MessageInput::Range { range: 1..3, frame: 1 },
-            ..Default::default()
-        };
+        let message = MessageExt::<()> { input: MessageInput::Range(1..3), ..Default::default() };
 
         message.input_bytes(&memory);
     }

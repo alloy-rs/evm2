@@ -46,8 +46,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     message: Option<&'frame Message<T>>,
     /// Input bytes resolved once when the frame starts.
     pub(in crate::interpreter) input: &'frame [u8],
-    /// Entry number assigned by the EVM; zero outside an EVM-managed frame.
-    frame: u64,
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
@@ -111,7 +109,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             output: 0..0,
             message: None,
             input: &[],
-            frame: 0,
             is_static: false,
             lends_memory: false,
             return_data: Bytes::new(),
@@ -140,7 +137,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.output = 0..0;
         self.message = Some(message);
         self.input = message.input.as_owned().map_or(&[][..], |input| &input[..]);
-        self.frame = 0;
         self.is_static = is_static;
         self.lends_memory = false;
         self.return_data = Bytes::new();
@@ -312,25 +308,13 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             return Bytes::copy_from_slice(self.memory.slice(offset, len)).into();
         }
         self.memory.slice(offset, len);
-        MessageInput::Range { range: offset..offset + len, frame: self.frame }
+        MessageInput::Range(offset..offset + len)
     }
 
     /// Returns the active message's input bytes.
     #[inline]
     pub const fn input(&self) -> &[u8] {
         self.input
-    }
-
-    /// Returns this frame's entry number.
-    #[inline]
-    pub(crate) const fn frame(&self) -> u64 {
-        self.frame
-    }
-
-    /// Sets this frame's entry number.
-    #[inline]
-    pub(crate) const fn set_frame(&mut self, frame: u64) {
-        self.frame = frame;
     }
 
     /// Sets the resolved input bytes for this frame.

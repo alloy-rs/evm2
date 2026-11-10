@@ -248,8 +248,6 @@ pub struct Evm<'a, T: EvmTypesHost> {
     /// This is passed to the inspector call and create hooks as the parent frame.
     #[derive_where(skip)]
     current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
-    /// Monotonic entry number used to identify the frame that owns range input.
-    frames_entered: u64,
     /// The checkpoint the currently running interpreter frame rolls back to if it fails.
     #[derive_where(skip)]
     frame_checkpoint: Option<StateCheckpoint>,
@@ -381,7 +379,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_runner: None,
             runner_supported: false,
             current_frame: None,
-            frames_entered: 0,
             frame_checkpoint: None,
             running: false,
             #[cfg(feature = "async")]
@@ -1408,8 +1405,8 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
 
 impl<'a, T: EvmTypes> Evm<'a, T> {
     /// A call message may carry a range in its caller's memory (see
-    /// [`Interpreter::call_input`]). Forwarding that range from another frame requires
-    /// resolving it to owned bytes first.
+    /// [`Interpreter::call_input`]). A forwarded range needs the corresponding caller memory
+    /// in the message; otherwise resolve it to owned bytes first.
     #[inline]
     fn execute_message_impl(
         &mut self,
@@ -1862,19 +1859,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
-        if let Some((_, frame)) = message.input.as_range() {
-            let caller =
-                guard.evm.current_frame.expect("a range input must come from a running frame");
-            // SAFETY: The caller is suspended for the duration of the child frame.
-            let caller = unsafe { caller.as_ref() };
-            assert_eq!(frame, caller.frame(), "range input belongs to a different frame");
-            let memory = message.previous_frame_memory.as_ref().unwrap_or_else(|| caller.memory());
+        if message.input.as_range().is_some() {
+            let memory = message
+                .previous_frame_memory
+                .as_ref()
+                .expect("range input requires previous frame memory");
             // SAFETY: The message and its previous frame memory outlive the child interpreter.
             interp_ref.set_input(unsafe { trustme::decouple_lt(message.input_bytes(memory)) });
         }
         interp_ref.lend_memory();
-        guard.evm.frames_entered += 1;
-        interp_ref.set_frame(guard.evm.frames_entered);
         let inspector = guard.evm.active_inspector().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // interpreter run.
@@ -1938,14 +1931,14 @@ impl<T: EvmTypesHost> Evm<'_, T> {
     /// nested message whose hooks may change the caller's memory.
     #[inline]
     pub fn message_input<'m>(&'m self, message: &'m Message<T>) -> &'m [u8] {
-        let Some((_, frame)) = message.input.as_range() else {
-            return message.input.as_owned().expect("owned message input");
-        };
-        let caller = self.current_frame.expect("a call input must come from a running frame");
-        // SAFETY: The caller is suspended while its child message runs.
-        let caller = unsafe { caller.as_ref() };
-        assert_eq!(frame, caller.frame(), "range input belongs to a different frame");
-        let memory = message.previous_frame_memory.as_ref().unwrap_or_else(|| caller.memory());
+        if let Some(input) = message.input.as_owned() {
+            return input;
+        }
+        let memory = message.previous_frame_memory.as_ref().unwrap_or_else(|| {
+            let caller = self.current_frame.expect("a call input must come from a running frame");
+            // SAFETY: The caller is suspended while its child message runs.
+            unsafe { caller.as_ref() }.memory()
+        });
         message.input_bytes(memory)
     }
 }
