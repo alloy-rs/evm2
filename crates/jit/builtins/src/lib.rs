@@ -689,7 +689,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
                 caller_info.nonce,
                 value,
                 depth,
-                ecx.version(),
+                ecx.host().initial_call_depth(),
             )
             .is_some()
         {

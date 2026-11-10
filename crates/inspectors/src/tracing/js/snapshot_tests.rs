@@ -3,7 +3,7 @@
 use super::{interrupt_tests::transaction, *};
 use alloy_primitives::hex;
 use evm2::{
-    BaseEvmTypes, ExecutionConfig, Precompiles, SpecId, Version,
+    BaseEvmTypes, Precompiles, SpecId,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     ethereum::ethereum_tx_registry,
@@ -100,16 +100,14 @@ fn compare(code: Bytes, child: Option<Bytes>, initial_call_depth: u16, spec: Spe
         pending: Vec::new(),
         expected: Vec::new(),
     };
-    let mut version = Version::new(spec);
-    version.initial_call_depth = initial_call_depth;
-    let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-        ExecutionConfig::for_spec_and_version(spec, version),
+    let mut evm = Evm::<BaseEvmTypes>::new(
         spec,
         evm2::env::BlockEnvExt::default(),
         ethereum_tx_registry(spec),
         db,
         Precompiles::base(spec),
     );
+    evm.set_initial_call_depth(initial_call_depth);
     evm.set_inspector(inspector);
     let tx = transaction(TxKind::Call(address));
     let res = evm.transact(&tx).unwrap().detach();
