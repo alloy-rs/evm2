@@ -125,6 +125,22 @@ pub struct CallTrace {
     /// [`record_step_deltas`]: crate::tracing::TracingInspectorConfig::record_step_deltas
     #[cfg_attr(feature = "serde", serde(default))]
     pub step_deltas: Vec<StepDelta>,
+    /// The pc of the call or create instruction in the caller's code that sent this message.
+    ///
+    /// `None` for the transaction's top-level message, or when
+    /// [`TracingInspectorConfig::record_frame_pcs`](crate::tracing::TracingInspectorConfig::record_frame_pcs)
+    /// is off.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub caller_pc: Option<usize>,
+    /// The pc of the terminating instruction that ended this frame: `STOP`, `RETURN`, `REVERT`,
+    /// `INVALID`, `SELFDESTRUCT` or an undefined opcode.
+    ///
+    /// Code that runs off its end stops at the pc one past its last byte. `None` if the frame ran
+    /// no code or halted at another instruction, such as on out of gas or a bad jump, or when
+    /// [`TracingInspectorConfig::record_frame_pcs`](crate::tracing::TracingInspectorConfig::record_frame_pcs)
+    /// is off.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub exit_pc: Option<usize>,
     /// Optional complementary decoded call data.
     pub decoded: Option<Box<DecodedCallTrace>>,
 }

@@ -49,6 +49,15 @@ pub struct TracingInspectorConfig {
     /// Required for parity `vmTrace` memory and storage. The remaining gas after returning from a
     /// call or gaining gas is recorded whenever steps are enabled, independently of this option.
     pub record_step_deltas: bool,
+    /// Whether to record where each frame was called from and where it stopped, as
+    /// [`CallTrace::caller_pc`] and [`CallTrace::exit_pc`].
+    ///
+    /// This steps only the terminating opcodes, once per frame, so it locates the frames of a
+    /// failing call stack without recording steps.
+    ///
+    /// [`CallTrace::caller_pc`]: crate::tracing::types::CallTrace::caller_pc
+    /// [`CallTrace::exit_pc`]: crate::tracing::types::CallTrace::exit_pc
+    pub record_frame_pcs: bool,
 }
 
 impl TracingInspectorConfig {
@@ -68,6 +77,7 @@ impl TracingInspectorConfig {
             record_logs: true,
             record_immediate_bytes: true,
             record_step_deltas: true,
+            record_frame_pcs: true,
         }
     }
 
@@ -87,6 +97,7 @@ impl TracingInspectorConfig {
             record_opcodes_filter: None,
             record_immediate_bytes: false,
             record_step_deltas: false,
+            record_frame_pcs: false,
         }
     }
 
@@ -108,6 +119,7 @@ impl TracingInspectorConfig {
             record_opcodes_filter: None,
             record_immediate_bytes: false,
             record_step_deltas: false,
+            record_frame_pcs: false,
         }
     }
 
@@ -151,6 +163,7 @@ impl TracingInspectorConfig {
             record_opcodes_filter: None,
             record_immediate_bytes: false,
             record_step_deltas: false,
+            record_frame_pcs: false,
         }
     }
 
@@ -245,6 +258,7 @@ impl TracingInspectorConfig {
         self.record_opcodes_filter = self.record_opcodes_filter.or(other.record_opcodes_filter);
         self.record_immediate_bytes |= other.record_immediate_bytes;
         self.record_step_deltas |= other.record_step_deltas;
+        self.record_frame_pcs |= other.record_frame_pcs;
         self
     }
 
@@ -317,6 +331,13 @@ impl TracingInspectorConfig {
     /// [`Self::record_step_deltas`].
     pub const fn set_step_deltas(mut self, record_step_deltas: bool) -> Self {
         self.record_step_deltas = record_step_deltas;
+        self
+    }
+
+    /// Configure whether the tracer should record where each frame was called from and where it
+    /// stopped, see [`Self::record_frame_pcs`].
+    pub const fn set_frame_pcs(mut self, record_frame_pcs: bool) -> Self {
+        self.record_frame_pcs = record_frame_pcs;
         self
     }
 

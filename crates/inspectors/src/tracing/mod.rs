@@ -371,6 +371,7 @@ impl TracingInspector {
         caller: Address,
         gas_limit: u64,
         maybe_precompile: Option<bool>,
+        caller_pc: Option<usize>,
     ) {
         // find an empty steps vec or create a new one
         let steps = self.reusable_step_vecs.pop().unwrap_or_default();
@@ -391,10 +392,19 @@ impl TracingInspector {
                 maybe_precompile,
                 gas_limit,
                 steps,
+                caller_pc,
                 ..Default::default()
             },
         );
         self.trace_stack.push(TraceStackEntry { trace_idx, log_count: self.log_count });
+    }
+
+    /// Returns the pc of the call or create instruction that sends the next message, if
+    /// [`TracingInspectorConfig::record_frame_pcs`] is set.
+    ///
+    /// The interpreter of a top-level message is not running any code, so it has no caller pc.
+    fn caller_pc<T: EvmTypes>(&self, interp: &Interpreter<'_, '_, T>) -> Option<usize> {
+        (self.config.record_frame_pcs && !self.trace_stack.is_empty()).then(|| interp.pc())
     }
 
     /// Fills the current trace with the outcome of a call.
@@ -689,18 +699,24 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn inspector_config(&self) -> InspectorConfig {
         // The step hooks record steps, and halt the execution once a halting byte budget is
         // exceeded, which any hook can cause.
-        let steps = if self.budget.can_halt() {
+        let mut steps = if self.budget.can_halt() {
             OpcodeSet::ALL
         } else if self.config.record_steps {
             self.config.record_opcodes_filter.unwrap_or(OpcodeSet::ALL)
         } else {
             OpcodeSet::EMPTY
         };
+        if self.config.record_frame_pcs {
+            steps = steps.union(TERMINATING_OPCODES);
+        }
         InspectorConfig::new().with_steps(steps)
     }
 
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if self.config.record_frame_pcs && TERMINATING_OPCODES.contains(interp.opcode()) {
+            self.last_trace().trace.exit_pc = Some(interp.pc());
+        }
         if self.config.record_steps {
             self.start_step(interp);
         }
@@ -771,6 +787,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         } else {
             Bytes::new()
         };
+        let caller_pc = self.caller_pc(interp);
         self.start_trace_on_call(
             usize::from(message.depth),
             to,
@@ -780,6 +797,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             from,
             message.gas_limit,
             maybe_precompile,
+            caller_pc,
         );
 
         self.budget.halt(interp, false);
@@ -814,6 +832,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         } else {
             Bytes::new()
         };
+        let caller_pc = self.caller_pc(interp);
         self.start_trace_on_call(
             usize::from(message.depth),
             message.destination,
@@ -823,6 +842,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             message.caller,
             message.gas_limit,
             Some(false),
+            caller_pc,
         );
         self.budget.halt(interp, false);
         None
@@ -853,6 +873,20 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         node.trace.selfdestruct_transferred_value = Some(*value);
     }
 }
+
+/// The opcodes that end a frame, including the undefined ones, which
+/// [`TracingInspectorConfig::record_frame_pcs`] steps.
+const TERMINATING_OPCODES: OpcodeSet = {
+    let mut set = OpcodeSet::EMPTY;
+    let mut op = 0;
+    while op <= u8::MAX as usize {
+        if OpCode::new_or_unknown(op as u8).info().is_terminating() {
+            set.insert(op as u8);
+        }
+        op += 1;
+    }
+    set
+};
 
 /// Contains some contextual infos for a transaction execution that is made available to the JS
 /// object.
