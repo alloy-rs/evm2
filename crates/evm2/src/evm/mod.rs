@@ -899,6 +899,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.precompiles = precompiles;
     }
 
+    /// Takes the precompile provider, leaving an empty provider in its place.
+    ///
+    /// Hosts can wrap the returned provider and reinstall it with [`Self::set_boxed_precompiles`].
+    /// Like other provider mutations, this must not be called during execution.
+    #[inline]
+    pub fn take_precompiles(&mut self) -> Box<dyn PrecompileProvider<T> + 'a> {
+        self.assert_precompiles_mutable();
+        core::mem::replace(
+            &mut self.precompiles,
+            boxed_precompile_provider(precompile::NoPrecompiles::default()),
+        )
+    }
+
     /// Returns the precompile provider as `P` if it has that concrete type.
     #[inline]
     pub fn precompiles_as<P: PrecompileProvider<T> + 'static>(&self) -> Option<&P>
@@ -2733,6 +2746,7 @@ mod tests {
         Mut,
         AsMut,
         Set,
+        Take,
     }
 
     fn run_precompile_access(access: PrecompileAccess) {
@@ -2749,6 +2763,10 @@ mod tests {
                 },
                 PrecompileAccess::Set => |evm, _, _| {
                     evm.set_precompiles(empty_precompiles());
+                    Ok(PrecompileOutput::new(Bytes::new()))
+                },
+                PrecompileAccess::Take => |evm, _, _| {
+                    let _ = evm.take_precompiles();
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
             },
@@ -2911,6 +2929,27 @@ mod tests {
         evm.set_boxed_precompiles(Box::new(precompiles_with([])));
 
         assert!(evm.precompiles_as::<Precompiles>().unwrap().as_map().is_empty());
+    }
+
+    #[test]
+    fn take_precompiles_preserves_provider_and_can_be_restored() {
+        let mut evm = lifecycle_evm();
+        let original_ids = evm.precompiles().precompile_ids();
+        assert!(!original_ids.is_empty());
+
+        let provider = evm.take_precompiles();
+        assert!(evm.precompiles().addresses().is_empty());
+        assert!(evm.precompiles().precompile_ids().is_empty());
+        assert_eq!(provider.precompile_ids(), original_ids);
+
+        evm.set_boxed_precompiles(provider);
+        assert_eq!(evm.precompiles().precompile_ids(), original_ids);
+    }
+
+    #[test]
+    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
+    fn take_precompiles_panics_during_execution() {
+        run_precompile_access(PrecompileAccess::Take);
     }
 
     #[test]
@@ -4667,6 +4706,7 @@ mod tests {
     #[rstest::rstest]
     #[case(PrecompileAccess::Mut)]
     #[case(PrecompileAccess::Set)]
+    #[case(PrecompileAccess::Take)]
     #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
     fn precompiles_cannot_be_modified_during_transact(#[case] access: PrecompileAccess) {
         let mut evm = lifecycle_evm();
@@ -4682,6 +4722,9 @@ mod tests {
                         }
                         PrecompileAccess::Set => req.host.set_precompiles(empty_precompiles()),
                         PrecompileAccess::AsMut => unreachable!(),
+                        PrecompileAccess::Take => {
+                            let _ = req.host.take_precompiles();
+                        }
                     }
                     Ok(TxResultExt::default())
                 },
