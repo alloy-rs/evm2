@@ -71,8 +71,9 @@ pub struct MessageExt<E = ()> {
     pub caller: Address,
     /// Call input data, or initcode for create messages.
     pub input: MessageInput,
-    /// Memory of the frame that sent this message, returned to that frame after execution.
-    /// A range [`input`](Self::input) reads its bytes from this memory while the child runs.
+    /// Memory supplied by the producer of this message. A call or create opcode moves its frame's
+    /// memory here and restores it after execution. A range [`input`](Self::input) reads its bytes
+    /// from this memory while the child runs.
     pub previous_frame_memory: Option<Memory>,
     /// Value transferred with the message.
     pub value: U256,
@@ -165,7 +166,7 @@ impl<E> MessageExt<E> {
 
     /// Returns the input bytes, using `memory` for an input that names a caller-memory range.
     ///
-    /// `memory` must be the previous frame's memory. An owned input does not use it.
+    /// `memory` must back this message's input range. An owned input does not use it.
     /// Panics if a range is out of bounds.
     #[inline]
     pub fn input_bytes<'a>(&'a self, memory: &'a Memory) -> &'a [u8] {

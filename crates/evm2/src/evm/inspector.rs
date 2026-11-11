@@ -106,12 +106,13 @@ impl Default for InspectorConfig {
 
 /// EVM execution inspector.
 ///
-/// In `call`, `call_end`, `create`, and `create_end`, `interp` is the caller's interpreter
-/// (or a temporary interpreter when no bytecode frame sent the message). Its
-/// [memory](Interpreter::memory) contains the caller's memory during the hook. When that memory
-/// was carried by [`Message::previous_frame_memory`], the field is temporarily `None`.
+/// In `call`, `call_end`, `create`, and `create_end`, `interp` is the active bytecode interpreter
+/// (or a temporary interpreter when none is active). Its [memory](Interpreter::memory) contains
+/// any memory carried by [`Message::previous_frame_memory`] during the hook; that field is then
+/// temporarily `None`. A custom precompile that sends another message controls the memory it
+/// attaches to that message.
 /// Read the input with [`Message::input_bytes`](crate::interpreter::MessageExt::input_bytes),
-/// passing `interp.memory()`; a range input refers to this caller memory.
+/// passing `interp.memory()`; a range input refers to the memory attached to the message.
 #[auto_impl(&mut, Box)]
 pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called after a frame interpreter has been initialized.
@@ -154,9 +155,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Called before a call message executes.
     ///
-    /// The interpreter is the currently running frame whose instruction produced the message; if
-    /// no bytecode frame sent it, the interpreter is initialized with the message itself.
-    /// The caller's memory and message input are available as described on [`Inspector`].
+    /// The interpreter is the active bytecode frame, if any; otherwise it is initialized with the
+    /// message itself. Memory and message input are available as described on [`Inspector`].
     ///
     /// A first frame that runs out of gas in the transaction's runtime gas phase halts without
     /// executing: this hook still fires for it, with a message that carries no bytecode, a
@@ -172,8 +172,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
         None
     }
 
-    /// Called after a call message executes. The caller's memory and message input are available
-    /// as described on [`Inspector`].
+    /// Called after a call message executes. Memory and message input are available as described
+    /// on [`Inspector`].
     #[inline]
     fn call_end(
         &mut self,
@@ -188,9 +188,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Called before a create message executes.
     ///
-    /// The interpreter is the currently running frame whose instruction produced the message; if
-    /// no bytecode frame sent it, the interpreter is initialized with the message itself.
-    /// The caller's memory and message input are available as described on [`Inspector`].
+    /// The interpreter is the active bytecode frame, if any; otherwise it is initialized with the
+    /// message itself. Memory and message input are available as described on [`Inspector`].
     ///
     /// A first frame that runs out of gas in the transaction's runtime gas phase halts without
     /// executing: this hook still fires for it, with a message that carries no bytecode, a
@@ -206,8 +205,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
         None
     }
 
-    /// Called after a create message executes. The caller's memory and message input are available
-    /// as described on [`Inspector`].
+    /// Called after a create message executes. Memory and message input are available as described
+    /// on [`Inspector`].
     #[inline]
     fn create_end(
         &mut self,

@@ -1756,11 +1756,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ) -> Result<MessageResult<T>, ExecutionError> {
         let mut gas =
             GasTracker::new_with_execution_gas_and_reservoir(message.gas_limit, message.reservoir);
-        // A custom precompile may execute another message. That message supplies its own caller
-        // memory; it must not inherit the interpreter that called this precompile.
-        let caller_frame = self.current_frame.take();
         let execution = self.execute_precompile(message, &mut gas);
-        self.current_frame = caller_frame;
         let (stop, output) = match execution {
             Ok(_) | Err(PrecompileError::Revert(_)) if gas.remaining() > message.gas_limit => {
                 (InstrStop::PrecompileOOG, Bytes::new())
@@ -5278,7 +5274,10 @@ mod tests {
 
     #[test]
     fn nested_precompile_hook_does_not_change_outer_input() {
-        struct ResizeNestedMemory;
+        #[derive(Default)]
+        struct ResizeNestedMemory {
+            outer_frame: Option<usize>,
+        }
 
         impl Inspector<BaseEvmTypes> for ResizeNestedMemory {
             fn call(
@@ -5286,7 +5285,11 @@ mod tests {
                 interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message,
             ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.destination == TEST_PRECOMPILE {
+                    self.outer_frame = Some(interp as *mut _ as usize);
+                }
                 if message.destination == INNER_TEST_PRECOMPILE {
+                    assert_eq!(self.outer_frame, Some(interp as *mut _ as usize));
                     assert!(interp.memory().as_slice().is_empty());
                     let memory = interp.memory_mut();
                     memory.resize(0, 1 << 20).unwrap();
@@ -5316,7 +5319,7 @@ mod tests {
             InMemoryDB::default(),
             precompiles,
         );
-        evm.set_inspector(ResizeNestedMemory);
+        evm.set_inspector(ResizeNestedMemory::default());
         let code = memory_input_call_code(TEST_PRECOMPILE, op::CALL);
         let mut message =
             MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
