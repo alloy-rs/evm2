@@ -149,7 +149,7 @@ where
     type Tx = &'a E::Transaction;
 
     fn into_parts(self) -> (Recovered<EvmTxOf<E>>, &'a E::Transaction) {
-        let tx = Recovered::new_unchecked(self.inner().clone().into(), self.signer());
+        let tx = Recovered::new_unchecked(self.clone_inner().into(), self.signer());
         (tx, self.inner())
     }
 }
@@ -158,6 +158,9 @@ where
 pub trait BlockTransactionResult<T: EvmTypes> {
     /// Returns the raw transaction execution result.
     fn result(&self) -> &TxResultWithState<T>;
+
+    /// Consumes the output and returns the raw transaction execution result.
+    fn into_result(self) -> TxResultWithState<T>;
 }
 
 /// The result of executing a block.

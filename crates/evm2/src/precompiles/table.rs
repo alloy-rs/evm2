@@ -16,6 +16,9 @@ use core::fmt::{self, Display};
 use derive_where::derive_where;
 
 /// Precompile implementation function.
+///
+/// It reads the message's input with [`Evm::message_input`], since the input of a call
+/// instruction's message is a range of the caller's memory.
 pub type PrecompileFn<T = BaseEvmTypes> =
     fn(&mut Evm<'_, T>, &Message<T>, &mut GasTracker) -> PrecompileResult;
 
@@ -163,7 +166,7 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             inner: AddressMap::with_capacity_and_hasher(capacity, Default::default()),
-            ..Self::default()
+            ..Self::new()
         }
     }
 
@@ -449,11 +452,11 @@ macro_rules! define_precompiles {
             #[allow(non_snake_case)]
             $vis const fn $name<T: $crate::EvmTypesHost>() -> $crate::precompiles::Precompile<T> {
                 fn run<T: $crate::EvmTypesHost>(
-                    _evm: &mut $crate::Evm<'_, T>,
+                    evm: &mut $crate::Evm<'_, T>,
                     message: &$crate::interpreter::Message<T>,
                     gas: &mut $crate::interpreter::GasTracker,
                 ) -> $crate::precompiles::PrecompileResult {
-                    $f(message.input.as_ref(), gas)
+                    $f(evm.message_input(message), gas)
                 }
 
                 $crate::precompiles::Precompile::new(
@@ -522,7 +525,7 @@ define_precompiles! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evm::precompile::PrecompileOutput;
+    use crate::{evm::precompile::PrecompileOutput, precompiles::Precompiles};
     use alloy_primitives::{Bytes, address};
     use core::assert_matches;
 
@@ -530,7 +533,7 @@ mod tests {
     fn map_precompile_updates_data_at_target_address() {
         let identity = IDENTITY::<BaseEvmTypes>();
         let address = identity.address();
-        let mut map = PrecompileMap::from_precompiles([identity]);
+        let mut map = Precompiles::map([identity]);
 
         map.map_precompile(&address, |precompile| {
             precompile
@@ -568,7 +571,7 @@ mod tests {
     fn map_precompiles_preserves_existing_addresses() {
         let identity = IDENTITY::<BaseEvmTypes>();
         let sha256 = SHA256::<BaseEvmTypes>();
-        let mut map = PrecompileMap::from_precompiles([identity.clone(), sha256.clone()]);
+        let mut map = Precompiles::map([identity.clone(), sha256.clone()]);
 
         map.map_precompiles(|_, precompile| {
             assert_matches!(precompile.id(), PrecompileId::Identity | PrecompileId::Sha256);
@@ -588,7 +591,7 @@ mod tests {
         let source = identity.address();
         let missing = address!("0x0000000000000000000000000000000000000999");
         let dest = address!("0x0000000000000000000000000000000000001000");
-        let mut map = PrecompileMap::from_precompiles([identity]);
+        let mut map = Precompiles::map([identity]);
 
         let err = map.move_precompiles([(source, dest), (missing, sha256.address())]);
 
@@ -605,7 +608,7 @@ mod tests {
         let sha256_address = sha256.address();
         let new_identity = address!("0x0000000000000000000000000000000000001001");
         let new_sha256 = address!("0x0000000000000000000000000000000000001002");
-        let mut map = PrecompileMap::from_precompiles([identity, sha256]);
+        let mut map = Precompiles::map([identity, sha256]);
 
         map.move_precompiles([(identity_address, new_identity), (sha256_address, new_sha256)])
             .unwrap();
@@ -622,7 +625,7 @@ mod tests {
         let identity_address = identity.address();
         let first = address!("0x0000000000000000000000000000000000001001");
         let second = address!("0x0000000000000000000000000000000000001002");
-        let mut map = PrecompileMap::from_precompiles([identity]);
+        let mut map = Precompiles::map([identity]);
 
         map.move_precompiles([(identity_address, first), (identity_address, second)]).unwrap();
 
@@ -637,7 +640,7 @@ mod tests {
         let short_miss = address!("0x0000000000000000000000000000000000000999");
         let long = address!("0x1000000000000000000000000000000000000004");
         let long_miss = address!("0x1000000000000000000000000000000000000005");
-        let mut map = PrecompileMap::from_precompiles([identity]);
+        let mut map = Precompiles::map([identity]);
 
         assert_eq!(map.get_data(&identity_address).unwrap().id(), &PrecompileId::Identity);
         assert!(map.get_data(&short_miss).is_none());
@@ -661,14 +664,14 @@ mod tests {
         let identity_address = identity.address();
         let sha256_address = sha256.address();
         let long = address!("0x1000000000000000000000000000000000000004");
-        let mut map = PrecompileMap::from_precompiles([identity, sha256]);
+        let mut map = Precompiles::map([identity, sha256]);
         map.move_precompiles([(sha256_address, long)]).unwrap();
 
         let mut warm = PrewarmSet::new();
         map.warm_addresses(&mut warm);
         assert!(warm.is_warm(&identity_address));
         assert!(warm.is_warm(&long));
-        assert!(!warm.is_warm(&sha256_address));
+        assert!(warm.is_cold(&sha256_address));
 
         map.move_precompiles([(long, sha256_address)]).unwrap();
         assert!(!map.contains(&long));
@@ -677,6 +680,6 @@ mod tests {
         let mut warm = PrewarmSet::new();
         map.warm_addresses(&mut warm);
         assert!(warm.is_warm(&sha256_address));
-        assert!(!warm.is_warm(&long));
+        assert!(warm.is_cold(&long));
     }
 }

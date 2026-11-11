@@ -100,7 +100,7 @@ impl ReceiptBuilder for EthReceiptBuilder {
     ) -> ReceiptEnvelope {
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
         let receipt = Receipt {
-            status: Eip658Value::Eip658(result.status),
+            status: Eip658Value::Eip658(result.is_success()),
             cumulative_gas_used,
             logs: result.logs,
         };
@@ -136,6 +136,10 @@ impl<T: EvmTypes, Ty> EthTransactionResultWithState<T, Ty> {
 impl<T: EvmTypes, Ty> BlockTransactionResult<T> for EthTransactionResultWithState<T, Ty> {
     fn result(&self) -> &TxResultWithState<T> {
         &self.result
+    }
+
+    fn into_result(self) -> TxResultWithState<T> {
+        self.result
     }
 }
 
@@ -383,10 +387,10 @@ where
     }
 
     #[inline]
-    const fn set_transaction_block_access_index(&mut self) {
+    fn set_transaction_block_access_index(&mut self) {
         if self.block_access_list_builder_enabled() {
             let index = self.receipts.len() as u64 + 1 + self.bal_index_offset;
-            self.evm.state_mut().set_bal_index(BlockAccessIndex::new(index));
+            self.set_block_access_index(BlockAccessIndex::new(index));
         }
     }
 
@@ -587,7 +591,7 @@ where
     ) -> Result<(BlockExecutionOutput<Self::Receipt>, Option<Bal>), BlockExecutionError> {
         let EthPostExecutionOutput { requests, gas_used, blob_gas_used } =
             self.apply_post_execution_changes(0)?;
-        let block_access_list = self.evm.state_mut().take_bal_builder();
+        let block_access_list = self.take_block_access_list();
         let output = BlockExecutionOutput::new(
             BlockExecutionResult { receipts: self.receipts, requests, gas_used, blob_gas_used },
             self.block_state.into_bundle(),

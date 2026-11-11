@@ -32,7 +32,10 @@ mod memory;
 pub use memory::Memory;
 
 mod message;
-pub use message::{Message, MessageExt, MessageKind, derive_create_destination};
+pub use message::{
+    Message, MessageExt, MessageInput, MessageKind, create_preaccess_failure,
+    derive_create_destination,
+};
 
 mod host;
 pub use host::{Host, MessageResult, MessageResultExt};
@@ -113,9 +116,9 @@ pub enum InstrStop {
     FatalExternalError,
     /// Invalid encoding of an instruction's immediate operand.
     InvalidImmediateEncoding,
-    /// The inspector's config changed while a child message ran. The frame leaves the dispatch,
-    /// continues after the instruction on the table for the new config, and never reports this
-    /// stop.
+    /// The inspector's config changed while a `hooked` instruction ran. The dispatch exits with
+    /// this stop after the instruction, and the frame continues on the table for the new config. No
+    /// instruction returns it, and a frame never reports it.
     #[doc(hidden)]
     Reload,
 }

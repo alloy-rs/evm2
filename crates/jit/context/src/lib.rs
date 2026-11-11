@@ -107,9 +107,8 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
         let block_env = NonNull::from(interpreter.host().block_env());
         let tx_env = NonNull::from(interpreter.host().tx_env());
-        let message = interpreter.message();
         let gas = interpreter.gas();
-        let calldatasize = message.input.len();
+        let calldatasize = interpreter.input().len();
         let return_data_len = interpreter.return_data().len();
         let (stack_ptr, stack_len) = unsafe { interpreter.stack_mut().into_raw_parts() };
         let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
@@ -180,8 +179,8 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
 
     /// Returns calldata bytes.
     #[inline]
-    pub const fn input(&self) -> &Bytes {
-        &self.message().input
+    pub const fn input(&self) -> &[u8] {
+        self.interpreter().input()
     }
 
     /// Returns the current block environment.
@@ -919,8 +918,8 @@ mod tests {
 
     #[test]
     fn extern_macro() {
-        let f1 = EvmCompilerFn::new(test_fn).0;
-        let f2 = EvmCompilerFn::new(__test_fn).0;
+        let f1 = EvmCompilerFn::new(test_fn).into_inner();
+        let f2 = EvmCompilerFn::new(__test_fn).into_inner();
         assert!(core::ptr::fn_addr_eq(f1, f2), "{f1:?} != {f2:?}");
     }
 }

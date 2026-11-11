@@ -45,6 +45,8 @@ pub(crate) struct RuntimeStats {
     pub(crate) jit_helper_resume_requests: AtomicU64,
     /// Total number of out-of-process JIT helper resume request failures.
     pub(crate) jit_helper_resume_failures: AtomicU64,
+    /// Total compilation results discarded because the resident cache was cleared.
+    pub(crate) compilations_discarded: AtomicU64,
 }
 
 /// Gauge values sampled at snapshot time.
@@ -131,6 +133,8 @@ pub struct RuntimeStatsSnapshot {
     pub jit_helper_resume_requests: u64,
     /// Total number of out-of-process JIT helper resume request failures.
     pub jit_helper_resume_failures: u64,
+    /// Total compilation results discarded because the resident cache was cleared while they ran.
+    pub compilations_discarded: u64,
 }
 
 impl RuntimeStatsSnapshot {
@@ -152,7 +156,9 @@ impl RuntimeStats {
         let dispatched = self.compilations_dispatched.load(Ordering::Relaxed);
         let succeeded = self.compilations_succeeded.load(Ordering::Relaxed);
         let failed = self.compilations_failed.load(Ordering::Relaxed);
-        let pending_jobs = dispatched.saturating_sub(succeeded.saturating_add(failed));
+        let discarded = self.compilations_discarded.load(Ordering::Relaxed);
+        let pending_jobs =
+            dispatched.saturating_sub(succeeded.saturating_add(failed).saturating_add(discarded));
 
         RuntimeStatsSnapshot {
             lookup_hits: self.lookup_hits.load(Ordering::Relaxed),
@@ -183,6 +189,7 @@ impl RuntimeStats {
             jit_helper_pause_timeouts: self.jit_helper_pause_timeouts.load(Ordering::Relaxed),
             jit_helper_resume_requests: self.jit_helper_resume_requests.load(Ordering::Relaxed),
             jit_helper_resume_failures: self.jit_helper_resume_failures.load(Ordering::Relaxed),
+            compilations_discarded: discarded,
         }
     }
 }

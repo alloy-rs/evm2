@@ -8,6 +8,7 @@ use alloy_primitives::{
 use evm2::{
     Evm, EvmTypes, Inspector,
     interpreter::{Interpreter, Message, MessageResult, op},
+    utils::WordExt,
 };
 
 /// An [Inspector] that collects touched accounts and storage slots.
@@ -19,6 +20,9 @@ pub struct AccessListInspector {
     excluded: HashSet<Address>,
     /// All addresses and touched slots
     touched_slots: HashMap<Address, BTreeSet<B256>>,
+    /// Whether the seeded entries of excluded addresses were removed, which happens once, before
+    /// the first top-level call.
+    seeds_pruned: bool,
 }
 
 impl From<AccessList> for AccessListInspector {
@@ -36,7 +40,7 @@ impl AccessListInspector {
         for item in access_list.0 {
             touched_slots.entry(item.address).or_default().extend(item.storage_keys);
         }
-        Self { excluded: Default::default(), touched_slots }
+        Self { excluded: Default::default(), touched_slots, seeds_pruned: false }
     }
 
     /// Excludes additional addresses from the final access list.
@@ -108,16 +112,22 @@ impl AccessListInspector {
         access_list
     }
 
-    /// Collects addresses which should be excluded from the access list. Must be called before the
-    /// top-level call.
+    /// Collects addresses which should be excluded from the access list. Must be called before
+    /// each top-level call.
     ///
-    /// Those include caller, callee and precompiles.
+    /// Those include caller, callee and precompiles. In a transaction with several top-level
+    /// calls, such as an account-abstraction batch, entries touched by earlier calls are kept even
+    /// if a later call targets their address.
     fn collect_excluded_addresses<T: EvmTypes>(&mut self, message: &Message<T>, host: &Evm<'_, T>) {
         self.excluded.extend(
             [message.caller, message.destination].into_iter().chain(host.precompiles().addresses()),
         );
-        // Remove seeded excluded entries; SLOAD/SSTORE can re-add slots accessed during execution.
-        self.touched_slots.retain(|address, _| !self.excluded.contains(address));
+        if !self.seeds_pruned {
+            self.seeds_pruned = true;
+            // Remove seeded excluded entries; SLOAD/SSTORE can re-add slots accessed during
+            // execution.
+            self.touched_slots.retain(|address, _| !self.excluded.contains(address));
+        }
     }
 }
 
@@ -127,10 +137,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
             op::SLOAD | op::SSTORE => {
                 if let Some([slot]) = interp.stack().peekn() {
                     let cur_contract = interp.message().destination;
-                    self.touched_slots
-                        .entry(cur_contract)
-                        .or_default()
-                        .insert(B256::from(slot.to_be_bytes()));
+                    self.touched_slots.entry(cur_contract).or_default().insert(B256::from(slot));
                 }
             }
             op::EXTCODECOPY
@@ -139,7 +146,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
             | op::BALANCE
             | op::SELFDESTRUCT => {
                 if let Some([slot]) = interp.stack().peekn() {
-                    let addr = Address::from_word(B256::from(slot.to_be_bytes()));
+                    let addr = slot.to_address();
                     if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
@@ -149,7 +156,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
                 // `go-ethereum` reads the target once five items are on the stack, even if the call
                 // then underflows.
                 if let Some([_, slot, _, _, _]) = interp.stack().peekn() {
-                    let addr = Address::from_word(B256::from(slot.to_be_bytes()));
+                    let addr = slot.to_address();
                     if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
@@ -165,7 +172,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
-        if message.depth == interp.version().initial_call_depth {
+        if message.depth == 0 {
             self.collect_excluded_addresses(message, interp.host());
         }
         None
@@ -177,7 +184,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
-        if message.depth == interp.version().initial_call_depth {
+        if message.depth == 0 {
             self.collect_excluded_addresses(message, interp.host());
         }
         None

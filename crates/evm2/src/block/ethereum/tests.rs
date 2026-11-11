@@ -9,9 +9,12 @@ use crate::{
         AccountInfo, BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
         InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
     },
+    utils::b256_to_word,
 };
 use alloc::vec;
-use alloy_consensus::{Signed, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered};
+use alloy_consensus::{
+    SignableTransaction, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered,
+};
 use alloy_eips::{
     eip2935::HISTORY_STORAGE_CODE, eip4788::BEACON_ROOTS_CODE,
     eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_CODE, eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_CODE,
@@ -46,7 +49,7 @@ fn evm(spec: SpecId, gas_limit: u64) -> Evm<'static, BaseEvmTypes> {
 
 fn evm_with(spec: SpecId, gas_limit: u64, database: InMemoryDB) -> Evm<'static, BaseEvmTypes> {
     let block = BlockEnvExt {
-        number: U256::from(1),
+        number: U256::ONE,
         timestamp: U256::from(12),
         beneficiary: BENEFICIARY,
         gas_limit: U256::from(gas_limit),
@@ -79,14 +82,11 @@ fn transfer(gas_limit: u64) -> Recovered<EthereumTxEnvelope<TxEip4844>> {
         gas_price: 1,
         gas_limit,
         to: TxKind::Call(RECIPIENT),
-        value: U256::from(1),
+        value: U256::ONE,
         ..TxLegacy::default()
     };
-    let signature = Signature::new(U256::from(1), U256::from(1), false);
-    Recovered::new_unchecked(
-        EthereumTxEnvelope::Legacy(Signed::new_unhashed(tx, signature)),
-        SENDER,
-    )
+    let signature = Signature::new(U256::ONE, U256::ONE, false);
+    Recovered::new_unchecked(EthereumTxEnvelope::Legacy(tx.into_signed(signature)), SENDER)
 }
 
 fn blob_transfer() -> Recovered<EthereumTxEnvelope<TxEip4844>> {
@@ -96,11 +96,8 @@ fn blob_transfer() -> Recovered<EthereumTxEnvelope<TxEip4844>> {
         blob_versioned_hashes: vec![B256::ZERO],
         ..TxEip4844::default()
     };
-    let signature = Signature::new(U256::from(1), U256::from(1), false);
-    Recovered::new_unchecked(
-        EthereumTxEnvelope::Eip4844(Signed::new_unhashed(tx, signature)),
-        SENDER,
-    )
+    let signature = Signature::new(U256::ONE, U256::ONE, false);
+    Recovered::new_unchecked(EthereumTxEnvelope::Eip4844(tx.into_signed(signature)), SENDER)
 }
 
 fn balance(state: &BundleState, address: Address) -> Option<U256> {
@@ -120,18 +117,18 @@ fn executes_prague_block() {
 
     let output = executor.finish().unwrap();
     let [receipt] = output.result.receipts.as_slice() else { panic!("expected one receipt") };
-    assert!(receipt.status());
+    assert!(receipt.is_success());
     assert_eq!(receipt.cumulative_gas_used(), 21_000);
     assert_eq!(output.result.gas_used, 21_000);
     assert!(output.result.requests.is_empty());
 
     let state = &output.state;
-    assert_eq!(balance(state, RECIPIENT), Some(U256::from(1)));
+    assert_eq!(balance(state, RECIPIENT), Some(U256::ONE));
     // EIP-2935 stores the parent hash at slot `(number - 1) % 8191`.
-    let parent_hash = U256::from_be_bytes(PARENT_HASH.0);
+    let parent_hash = b256_to_word(PARENT_HASH);
     assert_eq!(storage(state, HISTORY_STORAGE_ADDRESS, U256::ZERO), Some(parent_hash));
     // EIP-4788 stores the timestamp at `timestamp % 8191` and the root 8191 slots later.
-    let root = U256::from_be_bytes(PARENT_BEACON_BLOCK_ROOT.0);
+    let root = b256_to_word(PARENT_BEACON_BLOCK_ROOT);
     assert_eq!(storage(state, BEACON_ROOTS_ADDRESS, U256::from(12)), Some(U256::from(12)));
     assert_eq!(storage(state, BEACON_ROOTS_ADDRESS, U256::from(12 + 8191)), Some(root));
 }
@@ -221,19 +218,16 @@ fn reads_rules_from_hardforks() {
 }
 
 #[test]
-fn rejects_request_contract_without_code() {
+fn request_contract_without_code_produces_no_requests() {
     let mut database = database();
     database.insert_account_info(&WITHDRAWAL_REQUEST_ADDRESS, AccountInfo::default());
+    database.insert_account_info(&CONSOLIDATION_REQUEST_ADDRESS, AccountInfo::default());
     let evm = evm_with(SpecId::PRAGUE, 30_000_000, database);
     let mut executor =
         EthBlockExecutor::new(evm, ctx(), EthBlockRules::default(), EthReceiptBuilder);
     executor.apply_pre_execution_changes().unwrap();
-    let error = executor.finish().unwrap_err();
-    assert!(matches!(
-        error,
-        BlockExecutionError::Validation(BlockValidationError::SystemContractEmpty { address })
-            if address == WITHDRAWAL_REQUEST_ADDRESS
-    ));
+    let output = executor.finish().unwrap();
+    assert!(output.result.requests.is_empty());
 }
 
 #[test]

@@ -277,7 +277,7 @@ pub fn pre_execution_system_call_state_changes<T: EvmTypes>(
             .ok_or(BlockValidationError::MissingParentBeaconBlockRoot)?;
 
         if block_number == 0 {
-            if parent_beacon_block_root != B256::ZERO {
+            if !parent_beacon_block_root.is_zero() {
                 return Err(BlockValidationError::CancunGenesisParentBeaconBlockRootNotZero {
                     parent_beacon_block_root,
                 }
@@ -393,24 +393,26 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
         return Ok(());
     }
 
-    let withdrawal_requests = execute_request_system_call(
+    let withdrawal_requests = execute_system_call(
         evm,
         block_state,
         stream_state,
         on_state_update,
         WITHDRAWAL_REQUEST_ADDRESS,
+        Bytes::new(),
     )?;
     requests.push_request_with_type(
         WITHDRAWAL_REQUEST_TYPE,
         withdrawal_requests.output.iter().copied(),
     );
 
-    let consolidation_requests = execute_request_system_call(
+    let consolidation_requests = execute_system_call(
         evm,
         block_state,
         stream_state,
         on_state_update,
         CONSOLIDATION_REQUEST_ADDRESS,
+        Bytes::new(),
     )?;
     requests.push_request_with_type(
         CONSOLIDATION_REQUEST_TYPE,
@@ -418,24 +420,26 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     );
 
     if spec_id.enables(SpecId::AMSTERDAM) {
-        let builder_deposit_requests = execute_request_system_call(
+        let builder_deposit_requests = execute_system_call(
             evm,
             block_state,
             stream_state,
             on_state_update,
             BUILDER_DEPOSIT_REQUEST_ADDRESS,
+            Bytes::new(),
         )?;
         requests.push_request_with_type(
             BUILDER_DEPOSIT_REQUEST_TYPE,
             builder_deposit_requests.output.iter().copied(),
         );
 
-        let builder_exit_requests = execute_request_system_call(
+        let builder_exit_requests = execute_system_call(
             evm,
             block_state,
             stream_state,
             on_state_update,
             BUILDER_EXIT_REQUEST_ADDRESS,
+            Bytes::new(),
         )?;
         requests.push_request_with_type(
             BUILDER_EXIT_REQUEST_TYPE,
@@ -444,22 +448,6 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     }
 
     Ok(())
-}
-
-/// Runs a request system call. A target without code makes the block invalid: the EVM itself
-/// treats a call to it as a successful no-op.
-fn execute_request_system_call<T: EvmTypes>(
-    evm: &mut Evm<'_, T>,
-    block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
-    address: Address,
-) -> Result<TxResult<T>, BlockExecutionError> {
-    let info = evm.read_account_info(&address).map_err(map_database_error)?;
-    if info.is_none_or(|info| info.is_empty_code_hash()) {
-        return Err(BlockValidationError::SystemContractEmpty { address }.into());
-    }
-    execute_system_call(evm, block_state, stream_state, on_state_update, address, Bytes::new())
 }
 
 fn execute_system_call<T: EvmTypes>(
@@ -472,7 +460,7 @@ fn execute_system_call<T: EvmTypes>(
 ) -> Result<TxResult<T>, BlockExecutionError> {
     let executed = evm.system_call(SystemTx::new(address, data)).map_err(map_handler_error)?;
     // History and beacon-root calls accept reverts and halts, unlike request-producing calls.
-    if !executed.result().status
+    if !executed.result().is_success()
         && !matches!(address, BEACON_ROOTS_ADDRESS | HISTORY_STORAGE_ADDRESS)
     {
         let reason = executed.result().stop;
@@ -486,7 +474,7 @@ fn execute_system_call<T: EvmTypes>(
                     message: alloc::format!("{reason:?}"),
                 }
             }
-            _ => BlockValidationError::Other(AnyError::new(SystemCallFailed { address, reason })),
+            _ => BlockValidationError::other(SystemCallFailed { address, reason }),
         }
         .into());
     }
@@ -671,13 +659,13 @@ impl core::error::Error for SystemCallFailed {}
 mod tests {
     use super::*;
     use alloc::vec;
-    use alloy_primitives::LogData;
 
     fn deposit_log(data: Vec<u8>) -> Log {
-        Log {
-            address: MAINNET_DEPOSIT_CONTRACT_ADDRESS,
-            data: LogData::new_unchecked(vec![DEPOSIT_EVENT_SIGNATURE_HASH], data.into()),
-        }
+        Log::new_unchecked(
+            MAINNET_DEPOSIT_CONTRACT_ADDRESS,
+            vec![DEPOSIT_EVENT_SIGNATURE_HASH],
+            data.into(),
+        )
     }
 
     /// Encodes a canonical `DepositEvent` payload whose fields are filled with `fill`.

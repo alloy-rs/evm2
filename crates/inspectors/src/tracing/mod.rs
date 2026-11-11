@@ -3,20 +3,20 @@
 use crate::{
     opcode::immediate_size,
     tracing::{
-        arena::PushTraceKind,
         types::{
             CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
             TraceMemberOrder,
         },
+        utils::step_cost,
     },
 };
 use alloc::{boxed::Box, vec::Vec};
-use alloy_consensus::{Transaction, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256};
-use alloy_rpc_types_trace::parity::StorageDelta;
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use alloy_rpc_types_trace::{geth::FlatCallConfig, parity::StorageDelta};
 use core::{mem, ops::Range};
 use evm2::{
-    Evm, EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId, TxResultExt,
+    EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId,
+    evm::PrewarmSet,
     interpreter::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
@@ -29,7 +29,7 @@ pub use arena::CallTraceArena;
 mod builder;
 pub use builder::{
     geth::{self, GethTraceBuilder},
-    parity::{self, ParityTraceBuilder},
+    parity::{self, ParityTraceBuilder, PrecompileExclusion},
 };
 
 mod config;
@@ -57,7 +57,7 @@ pub use opcount::OpcodeCountInspector;
 pub mod types;
 use types::{CallLog, CallTrace, CallTraceStep};
 
-mod utils;
+pub(crate) mod utils;
 
 #[cfg(feature = "std")]
 mod writer;
@@ -99,7 +99,7 @@ pub struct TracingInspector {
     ///
     /// This is a stack because nested calls are executed between the `step` and `step_end` of the
     /// call instruction itself. A `usize::MAX` step index marks a step that was not recorded.
-    step_stack: Vec<(usize, usize)>,
+    step_stack: Vec<PendingStep>,
     /// Number of opcode steps captured across all calls since the last reset.
     recorded_steps: u64,
     /// The spec id of the EVM.
@@ -114,6 +114,11 @@ pub struct TracingInspector {
     ///
     /// All `Vec<CallTraceStep>` are always empty but may have capacity.
     reusable_step_vecs: Vec<Vec<CallTraceStep>>,
+    /// The precompiles the host warms, read on the first call that records precompile calls.
+    ///
+    /// Addresses a provider only dispatches to on demand, such as Tempo's token precompiles,
+    /// trace like contracts, as with revm-inspectors' warm precompile set.
+    precompiles: Option<PrewarmSet>,
 }
 
 impl TracingInspector {
@@ -135,7 +140,7 @@ impl TracingInspector {
 
     /// Returns whether recording omitted a byte buffer after reaching the budget.
     pub const fn limit_exceeded(&self) -> bool {
-        self.budget.exceeded
+        self.budget.exceeded()
     }
 
     /// Resets the inspector to its initial state of [Self::new].
@@ -152,6 +157,7 @@ impl TracingInspector {
             recorded_steps,
             spec_id,
             features,
+            precompiles,
             // kept
             config,
             budget,
@@ -160,7 +166,7 @@ impl TracingInspector {
 
         // if we record steps we can reuse the individual calltracestep vecs
         if config.record_steps {
-            for node in &mut traces.arena {
+            for node in traces.nodes_mut() {
                 // move out and store the reusable steps vec
                 let mut steps = mem::take(&mut node.trace.steps);
                 // ensure steps are cleared
@@ -176,6 +182,7 @@ impl TracingInspector {
         *recorded_steps = 0;
         spec_id.take();
         *features = EvmFeatures::empty();
+        precompiles.take();
         budget.recorded = 0;
         budget.exceeded = false;
     }
@@ -282,10 +289,25 @@ impl TracingInspector {
         }
     }
 
-    /// Consumes the Inspector and returns a [ParityTraceBuilder].
+    /// Consumes the Inspector and returns a [ParityTraceBuilder] that leaves out calls to
+    /// precompiles without value, see [PrecompileExclusion::ZeroValue].
     #[inline]
     pub fn into_parity_builder(self) -> ParityTraceBuilder {
-        ParityTraceBuilder::new(self.traces.arena, self.spec_id, self.config)
+        ParityTraceBuilder::new(self.traces.arena, PrecompileExclusion::ZeroValue)
+    }
+
+    /// Consumes the Inspector and returns a [ParityTraceBuilder] for geth's flatCallTracer.
+    ///
+    /// Unlike [Self::into_parity_builder], this keeps or leaves out calls to precompiles as the
+    /// tracer's `includePrecompiles` option says.
+    #[inline]
+    pub fn into_flat_call_builder(self, config: &FlatCallConfig) -> ParityTraceBuilder {
+        let exclusion = if config.include_precompiles.unwrap_or_default() {
+            PrecompileExclusion::None
+        } else {
+            PrecompileExclusion::CallAndStaticCall
+        };
+        ParityTraceBuilder::new(self.traces.arena, exclusion)
     }
 
     /// Consumes the Inspector and returns a [GethTraceBuilder].
@@ -301,30 +323,7 @@ impl TracingInspector {
     /// starting a new transaction: [`Self::fuse`]
     #[inline]
     pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
-        GethTraceBuilder::new_borrowed(&self.traces.arena).with_features(self.features)
-    }
-
-    /// Returns true if we're no longer in the context of the root call.
-    const fn is_deep(&self) -> bool {
-        // the root call will always be the first entry in the trace stack
-        !self.trace_stack.is_empty()
-    }
-
-    /// Returns true if this a call to a precompile contract.
-    ///
-    /// Returns true if the `to` address is a precompile contract and the value is zero.
-    #[inline]
-    fn is_precompile_call<T: EvmTypes>(
-        &self,
-        host: &Evm<'_, T>,
-        to: &Address,
-        value: &U256,
-    ) -> bool {
-        if host.precompiles().contains(to) {
-            // only if this is _not_ the root call
-            return self.is_deep() && value.is_zero();
-        }
-        false
+        GethTraceBuilder::new_borrowed(self.traces.nodes()).with_features(self.features)
     }
 
     /// Returns the last trace [CallTrace] index from the stack.
@@ -373,15 +372,6 @@ impl TracingInspector {
         gas_limit: u64,
         maybe_precompile: Option<bool>,
     ) {
-        // This will only be true if the inspector is configured to exclude precompiles and the call
-        // is to a precompile
-        let push_kind = if maybe_precompile.unwrap_or(false) {
-            // We don't want to track precompiles
-            PushTraceKind::PushOnly
-        } else {
-            PushTraceKind::PushAndAttachToParent
-        };
-
         // find an empty steps vec or create a new one
         let steps = self.reusable_step_vecs.pop().unwrap_or_default();
 
@@ -390,7 +380,6 @@ impl TracingInspector {
 
         let trace_idx = self.traces.push_trace(
             parent,
-            push_kind,
             CallTrace {
                 depth,
                 address,
@@ -423,7 +412,7 @@ impl TracingInspector {
         trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
 
         trace.status = Some(result.stop);
-        trace.success = result.stop.is_success();
+        trace.success = result.is_success();
         trace.output = result.output.clone();
         if !trace.success {
             self.log_count = log_count;
@@ -457,7 +446,7 @@ impl TracingInspector {
             && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get());
         if !record {
             // Push a sentinel so that the upcoming `step_end` stays paired with this step.
-            self.step_stack.push((trace_idx, usize::MAX));
+            self.step_stack.push(PendingStep::new(trace_idx, usize::MAX, 0));
             return;
         }
 
@@ -547,7 +536,11 @@ impl TracingInspector {
         });
 
         node.ordering.push(TraceMemberOrder::Step(step_idx));
-        self.step_stack.push((trace_idx, step_idx));
+        self.step_stack.push(PendingStep::new(
+            trace_idx,
+            step_idx,
+            interp.gas().remaining_excluding_state_spill(),
+        ));
 
         if self.config.record_step_deltas {
             let write_range = memory_write_range(op.get(), interp.stack().as_slice());
@@ -568,12 +561,30 @@ impl TracingInspector {
         }
     }
 
+    /// Records the gas a call or create step has charged, when its message starts.
+    ///
+    /// Invoked on [Inspector::call] and [Inspector::create], where the parent has charged the step,
+    /// including the gas forwarded to the child, and the child has not returned any gas yet. A
+    /// call step costs the forwarded gas too, a create step does not, so `forwarded` is the gas to
+    /// give back.
+    fn finish_step_charge<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>, forwarded: u64) {
+        // The step's own message is the first one it starts; a precompile may start more.
+        if let Some(pending) = self.step_stack.last_mut()
+            && pending.gas_after_charge.is_none()
+        {
+            pending.gas_after_charge =
+                Some(interp.gas().remaining_excluding_state_spill().saturating_add(forwarded));
+        }
+    }
+
     /// Fills the current trace with the output of a step.
     ///
     /// Invoked on [Inspector::step_end].
     #[cold]
     fn fill_step_on_step_end<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        let Some((trace_idx, step_idx)) = self.step_stack.pop() else {
+        let Some(PendingStep { trace_idx, step_idx, gas_before, gas_after_charge }) =
+            self.step_stack.pop()
+        else {
             return;
         };
         let node = &mut self.traces.arena[trace_idx];
@@ -605,12 +616,19 @@ impl TracingInspector {
             );
         }
 
-        // An out-of-gas step consumes the whole remainder, except the reentrancy sentry, which
-        // halts before any charge.
-        step.gas_cost = if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
-            0
-        } else {
-            interp.step_cost()
+        // A call or create step is charged once its message starts, which includes the gas
+        // forwarded by a call and excludes it for a create. Any other step is charged when it
+        // ends. State gas that spills into the remaining gas is not part of the cost.
+        let result = interp.result();
+        step.gas_cost = match gas_after_charge {
+            Some(after) if result != Err(InstrStop::ReentrancySentryOOG) => {
+                gas_before.saturating_sub(after)
+            }
+            _ => step_cost(
+                result,
+                step.gas_remaining,
+                gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill()),
+            ),
         };
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
@@ -652,37 +670,6 @@ impl TracingInspector {
                 );
             }
         }
-    }
-
-    /// Restores a root omitted when evm2 halts during runtime gas charging, before its hooks run.
-    pub(crate) fn recover_runtime_oog_root<E>(
-        &mut self,
-        tx: &Recovered<impl Transaction>,
-        result: &TxResultExt<E>,
-    ) {
-        // The arena starts with a default root. After execution, call_end/create_end have set
-        // its status if the root was recorded, even when it executed no opcodes.
-        if self.traces.arena[0].trace.status.is_some() || result.stop != InstrStop::OutOfGas {
-            return;
-        }
-
-        let (kind, address) = match tx.kind() {
-            TxKind::Call(address) => (CallKind::Call, address),
-            TxKind::Create => (CallKind::Create, tx.signer().create(tx.nonce())),
-        };
-        self.traces.arena[0].trace = CallTrace {
-            caller: tx.signer(),
-            address,
-            kind,
-            value: tx.value(),
-            data: if self.config.record_inputs { tx.input().clone() } else { Bytes::new() },
-            gas_limit: tx.gas_limit(),
-            gas_used: result.tx_gas_used(),
-            status: Some(InstrStop::OutOfGas),
-            ..Default::default()
-        };
-        // Do not guess the EVM features from the halt or its gas accounting. The normal hooks did
-        // not run, and the transaction result does not identify the active fork.
     }
 }
 
@@ -732,6 +719,11 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         if self.config.record_logs {
             let log_count = self.log_count;
             self.log_count += 1;
+            // Embedders can emit logs outside any call, before the first or after the last. They
+            // still take a log index but have no trace to attach to.
+            if self.trace_stack.is_empty() {
+                return;
+            }
             let trace = self.last_trace();
             trace.ordering.push(TraceMemberOrder::Log(trace.logs.len()));
             trace.logs.push(
@@ -751,6 +743,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             self.spec_id = Some(interp.spec());
         }
         self.features = interp.version().features;
+        self.finish_step_charge(interp, 0);
 
         // determine correct `from` and `to` based on the call scheme
         let (from, to) = match message.kind {
@@ -760,16 +753,21 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             _ => (message.caller, message.destination),
         };
 
-        // if calls to precompiles should be excluded, check whether this is a call to a precompile
-        let maybe_precompile = self
-            .config
-            .exclude_precompile_calls
-            .then(|| self.is_precompile_call(interp.host(), &to, &message.value));
+        // Builders decide whether to leave out calls to precompiles, so record which calls are.
+        let maybe_precompile = self.config.record_precompile_calls.then(|| {
+            self.precompiles
+                .get_or_insert_with(|| {
+                    let mut precompiles = PrewarmSet::new();
+                    interp.host().precompiles().warm_addresses(&mut precompiles);
+                    precompiles
+                })
+                .is_warm(&to)
+        });
 
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
         {
-            message.input.clone()
+            message.input.to_bytes(interp.memory())
         } else {
             Bytes::new()
         };
@@ -807,11 +805,12 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             self.spec_id = Some(interp.spec());
         }
         self.features = interp.version().features;
+        self.finish_step_charge(interp, message.gas_limit);
 
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
         {
-            message.input.clone()
+            message.input.to_bytes(interp.memory())
         } else {
             Bytes::new()
         };
@@ -845,6 +844,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         value: &U256,
         _host: &mut T::Host<'_>,
     ) {
+        if self.trace_stack.is_empty() {
+            return;
+        }
         let node = self.last_trace();
         node.trace.selfdestruct_address = Some(*contract);
         node.trace.selfdestruct_refund_target = Some(*target);
@@ -954,4 +956,57 @@ const fn storage_write(op: u8, stack: &[U256]) -> Option<StorageDelta> {
 struct TraceStackEntry {
     trace_idx: usize,
     log_count: usize,
+}
+
+/// A step waiting for `step_end`.
+#[derive(Clone, Copy, Debug)]
+struct PendingStep {
+    trace_idx: usize,
+    step_idx: usize,
+    /// The remaining gas plus spilled state gas when the step started.
+    gas_before: u64,
+    /// The same measure once a call or create step charged everything it charges before its
+    /// message starts.
+    gas_after_charge: Option<u64>,
+}
+
+impl PendingStep {
+    const fn new(trace_idx: usize, step_idx: usize, gas_before: u64) -> Self {
+        Self { trace_idx, step_idx, gas_before, gas_after_charge: None }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use evm2::{BaseEvmTypes, Evm, Precompiles, ethereum::ethereum_tx_registry, evm::InMemoryDB};
+
+    #[test]
+    fn log_and_selfdestruct_without_active_frame() {
+        let mut inspector = TracingInspector::new(TracingInspectorConfig::none().record_logs());
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            Default::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let traces = inspector.traces.clone();
+
+        Inspector::<BaseEvmTypes>::log(&mut inspector, &Log::default(), &mut host);
+
+        assert_eq!(inspector.log_count, 1);
+        assert!(inspector.traces.nodes().iter().all(|node| node.logs.is_empty()));
+        assert_eq!(inspector.traces, traces);
+
+        Inspector::<BaseEvmTypes>::selfdestruct(
+            &mut inspector,
+            &Address::ZERO,
+            &Address::ZERO,
+            &U256::ZERO,
+            &mut host,
+        );
+
+        assert_eq!(inspector.traces, traces);
+    }
 }

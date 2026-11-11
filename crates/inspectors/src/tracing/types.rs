@@ -51,7 +51,8 @@ pub struct DecodedCallTrace {
 pub struct CallTrace {
     /// The inspector-visible depth of the call.
     ///
-    /// The root starts at [`evm2::Version::initial_call_depth`], normally zero.
+    /// Top-level calls start at [`evm2::Evm::initial_call_depth`], normally zero. Above zero,
+    /// they are children of an empty root at depth zero.
     ///
     /// The depth of a call's steps is the depth of the call plus one.
     pub depth: usize,
@@ -67,7 +68,9 @@ pub struct CallTrace {
     pub address: Address,
     /// Whether this is a call to a precompile.
     ///
-    /// Note: This is optional because not all tracers make use of this.
+    /// Only recorded if
+    /// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls)
+    /// is set, otherwise `None`.
     pub maybe_precompile: Option<bool>,
     /// The address of the selfdestructed contract.
     pub selfdestruct_address: Option<Address>,
@@ -139,7 +142,7 @@ impl CallTrace {
     /// Returns true if the status code is a revert.
     #[inline]
     pub fn is_revert(&self) -> bool {
-        self.status.is_some_and(|status| status == InstrStop::Revert)
+        self.status.is_some_and(InstrStop::is_revert)
     }
 
     /// Returns `true` if this trace was a selfdestruct.
