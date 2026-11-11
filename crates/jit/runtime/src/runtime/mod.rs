@@ -795,19 +795,21 @@ impl BackendInner {
             // Ignoring send error — backend may already be gone.
             let _ = self.tx.send(Command::Shutdown);
 
-            // Wait for the thread to signal completion, with a timeout.
-            match ct.done_rx.recv_timeout(self.shutdown_timeout) {
-                Ok(()) | Err(chan::RecvTimeoutError::Disconnected) => {}
-                Err(chan::RecvTimeoutError::Timeout) => {
-                    eyre::bail!(
-                        "backend thread did not exit within timeout ({:?})",
-                        self.shutdown_timeout
-                    );
-                }
+            let timed_out = matches!(
+                ct.done_rx.recv_timeout(self.shutdown_timeout),
+                Err(chan::RecvTimeoutError::Timeout)
+            );
+            // Returning here would drop the handle and detach the thread, and a worker still
+            // inside LLVM would then race process-exit destructors. So a missed deadline only
+            // warns, and the join below waits.
+            if timed_out {
+                warn!(
+                    timeout = ?self.shutdown_timeout,
+                    "JIT backend thread did not exit within the shutdown timeout; waiting for it to exit"
+                );
             }
-
-            // Thread signaled done, join should return immediately.
-            ct.handle.join().map_err(|_| eyre::eyre!("backend thread panicked"))??;
+            let joined = ct.handle.join().map_err(|_| eyre::eyre!("backend thread panicked"))?;
+            joined?;
         }
         Ok(())
     }

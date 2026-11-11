@@ -211,7 +211,8 @@ pub(crate) struct WorkerPool {
     queued: Arc<AtomicUsize>,
     /// Maximum queued jobs accepted by the pool.
     queue_capacity: usize,
-    /// Signals workers to stop accepting new work.
+    /// Set by [`shutdown`](Self::shutdown): new jobs are rejected and queued jobs return without
+    /// compiling.
     shutdown: Arc<AtomicBool>,
 }
 
@@ -296,15 +297,22 @@ impl WorkerPool {
         let result_tx = self.result_tx.clone();
         let config = self.config.clone();
         let out_of_process_helper = self.out_of_process_helper.clone();
+        let shutdown = self.shutdown.clone();
         pool.spawn_fifo(move || {
             queued.fetch_sub(1, Ordering::AcqRel);
+            // The backend discards results after shutdown, so a job that has not started yet
+            // only delays the join. Dropping its notifier tells a waiter that it never ran.
+            if shutdown.load(Ordering::Acquire) {
+                return;
+            }
             let result = compile_job(job, &config, out_of_process_helper);
             let _ = result_tx.send(result);
         });
         Ok(())
     }
 
-    /// Shuts down all workers after draining queued jobs.
+    /// Cancels any out-of-process compile, skips queued jobs, and joins the workers once their
+    /// running jobs return.
     pub(crate) fn shutdown(&mut self) -> eyre::Result<()> {
         self.shutdown.store(true, Ordering::Release);
         self.cancel_in_flight();
@@ -784,6 +792,8 @@ fn compile_job(
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    use alloy_primitives::B256;
+    use evm2::SpecId;
     use std::cell::RefCell;
 
     struct ExitHook {
@@ -882,5 +892,49 @@ mod lifecycle_tests {
         });
         release.send(()).unwrap();
         owner.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_skips_queued_jobs() {
+        let (results, results_rx) = chan::unbounded();
+        let config = RuntimeConfig {
+            tuning: super::super::RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+            ..Default::default()
+        };
+        let mut pool = WorkerPool::new(results, config, Arc::new(RuntimeStats::default()));
+        let (entered, entered_rx) = chan::bounded(1);
+        let (release, release_rx) = chan::bounded(1);
+        pool.pool.as_ref().unwrap().spawn_fifo(move || {
+            entered.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        // The only worker is busy, so these jobs wait in the queue.
+        let (notifier, waiter) = chan::bounded(4);
+        for i in 0..4 {
+            let job = CompileJob {
+                kind: CompilationKind::Jit,
+                key: RuntimeCacheKey {
+                    code_hash: B256::with_last_byte(i),
+                    spec_id: SpecId::CANCUN,
+                },
+                bytecode: Bytes::from_static(&[0x00]),
+                symbol_name: format!("queued_{i}"),
+                opt_level: OptimizationLevel::default(),
+                sync_notifier: SyncNotifier::new(notifier.clone()),
+                generation: 0,
+            };
+            assert!(pool.try_send(job).is_ok());
+        }
+        drop(notifier);
+        let shutdown = pool.shutdown.clone();
+        let owner = std::thread::spawn(move || pool.shutdown().unwrap());
+        while !shutdown.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        owner.join().unwrap();
+        assert_eq!(results_rx.try_iter().count(), 0);
+        assert_eq!(waiter.try_recv(), Err(chan::TryRecvError::Disconnected));
     }
 }

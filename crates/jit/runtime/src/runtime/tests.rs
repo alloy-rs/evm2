@@ -2094,3 +2094,75 @@ fn shutdown_propagates_worker_error() {
     assert!(error.to_string().contains("controlled compile worker failure"));
     assert!(backend.inner.thread.lock().unwrap().is_none());
 }
+
+#[test]
+fn shutdown_joins_past_timeout() {
+    let mut backend = JitBackend::disabled();
+    Arc::get_mut(&mut backend.inner).unwrap().shutdown_timeout =
+        std::time::Duration::from_millis(50);
+    // `shutdown` sends this immediately before waiting on the backend thread.
+    let commands = backend.inner.lazy_spawn.lock().unwrap().take().unwrap().rx;
+
+    let (release_tx, release_rx) = chan::bounded(1);
+    let (finished_tx, finished_rx) = chan::bounded(1);
+    let (done_tx, done_rx) = chan::bounded(1);
+    *backend.inner.thread.lock().unwrap() = Some(BackendThread {
+        handle: std::thread::spawn(move || {
+            release_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let _ = done_tx.send(());
+            finished_tx.send(()).unwrap();
+            Ok(())
+        }),
+        done_rx,
+    });
+
+    let logs = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let logs_for_writer = Arc::clone(&logs);
+    let (returned_tx, returned_rx) = chan::bounded(1);
+    let owner = std::thread::spawn(move || {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || ShutdownLog(Arc::clone(&logs_for_writer)))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || backend.inner.shutdown().unwrap());
+        returned_tx.send(()).unwrap();
+    });
+    let read_logs = || String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+        Command::Shutdown
+    ));
+    poll_until(std::time::Duration::from_secs(10), || {
+        read_logs()
+            .contains(
+                "JIT backend thread did not exit within the shutdown timeout; waiting for it to exit",
+            )
+            .then_some(())
+    });
+    // The injected thread is still parked, so shutdown must still be waiting on it.
+    assert_eq!(returned_rx.try_recv(), Err(chan::TryRecvError::Empty));
+
+    release_tx.send(()).unwrap();
+    returned_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    let trace = read_logs();
+    assert!(trace.contains("timeout=50ms"), "{trace}");
+    assert!(!trace.contains("failed to shutdown"), "{trace}");
+    assert_eq!(finished_rx.try_recv(), Ok(()));
+    owner.join().unwrap();
+}
+
+struct ShutdownLog(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for ShutdownLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}

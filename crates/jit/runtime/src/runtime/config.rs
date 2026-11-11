@@ -262,7 +262,10 @@ pub struct RuntimeTuning {
     /// Defaults to `100ms`.
     pub event_drain_interval: Duration,
 
-    /// Timeout for joining the backend thread during shutdown.
+    /// How long shutdown waits for the backend thread before it logs a warning. Shutdown keeps
+    /// waiting until the thread exits.
+    ///
+    /// Also bounds the wait for a killed out-of-process JIT helper to exit.
     ///
     /// Defaults to `5s`.
     pub shutdown_timeout: Duration,
