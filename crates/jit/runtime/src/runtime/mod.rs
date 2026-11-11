@@ -6,7 +6,7 @@
 //! - Background JIT compilation for hot keys (threshold-based promotion).
 
 use crate::eyre::{self, WrapErr};
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::B256;
 use backend::{
     Command, CompileJitRequest, EventQueue, JitObjectLinker, LookupEvent, PrepareAotRequest,
     ResidentMap,
