@@ -51,7 +51,8 @@ pub struct DecodedCallTrace {
 pub struct CallTrace {
     /// The inspector-visible depth of the call.
     ///
-    /// The root starts at [`evm2::Version::initial_call_depth`], normally zero.
+    /// Top-level calls start at [`evm2::Evm::initial_call_depth`], normally zero. Above zero,
+    /// they are children of an empty root at depth zero.
     ///
     /// The depth of a call's steps is the depth of the call plus one.
     pub depth: usize,
