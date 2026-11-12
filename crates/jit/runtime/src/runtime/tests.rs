@@ -59,27 +59,42 @@ impl TestBackend {
         Self::new(RuntimeConfig { enabled: true, tuning, ..Default::default() })
     }
 
+    /// Creates a backend with `enabled: false` and the given tuning overrides.
+    fn disabled_with_tuning(tuning: RuntimeTuning) -> Self {
+        Self::new(RuntimeConfig { enabled: false, tuning, ..Default::default() })
+    }
+
+    /// Creates a backend with `blocking: true` and the given tuning overrides.
+    fn blocking_with_tuning(tuning: RuntimeTuning) -> Self {
+        Self::new(RuntimeConfig { blocking: true, tuning, ..Default::default() })
+    }
+
+    /// Creates a backend with `enabled: true`, the given store, and the given tuning overrides.
+    #[cfg(feature = "llvm")]
+    fn with_store(store: Arc<dyn ArtifactStore>, tuning: RuntimeTuning) -> Self {
+        Self::new(RuntimeConfig { enabled: true, store: Some(store), tuning, ..Default::default() })
+    }
+
     /// Creates a backend with `enabled: true`, 1 worker, and the given tuning overrides.
     fn with_tuning_1w(tuning: RuntimeTuning) -> Self {
         Self::with_tuning(RuntimeTuning { jit_worker_count: 1, ..tuning })
     }
 
     /// Creates a backend with `enabled: true`, 1 worker, and default tuning.
-    #[cfg(feature = "llvm")]
     fn default_1w() -> Self {
         Self::with_tuning_1w(RuntimeTuning::default())
     }
 
     /// Builds a [`LookupRequest`] for the given bytecode and spec.
-    fn req(bytecode: &[u8], spec_id: SpecId) -> LookupRequest {
+    fn req(bytecode: &[u8], spec_id: SpecId) -> LookupRequest<'_> {
         LookupRequest {
             key: RuntimeCacheKey { code_hash: alloy_primitives::keccak256(bytecode), spec_id },
-            code: Bytes::copy_from_slice(bytecode),
+            code: bytecode.into(),
         }
     }
 
     /// Builds a [`LookupRequest`] with [`SpecId::CANCUN`].
-    fn req_cancun(bytecode: &[u8]) -> LookupRequest {
+    fn req_cancun(bytecode: &[u8]) -> LookupRequest<'_> {
         Self::req(bytecode, SpecId::CANCUN)
     }
 
@@ -241,6 +256,74 @@ impl ArtifactStore for CountingStore {
     }
 }
 
+#[cfg(feature = "llvm")]
+#[derive(Clone, Copy, Debug)]
+enum AotFailure {
+    Persist,
+    ReloadMissing,
+    ReloadError,
+    Link,
+    NoStore,
+}
+
+#[cfg(feature = "llvm")]
+struct AotFailureStore {
+    inner: RuntimeArtifactStore,
+    failure: AotFailure,
+}
+
+#[cfg(feature = "llvm")]
+impl ArtifactStore for AotFailureStore {
+    fn load_all(&self) -> eyre::Result<Vec<(ArtifactKey, StoredArtifact)>> {
+        self.inner.load_all()
+    }
+
+    fn load(&self, key: &ArtifactKey) -> eyre::Result<Option<StoredArtifact>> {
+        let Some(mut stored) = self.inner.load(key)? else { return Ok(None) };
+        match self.failure {
+            AotFailure::ReloadMissing => return Ok(None),
+            AotFailure::ReloadError => eyre::bail!("injected AOT reload failure"),
+            // A malformed symbol makes linking fail without handing invalid object bytes to LLVM.
+            AotFailure::Link => stored.manifest.symbol_name.push('\0'),
+            _ => {}
+        }
+        Ok(Some(stored))
+    }
+
+    fn store(
+        &self,
+        key: &ArtifactKey,
+        manifest: &ArtifactManifest,
+        object_bytes: &[u8],
+    ) -> eyre::Result<()> {
+        if matches!(self.failure, AotFailure::Persist) {
+            eyre::bail!("injected AOT persist failure");
+        }
+        self.inner.store(key, manifest, object_bytes)
+    }
+
+    fn delete(&self, key: &ArtifactKey) -> eyre::Result<()> {
+        self.inner.delete(key)
+    }
+
+    fn clear(&self) -> eyre::Result<()> {
+        self.inner.clear()
+    }
+}
+
+#[cfg(feature = "llvm")]
+static STALE_RESULT_GATE: Mutex<Option<(chan::Sender<()>, chan::Receiver<()>)>> = Mutex::new(None);
+
+#[cfg(feature = "llvm")]
+fn gated_builtin_address(builtin: evm2_jit_builtins::Builtin) -> usize {
+    let gate = STALE_RESULT_GATE.lock().unwrap().take();
+    if let Some((entered, release)) = gate {
+        entered.send(()).unwrap();
+        release.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+    }
+    builtin.addr::<evm2::BaseEvmTypes>()
+}
+
 // ===========================================================================
 // Tests: startup / basic.
 // ===========================================================================
@@ -294,9 +377,8 @@ fn aot_out_of_process_is_rejected() {
 
 #[test]
 fn zero_workers_fails_sync_compile_without_blocking() {
-    let tb = TestBackend::new(RuntimeConfig {
-        blocking: true,
-        tuning: RuntimeTuning { jit_worker_count: 0, ..Default::default() },
+    let tb = TestBackend::blocking_with_tuning(RuntimeTuning {
+        jit_worker_count: 0,
         ..Default::default()
     });
 
@@ -311,9 +393,8 @@ fn zero_workers_fails_sync_compile_without_blocking() {
 
 #[test]
 fn blocking_pending_job_cap_counts_fallback() {
-    let tb = TestBackend::new(RuntimeConfig {
-        blocking: true,
-        tuning: RuntimeTuning { jit_max_pending_jobs: 0, ..Default::default() },
+    let tb = TestBackend::blocking_with_tuning(RuntimeTuning {
+        jit_max_pending_jobs: 0,
         ..Default::default()
     });
 
@@ -347,13 +428,9 @@ fn blocking_sync_compile_timeout_counts_fallback() {
 #[test]
 #[cfg(feature = "llvm")]
 fn blocking_mode_compiles_bytecode_over_max_len() {
-    let tb = TestBackend::new(RuntimeConfig {
-        blocking: true,
-        tuning: RuntimeTuning {
-            jit_worker_count: 1,
-            jit_max_bytecode_len: 4,
-            ..Default::default()
-        },
+    let tb = TestBackend::blocking_with_tuning(RuntimeTuning {
+        jit_worker_count: 1,
+        jit_max_bytecode_len: 4,
         ..Default::default()
     });
 
@@ -364,7 +441,7 @@ fn blocking_mode_compiles_bytecode_over_max_len() {
 
 #[test]
 fn lookup_disabled() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: false, ..Default::default() });
+    let tb = TestBackend::disabled_with_tuning(Default::default());
 
     let req = TestBackend::req_cancun(&[0x00]);
     let decision = tb.lookup(req);
@@ -377,7 +454,7 @@ fn lookup_disabled() {
 
 #[test]
 fn lookup_miss_when_enabled() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
+    let tb = TestBackend::with_tuning(Default::default());
 
     let decision = tb.lookup(TestBackend::req_cancun(&[0x00]));
     assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::NotReady)));
@@ -389,19 +466,13 @@ fn lookup_miss_when_enabled() {
 
 #[test]
 fn set_enabled_toggle() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: false, ..Default::default() });
+    let tb = TestBackend::disabled_with_tuning(Default::default());
     let req = TestBackend::req_cancun(&[0x00]);
 
-    assert!(matches!(
-        tb.lookup(req.clone()),
-        LookupDecision::Unavailable(LookupMissReason::Disabled)
-    ));
+    assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::Disabled)));
 
     tb.set_enabled(true).unwrap();
-    assert!(matches!(
-        tb.lookup(req.clone()),
-        LookupDecision::Unavailable(LookupMissReason::NotReady)
-    ));
+    assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::NotReady)));
 
     tb.set_enabled(false).unwrap();
     assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::Disabled)));
@@ -416,10 +487,7 @@ fn pause_processes_lookup_events() {
     tb.pause();
     tb.pause();
     assert!(tb.is_paused());
-    assert!(matches!(
-        tb.lookup(req.clone()),
-        LookupDecision::Unavailable(LookupMissReason::NotReady)
-    ));
+    assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::NotReady)));
 
     let stats = tb.wait_stats(|s| s.lookup_misses == 1);
     assert_eq!(stats.lookup_misses, 1);
@@ -438,7 +506,7 @@ fn pause_processes_lookup_events() {
 
 #[test]
 fn lookup_increments_miss_counter() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
+    let tb = TestBackend::with_tuning(Default::default());
 
     for _ in 0..10 {
         let _ = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
@@ -462,7 +530,7 @@ fn drop_shuts_down_backend() {
 
 #[test]
 fn backend_clone() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
+    let tb = TestBackend::with_tuning(Default::default());
     let b2 = tb.backend.clone();
 
     let _ = tb.lookup(TestBackend::req_cancun(&[0x00]));
@@ -521,7 +589,7 @@ fn prepare_aot_enqueue() {
     let tb = TestBackend::with_tuning(RuntimeTuning { jit_worker_count: 0, ..Default::default() });
     tb.prepare_aot(AotRequest {
         code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     });
 }
@@ -532,12 +600,12 @@ fn prepare_aot_batch_enqueue() {
     let reqs = vec![
         AotRequest {
             code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         },
         AotRequest {
             code_hash: alloy_primitives::keccak256(BYTECODE_ADD),
-            code: Bytes::copy_from_slice(BYTECODE_ADD),
+            code: Bytes::from_static(BYTECODE_ADD),
             spec_id: SpecId::CANCUN,
         },
     ];
@@ -559,7 +627,7 @@ fn prepare_aot_batch_never_blocks_when_startup_fails() {
     let worker = std::thread::spawn(move || {
         let reqs = vec![AotRequest {
             code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         }];
         // More requests than the channel can hold: deadlocks without the started check.
@@ -583,7 +651,7 @@ fn prepare_aot_batch_never_blocks_when_startup_fails() {
 
 #[test]
 fn clear_resident() {
-    let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
+    let tb = TestBackend::with_tuning(Default::default());
     tb.clear_resident();
 
     let decision = tb.lookup(TestBackend::req_cancun(&[0x00]));
@@ -620,9 +688,8 @@ fn pause_resume_never_block_without_backend_thread() {
     // after `channel_capacity` sends and block the caller forever (observed in production as a
     // consensus-engine deadlock after exactly capacity/2 blocks). They must be skipped, not
     // queued, while the backend is not started.
-    let tb = TestBackend::new(RuntimeConfig {
-        enabled: false,
-        tuning: RuntimeTuning { channel_capacity: 2, ..Default::default() },
+    let tb = TestBackend::disabled_with_tuning(RuntimeTuning {
+        channel_capacity: 2,
         ..Default::default()
     });
 
@@ -686,9 +753,8 @@ fn clear_commands_are_queued_after_startup_takes_config() {
         (JitBackend::clear_persisted, Command::ClearPersisted),
         (JitBackend::clear_all, Command::ClearAll),
     ] {
-        let tb = TestBackend::new(RuntimeConfig {
-            enabled: false,
-            tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+        let tb = TestBackend::disabled_with_tuning(RuntimeTuning {
+            channel_capacity: 1,
             ..Default::default()
         });
         let mut guard = tb.inner.lazy_spawn.lock().unwrap();
@@ -743,9 +809,8 @@ fn clear_commands_racing_with_startup_reach_store() {
 
 #[test]
 fn clear_commands_never_block_after_startup_receiver_disconnects() {
-    let tb = TestBackend::new(RuntimeConfig {
-        enabled: false,
-        tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+    let tb = TestBackend::disabled_with_tuning(RuntimeTuning {
+        channel_capacity: 1,
         ..Default::default()
     });
     drop(tb.inner.lazy_spawn.lock().unwrap().take().unwrap());
@@ -802,7 +867,7 @@ fn clear_commands_after_failed_spawn_reach_store_and_allow_retry() {
 #[test]
 fn pause_resume_depth_tracking_with_backend_thread() {
     // With the backend running, pause/resume still track depth and deliver commands.
-    let tb = TestBackend::with_tuning_1w(RuntimeTuning::default());
+    let tb = TestBackend::default_1w();
 
     tb.pause();
     tb.pause();
@@ -851,9 +916,8 @@ fn blocking_out_of_process_pause_resume_does_not_stop_helper() {
 #[test]
 #[cfg(feature = "llvm")]
 fn blocking_mode() {
-    let tb = TestBackend::new(RuntimeConfig {
-        blocking: true,
-        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+    let tb = TestBackend::blocking_with_tuning(RuntimeTuning {
+        jit_worker_count: 1,
         ..Default::default()
     });
 
@@ -978,27 +1042,53 @@ fn failed_compile_is_not_retried_until_cleared() {
 #[test]
 #[cfg(feature = "llvm")]
 fn clear_resident_discards_inflight_jit() {
-    let tb =
-        TestBackend::with_tuning_1w(RuntimeTuning { jit_hot_threshold: 1, ..Default::default() });
+    for clear in [JitBackend::clear_resident, JitBackend::clear_all] {
+        let (entered_tx, entered_rx) = chan::bounded(1);
+        let (release_tx, release_rx) = chan::bounded(1);
+        *STALE_RESULT_GATE.lock().unwrap() = Some((entered_tx, release_rx));
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: true,
+            // SAFETY: the resolver returns the base host's unchanged builtin addresses.
+            host: unsafe {
+                HostConfig::for_types::<evm2::BaseEvmTypes>().with_resolver(gated_builtin_address)
+            },
+            tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+            ..Default::default()
+        });
 
-    let req = || TestBackend::req_cancun(BYTECODE_RET42);
+        std::thread::scope(|scope| {
+            let compiling = scope.spawn(|| {
+                tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+            });
+            entered_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            clear(&tb);
+            // An ineligible request completes without a worker. Its notification proves the
+            // earlier clear command was processed, while the real compilation is still held.
+            tb.compile_jit_sync(TestBackend::req_cancun(&[])).unwrap();
+            assert_eq!(tb.stats().pending_jobs, 1);
+            release_tx.send(()).unwrap();
+            compiling.join().unwrap();
+        });
 
-    // Trigger JIT promotion.
-    for _ in 0..5 {
-        let _ = tb.lookup(req());
+        let stats = tb.stats();
+        assert_eq!(stats.compilations_dispatched, 1);
+        assert_eq!(stats.compilations_succeeded, 0);
+        assert_eq!(stats.compilations_failed, 0);
+        assert_eq!(stats.pending_jobs, 0);
+        assert_eq!(stats.compilations_discarded, 1);
+        assert!(
+            tb.get_compiled(alloy_primitives::keccak256(BYTECODE_RET42), SpecId::CANCUN).is_none()
+        );
+
+        // The new generation still compiles and notifies normally.
+        tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+        assert!(
+            tb.get_compiled(alloy_primitives::keccak256(BYTECODE_RET42), SpecId::CANCUN).is_some()
+        );
+        assert_eq!(tb.stats().pending_jobs, 0);
+        assert_eq!(tb.stats().compilations_succeeded, 1);
+        assert_eq!(tb.stats().compilations_discarded, 1);
     }
-
-    // Immediately clear — in-flight JIT results should be discarded.
-    tb.clear_resident();
-
-    // Give time for worker to finish and backend to process.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    // The result from the old generation should have been discarded.
-    assert!(
-        matches!(tb.lookup(req()), LookupDecision::Unavailable(LookupMissReason::NotReady)),
-        "stale JIT result should not appear after clear_resident",
-    );
 }
 
 #[test]
@@ -1031,11 +1121,8 @@ fn compile_jit_sync_blocks() {
 
 #[test]
 fn sync_compile_wait_times_out() {
-    let tb = TestBackend::new(RuntimeConfig {
-        tuning: RuntimeTuning {
-            sync_compile_timeout: std::time::Duration::from_millis(1),
-            ..Default::default()
-        },
+    let tb = TestBackend::disabled_with_tuning(RuntimeTuning {
+        sync_compile_timeout: std::time::Duration::from_millis(1),
         ..Default::default()
     });
     let (_tx, rx) = chan::bounded(1);
@@ -1182,7 +1269,7 @@ fn memory_budget_eviction() {
     // evictions counter instead.
     let req = TestBackend::req_cancun(BYTECODE_RET42);
     poll_until(std::time::Duration::from_secs(10), || {
-        let _ = tb.lookup(req.clone());
+        let _ = tb.lookup(req);
         if tb.stats().evictions >= 1 { Some(()) } else { None }
     });
 }
@@ -1204,7 +1291,7 @@ fn memory_budget_evicts_aot_entries() {
 
     tb.prepare_aot_sync(AotRequest {
         code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     })
     .unwrap();
@@ -1435,7 +1522,7 @@ fn prepare_aot_persist_and_load() {
     let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
     tb.prepare_aot_sync(AotRequest {
         code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     })
     .unwrap();
@@ -1443,6 +1530,107 @@ fn prepare_aot_persist_and_load() {
     let p = tb.get_compiled(code_hash, SpecId::CANCUN).unwrap();
     assert_eq!(p.kind, ProgramKind::Aot);
     assert_eq!(store.len(), 1);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn failed_aot_persist_is_not_retried_until_cleared() {
+    let mut dispatches = Vec::new();
+    for failure in [
+        AotFailure::Persist,
+        AotFailure::ReloadMissing,
+        AotFailure::ReloadError,
+        AotFailure::Link,
+        AotFailure::NoStore,
+    ] {
+        let store = (!matches!(failure, AotFailure::NoStore)).then(|| {
+            Arc::new(AotFailureStore { inner: RuntimeArtifactStore::new().unwrap(), failure })
+                as Arc<dyn ArtifactStore>
+        });
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: true,
+            aot: store.is_some(),
+            store,
+            tuning: RuntimeTuning {
+                jit_worker_count: 1,
+                jit_hot_threshold: 1,
+                idle_evict_duration: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let req = || AotRequest {
+            code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
+            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            spec_id: SpecId::CANCUN,
+        };
+
+        // Duplicate requests must all be notified even when persistence/linking fails.
+        tb.prepare_aot_batch_sync(vec![req(), req(), req()]).unwrap();
+        assert_eq!(tb.stats().compilations_failed, 1, "failure case {failure:?}");
+        for _ in 0..10 {
+            if !matches!(failure, AotFailure::NoStore) {
+                let misses = tb.stats().lookup_misses;
+                let _ = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+                tb.wait_stats(|s| s.lookup_misses > misses);
+            }
+            // Also acts as a completion barrier and checks suppressed requests notify callers.
+            tb.prepare_aot_sync(req()).unwrap();
+        }
+        let attempts = tb.stats().compilations_dispatched;
+        eprintln!("{failure:?}: dispatched {attempts} AOT attempts before clear");
+        dispatches.push(attempts);
+
+        tb.clear_resident();
+        tb.prepare_aot_sync(req()).unwrap();
+        assert_eq!(tb.stats().compilations_dispatched, attempts + 1);
+        assert_eq!(tb.stats().compilations_failed, attempts + 1);
+
+        // In JIT mode an explicit AOT failure must not suppress the other compilation kind.
+        // In AOT mode even compile_jit_sync deliberately requests AOT output.
+        if matches!(failure, AotFailure::NoStore) {
+            tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+            let program = tb.get_compiled(req().code_hash, SpecId::CANCUN).unwrap();
+            assert_eq!(program.kind, ProgramKind::Jit);
+            assert_eq!(tb.stats().compilations_succeeded, 1);
+        }
+        assert_eq!(tb.stats().pending_jobs, 0);
+    }
+    assert_eq!(dispatches, vec![1; 5]);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn failed_aot_persist_allows_jit_retry() {
+    for failure in
+        [AotFailure::Persist, AotFailure::ReloadMissing, AotFailure::ReloadError, AotFailure::Link]
+    {
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: true,
+            store: Some(Arc::new(AotFailureStore {
+                inner: RuntimeArtifactStore::new().unwrap(),
+                failure,
+            })),
+            tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+            ..Default::default()
+        });
+        let req = TestBackend::req_cancun(BYTECODE_RET42);
+        tb.prepare_aot_sync(AotRequest {
+            code_hash: req.key.code_hash,
+            code: req.code.to_bytes(),
+            spec_id: req.key.spec_id,
+        })
+        .unwrap();
+        assert_eq!(tb.stats().compilations_failed, 1);
+        tb.compile_jit_sync(req).unwrap();
+        assert_eq!(
+            tb.get_compiled(req.key.code_hash, req.key.spec_id).unwrap().kind,
+            ProgramKind::Jit
+        );
+        assert_eq!(tb.stats().compilations_dispatched, 2);
+        assert_eq!(tb.stats().compilations_succeeded, 1);
+        assert_eq!(tb.stats().pending_jobs, 0);
+    }
 }
 
 #[test]
@@ -1514,7 +1702,7 @@ fn aot_artifacts_survive_restart() {
 
         tb.prepare_aot_sync(AotRequest {
             code_hash,
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         })
         .unwrap();
@@ -1524,11 +1712,7 @@ fn aot_artifacts_survive_restart() {
 
     // Second backend: should preload the artifact at startup.
     {
-        let tb = TestBackend::new(RuntimeConfig {
-            enabled: true,
-            store: Some(store),
-            ..Default::default()
-        });
+        let tb = TestBackend::with_store(store, Default::default());
 
         let decision = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
         assert!(
@@ -1556,7 +1740,7 @@ fn preload_aot_seeds_resident() {
 
         tb.prepare_aot_sync(AotRequest {
             code_hash,
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         })
         .unwrap();
@@ -1564,11 +1748,7 @@ fn preload_aot_seeds_resident() {
 
     // Second backend: preloaded AOT should be available immediately.
     {
-        let tb = TestBackend::new(RuntimeConfig {
-            enabled: true,
-            store: Some(store),
-            ..Default::default()
-        });
+        let tb = TestBackend::with_store(store, Default::default());
         assert_eq!(tb.stats().resident_entries, 1);
     }
 }
@@ -1588,7 +1768,7 @@ fn preload_aot_skips_stale_abi_version() {
         });
         tb.prepare_aot_sync(AotRequest {
             code_hash,
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         })
         .unwrap();
@@ -1627,7 +1807,7 @@ fn preload_aot_skips_manifest_key_mismatch() {
         });
         tb.prepare_aot_sync(AotRequest {
             code_hash,
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            code: Bytes::from_static(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
         })
         .unwrap();
@@ -1639,18 +1819,16 @@ fn preload_aot_skips_manifest_key_mismatch() {
     let mismatched_store = Arc::new(RuntimeArtifactStore::new().unwrap());
     mismatched_store.store(&key, &manifest, &std::fs::read(&stored.object_path).unwrap()).unwrap();
 
-    let tb = TestBackend::new(RuntimeConfig {
-        enabled: true,
-        store: Some(mismatched_store),
-        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
-        ..Default::default()
-    });
+    let tb = TestBackend::with_store(
+        mismatched_store,
+        RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+    );
     assert_eq!(tb.stats().resident_entries, 0);
 
     // The probe rejects it too, so the artifact is recompiled.
     tb.prepare_aot_sync(AotRequest {
         code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     })
     .unwrap();
@@ -1688,7 +1866,7 @@ fn artifacts_are_scoped_to_compile_config() {
     let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
     let req = || AotRequest {
         code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     };
     let config = |gas_params| RuntimeConfig {
@@ -1736,7 +1914,7 @@ fn prepare_aot_already_persisted_not_resident() {
     // Compile and persist an AOT artifact.
     tb.prepare_aot_sync(AotRequest {
         code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     })
     .unwrap();
@@ -1751,7 +1929,7 @@ fn prepare_aot_already_persisted_not_resident() {
     // Requesting prepare_aot again should load from store without recompiling.
     tb.prepare_aot_sync(AotRequest {
         code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        code: Bytes::from_static(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
     })
     .unwrap();
@@ -1793,11 +1971,8 @@ fn prepare_aot_persists_jit_resident() {
     tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
     assert_eq!(tb.stats().compilations_dispatched, dispatched_before);
 
-    let req = AotRequest {
-        code_hash,
-        code: Bytes::copy_from_slice(BYTECODE_RET42),
-        spec_id: SpecId::CANCUN,
-    };
+    let req =
+        AotRequest { code_hash, code: Bytes::from_static(BYTECODE_RET42), spec_id: SpecId::CANCUN };
     tb.prepare_aot_sync(req.clone()).unwrap();
 
     assert_eq!(store.len(), 1);
@@ -1830,7 +2005,7 @@ fn prepare_aot_preserves_jit_resident_on_failure() {
         ..Default::default()
     });
     let req = TestBackend::req_cancun(BYTECODE_RET42);
-    tb.compile_jit_sync(req.clone()).unwrap();
+    tb.compile_jit_sync(req).unwrap();
     let jit = tb.get_compiled(req.key.code_hash, req.key.spec_id).unwrap();
     assert_eq!(jit.kind, ProgramKind::Jit);
     let before = tb.stats();
@@ -1838,7 +2013,7 @@ fn prepare_aot_preserves_jit_resident_on_failure() {
     // EmptyStore accepts writes but cannot return the artifact for loading.
     tb.prepare_aot_sync(AotRequest {
         code_hash: req.key.code_hash,
-        code: req.code,
+        code: req.code.to_bytes(),
         spec_id: req.key.spec_id,
     })
     .unwrap();

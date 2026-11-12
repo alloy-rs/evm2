@@ -7,7 +7,6 @@ use crate::tracing::{
         call_kind_js_string, to_bigint, to_uint8_array, to_uint8_array_value,
         uint8_array_from_block,
     },
-    tx_state::TxState,
     types::CallKind,
 };
 use alloc::{
@@ -34,9 +33,10 @@ use core::{
 };
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, DbResult, DynDatabase, State},
+    evm::{AccountInfo, DbResult, DynDatabase, PendingState, State},
     interpreter::{
         Word,
+        instructions::{decode_pair, decode_single},
         opcode::{
             OpCode, op as opcode,
             op::{PUSH0, PUSH32},
@@ -112,7 +112,7 @@ fn state_fn<T: 'static>(
     .build()
 }
 
-fn type_error(message: String) -> JsError {
+pub(crate) fn type_error(message: String) -> JsError {
     JsError::from_native(JsNativeError::typ().with_message(message))
 }
 
@@ -241,6 +241,8 @@ pub(crate) struct PreStep<'a> {
     pub(crate) pc: u64,
     /// Opcode to be executed
     pub(crate) op: u8,
+    /// Byte after the opcode, or 0 if the bytecode ends there
+    pub(crate) immediate: u8,
     /// Remaining gas before step execution
     pub(crate) gas_remaining: u64,
     /// Stack before step execution
@@ -481,10 +483,10 @@ impl ReusableEvmDb {
         self.with_scope(&mut StateDbReader { state }, f)
     }
 
-    /// Borrows a transaction's materialized changes and backing database during a callback.
+    /// Borrows a transaction's pending state and backing database during a callback.
     pub(crate) fn with_changes_scope<R>(
         &self,
-        changes: &TxState,
+        changes: &PendingState,
         db: &mut dyn DynDatabase,
         f: impl FnOnce() -> R,
     ) -> R {
@@ -552,7 +554,7 @@ impl EvmDbReader for StateDbReader<'_, '_> {
     }
 
     fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.account(address)?.load_code()
+        self.state.code_untracked(address)
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
@@ -561,7 +563,7 @@ impl EvmDbReader for StateDbReader<'_, '_> {
 }
 
 struct ChangesDbReader<'a> {
-    changes: &'a TxState,
+    changes: &'a PendingState,
     db: &'a mut dyn DynDatabase,
 }
 
@@ -582,13 +584,16 @@ impl ChangesDbReader<'_> {
 
 impl EvmDbReader for ChangesDbReader<'_> {
     fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        if let Some(account) = self.changes.accounts.get(address) {
-            return Ok(account.current.clone());
+        if let Some(account) = self.changes.account_changes_for(address) {
+            return Ok(account.current.cloned());
         }
         self.db.get_account(address)
     }
 
     fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
+        if let Some((_, code)) = self.changes.account_changes_for(address).and_then(|a| a.code) {
+            return Ok(code.clone());
+        }
         let Some(info) = self.read_basic(address)? else {
             return Ok(Bytecode::default());
         };
@@ -645,12 +650,12 @@ pub(crate) struct StepSnapshot {
 impl StepSnapshot {
     /// Records everything about a step that must be captured before the opcode executes.
     pub(crate) fn record(&mut self, step: PreStep<'_>) {
-        let PreStep { pc, op, gas_remaining, stack, memory } = step;
+        let PreStep { pc, op, immediate, gas_remaining, stack, memory } = step;
         let state = self;
         state.pc = pc;
         state.op = op;
         state.gas_remaining = gas_remaining;
-        state.stack.record(op, stack);
+        state.stack.record(op, immediate, stack);
         state.memory.record(op, stack, memory);
     }
 }
@@ -727,6 +732,9 @@ impl OpcodeNames {
 /// An opcode only touches its top `inputs` items, so the pre-execution stack is the post-execution
 /// stack below those items followed by the saved inputs. This holds for halted opcodes too, which
 /// pop at most `inputs` items.
+///
+/// SWAPN and EXCHANGE declare no inputs but swap items at depths decoded from their immediate, so
+/// they save every item down to the deepest one they touch.
 #[derive(Debug, Default)]
 struct StackView {
     /// Pre-execution length.
@@ -738,9 +746,17 @@ struct StackView {
 }
 
 impl StackView {
-    fn record(&mut self, op: u8, stack: &[U256]) {
+    fn record(&mut self, op: u8, immediate: u8, stack: &[U256]) {
         self.len = stack.len();
-        let inputs = OpCode::new(op).map_or(0, |op| op.inputs() as usize).min(stack.len());
+        let inputs = match op {
+            // An invalid immediate halts the opcode before it touches the stack.
+            opcode::SWAPN => decode_single(immediate).map_or(0, |n| usize::from(n) + 1),
+            opcode::EXCHANGE => {
+                decode_pair(immediate).map_or(0, |(n, m)| usize::from(n.max(m)) + 1)
+            }
+            _ => OpCode::new(op).map_or(0, |op| op.inputs() as usize),
+        }
+        .min(stack.len());
         self.saved.clear();
         self.saved.extend_from_slice(&stack[stack.len() - inputs..]);
     }
@@ -840,7 +856,7 @@ fn memory_write_range(op: u8, stack: &[U256]) -> Option<(usize, usize)> {
     let peek = |n: usize| stack.len().checked_sub(n + 1).map(|i| stack[i]);
     let (offset, size) = match op {
         opcode::MSTORE => (peek(0)?, U256::from(32)),
-        opcode::MSTORE8 => (peek(0)?, U256::from(1)),
+        opcode::MSTORE8 => (peek(0)?, U256::ONE),
         opcode::MCOPY | opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY => {
             (peek(0)?, peek(2)?)
         }
@@ -1116,7 +1132,8 @@ mod tests {
     use alloc::vec;
     use boa_engine::{Source, object::builtins::JsUint8Array};
     use core::convert::Infallible;
-    use evm2::evm::{CacheDB, Database, Db, EmptyDB};
+    use evm2::evm::{Database, Db, InMemoryDB};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     /// Records and enters a step with the given pre- and post-execution stack.
     fn with_step<'a, R>(
@@ -1128,7 +1145,14 @@ mod tests {
         f: impl FnOnce() -> R,
     ) -> R {
         let mut snapshot = StepSnapshot::default();
-        snapshot.record(PreStep { pc: 0, op, gas_remaining: 0, stack, memory: &memory.borrow() });
+        snapshot.record(PreStep {
+            pc: 0,
+            op,
+            immediate: 0,
+            gas_remaining: 0,
+            stack,
+            memory: &memory.borrow(),
+        });
         log.with_scope(
             &mut snapshot,
             stack,
@@ -1235,8 +1259,8 @@ mod tests {
 
         let f = result.as_callable().unwrap();
 
-        let mut db = CacheDB::new(EmptyDB::default());
-        let state = TxState::default();
+        let mut db = InMemoryDB::default();
+        let state = PendingState::default();
         let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
         {
             let addr = JsValue::from(js_string!(Address::default().to_string()));
@@ -1288,8 +1312,8 @@ mod tests {
         let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
         let setup_fn = obj.get(js_string!("setup"), &mut context).unwrap().as_object().unwrap();
 
-        let mut db = CacheDB::new(EmptyDB::default());
-        let state = TxState::default();
+        let mut db = InMemoryDB::default();
+        let state = PendingState::default();
         {
             let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
             let addr = JsValue::from(js_string!(Address::default().to_string()));
@@ -1357,7 +1381,7 @@ mod tests {
             .with_nonce(9)
             .with_code(code.clone());
         let mut db = Db::new(BackingDb { address, account, slot, value });
-        let changes = TxState::default();
+        let changes = PendingState::default();
         let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
         reusable_db.with_changes_scope(&changes, &mut db, || {
             let js_db = reusable_db.value().as_object().unwrap();
@@ -1523,8 +1547,6 @@ mod tests {
 
     #[test]
     fn test_scopes_revoke_access_on_return_error_and_unwind() {
-        use std::panic::{AssertUnwindSafe, catch_unwind};
-
         let mut ctx = Context::default();
         register_builtins(&mut ctx).unwrap();
         let log = ReusableStepLog::new(&mut ctx, OpcodeNames::new()).unwrap();
@@ -1536,8 +1558,8 @@ mod tests {
             let stack = vec![U256::from(42)];
             let memory = RefCell::new(vec![7u8; 32]);
             let contract = Contract::default();
-            let state = TxState::default();
-            let mut database = CacheDB::new(EmptyDB::default());
+            let state = PendingState::default();
+            let mut database = InMemoryDB::default();
             let result = catch_unwind(AssertUnwindSafe(|| {
                 db.with_changes_scope(&state, &mut database, || {
                     with_step(&log, opcode::STOP, &stack, &memory, &contract, || {
@@ -1579,18 +1601,18 @@ mod tests {
     #[test]
     fn test_stack_view_reconstructs_pre_execution_stack() {
         // SWAP1 touches the top two items, DUP1 one item, ADD two items
-        let pre = [U256::from(1), U256::from(2), U256::from(3)];
+        let pre = [U256::ONE, U256::from(2), U256::from(3)];
         for (op, post) in [
-            (opcode::SWAP1, vec![U256::from(1), U256::from(3), U256::from(2)]),
-            (opcode::DUP1, vec![U256::from(1), U256::from(2), U256::from(3), U256::from(3)]),
-            (opcode::ADD, vec![U256::from(1), U256::from(5)]),
-            (opcode::POP, vec![U256::from(1), U256::from(2)]),
+            (opcode::SWAP1, vec![U256::ONE, U256::from(3), U256::from(2)]),
+            (opcode::DUP1, vec![U256::ONE, U256::from(2), U256::from(3), U256::from(3)]),
+            (opcode::ADD, vec![U256::ONE, U256::from(5)]),
+            (opcode::POP, vec![U256::ONE, U256::from(2)]),
             // halted before pushing, e.g. out of gas after popping the inputs
-            (opcode::MSTORE, vec![U256::from(1)]),
+            (opcode::MSTORE, vec![U256::ONE]),
             (opcode::STOP, pre.to_vec()),
         ] {
             let mut view = StackView::default();
-            view.record(op, &pre);
+            view.record(op, 0, &pre);
             let post: &'static [U256] = post.leak();
             view.post = Some(post);
             assert_eq!(view.len(), 3);
@@ -1617,7 +1639,7 @@ mod tests {
         view.post = Some(post.leak());
 
         assert_eq!(view.len(), 64);
-        assert_eq!(view.bytes(0..64).unwrap().as_slice(), pre.as_slice());
+        assert_eq!(view.bytes(0..64).unwrap().as_slice(), pre);
         assert_eq!(view.bytes(10..20).unwrap().as_slice(), &pre[10..20]);
 
         // writes beyond the pre-execution length only expand memory
@@ -1635,7 +1657,7 @@ mod tests {
         let mut view = MemoryView::default();
         view.record(
             opcode::EXTCODECOPY,
-            &[U256::from(2), U256::ZERO, U256::from(4), U256::from(1)],
+            &[U256::from(2), U256::ZERO, U256::from(4), U256::ONE],
             &pre,
         );
         assert_eq!(view.patch_offset, 4);

@@ -3,6 +3,7 @@ use crate::{
     BaseEvmTypes, DatabaseError, EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    utils::address_to_word,
 };
 use alloc::borrow::Cow;
 use alloy_primitives::{Address, B256, Bytes};
@@ -60,7 +61,7 @@ impl<E> MessageResultExt<E> {
     pub fn created_address_for_parent(&self) -> Word {
         self.created_address
             .filter(|_| self.stop.is_success())
-            .map(|address| Word::from_be_slice(address.as_slice()))
+            .map(|address| address_to_word(&address))
             .unwrap_or_default()
     }
 
@@ -116,7 +117,8 @@ pub trait Host<T: EvmTypesHost> {
     /// Returns the active execution configuration.
     ///
     /// The interpreter keeps a reference to the returned version for the whole run, so the host
-    /// must not replace or mutate it while the interpreter runs.
+    /// must not replace or mutate it while the interpreter runs. An inspected run reads the config
+    /// again when its inspector changes the opcodes it steps.
     fn execution_config(&self) -> &ExecutionConfig<T>;
 
     /// Returns the block environment.
@@ -130,6 +132,13 @@ pub trait Host<T: EvmTypesHost> {
     /// Compiled code keeps a pointer to the returned environment for the whole run, so the host
     /// must keep it at a stable address while the interpreter runs.
     fn tx_env(&mut self) -> &TxEnv<T>;
+
+    /// Returns the inspector-visible depth of top-level messages.
+    ///
+    /// The call depth limit and the nested-create nonce check are measured from this depth, and
+    /// inspectors compare against it to find the top-level message. It should be at most
+    /// `u16::MAX - CALL_DEPTH_LIMIT - 1` so the deepest message stays representable.
+    fn initial_call_depth(&self) -> u16;
 
     /// Loads account information.
     fn load_account(

@@ -211,7 +211,7 @@ impl Index<GasId> for GasParams {
 impl IndexMut<GasId> for GasParams {
     #[inline]
     fn index_mut(&mut self, id: GasId) -> &mut Self::Output {
-        &mut self.table[id.as_usize()]
+        self.get_mut(id)
     }
 }
 
@@ -258,28 +258,34 @@ impl GasParams {
         self.get(GasId::ExpByte).saturating_mul(power.bit_len().div_ceil(8) as u64)
     }
 
+    /// Calculates the per-word gas `id` for `len` bytes.
+    #[inline]
+    const fn per_word_cost(&self, id: GasId, len: usize) -> u64 {
+        self.get(id).saturating_mul(num_words(len) as u64)
+    }
+
     /// Calculates copy gas for `len` bytes.
     #[inline]
     pub const fn copy_cost(&self, len: usize) -> u64 {
-        self.get(GasId::CopyPerWord).saturating_mul(num_words(len) as u64)
+        self.per_word_cost(GasId::CopyPerWord, len)
     }
 
     /// Calculates `EXTCODECOPY` copy gas for `len` bytes.
     #[inline]
     pub const fn extcodecopy_cost(&self, len: usize) -> u64 {
-        self.get(GasId::ExtcodecopyPerWord).saturating_mul(num_words(len) as u64)
+        self.per_word_cost(GasId::ExtcodecopyPerWord, len)
     }
 
     /// Calculates `MCOPY` copy gas for `len` bytes.
     #[inline]
     pub const fn mcopy_cost(&self, len: usize) -> u64 {
-        self.get(GasId::McopyPerWord).saturating_mul(num_words(len) as u64)
+        self.per_word_cost(GasId::McopyPerWord, len)
     }
 
     /// Calculates `KECCAK256` word gas for `len` bytes.
     #[inline]
     pub const fn keccak256_word_cost(&self, len: usize) -> u64 {
-        self.get(GasId::Keccak256PerWord).saturating_mul(num_words(len) as u64)
+        self.per_word_cost(GasId::Keccak256PerWord, len)
     }
 
     /// Calculates dynamic `LOG` gas.
@@ -293,14 +299,13 @@ impl GasParams {
     /// Calculates initcode word gas for `len` bytes.
     #[inline]
     pub const fn initcode_cost(&self, len: usize) -> u64 {
-        self.get(GasId::InitcodePerWord).saturating_mul(num_words(len) as u64)
+        self.per_word_cost(GasId::InitcodePerWord, len)
     }
 
     /// Calculates dynamic `CREATE2` gas for `len` bytes.
     #[inline]
     pub const fn create2_cost(&self, len: usize) -> u64 {
-        self.get(GasId::Create)
-            .saturating_add(self.get(GasId::Keccak256PerWord).saturating_mul(num_words(len) as u64))
+        self.get(GasId::Create).saturating_add(self.keccak256_word_cost(len))
     }
 
     /// Returns `CALL` stipend reduction.
@@ -419,8 +424,7 @@ impl GasParams {
     /// Returns `SELFDESTRUCT` cold account cost.
     #[inline]
     pub const fn selfdestruct_cold_cost(&self) -> u64 {
-        self.get(GasId::ColdAccountAdditionalCost)
-            .saturating_add(self.get(GasId::WarmStorageReadCost))
+        self.cold_account_additional_cost().saturating_add(self.get(GasId::WarmStorageReadCost))
     }
 
     /// Calculates `SELFDESTRUCT` dynamic gas.
@@ -535,7 +539,7 @@ mod tests {
     fn gas_id_roundtrips_values() {
         assert_eq!(GasId::from_usize(0), Some(GasId::ExpByte));
         assert_eq!(GasId::ExpByte.as_usize(), 0);
-        assert_eq!(GasId::from_usize(GasId::MAX as usize), Some(GasId::Custom7));
+        assert_eq!(GasId::from_usize(GasId::MAX.as_usize()), Some(GasId::Custom7));
         assert_eq!(GasId::from_usize(GasId::COUNT), None);
     }
 
@@ -571,7 +575,7 @@ mod tests {
 
         let berlin = gas_params(SpecId::BERLIN);
         assert_eq!(berlin.get(GasId::SstoreStatic), 100);
-        assert_eq!(berlin.get(GasId::ColdAccountAdditionalCost), 2500);
+        assert_eq!(berlin.cold_account_additional_cost(), 2500);
         assert_eq!(berlin.get(GasId::ColdStorageCost), 2100);
         assert_eq!(berlin.get(GasId::MaxRefundQuotient), 2);
 
@@ -599,7 +603,7 @@ mod tests {
         assert_eq!(amsterdam.get(GasId::Create), 12_000);
         assert_eq!(amsterdam.get(GasId::WarmStorageReadCost), 100); // unchanged
         assert_eq!(amsterdam.get(GasId::ColdStorageCost), 2000);
-        assert_eq!(amsterdam.get(GasId::ColdAccountAdditionalCost), 2900);
+        assert_eq!(amsterdam.cold_account_additional_cost(), 2900);
         assert_eq!(amsterdam.get(GasId::TransferValueCost), 11_300);
         // CALL folds the account-write surcharge into CALL_VALUE, so a new target
         // adds no extra execution gas (only NEW_ACCOUNT state gas).

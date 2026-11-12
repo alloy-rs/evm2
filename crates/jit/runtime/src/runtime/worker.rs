@@ -468,6 +468,46 @@ impl CompilerTarget {
 
 #[cfg(feature = "llvm")]
 pub(super) fn compile_with_state(
+    mut job: CompileJob,
+    config: &RuntimeConfig,
+    target: CompilerTarget,
+    state_slot: &mut Option<CompilerState>,
+) -> WorkerResult {
+    // A panic while compiling must fail this job rather than unwind into the Rayon pool, which
+    // aborts the process when a spawned job panics.
+    let (key, kind, generation) = (job.key, job.kind, job.generation);
+    let sync_notifier = std::mem::replace(&mut job.sync_notifier, SyncNotifier::none());
+    let t0 = Instant::now();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compile_with_state_inner(job, config, target, state_slot)
+    }));
+    match result {
+        Ok(result) => WorkerResult { sync_notifier, ..result },
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".into());
+            error!(hash = %key.code_hash, spec_id = ?key.spec_id, %message, "compilation panicked");
+            // The compiler may be left inconsistent: build a fresh one for the next job.
+            *state_slot = None;
+            WorkerResult {
+                key,
+                outcome: Err(format!("compilation panicked: {message}")),
+                kind,
+                sync_notifier,
+                generation,
+                compile_duration: t0.elapsed(),
+                timings: CompileTimings::default(),
+                transient: false,
+            }
+        }
+    }
+}
+
+#[cfg(feature = "llvm")]
+fn compile_with_state_inner(
     job: CompileJob,
     config: &RuntimeConfig,
     target: CompilerTarget,
@@ -586,7 +626,7 @@ struct CompilerProfile {
     layout: evm2_jit_codegen::HostLayout,
     resolver: Option<usize>,
     symbol_suffix: Option<usize>,
-    opcode_view: Option<std::sync::Arc<evm2::OpcodeView>>,
+    opcode_view: Option<Arc<evm2::OpcodeView>>,
     opt_level: crate::OptimizationLevel,
     gas_params: Option<evm2::version::GasParams>,
     debug_assertions: bool,
@@ -707,15 +747,7 @@ pub(super) fn compile_jit_object_artifact(
     compiler: &mut EvmCompiler<EvmLlvmBackend>,
 ) -> Result<WorkerSuccess, String> {
     let object_bytes = compile_object(job, compiler)?;
-    let mut builtin_symbols: Vec<String> = compiler
-        .backend()
-        .pending_symbol_names()
-        .into_iter()
-        .map(|name| name.to_string_lossy().into_owned())
-        .collect();
-    if builtin_symbols.is_empty() {
-        builtin_symbols = builtin_symbol_names(compiler.builtin_symbol_suffix());
-    }
+    let builtin_symbols = builtin_symbol_names(compiler.builtin_symbol_suffix());
 
     debug!(
         bytecode_len = job.bytecode.len(),

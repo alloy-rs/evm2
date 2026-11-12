@@ -10,13 +10,13 @@ use crate::{
     evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
     interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
-    test_utils::{legacy_bytecode, push, push_address, push_all},
+    test_utils::{legacy_bytecode, push, push_address, push_all, return_top_word},
     version::GasId,
 };
 use alloc::{vec, vec::Vec};
-use alloy_consensus::{TxEip7702, TxLegacy, transaction::Recovered};
+use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered};
 use alloy_eips::eip7702::{Authorization, SignedAuthorization};
-use alloy_primitives::{Address, Log, TxKind, U256, hex};
+use alloy_primitives::{Address, Log, TxKind, U256, bytes, hex};
 
 type TestEvm = Evm<'static, BaseEvmTypes>;
 
@@ -29,12 +29,12 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         ..Default::default()
     };
     let result = Host::execute_message(evm, &mut message).unwrap();
-    assert!(result.stop.is_success());
+    assert!(result.is_success());
 }
 
 #[test]
 fn evm_executes_storage_transaction() {
-    let contract = Address::from([0x11; 20]);
+    let contract = Address::repeat_byte(0x11);
     let mut evm = TestEvm::new(
         SpecId::OSAKA,
         BlockEnvExt::default(),
@@ -52,18 +52,15 @@ fn evm_executes_storage_transaction() {
 
     run_tx(&mut evm, contract, [op::PUSH1, 0x2a, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
-    assert_eq!(
-        evm.state.storage_slot(&contract, Word::from(1)).unwrap().current(),
-        Word::from(0x2a)
-    );
+    assert_eq!(evm.state.storage_slot(&contract, Word::ONE).unwrap().current(), Word::from(0x2a));
 }
 
 #[test]
 fn evm_runs_transactions_against_initial_state() {
-    let contract = Address::from([0x22; 20]);
+    let contract = Address::repeat_byte(0x22);
     let mut database = InMemoryDB::default();
     database.insert_account_info(&contract, AccountInfo { nonce: 1, ..Default::default() });
-    database.insert_account_storage(&contract, &Word::from(1), &Word::from(40));
+    database.insert_account_storage(&contract, &Word::ONE, &Word::from(40));
     let mut evm = TestEvm::new(
         SpecId::OSAKA,
         BlockEnvExt::default(),
@@ -90,7 +87,7 @@ fn evm_runs_transactions_against_initial_state() {
     );
     run_tx(&mut evm, contract, [op::PUSH1, 0x07, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
-    assert_eq!(evm.state.storage_slot(&contract, Word::from(1)).unwrap().current(), Word::from(7));
+    assert_eq!(evm.state.storage_slot(&contract, Word::ONE).unwrap().current(), Word::from(7));
     assert_eq!(evm.state.storage_slot(&contract, Word::from(2)).unwrap().current(), Word::from(42));
 }
 
@@ -107,7 +104,7 @@ fn evm_propagates_child_sstore_negative_refund() {
         &contract,
         AccountInfo { nonce: 1, code: Some(legacy_bytecode(child_code)), ..Default::default() },
     );
-    database.insert_account_storage(&contract, &Word::from(0), &Word::from(5));
+    database.insert_account_storage(&contract, &Word::ZERO, &Word::from(5));
     let mut evm = TestEvm::new(
         SpecId::LONDON,
         BlockEnvExt::default(),
@@ -138,13 +135,13 @@ fn evm_propagates_child_sstore_negative_refund() {
     };
     let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
-    assert!(result.stop.is_success());
+    assert!(result.is_success());
     assert_eq!(result.gas.refunded(), 0);
 }
 
 #[test]
 fn evm_reports_invalid_transaction_execution() {
-    let contract = Address::from([0x33; 20]);
+    let contract = Address::repeat_byte(0x33);
     let mut evm = TestEvm::new(
         SpecId::OSAKA,
         BlockEnvExt::default(),
@@ -166,18 +163,10 @@ fn evm_reports_invalid_transaction_execution() {
 
 #[test]
 fn eip8037_sibling_refill_restores_parent_gas_left() {
-    use crate::{
-        EvmFeatures, ExecutionConfig, Version,
-        ethereum::{TxEnvelope, ethereum_tx_registry},
-        version::GasId,
-    };
-    use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{TxKind, U256};
-
-    let parent = Address::from([0x11; 20]);
-    let setter = Address::from([0xa1; 20]);
-    let clearer = Address::from([0xb2; 20]);
-    let caller = Address::from([0xcc; 20]);
+    let parent = Address::repeat_byte(0x11);
+    let setter = Address::repeat_byte(0xa1);
+    let clearer = Address::repeat_byte(0xb2);
+    let caller = Address::repeat_byte(0xcc);
     let mut parent_code = Vec::new();
     for target in [setter, clearer] {
         // DELEGATECALL(gas, target, 0, 0, 0, 0).
@@ -240,19 +229,19 @@ fn eip8037_sibling_refill_restores_parent_gas_left() {
 
     let baseline = run(false);
     let result = run(true);
-    assert!(baseline.status);
-    assert!(result.status);
-    assert_eq!(result.state_gas_spent, 0);
+    assert!(baseline.is_success());
+    assert!(result.is_success());
+    assert_eq!(result.state_gas_spent(), 0);
     assert_eq!(result.output.len(), 32);
     assert_eq!(result.output, baseline.output);
 }
 
 #[test]
 fn eip2780_authorization_charges_no_state_gas_without_eip8037() {
-    let caller = Address::from([0xbb; 20]);
-    let recipient = Address::from([0xaa; 20]);
-    let authority = Address::from([0xcc; 20]);
-    let delegate = Address::from([0xdd; 20]);
+    let caller = Address::repeat_byte(0xbb);
+    let recipient = Address::repeat_byte(0xaa);
+    let authority = Address::repeat_byte(0xcc);
+    let delegate = Address::repeat_byte(0xdd);
 
     let mut database = InMemoryDB::default();
     database.insert_account_info(
@@ -291,8 +280,8 @@ fn eip2780_authorization_charges_no_state_gas_without_eip8037() {
     );
 
     let result = evm.transact(&tx).unwrap().detach();
-    assert!(result.result.status);
-    assert_eq!(result.result.state_gas_spent, 0);
+    assert!(result.result.is_success());
+    assert_eq!(result.result.state_gas_spent(), 0);
     let authority = result.pending_state.account_info(&authority).unwrap();
     assert_eq!(authority.nonce, 1);
     assert_eq!(authority.code_hash, Bytecode::new_eip7702(delegate).hash_slow());
@@ -398,6 +387,93 @@ fn apply_auth_list_refunds_touched_absent_authority() {
     assert_eq!(refunds.execution_refund, per_auth);
 }
 
+#[rstest::rstest]
+#[case::legacy(0)]
+#[case::eip2930(1)]
+#[case::eip1559(2)]
+fn top_level_create_uses_sender_state_nonce(
+    #[case] tx_type: u8,
+    #[values(false, true)] occupied_first_address: bool,
+    #[values((false, 0), (false, 9), (true, 5))] nonce_check_and_tx_nonce: (bool, u64),
+) {
+    let (nonce_check, nonce) = nonce_check_and_tx_nonce;
+    let caller = Address::from([0xbb; 20]);
+    let destination = caller.create(5);
+    let first_address = caller.create(0);
+    let code = legacy_bytecode([op::STOP]);
+    let mut database = InMemoryDB::default();
+    database.insert_account_info(
+        &caller,
+        AccountInfo { nonce: 5, balance: U256::from(u64::MAX), ..Default::default() },
+    );
+    if occupied_first_address {
+        database.insert_account_info(
+            &first_address,
+            AccountInfo::default().with_nonce(1).with_code(code.clone()),
+        );
+    }
+    let mut version = Version::new(SpecId::OSAKA);
+    version.features.set(EvmFeatures::NONCE_CHECK, nonce_check);
+    let chain_id = version.chain_id;
+    let mut evm = TestEvm::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+        SpecId::OSAKA,
+        BlockEnvExt::default(),
+        ethereum_tx_registry(SpecId::OSAKA),
+        database,
+        Precompiles::base(SpecId::OSAKA),
+    );
+    // Return one zero byte as deployed STOP code.
+    let input = [op::PUSH1, 1, op::PUSH1, 0, op::RETURN].into();
+    let gas_limit = 100_000;
+    let value = U256::from(7);
+    let tx = match tx_type {
+        0 => TxEnvelope::Legacy(TxLegacy {
+            nonce,
+            gas_limit,
+            value,
+            input,
+            to: TxKind::Create,
+            ..Default::default()
+        }),
+        1 => TxEnvelope::Eip2930(TxEip2930 {
+            chain_id,
+            nonce,
+            gas_limit,
+            value,
+            input,
+            to: TxKind::Create,
+            ..Default::default()
+        }),
+        2 => TxEnvelope::Eip1559(TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit,
+            value,
+            input,
+            to: TxKind::Create,
+            ..Default::default()
+        }),
+        _ => unreachable!(),
+    };
+    let result = evm.transact(&Recovered::new_unchecked(tx, caller)).unwrap().commit();
+    assert!(result.status, "{result:?}");
+    assert_eq!(result.created_address, Some(destination));
+    let created = evm.state.account_info_untracked(&destination).unwrap().unwrap();
+    assert_eq!(created.nonce, 1);
+    assert_eq!(created.balance, value);
+    assert_eq!(created.code_hash, code.hash_slow());
+    assert_eq!(evm.state.account(&caller).unwrap().nonce(), 6);
+    let first = evm.state.account(&first_address).unwrap();
+    if occupied_first_address {
+        assert_eq!(first.nonce(), 1);
+        assert_eq!(first.code_hash(), code.hash_slow());
+        assert_eq!(first.balance(), U256::ZERO);
+    } else {
+        assert!(first.get().is_none());
+    }
+}
+
 #[test]
 fn eip2780_touched_absent_authority_pays_no_new_account_state_gas() {
     let authority = Address::with_last_byte(0xa1);
@@ -464,11 +540,6 @@ fn log_collection_tx() -> RecoveredTxEnvelope {
     )
 }
 
-/// Appends code that returns the word at the top of the stack.
-fn return_top_word(code: &mut Vec<u8>) {
-    code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
-}
-
 #[test]
 fn log_collection_off_keeps_log_semantics() {
     // LOG4 over memory that is already allocated, then LOG0 past it, which grows memory to four
@@ -483,7 +554,7 @@ fn log_collection_off_keeps_log_semantics() {
     return_top_word(&mut logs);
 
     let mut memory_oog = Vec::new();
-    push_all(&mut memory_oog, [Word::from(1), Word::MAX]);
+    push_all(&mut memory_oog, [Word::ONE, Word::MAX]);
     memory_oog.push(op::LOG0);
 
     let mut underflow = Vec::new();
@@ -512,7 +583,7 @@ fn log_collection_off_keeps_log_semantics() {
         let mut on = run(true);
         let off = run(false);
 
-        assert_eq!(on.status, status, "{name}");
+        assert_eq!(on.is_success(), status, "{name}");
         if let Some(output) = output {
             assert_eq!(on.output[..], output.to_be_bytes::<32>(), "{name}");
         }
@@ -542,7 +613,7 @@ fn log_collection_off_still_inspects_logs() {
     let inspected = evm.transact(&log_collection_tx()).unwrap().discard();
     let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
 
-    assert!(inspected.status);
+    assert!(inspected.is_success());
     assert!(inspected.logs.is_empty());
     assert_eq!(
         inspector.0.iter().map(|log| log.address).collect::<Vec<_>>(),
@@ -630,15 +701,14 @@ fn precompile_dispatch_uses_original_callee(
         caller,
         0,
         TxKind::Call(target),
-        &hex!("01020304").into(),
+        &bytes!("01020304"),
         U256::ZERO,
         &mut gas,
     )
-    .unwrap()
     .unwrap();
     let result = Host::execute_message(&mut evm, &mut frame.message).unwrap();
 
-    assert!(result.stop.is_success(), "{:?}", result.stop);
+    assert!(result.is_success(), "{:?}", result.stop);
     assert_eq!(result.output.as_ref(), expected_output);
     // Geth's Prague gas usage includes delegation resolution even for precompile callees.
     let expected_gas = match opcode {

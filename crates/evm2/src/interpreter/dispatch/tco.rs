@@ -2,8 +2,9 @@ use super::{InspectMode, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
-        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, gas::RemainingGas,
-        private::InstructionImplFn,
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result,
+        gas::RemainingGas,
+        private::{InstructionFlags, InstructionImplFn},
     },
 };
 use core::hint::cold_path;
@@ -40,6 +41,9 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
 }
 
 extern_table! {
+    // Without alignment, each handler's offset inside its 64-byte line depends on unrelated code
+    // size. Aligned handlers run faster and vary less across layouts.
+    #[cfg_attr(target_arch = "x86_64", rustc_align(64))]
     pub(super) fn dispatch<
         T: EvmTypesHost,
         C: EvmConfig<T>,
@@ -54,8 +58,11 @@ extern_table! {
     ) {
         let instruction = C::OPCODE_CONFIG.instruction(OP);
         let instr: InstructionImplFn<T> = instruction.instr;
-        let dynamic_gas = instruction.dynamic_gas;
+        let dynamic_gas = instruction.flags.contains(InstructionFlags::DYNAMIC_GAS);
+        let hooked = instruction.flags.contains(InstructionFlags::HOOKED);
         if M::INSPECT {
+            // Handlers that skip the hooks keep the gas in a register.
+            state.gas_mut().set_remaining(remaining_gas.get());
             M::step(state, pc, stack.len());
             remaining_gas.set(state.gas_mut().remaining());
             if state.result().is_err() {
@@ -75,6 +82,9 @@ extern_table! {
         }
         if M::INSPECT || dynamic_gas {
             state.gas_mut().set_remaining(remaining_gas.get());
+        }
+        if hooked {
+            state.set_pc_stack_len(pc.as_ptr(), stack.len());
         }
         let (r, stack_len) = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
@@ -96,6 +106,15 @@ extern_table! {
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         super::inc_pc(&mut pc, OP);
+        if hooked {
+            state.note_inspector_config_change();
+            if !M::INSPECT && state.reload_requested() {
+                // The frame continues after the instruction on the table for the new config.
+                cold_path();
+                state.set_result(Err(InstrStop::Reload));
+                tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+            }
+        }
         if M::INSPECT {
             M::step_end(state, pc, stack.len());
             remaining_gas.set(state.gas_mut().remaining());

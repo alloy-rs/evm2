@@ -1,4 +1,4 @@
-//! Authority recovery must not go through, or initialize, the global crypto provider.
+//! Authority recovery must go through the installed crypto provider.
 //!
 //! The provider is a process-wide `OnceLock`, so this lives in its own test binary.
 
@@ -27,24 +27,19 @@ impl Crypto for BogusCrypto {
 }
 
 #[test]
-fn recovery_ignores_crypto_provider() {
+fn recovery_uses_installed_crypto_provider() {
     let key = SigningKey::from_slice(&[0x11; 32]).unwrap();
-    let signer =
-        Address::from_raw_public_key(&key.verifying_key().to_sec1_point(false).as_bytes()[1..]);
-    let inner = Authorization { chain_id: U256::from(1), address: Address::ZERO, nonce: 7 };
+    let inner = Authorization { chain_id: U256::ONE, address: Address::ZERO, nonce: 7 };
     let (sig, recid) = key.sign_prehash_recoverable(inner.signature_hash().as_slice());
     let r = U256::from_be_slice(&sig.r().to_bytes());
     let s = U256::from_be_slice(&sig.s().to_bytes());
     let authorization = SignedAuthorization::new_unchecked(inner, recid.to_byte(), r, s);
     let tx = TxEip7702 { authorization_list: vec![authorization.clone()], ..Default::default() };
 
-    assert_eq!(LazyAuthorization::Signed(&authorization).authority(), Some(signer));
-    let recovered = LazyTxEip7702::from_recovered_authorizations(tx.clone());
-    assert_eq!(recovered.authorizations().next().unwrap().authority(), Some(signer));
+    assert!(install_crypto(BogusCrypto));
 
-    assert!(install_crypto(BogusCrypto), "recovery initialized the crypto provider");
-
-    assert_eq!(LazyAuthorization::Signed(&authorization).authority(), Some(signer));
+    let bogus = Address::repeat_byte(0xff);
+    assert_eq!(LazyAuthorization::Signed(&authorization).authority(), Some(bogus));
     let recovered = LazyTxEip7702::from_recovered_authorizations(tx);
-    assert_eq!(recovered.authorizations().next().unwrap().authority(), Some(signer));
+    assert_eq!(recovered.authorizations().next().unwrap().authority(), Some(bogus));
 }

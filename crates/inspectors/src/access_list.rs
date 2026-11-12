@@ -7,7 +7,9 @@ use alloy_primitives::{
 };
 use evm2::{
     Evm, EvmTypes, Inspector,
+    evm::PrewarmSet,
     interpreter::{Interpreter, Message, MessageResult, op},
+    utils::WordExt,
 };
 
 /// An [Inspector] that collects touched accounts and storage slots.
@@ -15,10 +17,16 @@ use evm2::{
 /// This can be used to construct an [AccessList] for a transaction via `eth_createAccessList`
 #[derive(Debug, Default)]
 pub struct AccessListInspector {
-    /// All addresses that should be excluded from the final accesslist
+    /// Addresses that should be excluded from the final accesslist, other than precompiles
     excluded: HashSet<Address>,
+    /// The warm precompile addresses, which are also excluded. After a precompile move these are
+    /// the addresses from before the move, as in geth.
+    precompiles: PrewarmSet,
     /// All addresses and touched slots
     touched_slots: HashMap<Address, BTreeSet<B256>>,
+    /// Whether the seeded entries of excluded addresses were removed, which happens once, before
+    /// the first top-level call.
+    seeds_pruned: bool,
 }
 
 impl From<AccessList> for AccessListInspector {
@@ -36,7 +44,7 @@ impl AccessListInspector {
         for item in access_list.0 {
             touched_slots.entry(item.address).or_default().extend(item.storage_keys);
         }
-        Self { excluded: Default::default(), touched_slots }
+        Self { touched_slots, ..Default::default() }
     }
 
     /// Excludes additional addresses from the final access list.
@@ -68,7 +76,8 @@ impl AccessListInspector {
         self.with_excluded(authorities)
     }
 
-    /// Returns the excluded addresses.
+    /// Returns the excluded addresses other than precompiles, which are excluded through
+    /// [`PrecompileProvider::warm_addresses`](evm2::precompile::PrecompileProvider::warm_addresses).
     pub const fn excluded(&self) -> &HashSet<Address> {
         &self.excluded
     }
@@ -108,16 +117,29 @@ impl AccessListInspector {
         access_list
     }
 
-    /// Collects addresses which should be excluded from the access list. Must be called before the
-    /// top-level call.
+    /// Collects addresses which should be excluded from the access list. Must be called before
+    /// each top-level call.
     ///
-    /// Those include caller, callee and precompiles.
+    /// Those include caller, callee and precompiles. In a transaction with several top-level
+    /// calls, such as an account-abstraction batch, entries touched by earlier calls are kept even
+    /// if a later call targets their address.
     fn collect_excluded_addresses<T: EvmTypes>(&mut self, message: &Message<T>, host: &Evm<'_, T>) {
-        self.excluded.extend(
-            [message.caller, message.destination].into_iter().chain(host.precompiles().addresses()),
-        );
-        // Remove seeded excluded entries; SLOAD/SSTORE can re-add slots accessed during execution.
-        self.touched_slots.retain(|address, _| !self.excluded.contains(address));
+        self.excluded.extend([message.caller, message.destination]);
+        self.precompiles.clear();
+        host.precompiles().warm_addresses(&mut self.precompiles);
+        if !self.seeds_pruned {
+            self.seeds_pruned = true;
+            // Remove seeded excluded entries; SLOAD/SSTORE can re-add slots accessed during
+            // execution.
+            let Self { excluded, precompiles, touched_slots, .. } = self;
+            touched_slots
+                .retain(|address, _| !excluded.contains(address) && !precompiles.is_warm(address));
+        }
+    }
+
+    /// Returns whether `address` is excluded from the access list.
+    fn is_excluded(&self, address: &Address) -> bool {
+        self.excluded.contains(address) || self.precompiles.is_warm(address)
     }
 }
 
@@ -127,10 +149,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
             op::SLOAD | op::SSTORE => {
                 if let Some([slot]) = interp.stack().peekn() {
                     let cur_contract = interp.message().destination;
-                    self.touched_slots
-                        .entry(cur_contract)
-                        .or_default()
-                        .insert(B256::from(slot.to_be_bytes()));
+                    self.touched_slots.entry(cur_contract).or_default().insert(B256::from(slot));
                 }
             }
             op::EXTCODECOPY
@@ -139,8 +158,8 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
             | op::BALANCE
             | op::SELFDESTRUCT => {
                 if let Some([slot]) = interp.stack().peekn() {
-                    let addr = Address::from_word(B256::from(slot.to_be_bytes()));
-                    if !self.excluded.contains(&addr) {
+                    let addr = slot.to_address();
+                    if !self.is_excluded(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
                 }
@@ -149,8 +168,8 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
                 // `go-ethereum` reads the target once five items are on the stack, even if the call
                 // then underflows.
                 if let Some([_, slot, _, _, _]) = interp.stack().peekn() {
-                    let addr = Address::from_word(B256::from(slot.to_be_bytes()));
-                    if !self.excluded.contains(&addr) {
+                    let addr = slot.to_address();
+                    if !self.is_excluded(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
                 }
@@ -165,7 +184,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
-        if message.depth == interp.version().initial_call_depth {
+        if message.depth == 0 {
             self.collect_excluded_addresses(message, interp.host());
         }
         None
@@ -177,7 +196,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
-        if message.depth == interp.version().initial_call_depth {
+        if message.depth == 0 {
             self.collect_excluded_addresses(message, interp.host());
         }
         None
