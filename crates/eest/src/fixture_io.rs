@@ -68,19 +68,12 @@ pub fn write_blockchain(path: &Path, suite: &BlockchainTest) -> Result<(), Fixtu
     if is_binary_path(path) {
         let bytes = binary::to_vec(suite)?;
         if is_zstd_path(path) {
-            write_zstd_bytes(path, &bytes)?;
+            write_zstd_bytes(File::create(path)?, &bytes)?;
         } else {
             fs::write(path, bytes)?;
         }
     } else {
-        let writer = BufWriter::new(File::create(path)?);
-        if is_zstd_path(path) {
-            let mut encoder = ZstdEncoder::new(writer, ZSTD_COMPRESSION_LEVEL)?;
-            serde_json::to_writer(&mut encoder, suite)?;
-            encoder.finish()?;
-        } else {
-            serde_json::to_writer(writer, suite)?;
-        }
+        write_blockchain_json(File::create(path)?, suite, is_zstd_path(path))?;
     }
     Ok(())
 }
@@ -97,11 +90,11 @@ fn read_bytes(path: &Path) -> io::Result<Vec<u8>> {
     }
 }
 
-fn write_zstd_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let writer = BufWriter::new(File::create(path)?);
+fn write_zstd_bytes(writer: impl Write, bytes: &[u8]) -> io::Result<()> {
+    let writer = BufWriter::new(writer);
     let mut encoder = ZstdEncoder::new(writer, ZSTD_COMPRESSION_LEVEL)?;
     encoder.write_all(bytes)?;
-    encoder.finish()?;
+    encoder.finish()?.flush()?;
     Ok(())
 }
 
@@ -115,4 +108,89 @@ pub(crate) fn has_extension(path: &Path, extension: &str) -> bool {
 
 fn stem_has_extension(path: &Path, extension: &str) -> bool {
     path.file_stem().is_some_and(|stem| has_extension(Path::new(stem), extension))
+}
+
+fn write_blockchain_json(
+    writer: impl Write,
+    suite: &BlockchainTest,
+    compressed: bool,
+) -> Result<(), FixtureWriteError> {
+    let mut writer = BufWriter::new(writer);
+    if compressed {
+        let mut encoder = ZstdEncoder::new(&mut writer, ZSTD_COMPRESSION_LEVEL)?;
+        serde_json::to_writer(&mut encoder, suite)?;
+        encoder.finish()?;
+    } else {
+        serde_json::to_writer(&mut writer, suite)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FailingWriter {
+        fail_write: bool,
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail_write { Err(io::Error::other("write failed")) } else { Ok(bytes.len()) }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("flush failed"))
+        }
+    }
+
+    #[test]
+    fn json_propagates_write_and_flush_errors() {
+        let suite = BlockchainTest(Default::default());
+        for compressed in [false, true] {
+            for fail_write in [false, true] {
+                let error = write_blockchain_json(FailingWriter { fail_write }, &suite, compressed)
+                    .unwrap_err();
+                assert!(
+                    matches!(error, FixtureWriteError::Write(error) if error.kind() == io::ErrorKind::Other)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zstd_bytes_propagates_write_and_flush_errors() {
+        let suite = BlockchainTest(Default::default());
+        let bytes = binary::to_vec(&suite).unwrap();
+        for fail_write in [false, true] {
+            let error = write_zstd_bytes(FailingWriter { fail_write }, &bytes).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+        }
+    }
+
+    #[test]
+    fn json_roundtrip() {
+        let suite = BlockchainTest(Default::default());
+        for compressed in [false, true] {
+            let mut output = Vec::new();
+            write_blockchain_json(&mut output, &suite, compressed).unwrap();
+            let json = if compressed {
+                zstd::stream::decode_all(output.as_slice()).unwrap()
+            } else {
+                output
+            };
+            assert_eq!(json, b"{}");
+        }
+    }
+
+    #[test]
+    fn zstd_bytes_roundtrip() {
+        let suite = BlockchainTest(Default::default());
+        let bytes = binary::to_vec(&suite).unwrap();
+        let mut output = Vec::new();
+        write_zstd_bytes(&mut output, &bytes).unwrap();
+        let decoded = zstd::stream::decode_all(output.as_slice()).unwrap();
+        assert_eq!(decoded, bytes);
+    }
 }
