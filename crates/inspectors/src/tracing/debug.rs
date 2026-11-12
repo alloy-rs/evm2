@@ -179,7 +179,9 @@ impl DebugInspector {
     }
 
     /// Prepares inspector for executing the next transaction. This will remove any state from
-    /// previous transactions.
+    /// previous transactions, except the global state of a JavaScript tracer: its script is
+    /// evaluated again in the same JS context, so `globalThis` properties and modified prototypes
+    /// persist until the inspector is dropped.
     pub fn fuse(&mut self) -> Result<(), DebugInspectorError> {
         match self {
             Self::FourByte(inspector) => {

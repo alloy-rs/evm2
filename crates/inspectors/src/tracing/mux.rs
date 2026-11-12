@@ -141,7 +141,8 @@ impl MuxInspector {
     }
 
     /// Prepares the inspector for executing the next transaction. This removes any state from the
-    /// previous transaction.
+    /// previous transaction, except the global state of JavaScript tracers, see
+    /// [`DebugInspector::fuse`].
     pub fn fuse(&mut self) -> Result<(), Error> {
         if let Some(inspector) = &mut self.four_byte {
             core::mem::take(inspector);
