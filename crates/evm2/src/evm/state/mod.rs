@@ -459,6 +459,22 @@ impl<'a> State<'a> {
         }
     }
 
+    /// Clears the runtime warmth of every loaded account and storage slot without journaling the
+    /// change.
+    ///
+    /// This has the effect of [`Self::set_account_warm`] and [`Self::set_storage_warm`] with
+    /// `false` for everything that [`Self::loaded_accounts`] returns, in one pass over the
+    /// overlay. Values and the pre-warmed set are unchanged, so pre-warmed addresses and slots
+    /// remain effectively warm.
+    pub fn cool_loaded(&mut self) {
+        for account in self.accounts.values_mut() {
+            account.flags.remove(AccountFlags::WARM);
+            for slot in account.storage.slots.values_mut() {
+                slot.is_warm = false;
+            }
+        }
+    }
+
     /// Reads a storage slot from the committed state (accepted overlay and backing database),
     /// ignoring the in-flight transaction overlay.
     #[inline]
@@ -1551,6 +1567,38 @@ mod tests {
             state.set_account_warm(&address, true);
             assert!(!state.account(&address).unwrap().warm());
         }
+    }
+
+    #[test]
+    fn cool_loaded_clears_runtime_warmth_only() {
+        let cooled = Address::with_last_byte(42);
+        let prewarmed = Address::with_last_byte(43);
+        let key = Word::ONE;
+        let mut state = State::new(EmptyDB::default());
+        state.prewarm_storage(&prewarmed, [key]);
+        for address in [cooled, prewarmed] {
+            let mut account = state.account(&address).unwrap();
+            account.set_balance(Word::from(7));
+            account.warm();
+            drop(account);
+            let mut slot = state.storage_slot(&address, key).unwrap();
+            slot.set(Word::from(9));
+            slot.warm();
+        }
+
+        state.cool_loaded();
+
+        assert!(!state.account(&cooled).unwrap().is_warm());
+        assert!(!state.storage(&cooled).unwrap().is_warm(&key));
+        assert!(state.account(&prewarmed).unwrap().is_warm());
+        assert!(state.storage(&prewarmed).unwrap().is_warm(&key));
+        for address in [cooled, prewarmed] {
+            assert_eq!(state.account(&address).unwrap().balance(), Word::from(7));
+            assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::from(9));
+        }
+        // The cooled slot warms again as a cold access; the pre-warmed one was never cold.
+        assert!(state.storage_slot(&cooled, key).unwrap().warm());
+        assert!(!state.storage_slot(&prewarmed, key).unwrap().warm());
     }
 
     #[test]
