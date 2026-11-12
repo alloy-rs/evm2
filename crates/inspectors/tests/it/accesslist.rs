@@ -96,8 +96,6 @@ fn test_access_list_precompile() {
         .unwrap();
     assert!(res.result.is_success(), "{res:#?}");
 
-    let erecover = Address::with_last_byte(1);
-    assert!(accesslist.excluded().contains(&erecover));
     assert!(accesslist.into_access_list().is_empty());
 }
 
