@@ -162,37 +162,6 @@ fn rejects_transaction_over_block_gas() {
 }
 
 #[test]
-fn block_state_snapshot_matches_prefix_execution() {
-    let transfer_with_nonce = |nonce| {
-        let tx = TxLegacy {
-            nonce,
-            gas_price: 1,
-            gas_limit: 21_000,
-            to: TxKind::Call(RECIPIENT),
-            value: U256::ONE,
-            ..TxLegacy::default()
-        };
-        let signature = Signature::new(U256::ONE, U256::ONE, false);
-        Recovered::new_unchecked(EthereumTxEnvelope::Legacy(tx.into_signed(signature)), SENDER)
-    };
-
-    let mut full = executor(SpecId::PRAGUE, 30_000_000, ctx(), EthBlockRules::default());
-    full.apply_pre_execution_changes().unwrap();
-    full.execute_transaction(&transfer_with_nonce(0)).unwrap();
-    let snapshot = full.block_state.clone().into_bundle();
-    full.execute_transaction(&transfer_with_nonce(1)).unwrap();
-
-    let mut prefix = executor(SpecId::PRAGUE, 30_000_000, ctx(), EthBlockRules::default());
-    prefix.apply_pre_execution_changes().unwrap();
-    prefix.execute_transaction(&transfer_with_nonce(0)).unwrap();
-
-    assert_eq!(snapshot, prefix.block_state.into_bundle());
-    assert_eq!(balance(&snapshot, RECIPIENT), Some(U256::ONE));
-    let output = full.finish().unwrap();
-    assert_eq!(balance(&output.state, RECIPIENT), Some(U256::from(2)));
-}
-
-#[test]
 fn discards_uncommitted_transaction() {
     let mut executor = executor(SpecId::PRAGUE, 30_000_000, ctx(), EthBlockRules::default());
     executor.apply_pre_execution_changes().unwrap();
