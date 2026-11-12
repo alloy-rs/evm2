@@ -506,6 +506,7 @@ pub(super) fn compile_with_state(
     }
 }
 
+#[cfg(feature = "llvm")]
 fn compile_with_state_inner(
     job: CompileJob,
     config: &RuntimeConfig,
