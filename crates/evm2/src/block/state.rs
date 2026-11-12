@@ -11,7 +11,10 @@ use alloy_primitives::{
 };
 
 /// One block's account transitions, finalized into a [`BundleState`] with their reverts.
-#[derive(Debug, Default)]
+///
+/// Cloning snapshots the transitions so far: finalizing the clone gives the state after the
+/// last committed transaction (e.g. for a mid-block state root) while execution continues.
+#[derive(Clone, Debug, Default)]
 pub struct BlockState {
     transitions: AddressMap<TransitionAccount>,
     contracts: B256Map<Bytecode>,
