@@ -72,8 +72,9 @@ impl GasOutput {
 }
 
 impl From<u64> for GasOutput {
+    /// Converts receipt gas without a state-gas component: all of it is regular gas.
     fn from(gas_used: u64) -> Self {
-        Self::new(gas_used, gas_used)
+        Self::new(gas_used, 0)
     }
 }
 
@@ -310,5 +311,16 @@ pub trait BlockExecutor: Sized {
     /// Finishes block execution and returns the output.
     fn finish(self) -> Result<BlockExecutionOutput<Self::Receipt>, BlockExecutionError> {
         self.finish_with_block_access_list().map(|(output, _)| output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gas_output_from_receipt_gas_has_no_state_gas() {
+        let gas = GasOutput::from(21_000);
+        assert_eq!(gas, GasOutput::new_with_regular(21_000, 21_000, 0));
     }
 }

@@ -12,6 +12,8 @@ use evm2::{
 
 #[derive(Clone, Copy, Debug)]
 struct PendingOpcodeGas {
+    /// The depth of the frame that runs the step.
+    depth: u16,
     opcode: Option<OpCode>,
     gas_remaining: u64,
     child_gas_used: u64,
@@ -77,6 +79,16 @@ impl OpcodeGasInspector {
             pending.child_gas_used = pending.child_gas_used.saturating_add(child_gas_used);
         }
     }
+
+    /// Drops the steps a frame that ended left pending.
+    ///
+    /// A step that an inspector stopped in `step` never receives `step_end`, so it would pair
+    /// with a step of the parent frame.
+    fn end_frame(&mut self, depth: u16) {
+        while self.pending_steps.last().is_some_and(|pending| pending.depth >= depth) {
+            self.pending_steps.pop();
+        }
+    }
 }
 
 impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
@@ -90,6 +102,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
 
         // Undefined opcodes also receive step_end and must not pop a parent's step.
         self.pending_steps.push(PendingOpcodeGas {
+            depth: interp.message().depth,
             opcode,
             gas_remaining: interp.gas().remaining(),
             child_gas_used: 0,
@@ -117,6 +130,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
+        self.end_frame(message.depth);
         if message.depth == 0 {
             // skip the root call
             return;
@@ -142,6 +156,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
+        self.end_frame(message.depth);
         if message.depth == 0 {
             // skip the root create
             return;

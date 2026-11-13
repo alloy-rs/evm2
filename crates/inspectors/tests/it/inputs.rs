@@ -79,7 +79,7 @@ fn child_and_transaction_inputs_are_optional() {
         );
         let nodes = inspector.traces().nodes();
         assert_eq!(nodes.len(), 2);
-        assert!(nodes.iter().all(|node| node.trace.success));
+        assert!(nodes.iter().all(|node| node.trace.is_success()));
         assert_eq!(nodes[0].trace.data.len(), if record_inputs { 4 } else { 0 });
         assert_eq!(nodes[1].trace.data.len(), if record_inputs { BIG_CALL_INPUT_LEN } else { 0 });
     }
@@ -96,7 +96,7 @@ fn creation_input_is_optional() {
         assert_eq!(nodes.len(), 2);
         let trace = &nodes[1].trace;
         assert!(trace.kind.is_any_create());
-        assert!(trace.success);
+        assert!(trace.is_success());
         assert_eq!(trace.output.as_ref(), &[0xfe]);
         assert_eq!(trace.data.len(), if record_inputs { 10 } else { 0 });
     }
@@ -114,7 +114,7 @@ fn disabling_recording_preserves_calldata_execution() {
             TracingInspectorConfig::none().set_record_inputs(record_inputs),
         );
         let trace = &inspector.traces().nodes()[0].trace;
-        assert!(trace.success);
+        assert!(trace.is_success());
         assert_eq!(trace.output, data);
         assert_eq!(trace.data.len(), if record_inputs { 32 } else { 0 });
     }

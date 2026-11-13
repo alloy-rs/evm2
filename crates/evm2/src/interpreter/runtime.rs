@@ -381,28 +381,65 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     }
 
     /// Borrows the operand stack, linear memory, and host independently for inspection.
+    ///
+    /// # Panics
+    ///
+    /// Panics outside a run, when no host is installed.
     #[inline]
+    #[track_caller]
     pub const fn stack_memory_host(&mut self) -> (StackRef<'_>, &[u8], &mut T::Host<'host>) {
-        // SAFETY: As in `host`, the host pointer is initialized during execution and points
-        // outside the interpreter's owned stack and memory.
-        let host = unsafe { self.host.unwrap_unchecked().as_mut() };
+        // SAFETY: The installed host points outside the interpreter's owned stack and memory.
+        let host = unsafe { self.installed_host().as_mut() };
         (self.stack(), self.memory.as_slice(), host)
     }
 
     /// Borrows linear memory and the host independently, so memory can be passed to the host
     /// without copying.
+    ///
+    /// # Panics
+    ///
+    /// Panics outside a run, when no host is installed.
     #[inline]
+    #[track_caller]
     pub const fn memory_host(&mut self) -> (&Memory, &mut T::Host<'host>) {
-        // SAFETY: As in `host`, the host pointer is initialized during execution and points
-        // outside the interpreter's owned memory.
-        let host = unsafe { self.host.unwrap_unchecked().as_mut() };
+        // SAFETY: The installed host points outside the interpreter's owned memory.
+        let host = unsafe { self.installed_host().as_mut() };
         (&self.memory, host)
     }
 
     /// Returns the host implementation.
+    ///
+    /// # Panics
+    ///
+    /// Panics outside a run, when no host is installed.
     #[inline]
+    #[track_caller]
     pub const fn host(&mut self) -> &mut T::Host<'host> {
-        // SAFETY: `host` is initialized at the beginning of inspected execution.
+        // SAFETY: The installed host outlives the run, and the result borrows `self`.
+        unsafe { self.installed_host().as_mut() }
+    }
+
+    /// Returns the host installed for the current run.
+    ///
+    /// [`Self::prepare_run`] installs the host and finishing the run removes it, so the safe
+    /// accessors check for it rather than trust the caller to be inside a run.
+    #[inline]
+    #[track_caller]
+    const fn installed_host(&self) -> NonNull<T::Host<'host>> {
+        match self.host {
+            Some(host) => host,
+            None => host_not_installed(),
+        }
+    }
+
+    /// Returns the host implementation without checking that a run installed it.
+    ///
+    /// # Safety
+    ///
+    /// The interpreter must be running, so that [`Self::prepare_run`] installed the host.
+    #[inline]
+    const unsafe fn host_unchecked(&mut self) -> &mut T::Host<'host> {
+        // SAFETY: Upheld by the caller.
         unsafe { self.host.unwrap_unchecked().as_mut() }
     }
 
@@ -413,10 +450,15 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     }
 
     /// Returns the active runtime version data.
+    ///
+    /// # Panics
+    ///
+    /// Panics outside a run, when no host is installed.
     #[inline]
+    #[track_caller]
     pub fn version(&self) -> &Version {
         // SAFETY: The result is tied to `&self`, which excludes host calls through `self`.
-        unsafe { self.version_detached() }
+        unsafe { self.installed_host().as_ref() }.execution_config().version()
     }
 
     /// Returns the active runtime version data without borrowing the interpreter.
@@ -467,6 +509,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Finishes a backend run, returning its owned error and clearing execution references.
     pub(crate) fn finish_run(&mut self, stop: InstrStop) -> Result<InstrStop, ExecutionError> {
+        // A failed spend wraps the remaining gas, and an out-of-gas frame has burned all of it. A
+        // stepped opcode already had it zeroed before its `step_end` hook, whose edits stand.
+        if stop.is_out_of_gas() && (self.inspector.is_none() || !self.steps.contains(self.opcode()))
+        {
+            self.gas.set_remaining(0);
+        }
         self.host = None;
         self.inspector = None;
         if let Some(error) = self.take_error() {
@@ -808,13 +856,16 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     /// Returns the host implementation.
     #[inline]
     pub const fn host(&mut self) -> &mut T::Host<'host> {
-        self.0.host()
+        // SAFETY: Instructions only see the state while the interpreter runs.
+        unsafe { self.0.host_unchecked() }
     }
 
     /// Returns the active runtime version data.
     #[inline]
     pub fn version(&self) -> &Version {
-        self.0.version()
+        // SAFETY: Instructions only see the state while the interpreter runs, and the result is
+        // tied to `&self`, which excludes host calls through it.
+        unsafe { self.0.version_detached() }
     }
 
     /// Returns the active frame-local call/create message.
@@ -863,6 +914,16 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     pub const fn memory(&mut self) -> &mut Memory {
         &mut self.0.memory
+    }
+
+    /// Borrows linear memory and the host independently, so memory can be passed to the host
+    /// without copying.
+    #[inline]
+    pub(in crate::interpreter) const fn memory_host(&mut self) -> (&Memory, &mut T::Host<'host>) {
+        // SAFETY: Instructions only see the state while the interpreter runs, and the host points
+        // outside the interpreter's owned memory.
+        let host = unsafe { self.0.host.unwrap_unchecked().as_mut() };
+        (&self.0.memory, host)
     }
 
     /// Resizes linear memory using the active runtime gas parameters.
@@ -953,6 +1014,13 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             }
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+#[track_caller]
+const fn host_not_installed() -> ! {
+    panic!("the host is only available while the interpreter runs")
 }
 
 #[derive(Default)]
@@ -1048,5 +1116,62 @@ mod bytecode_padding_tests {
         let interp = run(RunConfig::new([op::PUSH1, 3, op::JUMP, op::JUMPDEST]));
         assert_eq!(interp.err, InstrStop::Stop);
         assert!(interp.stack().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod run_phase_tests {
+    use super::*;
+    use crate::{
+        InspectorConfig,
+        interpreter::{MessageExt, op},
+        test_utils::{RunConfig, TestHost, TestTypes, legacy_bytecode, run},
+    };
+
+    #[test]
+    #[should_panic(expected = "the host is only available while the interpreter runs")]
+    fn host_before_run_panics() {
+        let message = MessageExt::default();
+        let mut interpreter = Interpreter::<TestTypes>::new(&message);
+        let _ = interpreter.host();
+    }
+
+    #[test]
+    #[should_panic(expected = "the host is only available while the interpreter runs")]
+    fn host_after_run_panics() {
+        let message = MessageExt::default();
+        let mut interpreter = Interpreter::<TestTypes>::new(&message);
+        let mut host = TestHost::default();
+        interpreter.run(&mut host).unwrap();
+        let _ = interpreter.version();
+    }
+
+    #[test]
+    fn out_of_gas_leaves_no_remaining_gas() {
+        let interp = run(RunConfig::new([op::PUSH1, 1, op::PUSH1, 2, op::ADD]).gas_limit(4));
+        assert_eq!(interp.err, InstrStop::OutOfGas);
+        assert_eq!(interp.gas_remaining(), 0);
+    }
+
+    #[test]
+    fn out_of_gas_on_unstepped_opcode_leaves_no_remaining_gas() {
+        struct Steps(OpcodeSet);
+        impl Inspector<TestTypes> for Steps {
+            fn inspector_config(&self) -> InspectorConfig {
+                InspectorConfig::new().with_steps(self.0)
+            }
+        }
+
+        for steps in [OpcodeSet::EMPTY, OpcodeSet::from_iter([op::ADD])] {
+            let message = Message::<TestTypes> {
+                gas_limit: 2,
+                code: legacy_bytecode([op::PUSH1, 1]),
+                ..Default::default()
+            };
+            let mut interpreter = Interpreter::<TestTypes>::new(&message);
+            let stop = interpreter.run_inspect(&mut TestHost::default(), &mut Steps(steps));
+            assert_eq!(stop, Ok(InstrStop::OutOfGas));
+            assert_eq!(interpreter.gas().remaining(), 0);
+        }
     }
 }

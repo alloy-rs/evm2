@@ -56,8 +56,6 @@ pub struct CallTrace {
     ///
     /// The depth of a call's steps is the depth of the call plus one.
     pub depth: usize,
-    /// Whether the call was successful.
-    pub success: bool,
     /// The caller address.
     pub caller: Address,
     /// The target address of this call.
@@ -72,22 +70,10 @@ pub struct CallTrace {
     /// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls)
     /// is set, otherwise `None`.
     pub maybe_precompile: Option<bool>,
-    /// The address of the selfdestructed contract.
-    pub selfdestruct_address: Option<Address>,
-    /// Holds the target for the selfdestruct refund target.
-    ///
-    /// This is only `Some` if a selfdestruct was executed and the call is executed before the
-    /// Cancun hardfork.
+    /// The selfdestruct the call executed, if any.
     ///
     /// See [`is_selfdestruct`](Self::is_selfdestruct) for more information.
-    pub selfdestruct_refund_target: Option<Address>,
-    /// The value transferred on a selfdestruct.
-    ///
-    /// This is only `Some` if a selfdestruct was executed and the call is executed before the
-    /// Cancun hardfork.
-    ///
-    /// See [`is_selfdestruct`](Self::is_selfdestruct) for more information.
-    pub selfdestruct_transferred_value: Option<U256>,
+    pub selfdestruct: Option<CallSelfdestruct>,
     /// The kind of call.
     pub kind: CallKind,
     /// The value transferred in the call.
@@ -130,6 +116,17 @@ pub struct CallTrace {
 }
 
 impl CallTrace {
+    /// Returns true if the call ended successfully, see [InstrStop::is_success].
+    ///
+    /// A call that has not ended is neither successful nor an error.
+    #[inline]
+    pub const fn is_success(&self) -> bool {
+        match self.status {
+            Some(status) => status.is_success(),
+            None => false,
+        }
+    }
+
     /// Returns true if the status code is an error or revert, See [InstrStop::Revert].
     #[inline]
     pub const fn is_error(&self) -> bool {
@@ -153,12 +150,11 @@ impl CallTrace {
     /// because there's an edge case where a new created contract (CREATE) is immediately
     /// selfdestructed.
     ///
-    /// We also can't rely entirely on `selfdestruct_refund_target` being `Some` as the
-    /// `selfdestruct` inspector function will not be called after the Cancun hardfork.
+    /// We also can't rely entirely on [`Self::selfdestruct`] being `Some` as the trace can be
+    /// built without the `selfdestruct` inspector hook.
     #[inline]
     pub const fn is_selfdestruct(&self) -> bool {
-        matches!(self.status, Some(InstrStop::SelfDestruct))
-            || self.selfdestruct_refund_target.is_some()
+        matches!(self.status, Some(InstrStop::SelfDestruct)) || self.selfdestruct.is_some()
     }
 
     /// Returns the error message if it is an erroneous result.
@@ -187,6 +183,18 @@ impl CallTrace {
     pub(crate) fn decoded_return_data(&self) -> Option<&str> {
         self.decoded.as_ref()?.return_data.as_deref()
     }
+}
+
+/// A selfdestruct executed by a call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CallSelfdestruct {
+    /// The address of the selfdestructed contract.
+    pub address: Address,
+    /// The target that receives the balance.
+    pub refund_target: Address,
+    /// The value transferred to the target.
+    pub value: U256,
 }
 
 /// Additional decoded data enhancing the [CallLog].
@@ -369,22 +377,26 @@ impl CallTraceNode {
     /// If the trace is a selfdestruct, returns the `Action` for a parity trace.
     pub fn parity_selfdestruct_action(&self) -> Option<Action> {
         self.is_selfdestruct().then(|| {
+            let selfdestruct = self.trace.selfdestruct.unwrap_or_default();
             Action::Selfdestruct(SelfdestructAction {
-                address: self.trace.selfdestruct_address.unwrap_or_default(),
-                refund_address: self.trace.selfdestruct_refund_target.unwrap_or_default(),
-                balance: self.trace.selfdestruct_transferred_value.unwrap_or_default(),
+                address: selfdestruct.address,
+                refund_address: selfdestruct.refund_target,
+                balance: selfdestruct.value,
             })
         })
     }
 
     /// If the trace is a selfdestruct, returns the `CallFrame` for a geth call trace
     pub fn geth_selfdestruct_call_trace(&self) -> Option<CallFrame> {
-        self.is_selfdestruct().then(|| CallFrame {
-            typ: "SELFDESTRUCT".to_string(),
-            from: self.trace.selfdestruct_address.unwrap_or_default(),
-            to: self.trace.selfdestruct_refund_target,
-            value: self.trace.selfdestruct_transferred_value,
-            ..Default::default()
+        self.is_selfdestruct().then(|| {
+            let selfdestruct = self.trace.selfdestruct;
+            CallFrame {
+                typ: "SELFDESTRUCT".to_string(),
+                from: selfdestruct.map(|selfdestruct| selfdestruct.address).unwrap_or_default(),
+                to: selfdestruct.map(|selfdestruct| selfdestruct.refund_target),
+                value: selfdestruct.map(|selfdestruct| selfdestruct.value),
+                ..Default::default()
+            }
         })
     }
 
@@ -452,7 +464,7 @@ impl CallTraceNode {
         }
 
         // we need to populate error and revert reason
-        if !self.trace.success {
+        if !self.trace.is_success() {
             if self.kind().is_any_create() {
                 call_frame.to = None;
             }

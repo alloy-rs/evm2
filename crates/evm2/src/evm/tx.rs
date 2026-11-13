@@ -159,14 +159,6 @@ impl<E> TxResultExt<E> {
     }
 }
 
-/// Whether the transaction scratch is still pending resolution. Not the owned
-/// [`PendingState`] a transaction detaches into.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StateStatus {
-    Present,
-    Cleared,
-}
-
 /// A transaction whose post-finalization state is not resolved yet.
 ///
 /// `ExecutedTx` borrows the EVM mutably until the caller chooses what to do with the
@@ -184,77 +176,36 @@ enum StateStatus {
 #[must_use = "executed transaction state must be committed, discarded, or detached"]
 pub struct ExecutedTx<'evm, 'host, T: EvmTypesHost = crate::BaseEvmTypes> {
     evm: &'evm mut Evm<'host, T>,
-    result: Option<TxResult<T>>,
-    state: StateStatus,
+    /// The result while the transaction state is unresolved, taken once it is resolved.
+    unresolved: Option<TxResult<T>>,
 }
 
 impl<T: EvmTypesHost> fmt::Debug for ExecutedTx<'_, '_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ExecutedTx")
-            .field("has_pending_state", &self.has_pending_state())
-            .finish_non_exhaustive()
+        f.debug_struct("ExecutedTx").finish_non_exhaustive()
     }
 }
 
 impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     #[inline]
-    pub(crate) const fn from_result(
-        evm: &'evm mut Evm<'host, T>,
-        result: TxResult<T>,
-        has_pending_state: bool,
-    ) -> Self {
-        Self {
-            evm,
-            result: Some(result),
-            state: if has_pending_state { StateStatus::Present } else { StateStatus::Cleared },
-        }
+    pub(crate) const fn from_result(evm: &'evm mut Evm<'host, T>, result: TxResult<T>) -> Self {
+        Self { evm, unresolved: Some(result) }
     }
 
+    /// Marks the transaction state resolved and returns the result.
+    ///
+    /// Callers resolve the state first, so a resolution that unwinds leaves it to [`Drop`].
     #[inline]
-    fn has_pending_state(&self) -> bool {
-        self.state == StateStatus::Present
-    }
-
-    #[inline]
-    const fn take_result(&mut self) -> TxResult<T> {
-        self.result.take().expect("executed transaction result was already taken")
-    }
-
-    #[inline]
-    fn clear_pending_state(&mut self) {
-        if self.has_pending_state() {
-            self.evm.state.clear_transaction_state();
-            self.state = StateStatus::Cleared;
-        }
-    }
-
-    #[inline]
-    fn commit_pending_state(&mut self) {
-        if self.has_pending_state() {
-            self.evm.state.commit_transaction();
-            self.evm.state.clear_transaction_state();
-            self.state = StateStatus::Cleared;
-        }
-    }
-
-    #[inline]
-    fn take_pending_state(&mut self) -> PendingState {
-        if self.has_pending_state() {
-            let pending = self.evm.state.take_pending_state();
-            self.evm.state.clear_transaction_state();
-            self.state = StateStatus::Cleared;
-            pending
-        } else {
-            PendingState::default()
-        }
+    const fn resolved(&mut self) -> TxResult<T> {
+        self.unresolved.take().expect("executed transaction was already resolved")
     }
 
     /// Returns the transaction result without resolving state changes.
     #[inline]
     pub fn result(&self) -> &TxResult<T> {
-        match &self.result {
+        match &self.unresolved {
             Some(result) => result,
-            None => unreachable!("executed transaction result was already taken"),
+            None => unreachable!("executed transaction was already resolved"),
         }
     }
 
@@ -273,12 +224,8 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     /// place, so a caller can inspect what the transaction wrote, including single accounts and
     /// storage slots, before deciding to [`commit`](Self::commit) or [`discard`](Self::discard).
     #[inline]
-    pub fn changes(&self) -> TxStateChanges<'_> {
-        if self.has_pending_state() {
-            self.evm.state.transaction_changes()
-        } else {
-            TxStateChanges::empty()
-        }
+    pub const fn changes(&self) -> TxStateChanges<'_> {
+        self.evm.state.transaction_changes()
     }
 
     /// Accepts the transaction state into the internal accepted overlay.
@@ -286,8 +233,9 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     /// This makes the transaction's state effects visible to later transactions executed by the
     /// same EVM. It clears transaction scratch and returns the result-only [`TxResult`].
     pub fn commit(mut self) -> TxResult<T> {
-        self.commit_pending_state();
-        self.take_result()
+        self.evm.state.commit_transaction();
+        self.evm.state.clear_transaction_state();
+        self.resolved()
     }
 
     /// Accepts the transaction state and records its changes in a block accumulator.
@@ -303,15 +251,9 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     ///
     /// If the sink returns an error, the transaction is not committed and the executed handle is
     /// dropped, which discards the transaction scratch. Use infallible sinks on the block hot path.
-    pub fn commit_with<S: StateChangeSink>(
-        mut self,
-        sink: &mut S,
-    ) -> Result<TxResult<T>, S::Error> {
-        if self.has_pending_state() {
-            self.evm.state.transaction_changes().visit(sink)?;
-            self.commit_pending_state();
-        }
-        Ok(self.take_result())
+    pub fn commit_with<S: StateChangeSink>(self, sink: &mut S) -> Result<TxResult<T>, S::Error> {
+        self.changes().visit(sink)?;
+        Ok(self.commit())
     }
 
     /// Discards the transaction state and returns the result.
@@ -319,8 +261,8 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     /// Discarding does not mutate the accepted overlay and does not detach the transaction
     /// overlay. This is the intended path for result-only execution such as `eth_call`.
     pub fn discard(mut self) -> TxResult<T> {
-        self.clear_pending_state();
-        self.take_result()
+        self.evm.state.clear_transaction_state();
+        self.resolved()
     }
 
     /// Streams transaction changes into `sink`, then discards the transaction state.
@@ -328,15 +270,9 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     /// This observes the same pending writes as [`Self::commit_with`], but does not mutate the
     /// accepted overlay. If the sink returns an error, the executed handle is dropped, which
     /// discards the transaction scratch.
-    pub fn discard_with<S: StateChangeSink>(
-        mut self,
-        sink: &mut S,
-    ) -> Result<TxResult<T>, S::Error> {
-        if self.has_pending_state() {
-            self.evm.state.transaction_changes().visit(sink)?;
-            self.clear_pending_state();
-        }
-        Ok(self.take_result())
+    pub fn discard_with<S: StateChangeSink>(self, sink: &mut S) -> Result<TxResult<T>, S::Error> {
+        self.changes().visit(sink)?;
+        Ok(self.discard())
     }
 
     /// Detaches the transaction into its owned pending state without committing it.
@@ -349,8 +285,9 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     /// [`StateChangeSource::visit`](super::StateChangeSource::visit). The detached state is not
     /// accepted into this EVM's internal overlay unless the caller commits it separately.
     pub fn detach(mut self) -> TxResultWithState<T> {
-        let pending_state = self.take_pending_state();
-        let result = self.take_result();
+        let pending_state = self.evm.state.take_pending_state();
+        self.evm.state.clear_transaction_state();
+        let result = self.resolved();
         TxResultWithState { result, pending_state, _non_exhaustive: () }
     }
 }
@@ -366,7 +303,9 @@ impl<T: EvmTypesHost> StateChangeSource for ExecutedTx<'_, '_, T> {
 impl<T: EvmTypesHost> Drop for ExecutedTx<'_, '_, T> {
     #[inline]
     fn drop(&mut self) {
-        self.clear_pending_state();
+        if self.unresolved.is_some() {
+            self.evm.state.clear_transaction_state();
+        }
     }
 }
 

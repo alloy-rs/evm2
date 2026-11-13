@@ -146,7 +146,7 @@ fn log_common<T: EvmTypesHost>(
         *topic = B256::from(word);
     }
     let destination = &cx.state.message().destination;
-    let (memory, host) = cx.state.0.memory_host();
+    let (memory, host) = cx.state.memory_host();
     // SAFETY: `log` is only dispatched for LOG0 through LOG4.
     host.log(
         destination,

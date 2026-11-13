@@ -270,7 +270,7 @@ impl<'a> GethTraceBuilder<'a> {
 
         DefaultFrame {
             // If the top-level trace succeeded, then it was a success
-            failed: !main_trace.success,
+            failed: !main_trace.is_success(),
             gas: receipt_gas_used,
             execution_gas_used: gas.map(|gas| gas.0),
             state_gas_used: gas.map(|gas| gas.1),
@@ -617,7 +617,6 @@ mod tests {
                         parent,
                         trace: CallTrace {
                             address: Address::with_last_byte(idx as u8),
-                            success: !failed,
                             status: Some(if idx == 4 {
                                 InstrStop::OutOfGas
                             } else if failed {

@@ -82,8 +82,8 @@ pub struct RuntimeStatsSnapshot {
     pub interpreter_fallbacks: u64,
     /// Total control commands dropped because the command channel was full.
     ///
-    /// Pause/resume commands are best-effort and dropped instead of blocking the caller when
-    /// the command channel is full.
+    /// Pause/resume wakeups are dropped instead of blocking the caller when the command channel
+    /// is full; the backend still applies the pause depth on its next tick.
     pub commands_dropped: u64,
     /// Number of entries in the resident compiled map.
     pub resident_entries: u64,

@@ -87,10 +87,14 @@ impl AsyncError {
     }
 }
 
+/// The fiber that is running on this thread, installed in [`CURRENT`] while it runs.
+///
+/// Only the running fiber installs itself, on entry and after each suspension. Whoever resumes a
+/// fiber saves [`CURRENT`] before and restores it after (see [`resume_fiber`]), so a fiber that is
+/// later resumed from another fiber, another thread or a drop never restores a stale outer fiber.
 struct CurrentFiber {
     suspend: NonNull<Yielder<Resume, Yield>>,
     future_cx: NonNull<Context<'static>>,
-    previous: Option<NonNull<Self>>,
     cancelled: bool,
 }
 
@@ -102,16 +106,14 @@ impl CurrentFiber {
 
     #[inline]
     fn suspend(&mut self) -> AsyncResult<()> {
-        let current = NonNull::from(&mut *self);
-        CURRENT.set(self.previous);
-        match unsafe { self.suspend.as_ref() }.suspend(()) {
+        let resumed = unsafe { self.suspend.as_ref() }.suspend(());
+        CURRENT.set(Some(NonNull::from(&mut *self)));
+        match resumed {
             Ok(cx) => {
-                CURRENT.set(Some(current));
                 self.future_cx = cx;
                 Ok(())
             }
             Err(error) => {
-                CURRENT.set(Some(current));
                 self.cancelled = true;
                 Err(error)
             }
@@ -130,6 +132,13 @@ impl Drop for ResetCurrentFiber {
     fn drop(&mut self) {
         CURRENT.set(self.0);
     }
+}
+
+/// Resumes `fiber`, restoring the caller's [`CURRENT`] when it suspends, returns or panics.
+#[inline]
+fn resume_fiber<R>(fiber: &mut EvmFiber<R>, input: Resume) -> CoroutineResult<Yield, Complete<R>> {
+    let _reset = ResetCurrentFiber(CURRENT.get());
+    fiber.resume(input)
 }
 
 /// Runs `func` on a native fiber and awaits its completion.
@@ -210,9 +219,13 @@ impl<F: Future + Unpin> Future for LocalOnFiber<F> {
     }
 }
 
+/// State of an async EVM fiber execution.
 enum OnFiber<'a, R, E> {
+    /// The fiber was created and has not returned yet.
     Running(FiberFuture<'a, Result<R, E>>),
-    Error(Option<AsyncError>),
+    /// The fiber could not be created; the error is returned by the first poll.
+    Failed(AsyncError),
+    /// The result was returned.
     Done,
 }
 
@@ -232,7 +245,7 @@ impl<'a, R, E> OnFiber<'a, R, E> {
     ) -> Self {
         match FiberFuture::new(stack, func) {
             Ok(fiber) => Self::Running(fiber),
-            Err(error) => Self::Error(Some(error)),
+            Err(error) => Self::Failed(error),
         }
     }
 }
@@ -258,8 +271,10 @@ impl<R, E> Future for OnFiber<'_, R, E> {
                 }
                 Poll::Pending => Poll::Pending,
             },
-            Self::Error(error) => {
-                let error = error.take().expect("async EVM fiber error already returned");
+            Self::Failed(_) => {
+                let Self::Failed(error) = core::mem::replace(this, Self::Done) else {
+                    unreachable!("matched above")
+                };
                 Poll::Ready(Err(error.with_inner_error()))
             }
             Self::Done => panic!("async EVM fiber polled after completion"),
@@ -289,16 +304,9 @@ impl<'a, R> FiberFuture<'a, R> {
         };
         let body = move |suspend: &Yielder<Resume, Yield>, resume| {
             let future_cx = resume?;
-            let previous = CURRENT.get();
-            let mut current = CurrentFiber {
-                suspend: NonNull::from(suspend),
-                future_cx,
-                previous,
-                cancelled: false,
-            };
-            let current = NonNull::from(&mut current);
-            CURRENT.set(Some(current));
-            let _reset = ResetCurrentFiber(previous);
+            let mut current =
+                CurrentFiber { suspend: NonNull::from(suspend), future_cx, cancelled: false };
+            CURRENT.set(Some(NonNull::from(&mut current)));
             Ok(func())
         };
         // SAFETY: The coroutine is stored inside `FiberFuture<'a, R>`, which is tied to the
@@ -324,7 +332,7 @@ impl<R> Future for FiberFuture<'_, R> {
         let this = self.get_mut();
         let cx = NonNull::from(unsafe { change_context_lifetime(cx) });
         let fiber = this.fiber.as_mut().expect("async EVM fiber polled after completion");
-        match fiber.resume(Ok(cx)) {
+        match resume_fiber(fiber, Ok(cx)) {
             CoroutineResult::Return(result) => {
                 this.recycle_stack();
                 Poll::Ready(result)
@@ -341,7 +349,10 @@ impl<R> Drop for FiberFuture<'_, R> {
         };
         if fiber.done() {
             self.recycle_stack();
-        } else if matches!(fiber.resume(Err(AsyncError::Cancelled)), CoroutineResult::Yield(())) {
+        } else if matches!(
+            resume_fiber(fiber, Err(AsyncError::Cancelled)),
+            CoroutineResult::Yield(())
+        ) {
             // SAFETY: Cancellation already gave the coroutine a chance to return normally. If it
             // yields again, the stack is no longer useful to this future.
             unsafe { fiber.force_reset() };
@@ -1025,6 +1036,40 @@ mod tests {
             assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
         }
         assert!(saw_cancel);
+    }
+
+    #[test]
+    fn fiber_resumed_inside_another_fiber_keeps_it_current() {
+        let mut inner = Box::pin(on_fiber(|| block_on_current(PendingOnce { pending: true })));
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        assert_matches!(inner.as_mut().poll(&mut cx), Poll::Pending);
+
+        let outer = on_fiber(|| {
+            let inner = block_on_current(inner.as_mut()).unwrap();
+            let after = block_on_current(core::future::ready(()));
+            (inner, after)
+        });
+
+        assert_matches!(poll_ready(outer), Ok((Ok(Ok(2)), Ok(()))));
+    }
+
+    #[test]
+    fn dropping_fiber_outside_its_first_poller_clears_current() {
+        let mut inner = Box::pin(on_fiber(|| {
+            let _ = block_on_current(PendingForever);
+        }));
+        let outer = on_fiber(|| {
+            block_on_current(core::future::poll_fn(|cx| {
+                Poll::Ready(inner.as_mut().poll(cx).is_pending())
+            }))
+            .unwrap()
+        });
+
+        assert_matches!(poll_ready(outer), Ok(true));
+        drop(inner);
+        assert!(super::CURRENT.get().is_none());
     }
 
     #[rstest::rstest]

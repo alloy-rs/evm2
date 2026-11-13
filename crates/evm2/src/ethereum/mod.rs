@@ -538,17 +538,35 @@ pub fn initial_gas_and_reservoir(
 /// The first frame of a transaction, prepared by [`prepare_initial_frame`].
 #[derive(Clone, Debug)]
 pub struct InitialFrame<T: EvmTypes> {
-    /// Top-level call or create message, carrying the resolved bytecode to run unless
-    /// [`runtime_oog`](Self::runtime_oog).
+    /// Top-level call or create message, carrying the resolved bytecode to run unless the runtime
+    /// gas phase ran out of gas ([`RuntimeGas::OutOfGas`]).
     pub message: Message<T>,
-    /// EIP-8037 state gas charged on the transaction-level tracker for the account leaf this
-    /// frame creates (the call recipient's new-account charge or the create target's
-    /// account-creation charge), zero when nothing was charged. Refunded by
-    /// [`settle_initial_frame_gas`] when the frame fails and the leaf is not created.
-    pub charged_state_gas: u64,
-    /// Whether the runtime gas phase ran out of gas, so the frame halts without executing
-    /// ([`execute_initial_frame`]). Its message then carries no resolved bytecode.
-    pub runtime_oog: bool,
+    /// Outcome of the EIP-2780 runtime gas phase that built this frame.
+    pub runtime_gas: RuntimeGas,
+}
+
+impl<T: EvmTypes> InitialFrame<T> {
+    /// Returns whether the runtime gas phase ran out of gas, so the frame halts without executing.
+    #[inline]
+    pub const fn is_runtime_oog(&self) -> bool {
+        matches!(self.runtime_gas, RuntimeGas::OutOfGas)
+    }
+}
+
+/// Outcome of the EIP-2780 runtime gas phase that built an [`InitialFrame`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeGas {
+    /// Every runtime charge fit, so the frame executes.
+    Charged {
+        /// EIP-8037 state gas charged on the transaction-level tracker for the account leaf the
+        /// frame creates (the call recipient's new-account charge or the create target's
+        /// account-creation charge), zero when nothing was charged. Refunded by
+        /// [`settle_initial_frame_gas`] when the frame fails and the leaf is not created.
+        state_gas: u64,
+    },
+    /// A runtime charge ran out of gas, so the frame halts without executing
+    /// ([`execute_initial_frame`]). Its message carries no resolved bytecode.
+    OutOfGas,
 }
 
 /// Completes the EIP-2780 runtime gas phase on the transaction-level `tx_gas` and builds the
@@ -684,7 +702,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
         }
     };
     debug_assert_eq!(message.depth, host.initial_call_depth());
-    Ok(InitialFrame { message, charged_state_gas, runtime_oog: false })
+    Ok(InitialFrame { message, runtime_gas: RuntimeGas::Charged { state_gas: charged_state_gas } })
 }
 
 /// Builds the first frame of a transaction whose runtime gas phase ran out of gas.
@@ -721,7 +739,7 @@ pub fn halted_initial_frame<T: EvmTypes>(
         salt: B256::ZERO,
         ..MessageExt::default()
     };
-    InitialFrame { message, charged_state_gas: 0, runtime_oog: true }
+    InitialFrame { message, runtime_gas: RuntimeGas::OutOfGas }
 }
 
 /// Settles the first frame's result into the transaction-level `tx_gas` and writes the settled
@@ -730,7 +748,7 @@ pub fn halted_initial_frame<T: EvmTypes>(
 /// All execution gas was forwarded to the frame, so it is first consumed on `tx_gas` and the
 /// frame's settled gas merged back like any parent frame would
 /// ([`GasTracker::merge_child_gas`]). When the frame did not create the account leaf whose state
-/// gas the runtime gas phase charged upfront ([`InitialFrame::charged_state_gas`]), the charge
+/// gas the runtime gas phase charged upfront ([`RuntimeGas::Charged`]), the charge
 /// is refunded in LIFO order ([`GasTracker::refill_reservoir`]), exactly as the CALL/CREATE
 /// opcodes refund their upfront state charges for failed children. Unlike an inner frame's
 /// caller, the transaction ends here: an exceptional halt consumes all execution gas, including
@@ -753,7 +771,7 @@ pub const fn settle_initial_frame_gas<E>(
 
 /// Executes the prepared first frame and settles its gas into the transaction-level tracker.
 ///
-/// A frame whose runtime gas phase ran out of gas ([`InitialFrame::runtime_oog`]) is halted
+/// A frame whose runtime gas phase ran out of gas ([`RuntimeGas::OutOfGas`]) is halted
 /// without executing ([`Evm::execute_halted_message`]) and settled as [`runtime_oog_result`].
 pub fn execute_initial_frame<T: EvmTypes>(
     host: &mut Evm<'_, T>,
@@ -762,15 +780,15 @@ pub fn execute_initial_frame<T: EvmTypes>(
     execution_gas_limit: u64,
     reservoir: u64,
 ) -> Result<MessageResult<T>, crate::ExecutionError> {
-    let InitialFrame { mut message, charged_state_gas, runtime_oog } = frame;
-    if runtime_oog {
+    let InitialFrame { mut message, runtime_gas } = frame;
+    let RuntimeGas::Charged { state_gas: charged_state_gas } = runtime_gas else {
         // The hooks see the frame burn the budget it was given; the transaction itself burns all
         // its execution gas and returns the reservoir, dropping the phase's partial charges.
         let halted = runtime_oog_result(message.gas_limit, message.reservoir);
         let mut result = host.execute_halted_message(&mut message, halted)?;
         result.gas = runtime_oog_result::<()>(execution_gas_limit, reservoir).gas;
         return Ok(result);
-    }
+    };
 
     // Failed execution has already been rolled back to the message's own checkpoint inside
     // `execute_message`; the settle merges the frame gas into the transaction-level gas.
@@ -1419,7 +1437,7 @@ mod tests {
         );
 
         let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(100_000, 0);
-        let InitialFrame { mut message, charged_state_gas, .. } = prepare_initial_frame(
+        let InitialFrame { mut message, runtime_gas } = prepare_initial_frame(
             &mut evm,
             caller,
             0,
@@ -1431,7 +1449,7 @@ mod tests {
         .unwrap();
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);
-        assert_eq!(charged_state_gas, 0);
+        assert_eq!(runtime_gas, RuntimeGas::Charged { state_gas: 0 });
 
         let result = Host::execute_message(&mut evm, &mut message).unwrap();
 

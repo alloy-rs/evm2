@@ -64,8 +64,9 @@ pub enum JournalEntry {
         address: Address,
         /// Storage key.
         key: Word,
-        /// Previous transient storage value.
-        previous: Option<Word>,
+        /// Previous transient storage value. Zero means the slot was unset, since transient
+        /// storage reads unset slots as zero and never stores a zero value.
+        previous: Word,
     },
     /// Storage slot was warmed by EIP-2929 access tracking.
     StorageWarmed {

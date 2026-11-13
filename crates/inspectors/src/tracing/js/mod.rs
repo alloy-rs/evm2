@@ -91,16 +91,8 @@ pub struct JsInspector {
     fault_fn: JsObject,
 
     // EVM inspector hook functions
-    /// Invoked when the EVM enters a new call that is _NOT_ the top level call.
-    ///
-    /// Corresponds to [Inspector::call] and [Inspector::create_end] but is also invoked on
-    /// [Inspector::selfdestruct].
-    enter_fn: Option<JsObject>,
-    /// Invoked when the EVM exits a call that is _NOT_ the top level call.
-    ///
-    /// Corresponds to [Inspector::call_end] and [Inspector::create_end] but also invoked after
-    /// selfdestruct.
-    exit_fn: Option<JsObject>,
+    /// The `enter` and `exit` functions, which a tracer defines both or neither of.
+    frame_hooks: Option<FrameHooks>,
     /// Executed before each instruction is executed.
     step_fn: Option<JsObject>,
     /// Lazily initialized opcode names shared across transaction resets.
@@ -189,7 +181,7 @@ impl JsInspector {
         let script = Script::parse(Source::from_bytes(wrapped.as_bytes()), None, &mut ctx)
             .map_err(JsInspectorError::EvalCode)?;
 
-        let JsTracerObject { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn } =
+        let JsTracerObject { obj, result_fn, fault_fn, frame_hooks, step_fn } =
             JsTracerObject::evaluate(&script, &config, &mut ctx)?;
 
         let op_names = OpcodeNames::new();
@@ -211,8 +203,7 @@ impl JsInspector {
             transaction_context,
             result_fn,
             fault_fn,
-            enter_fn,
-            exit_fn,
+            frame_hooks,
             step_fn,
             op_names,
             reusable_step_log,
@@ -252,7 +243,7 @@ impl JsInspector {
         self.ensure_not_interrupted()?;
         // `setup` of the fresh tracer must not see the previous transaction's precompiles.
         self.precompiles.clear();
-        let JsTracerObject { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn } =
+        let JsTracerObject { obj, result_fn, fault_fn, frame_hooks, step_fn } =
             JsTracerObject::evaluate(&self.script, &self.config, &mut self.ctx)?;
         // Callback objects are mutable JS objects: replacing their Rust state does not remove
         // user-defined properties or restore overwritten methods. Rebuild them once per
@@ -273,8 +264,7 @@ impl JsInspector {
         self.obj = obj;
         self.result_fn = result_fn;
         self.fault_fn = fault_fn;
-        self.enter_fn = enter_fn;
-        self.exit_fn = exit_fn;
+        self.frame_hooks = frame_hooks;
         self.step_fn = step_fn;
         self.call_stack.clear();
         self.pending_steps.clear();
@@ -383,17 +373,17 @@ impl JsInspector {
     }
 
     fn try_enter(&mut self, frame: CallFrame) -> JsResult<()> {
-        if let Some(enter_fn) = &self.enter_fn {
+        if let Some(hooks) = &self.frame_hooks {
             self.reusable_call_frame.update(frame);
-            enter_fn.call(&self.this, &[self.reusable_call_frame.value()], &mut self.ctx)?;
+            hooks.enter.call(&self.this, &[self.reusable_call_frame.value()], &mut self.ctx)?;
         }
         Ok(())
     }
 
     fn try_exit(&mut self, frame: FrameResult) -> JsResult<()> {
-        if let Some(exit_fn) = &self.exit_fn {
+        if let Some(hooks) = &self.frame_hooks {
             self.reusable_frame_result.update(frame);
-            exit_fn.call(&self.this, &[self.reusable_frame_result.value()], &mut self.ctx)?;
+            hooks.exit.call(&self.this, &[self.reusable_frame_result.value()], &mut self.ctx)?;
         }
         Ok(())
     }
@@ -417,16 +407,10 @@ impl JsInspector {
         self.call_stack.len() == 1
     }
 
-    /// Returns true if there's an enter function and the active call is not the root call.
+    /// Returns true if there are frame hooks and the active call is not the root call.
     #[inline]
-    const fn can_call_enter(&self) -> bool {
-        self.enter_fn.is_some() && !self.is_root_call_active() && !self.hook_errored()
-    }
-
-    /// Returns true if there's an exit function and the active call is not the root call.
-    #[inline]
-    const fn can_call_exit(&mut self) -> bool {
-        self.exit_fn.is_some() && !self.is_root_call_active() && !self.hook_errored()
+    const fn can_call_frame_hooks(&self) -> bool {
+        self.frame_hooks.is_some() && !self.is_root_call_active() && !self.hook_errored()
     }
 
     /// Pushes a new call to the stack
@@ -741,7 +725,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             interp.gas().refunded(),
         );
 
-        if self.can_call_enter() {
+        if self.can_call_frame_hooks() {
             let call = self.active_call();
             let frame = CallFrame {
                 contract: call.contract.clone(),
@@ -766,7 +750,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         if self.check_interrupt(interp) {
             return;
         }
-        if self.can_call_exit() {
+        if self.can_call_frame_hooks() {
             let frame_result = FrameResult {
                 gas_used: result.gas.spent(),
                 output: result.output.clone(),
@@ -804,7 +788,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             interp.gas().refunded(),
         );
 
-        if self.can_call_enter() {
+        if self.can_call_frame_hooks() {
             let call = self.active_call();
             let frame = CallFrame {
                 contract: call.contract.clone(),
@@ -829,7 +813,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         if self.check_interrupt(interp) {
             return;
         }
-        if self.can_call_exit() {
+        if self.can_call_frame_hooks() {
             let frame_result = FrameResult {
                 gas_used: result.gas.spent(),
                 output: result.output.clone(),
@@ -856,7 +840,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         }
         // This is exempt from the root call constraint, because selfdestruct is treated as a
         // new scope that is entered and immediately exited.
-        if self.enter_fn.is_some() {
+        if self.frame_hooks.is_some() {
             let frame = CallFrame {
                 contract: Contract {
                     caller: *contract,
@@ -873,7 +857,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         }
 
         // exit with empty frame result ref <https://github.com/ethereum/go-ethereum/blob/0004c6b229b787281760b14fb9460ffd9c2496f1/core/vm/instructions.go#L829-L829>
-        if !self.is_interrupted() && !self.hook_errored() && self.exit_fn.is_some() {
+        if !self.is_interrupted() && !self.hook_errored() && self.frame_hooks.is_some() {
             let frame = FrameResult { gas_used: 0, output: Bytes::new(), error: None };
             if let Err(err) = self.try_exit(frame) {
                 self.record_hook_error("exit", err);
@@ -947,9 +931,18 @@ struct JsTracerObject {
     obj: JsObject,
     result_fn: JsObject,
     fault_fn: JsObject,
-    enter_fn: Option<JsObject>,
-    exit_fn: Option<JsObject>,
+    frame_hooks: Option<FrameHooks>,
     step_fn: Option<JsObject>,
+}
+
+/// The `enter` and `exit` functions of a tracer.
+struct FrameHooks {
+    /// Invoked when the EVM enters a call that is _NOT_ the top level call, and on
+    /// [Inspector::selfdestruct].
+    enter: JsObject,
+    /// Invoked when the EVM exits a call that is _NOT_ the top level call, and after
+    /// [Inspector::selfdestruct].
+    exit: JsObject,
 }
 
 impl JsTracerObject {
@@ -984,9 +977,11 @@ impl JsTracerObject {
         let exit_fn = obj.get(js_string!("exit"), ctx)?.as_object().filter(|o| o.is_callable());
         let step_fn = obj.get(js_string!("step"), ctx)?.as_object().filter(|o| o.is_callable());
 
-        if enter_fn.is_some() != exit_fn.is_some() {
-            return Err(JsInspectorError::EnterExitMismatch);
-        }
+        let frame_hooks = match (enter_fn, exit_fn) {
+            (Some(enter), Some(exit)) => Some(FrameHooks { enter, exit }),
+            (None, None) => None,
+            _ => return Err(JsInspectorError::EnterExitMismatch),
+        };
 
         // Like geth, `setup` receives the config as a JSON string, `{}` if there is none, and a
         // non-callable `setup` is ignored.
@@ -1002,7 +997,7 @@ impl JsTracerObject {
                 .map_err(JsInspectorError::SetupCallFailed)?;
         }
 
-        Ok(Self { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn })
+        Ok(Self { obj, result_fn, fault_fn, frame_hooks, step_fn })
     }
 }
 

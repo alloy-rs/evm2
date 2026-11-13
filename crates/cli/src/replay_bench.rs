@@ -321,7 +321,7 @@ impl ReplayFixture {
         let mut cfg = CfgEnv::new();
         cfg.set_spec_and_mainnet_gas_params(revm_spec);
 
-        let mut parent_block_hash = Some(case.genesis_block_header.hash);
+        let mut parent_block_hash = case.genesis_block_header.hash;
         let mut parent_excess_blob_gas =
             case.genesis_block_header.excess_blob_gas.unwrap_or_default().saturating_to::<u64>();
         let total_blocks = case.blocks.len();
@@ -406,7 +406,7 @@ impl ReplayFixture {
             }
             database.cache.block_hashes.insert(header.number, header.hash);
 
-            parent_block_hash = Some(header.hash);
+            parent_block_hash = header.hash;
             if let Some(excess) = header.excess_blob_gas {
                 parent_excess_blob_gas = excess.saturating_to::<u64>();
             }
@@ -643,7 +643,7 @@ fn revm_pre_block(
     evm: &mut RevmEvm<'_>,
     spec: SpecId,
     block_number: u64,
-    parent_block_hash: Option<B256>,
+    parent_block_hash: B256,
     header: &BlockHeader,
 ) {
     if block_number == 0 {
@@ -654,10 +654,8 @@ fn revm_pre_block(
     {
         revm_system_call(evm, BEACON_ROOTS_ADDRESS, root.0.into(), "eip4788");
     }
-    if spec.enables(SpecId::PRAGUE)
-        && let Some(hash) = parent_block_hash
-    {
-        revm_system_call(evm, HISTORY_STORAGE_ADDRESS, hash.0.into(), "eip2935");
+    if spec.enables(SpecId::PRAGUE) {
+        revm_system_call(evm, HISTORY_STORAGE_ADDRESS, parent_block_hash.0.into(), "eip2935");
     }
 }
 

@@ -627,7 +627,7 @@ pub fn populate_state_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracing::types::CallTrace;
+    use crate::tracing::types::{CallSelfdestruct, CallTrace};
     use alloy_primitives::U256;
 
     #[test]
@@ -635,7 +635,7 @@ mod tests {
         let nodes = vec![CallTraceNode {
             trace: CallTrace {
                 kind: CallKind::Call,
-                selfdestruct_refund_target: Some(Address::ZERO),
+                selfdestruct: Some(CallSelfdestruct::default()),
                 ..Default::default()
             },
             ..Default::default()
@@ -692,7 +692,7 @@ mod tests {
                 trace: CallTrace {
                     depth: 1,
                     kind: CallKind::Call,
-                    selfdestruct_refund_target: Some(Address::ZERO),
+                    selfdestruct: Some(CallSelfdestruct::default()),
                     ..Default::default()
                 },
                 ..Default::default()

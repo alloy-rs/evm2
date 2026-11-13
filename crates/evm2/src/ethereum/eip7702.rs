@@ -198,7 +198,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     // checkpoint reverts to drop the applied delegations, then the frame halts without executing,
     // consuming all execution gas and returning the reservoir. Unreachable pre-Amsterdam, where no
     // runtime charge is attempted.
-    if frame.runtime_oog {
+    if frame.is_runtime_oog() {
         let features = req.host.version().features;
         req.host.state.rollback(runtime_checkpoint, features);
     }
