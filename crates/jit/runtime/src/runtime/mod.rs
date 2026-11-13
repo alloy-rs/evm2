@@ -53,6 +53,9 @@ mod out_of_process;
 
 mod worker;
 
+mod execution_worker;
+mod spsc;
+
 /// Runs the out-of-process JIT helper if this process was launched as one.
 ///
 /// Returns [`ControlFlow::Break`] after the helper request has been handled and
@@ -93,6 +96,12 @@ pub(crate) struct BackendShared {
     events: EventQueue,
     /// Number of active out-of-process helper pauses.
     pause_depth: AtomicUsize,
+    /// Changes around every resident publication or retirement.
+    publication_epoch: AtomicUsize,
+    /// Separates lookup observations across explicit clears.
+    event_generation: AtomicUsize,
+    #[debug(skip)]
+    execution_workers: execution_worker::Registry,
     /// Shared stats counters.
     #[debug(skip)]
     stats: Arc<RuntimeStats>,
@@ -199,6 +208,9 @@ impl JitBackend {
             resident: ResidentMap::default(),
             events,
             pause_depth: AtomicUsize::new(0),
+            publication_epoch: AtomicUsize::new(0),
+            event_generation: AtomicUsize::new(0),
+            execution_workers: execution_worker::Registry::default(),
             stats: Arc::new(RuntimeStats::default()),
         });
         let this = Self {
@@ -502,7 +514,9 @@ impl JitBackend {
     /// Clears the in-memory resident compiled map.
     ///
     /// All compiled programs are removed from the map. Active references
-    /// held by callers remain valid until dropped.
+    /// held by callers remain valid until dropped. Worker-cache references are revoked immediately
+    /// when idle. Active calls retain their code until completion, with reclamation retried by
+    /// the coordinator.
     ///
     /// Before startup, clears the map in place instead of queueing an undrained command.
     /// May block waiting for startup or for space in the running backend's command channel.
@@ -636,6 +650,7 @@ impl JitBackend {
         // Preload AOT artifacts into the already-allocated resident map.
         match Self::preload_aot(&config) {
             Ok(entries) => {
+                let _publication = self.inner.shared.publication();
                 for (key, prog) in entries {
                     self.inner.shared.resident.insert(key, prog);
                 }
@@ -745,6 +760,8 @@ impl JitBackend {
         };
 
         if matches!(command, Command::ClearResident | Command::ClearAll) {
+            let _publication = self.inner.shared.publication();
+            self.inner.shared.event_generation.fetch_add(1, Ordering::AcqRel);
             self.inner.shared.resident.clear();
         }
         if matches!(command, Command::ClearPersisted | Command::ClearAll)
@@ -773,11 +790,13 @@ impl BackendShared {
     /// `command_queue_len` is omitted because the command channel sender lives
     /// on [`BackendInner`], not [`BackendShared`].
     pub(crate) fn stats(&self) -> RuntimeStatsSnapshot {
-        self.stats.snapshot(stats::RuntimeStatsGauges {
+        let mut snapshot = self.stats.snapshot(stats::RuntimeStatsGauges {
             resident_entries: self.resident.len() as u64,
             events_queued: self.events.len() as u64,
             command_queue_len: 0,
-        })
+        });
+        self.execution_workers.add_stats(&mut snapshot);
+        snapshot
     }
 }
 
@@ -818,5 +837,13 @@ impl Drop for BackendInner {
         if let Err(err) = self.shutdown() {
             warn!(%err, "failed to shutdown JIT backend");
         }
+    }
+}
+
+impl BackendShared {
+    fn publication(&self) -> execution_worker::Publication<'_> {
+        let previous = self.publication_epoch.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(previous & 1, 0, "resident publications must have one writer");
+        execution_worker::Publication(&self.publication_epoch)
     }
 }
