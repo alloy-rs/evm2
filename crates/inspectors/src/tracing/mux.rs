@@ -1,5 +1,5 @@
 use crate::tracing::{
-    DebugInspector, DebugInspectorError, FourByteInspector, TracingInspector,
+    DebugInspector, DebugInspectorError, FourByteInspector, TraceLimits, TracingInspector,
     TracingInspectorConfig, TransactionContext, utils::transaction_info,
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -140,8 +140,20 @@ impl MuxInspector {
         })
     }
 
+    /// Applies the limits to the shared recording and to each nested tracer, see
+    /// [`DebugInspector::set_limits`]. Each of them has its own budget.
+    pub fn set_limits(&mut self, limits: TraceLimits) {
+        if let Some(inspector) = &mut self.tracing {
+            inspector.set_limits(limits);
+        }
+        for (_, child) in &mut self.children {
+            child.set_limits(limits);
+        }
+    }
+
     /// Prepares the inspector for executing the next transaction. This removes any state from the
-    /// previous transaction.
+    /// previous transaction, except the global state of JavaScript tracers, see
+    /// [`DebugInspector::fuse`].
     pub fn fuse(&mut self) -> Result<(), Error> {
         if let Some(inspector) = &mut self.four_byte {
             core::mem::take(inspector);
@@ -257,37 +269,19 @@ impl MuxInspector {
     }
 }
 
-/// Runs `$body` with `$member` bound to each inspector of the mux, borrowed as the pattern says.
-macro_rules! each_member {
-    (&mut $mux:ident, | $member:ident | $body:expr) => {{
-        for (_, $member) in &mut $mux.children {
-            $body;
-        }
-        if let Some($member) = &mut $mux.four_byte {
-            $body;
-        }
-        if let Some($member) = &mut $mux.tracing {
-            $body;
-        }
-    }};
-    (& $mux:ident, | $member:ident | $body:expr) => {{
-        for (_, $member) in &$mux.children {
-            $body;
-        }
-        if let Some($member) = &$mux.four_byte {
-            $body;
-        }
-        if let Some($member) = &$mux.tracing {
-            $body;
-        }
-    }};
-}
-
 /// Calls a hook on every inspector of the mux.
 macro_rules! fan_out {
-    ($mux:ident.$hook:ident($($arg:expr),*)) => {
-        each_member!(&mut $mux, |member| Inspector::<T>::$hook(member, $($arg),*))
-    };
+    ($mux:ident.$hook:ident($($arg:expr),*)) => {{
+        for (_, child) in &mut $mux.children {
+            Inspector::<T>::$hook(child, $($arg),*);
+        }
+        if let Some(inspector) = &mut $mux.four_byte {
+            Inspector::<T>::$hook(inspector, $($arg),*);
+        }
+        if let Some(inspector) = &mut $mux.tracing {
+            Inspector::<T>::$hook(inspector, $($arg),*);
+        }
+    }};
 }
 
 impl<T: EvmTypes> Inspector<T> for MuxInspector {
@@ -298,10 +292,14 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
 
     #[inline]
     fn inspector_config(&self) -> InspectorConfig {
-        let mut config = InspectorConfig::without_steps();
-        each_member!(&self, |member| config =
-            config.union(Inspector::<T>::inspector_config(member)));
-        config
+        let children =
+            self.children.iter().map(|(_, child)| Inspector::<T>::inspector_config(child));
+        let four_byte = self.four_byte.iter().map(Inspector::<T>::inspector_config);
+        let tracing = self.tracing.iter().map(Inspector::<T>::inspector_config);
+        children
+            .chain(four_byte)
+            .chain(tracing)
+            .fold(InspectorConfig::without_steps(), InspectorConfig::union)
     }
 
     #[inline]

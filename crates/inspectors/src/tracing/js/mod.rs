@@ -31,7 +31,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, ExecutionError, Inspector, TxResultWithState,
     env::BlockEnv,
-    evm::DynDatabase,
+    evm::{DynDatabase, PrewarmSet},
     interpreter::{InstrStop, Interpreter, Message, MessageKind, MessageResult, opcode::op},
 };
 
@@ -453,7 +453,9 @@ impl JsInspector {
     /// Sets the active precompiles read by `isPrecompiled`.
     fn register_precompiles<T: EvmTypes>(&mut self, host: &Evm<'_, T>) {
         if !self.precompiles.is_set() {
-            self.precompiles.set(host.precompiles().addresses());
+            let mut precompiles = PrewarmSet::new();
+            host.precompiles().warm_addresses(&mut precompiles);
+            self.precompiles.set(precompiles);
         }
     }
 
@@ -669,6 +671,11 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             pending.snapshot.record(PreStep {
                 pc: pending.instruction.pc,
                 op: pending.instruction.op,
+                immediate: interp
+                    .original_bytecode_slice()
+                    .get(interp.pc() + 1)
+                    .copied()
+                    .unwrap_or_default(),
                 gas_remaining: pending.instruction.gas,
                 stack: interp.stack().as_slice(),
                 memory: interp.memory().as_slice(),
@@ -723,7 +730,12 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
 
         self.push_call(
             message.depth,
-            Contract { caller, contract, value: message.value, input: message.input.to_bytes() },
+            Contract {
+                caller,
+                contract,
+                value: message.value,
+                input: message.input.to_bytes(interp.memory()),
+            },
             message.kind.into(),
             message.gas_limit,
             interp.gas().refunded(),
@@ -785,7 +797,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 caller: message.caller,
                 contract: message.destination,
                 value: message.value,
-                input: message.input.to_bytes(),
+                input: message.input.to_bytes(interp.memory()),
             },
             message.kind.into(),
             message.gas_limit,
@@ -1266,7 +1278,9 @@ mod tests {
             result: function() { return this.before; }
         }"#;
         let mut insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
-        insp.precompiles.set([Address::with_last_byte(1)]);
+        let mut precompiles = PrewarmSet::new();
+        precompiles.warm(&Address::with_last_byte(1));
+        insp.precompiles.set(precompiles);
         insp.fuse().unwrap();
         assert_eq!(try_run_tx(insp, None, true, U256::ZERO, legacy_tx(0)).unwrap(), json!(false));
     }

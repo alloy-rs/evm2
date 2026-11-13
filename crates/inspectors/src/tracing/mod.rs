@@ -2,9 +2,12 @@
 
 use crate::{
     opcode::immediate_size,
-    tracing::types::{
-        CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
-        TraceMemberOrder,
+    tracing::{
+        types::{
+            CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
+            TraceMemberOrder,
+        },
+        utils::step_cost,
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -13,6 +16,7 @@ use alloy_rpc_types_trace::{geth::FlatCallConfig, parity::StorageDelta};
 use core::{mem, ops::Range};
 use evm2::{
     EvmFeatures, EvmTypes, Inspector, InspectorConfig, OpcodeSet, SpecId,
+    evm::PrewarmSet,
     interpreter::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
@@ -53,7 +57,7 @@ pub use opcount::OpcodeCountInspector;
 pub mod types;
 use types::{CallLog, CallTrace, CallTraceStep};
 
-mod utils;
+pub(crate) mod utils;
 
 #[cfg(feature = "std")]
 mod writer;
@@ -110,6 +114,11 @@ pub struct TracingInspector {
     ///
     /// All `Vec<CallTraceStep>` are always empty but may have capacity.
     reusable_step_vecs: Vec<Vec<CallTraceStep>>,
+    /// The precompiles the host warms, read on the first call that records precompile calls.
+    ///
+    /// Addresses a provider only dispatches to on demand, such as Tempo's token precompiles,
+    /// trace like contracts, as with revm-inspectors' warm precompile set.
+    precompiles: Option<PrewarmSet>,
 }
 
 impl TracingInspector {
@@ -124,12 +133,18 @@ impl TracingInspector {
         self
     }
 
-    /// Returns the number of retained or copied bytes counted against the budget.
+    /// Sets the byte budget for recorded trace data, see [`Self::with_limits`].
+    pub const fn set_limits(&mut self, limits: TraceLimits) {
+        self.budget.limits = limits;
+    }
+
+    /// Returns the number of bytes counted against the budget, see
+    /// [`TraceLimits::max_recorded_bytes`].
     pub const fn recorded_bytes(&self) -> usize {
         self.budget.recorded
     }
 
-    /// Returns whether recording omitted a byte buffer after reaching the budget.
+    /// Returns whether recording omitted a step or a byte buffer after reaching the budget.
     pub const fn limit_exceeded(&self) -> bool {
         self.budget.exceeded()
     }
@@ -148,6 +163,7 @@ impl TracingInspector {
             recorded_steps,
             spec_id,
             features,
+            precompiles,
             // kept
             config,
             budget,
@@ -172,6 +188,7 @@ impl TracingInspector {
         *recorded_steps = 0;
         spec_id.take();
         *features = EvmFeatures::empty();
+        precompiles.take();
         budget.recorded = 0;
         budget.exceeded = false;
     }
@@ -430,9 +447,13 @@ impl TracingInspector {
 
         let trace_idx = self.last_trace_idx();
 
+        // The step record is charged before any of its byte buffers, so the budget bounds the
+        // number of steps even when they copy no memory, as with a parity `vmTrace` of a tight
+        // loop.
         let record = !self.budget.exceeded()
             && self.config.should_record_opcode(op)
-            && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get());
+            && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get())
+            && self.budget.reserve(self.step_record_size(op, interp.stack().len()));
         if !record {
             // Push a sentinel so that the upcoming `step_end` stays paired with this step.
             self.step_stack.push(PendingStep::new(trace_idx, usize::MAX, 0));
@@ -550,6 +571,29 @@ impl TracingInspector {
         }
     }
 
+    /// Returns the bytes a recorded step retains outside of its byte buffers: the step itself, its
+    /// ordering entry, a possible step delta, and its stack snapshots.
+    fn step_record_size(&self, op: OpCode, stack_len: usize) -> usize {
+        let snapshots = self.config.record_stack_snapshots;
+        let stack_words = if snapshots.is_all() || snapshots.is_full() {
+            stack_len
+        } else if snapshots.is_top() {
+            stack_len.min(1)
+        } else {
+            0
+        };
+        let push_words = if (snapshots.is_all() || snapshots.is_pushes()) && op.is_valid() {
+            usize::from(op.outputs())
+        } else {
+            0
+        };
+        let delta = if self.config.record_step_deltas { size_of::<StepDelta>() } else { 0 };
+        size_of::<CallTraceStep>()
+            + size_of::<TraceMemberOrder>()
+            + delta
+            + (stack_words + push_words) * size_of::<U256>()
+    }
+
     /// Records the gas a call or create step has charged, when its message starts.
     ///
     /// Invoked on [Inspector::call] and [Inspector::create], where the parent has charged the step,
@@ -606,19 +650,18 @@ impl TracingInspector {
         }
 
         // A call or create step is charged once its message starts, which includes the gas
-        // forwarded by a call and excludes it for a create. An out-of-gas step consumes the whole
-        // remainder it started with, except the reentrancy sentry, which halts before any charge.
-        // Any other step is charged when it ends. State gas that spills into the remaining gas is
-        // not part of the cost.
+        // forwarded by a call and excludes it for a create. Any other step is charged when it
+        // ends. State gas that spills into the remaining gas is not part of the cost.
         let result = interp.result();
-        step.gas_cost = if result == Err(InstrStop::ReentrancySentryOOG) {
-            0
-        } else if let Some(after) = gas_after_charge {
-            gas_before.saturating_sub(after)
-        } else if result.is_err_and(InstrStop::is_out_of_gas) {
-            step.gas_remaining
-        } else {
-            gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill())
+        step.gas_cost = match gas_after_charge {
+            Some(after) if result != Err(InstrStop::ReentrancySentryOOG) => {
+                gas_before.saturating_sub(after)
+            }
+            _ => step_cost(
+                result,
+                step.gas_remaining,
+                gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill()),
+            ),
         };
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
@@ -744,13 +787,20 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         };
 
         // Builders decide whether to leave out calls to precompiles, so record which calls are.
-        let maybe_precompile =
-            self.config.record_precompile_calls.then(|| interp.host().precompiles().contains(&to));
+        let maybe_precompile = self.config.record_precompile_calls.then(|| {
+            self.precompiles
+                .get_or_insert_with(|| {
+                    let mut precompiles = PrewarmSet::new();
+                    interp.host().precompiles().warm_addresses(&mut precompiles);
+                    precompiles
+                })
+                .is_warm(&to)
+        });
 
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
         {
-            message.input.to_bytes()
+            message.input.to_bytes(interp.memory())
         } else {
             Bytes::new()
         };
@@ -793,7 +843,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
         {
-            message.input.to_bytes()
+            message.input.to_bytes(interp.memory())
         } else {
             Bytes::new()
         };

@@ -4,8 +4,13 @@ use crate::utils::{AccountInfo, Bytecode, Context, TransactTo, TxEnv, a};
 use alloy_consensus::{TxEip7702, crypto::secp256k1::sign_message};
 use alloy_eip2930::{AccessList, AccessListItem};
 use alloy_eips::eip7702::Authorization;
-use alloy_primitives::{Address, B256, Signature, U256, address, bytes, hex};
-use evm2::{ethereum::TxEnvelope, evm::InMemoryDB};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address, bytes, hex};
+use evm2::{
+    BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SpecId, Version,
+    ethereum::{TxEnvelope, ethereum_tx_registry, execute_initial_frame, prepare_initial_frame},
+    evm::InMemoryDB,
+    interpreter::GasTracker,
+};
 use evm2_inspectors::access_list::AccessListInspector;
 
 #[test]
@@ -91,8 +96,6 @@ fn test_access_list_precompile() {
         .unwrap();
     assert!(res.result.is_success(), "{res:#?}");
 
-    let erecover = Address::with_last_byte(1);
-    assert!(accesslist.excluded().contains(&erecover));
     assert!(accesslist.into_access_list().is_empty());
 }
 
@@ -135,6 +138,55 @@ fn test_access_list_authorization_exclusions() {
     assert!(!excluded.contains(&max_nonce_authority));
     // The unrecoverable authorization has no authority and therefore adds nothing.
     assert_eq!(excluded.len(), 2);
+}
+
+#[test]
+fn later_top_level_call_keeps_slots_touched_by_earlier_calls() {
+    let caller = Address::repeat_byte(0xaa);
+    // Calls `token` with no input.
+    let router = Address::with_last_byte(0x42);
+    // Reads the slot keyed by its caller.
+    let token = Address::with_last_byte(0x43);
+    let mut db = InMemoryDB::default();
+    let code = |code: &[u8]| AccountInfo {
+        code: Some(Bytecode::new_raw(Bytes::copy_from_slice(code))),
+        ..Default::default()
+    };
+    db.insert_account_info(&router, code(&hex!("5f5f5f5f5f60435af100")));
+    db.insert_account_info(&token, code(&hex!("335400")));
+    let mut inspector = AccessListInspector::default();
+    let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::CANCUN, Version::new(SpecId::CANCUN)),
+        SpecId::CANCUN,
+        Default::default(),
+        ethereum_tx_registry(SpecId::CANCUN),
+        db,
+        Precompiles::base(SpecId::CANCUN),
+    );
+    evm.set_inspector(&mut inspector);
+
+    // Two top-level calls of one transaction, as in an account-abstraction batch.
+    for to in [router, token] {
+        let mut gas = GasTracker::new(100_000);
+        let frame = prepare_initial_frame(
+            &mut evm,
+            caller,
+            0,
+            TxKind::Call(to),
+            &Bytes::new(),
+            U256::ZERO,
+            &mut gas,
+        )
+        .unwrap();
+        assert!(execute_initial_frame(&mut evm, frame, &mut gas, 100_000, 0).unwrap().is_success());
+    }
+    drop(evm);
+
+    // The slot `token` read under `router` stays after the second call targets `token`.
+    assert_eq!(
+        inspector.into_access_list(),
+        access_list(&[(token, &[router.into_word(), caller.into_word()])])
+    );
 }
 
 /// A call run through `go-ethereum`'s `eth_createAccessList`, and the list it returned.

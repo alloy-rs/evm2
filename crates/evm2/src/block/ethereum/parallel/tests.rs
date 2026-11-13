@@ -747,7 +747,7 @@ fn ledger(
         Host::sstore(evm, &LEDGER, &caller, &value, false)?;
         Ok(PrecompileOutput::new(Bytes::new()))
     };
-    match message.input.first().copied().unwrap_or_default() {
+    match evm.message_input(message).first().copied().unwrap_or_default() {
         0 => {
             Host::sadd(evm, &LEDGER, &U256::ZERO, &fee)?;
         }

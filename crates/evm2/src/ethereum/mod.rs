@@ -503,13 +503,10 @@ pub fn charge_upfront<'a, T: EvmTypes>(
 
 /// Returns `(execution_gas_limit, reservoir)` for the first frame.
 ///
-/// `initial_state_gas` is the EIP-8037 state gas charged at the intrinsic phase (the pre-EIP-2780
-/// pessimistic EIP-7702 authorization state gas, or hook-added charges). It is deducted from the
-/// reservoir, spilling into the execution budget when the reservoir is insufficient. It is zero
-/// without EIP-8037; under EIP-2780 the state-dependent charges are metered at the runtime gas
-/// phase instead ([`prepare_initial_frame`]). The pre-EIP-2780 EIP-7702 state-gas refund is not an
-/// input here: per execution-specs it is credited directly back to the reservoir after the
-/// authorizations are applied, not applied to execution gas first.
+/// `initial_state_gas` is the EIP-8037 state gas charged at the intrinsic phase by hooks. It is
+/// deducted from the reservoir, spilling into the execution budget when the reservoir is
+/// insufficient. It is zero without EIP-8037; under EIP-2780 the EIP-7702 authorization state
+/// charges are metered at the runtime gas phase instead ([`prepare_initial_frame`]).
 pub fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
@@ -635,7 +632,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
             }
             MessageExt {
                 kind: MessageKind::Call,
-                depth: host.version().initial_call_depth,
+                depth: host.initial_call_depth(),
                 gas_limit: tx_gas.remaining(),
                 reservoir: tx_gas.reservoir(),
                 destination: to,
@@ -666,7 +663,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
             }
             MessageExt {
                 kind: MessageKind::Create,
-                depth: host.version().initial_call_depth,
+                depth: host.initial_call_depth(),
                 gas_limit: tx_gas.remaining(),
                 reservoir: tx_gas.reservoir(),
                 destination,
@@ -683,7 +680,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
             }
         }
     };
-    debug_assert_eq!(message.depth, host.version().initial_call_depth);
+    debug_assert_eq!(message.depth, host.initial_call_depth());
     Ok(InitialFrame { message, charged_state_gas, runtime_oog: false })
 }
 
@@ -708,7 +705,7 @@ pub fn halted_initial_frame<T: EvmTypes>(
     };
     let message = MessageExt {
         kind,
-        depth: host.version().initial_call_depth,
+        depth: host.initial_call_depth(),
         gas_limit: budget.remaining(),
         reservoir: budget.reservoir(),
         destination,
@@ -838,7 +835,6 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         gas_limit: tx_gas_limit,
         floor_gas,
         initial_state_gas,
-        state_refund,
         result,
     } = settlement;
 
@@ -848,12 +844,8 @@ pub fn finalize_gas<'a, T: EvmTypes>(
     // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor: block-level
     // execution gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
     // execution-specs, without the floor clamp.
-    //
-    // The per-authorization `state_refund` is EIP-7702 state gas returned on top of the settled
-    // tracker's.
     let (total_gas_spent, state_gas_spent) =
         gas_spent_breakdown(tx_gas_limit, &result.gas, initial_state_gas);
-    let state_gas_spent = state_gas_spent.saturating_sub(state_refund);
     Ok(TxResultExt {
         status: result.is_success(),
         total_gas_spent,
@@ -1490,6 +1482,51 @@ mod tests {
             Err(HandlerError::TxGasLimitGreaterThanCap {
                 gas_limit: tx_gas_limit,
                 cap: amsterdam_without_eip8037.tx_gas_limit_cap,
+            })
+        );
+    }
+
+    #[test]
+    fn amsterdam_total_gas_cap_is_configurable() {
+        let gas_limit = 1u64 << 32;
+
+        // The default keeps the EIP-8037 cap from #862.
+        let amsterdam = Version::base(SpecId::AMSTERDAM);
+        assert_eq!(
+            validate_tx_gas_limit_cap(amsterdam, gas_limit),
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit,
+                cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM
+            })
+        );
+
+        // A chain with larger blocks can raise the cap above the execution cap.
+        let mut raised = Version::new(SpecId::AMSTERDAM);
+        raised.tx_total_gas_cap = 10_000_000_000;
+        assert_eq!(validate_tx_gas_limit_cap(&raised, gas_limit), Ok(()));
+        assert_eq!(
+            validate_tx_gas_limit_cap(&raised, raised.tx_total_gas_cap + 1),
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit: raised.tx_total_gas_cap + 1,
+                cap: raised.tx_total_gas_cap
+            })
+        );
+
+        // `u64::MAX` disables the total cap.
+        let mut disabled = Version::new(SpecId::AMSTERDAM);
+        disabled.tx_total_gas_cap = u64::MAX;
+        assert_eq!(validate_tx_gas_limit_cap(&disabled, gas_limit), Ok(()));
+        assert_eq!(validate_tx_gas_limit_cap(&disabled, u64::MAX), Ok(()));
+
+        // Without EIP-8037 the field is unused and the execution cap bounds `tx.gas`.
+        let mut without_eip8037 = Version::new(SpecId::AMSTERDAM);
+        without_eip8037.features.remove(EvmFeatures::EIP8037);
+        without_eip8037.tx_total_gas_cap = u64::MAX;
+        assert_eq!(
+            validate_tx_gas_limit_cap(&without_eip8037, gas_limit),
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit,
+                cap: without_eip8037.tx_gas_limit_cap
             })
         );
     }

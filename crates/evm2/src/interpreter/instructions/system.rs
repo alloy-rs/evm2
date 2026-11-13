@@ -138,12 +138,8 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     Ok((gas_limit, new_account_state_gas, code, code_address))
 }
 
-/// # Safety
-///
-/// The message must be passed to the host as in
-/// [`Interpreter::call_input`](crate::interpreter::Interpreter::call_input).
 #[inline(never)]
-unsafe fn prepare_call<T: EvmTypesHost>(
+fn prepare_call<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
@@ -183,8 +179,7 @@ unsafe fn prepare_call<T: EvmTypesHost>(
             kind == MessageKind::Call,
             local_gas_limit,
         )?;
-    // SAFETY: Upheld by the caller.
-    let input = unsafe { state.0.call_input(input_range.start, input_range.len()) };
+    let input = state.0.call_input(input_range.start, input_range.len());
 
     let current = state.message();
     let (destination, caller, call_value, code_address) = match kind {
@@ -252,8 +247,7 @@ fn call_inner<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
 ) -> Result {
-    // SAFETY: The hooks do nothing.
-    unsafe { call_impl(stack, gas, state, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(())) }
+    call_with(stack, gas, state, kind, |_, _, _| Ok(()), |_, _, _, _| Ok(()))
 }
 
 /// Executes a call opcode of `kind` with hooks around its child message.
@@ -275,39 +269,8 @@ fn call_inner<T: EvmTypesHost>(
 /// `after` runs.
 ///
 /// An `Err` from either hook stops the instruction with that error.
-///
-/// The result can be the stop for a config reload. Return it as the last step of the instruction.
 #[inline]
 pub fn call_with<T: EvmTypesHost>(
-    stack: StackMut<'_>,
-    gas: &mut Gas,
-    state: &mut InterpreterState<'_, '_, T>,
-    kind: MessageKind,
-    before: impl FnOnce(&mut Gas, &mut InterpreterState<'_, '_, T>, &mut Message<T>) -> Result,
-    after: impl FnOnce(
-        &mut Gas,
-        &mut InterpreterState<'_, '_, T>,
-        &Message<T>,
-        &MessageResult<T>,
-    ) -> Result,
-) -> Result {
-    let before =
-        |gas: &mut Gas, state: &mut InterpreterState<'_, '_, T>, message: &mut Message<T>| {
-            message.input.make_owned();
-            before(gas, state, message)
-        };
-    // SAFETY: `before` copies the input before the hooks can reach it.
-    unsafe { call_impl(stack, gas, state, kind, before, after) }
-}
-
-/// Body of [`call_with`]. The child message may borrow its input from memory.
-///
-/// # Safety
-///
-/// `before` and `after` must not read a borrowed input after changing memory, or let it outlive
-/// the call.
-#[inline]
-unsafe fn call_impl<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
@@ -322,11 +285,8 @@ unsafe fn call_impl<T: EvmTypesHost>(
 ) -> Result {
     let mut message = Message::<T>::default();
     let mut return_memory_range = 0..0;
-    // SAFETY: Upheld by the caller for the hooks. Nothing else reads the message after the host
-    // returns.
-    let new_account_state_gas = unsafe {
-        prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)
-    }?;
+    let new_account_state_gas =
+        prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
     before(gas, state, &mut message)?;
 
     let mut result =
@@ -334,7 +294,6 @@ unsafe fn call_impl<T: EvmTypesHost>(
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
-    state.note_inspector_config_change();
     gas.merge_child_gas(result.gas, result.stop);
     // EIP-8037: a value-bearing CALL that creates the target charges NEW_ACCOUNT state
     // gas upfront on this frame. If the call does not succeed (depth/balance failure,
@@ -351,7 +310,7 @@ unsafe fn call_impl<T: EvmTypesHost>(
     }
     state.swap_return_data(&mut result.output);
     stack.push_u64(result.is_success() as u64)?;
-    // A hook's stop or a config reload.
+    // A stop a hook set.
     state.result()
 }
 
@@ -380,7 +339,6 @@ fn create_inner<T: EvmTypesHost>(
 /// A fatal child result returns before `after` runs.
 ///
 /// Both hooks may charge or credit `gas` or fail the instruction, as in [`call_with`].
-/// Its result can be the stop for a config reload, as in [`call_with`].
 #[inline]
 pub fn create_with<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
@@ -454,7 +412,7 @@ pub fn create_with<T: EvmTypesHost>(
                 caller_info.nonce,
                 value,
                 depth,
-                state.version(),
+                state.host().initial_call_depth(),
             )
             .is_some()
         {
@@ -506,7 +464,6 @@ pub fn create_with<T: EvmTypesHost>(
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
-    state.note_inspector_config_change();
     gas.merge_child_gas(result.gas, result.stop);
 
     // EIP-8037: when the opcode charged the conditional `create_state_gas`
@@ -526,7 +483,7 @@ pub fn create_with<T: EvmTypesHost>(
         state.clear_return_data();
     }
     stack.push(result.created_address_for_parent())?;
-    // A hook's stop or a config reload.
+    // A stop a hook set.
     state.result()
 }
 

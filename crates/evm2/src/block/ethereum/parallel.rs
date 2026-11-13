@@ -92,6 +92,12 @@ const BUCKETS: usize = 32;
 /// Number of elements of the first bucket of a [`Buckets`].
 const FIRST_BUCKET: usize = 64;
 
+/// Times an idle worker polls for results to execute again before parking.
+const TAIL_SPINS: u32 = 1 << 8;
+
+/// How long an idle worker parks between polls for results to execute again.
+const TAIL_PARK: core::time::Duration = core::time::Duration::from_micros(20);
+
 /// Times the committer polls for the next result before parking.
 const COMMIT_SPINS: u32 = 1 << 10;
 
@@ -457,6 +463,9 @@ where
                     // reading in between must never fall through to an older version.
                     let mut committed = Vec::new();
                     store.publish(version, &result.pending_state, &mut committed);
+                    // Later results may have read the stale writes: have idle workers check them
+                    // again.
+                    results.revalidate.fetch_min(index + 1, Ordering::AcqRel);
                     store.unpublish(
                         version,
                         writes.iter().filter(|write| !committed.contains(write)),
@@ -598,6 +607,89 @@ fn run_worker<T, F, H>(
         scheduler.finish(index);
         let reads = core::mem::take(&mut *reads.borrow_mut());
         results.put(index, Speculative { worker, outcome, reward, reads, writes });
+    }
+
+    // Every transaction was handed out, and the committer is still behind: execute again, ahead
+    // of it, the results whose reads earlier executions have since overwritten, so that it can
+    // commit them instead of executing them itself.
+    let Some(evm) = &mut evm else { return };
+    let mut idle = 0;
+    while !scheduler.is_stopped() {
+        let index = results.revalidate.load(Ordering::Acquire);
+        if index >= queue.len.load(Ordering::Acquire) {
+            // Wait for the committer to execute a transaction again, which can make later results
+            // stale, or to finish, without taking a core it may need.
+            idle += 1;
+            if idle < TAIL_SPINS {
+                core::hint::spin_loop();
+            } else {
+                std::thread::park_timeout(TAIL_PARK);
+            }
+            continue;
+        }
+        if results
+            .revalidate
+            .compare_exchange_weak(index, index + 1, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            continue;
+        }
+        idle = 0;
+        if index <= results.committing.load(Ordering::Acquire) {
+            continue;
+        }
+        let mut stop = false;
+        results.update(index, |speculative| {
+            let version = version(index);
+            if speculative.outcome.is_some() && speculative.reads.validate_at(store, version) {
+                return;
+            }
+            let evm_tx = queue.get(index);
+            let cache = &mut evm.overlay_db_mut().cache;
+            cache.accounts.clear();
+            cache.storage.clear();
+            view_version.set(version);
+            let Buffers { reads: pooled, mut writes, pending } =
+                results.buffers(worker, &mut stash);
+            *reads.borrow_mut() = pooled;
+            let state = evm.state_mut();
+            state.set_pending_state(pending);
+            state.clear_transaction_state();
+            let executed = catch_unwind(AssertUnwindSafe(|| {
+                evm.transact(evm_tx).ok().map(|executed| executed.detach())
+            }));
+            let Ok(outcome) = executed else {
+                // The EVM may be left inconsistent: keep the stale result and stop.
+                reads.borrow_mut().clear();
+                stop = true;
+                return;
+            };
+            let reward = evm.deferred_beneficiary_reward().unwrap_or_default();
+            if let Some(outcome) = &outcome {
+                store.publish(version, &outcome.pending_state, &mut writes);
+                on_speculative(index, outcome.pending_state.changes());
+            }
+            store.unpublish(
+                version,
+                speculative.writes.iter().filter(|write| !writes.contains(write)),
+            );
+            let reads = core::mem::take(&mut *reads.borrow_mut());
+            let stale = core::mem::replace(
+                speculative,
+                Speculative { worker, outcome, reward, reads, writes },
+            );
+            let Speculative { worker: owner, reads: mut old_reads, writes: mut old_writes, .. } =
+                stale;
+            old_reads.clear();
+            old_writes.clear();
+            results.recycle(
+                owner,
+                Buffers { reads: old_reads, writes: old_writes, ..Default::default() },
+            );
+        });
+        if stop {
+            return;
+        }
     }
 }
 
@@ -928,6 +1020,24 @@ impl ReadSet {
             }
         }
         Ok(true)
+    }
+}
+
+impl ReadSet {
+    /// Returns whether every read still sees the same value in `store` at `version`: the latest
+    /// writes of earlier transactions, committed or speculative.
+    fn validate_at<B: DynDatabaseRef + Sync + ?Sized>(
+        &self,
+        store: &MvStore<'_, B>,
+        version: u32,
+    ) -> bool {
+        self.accounts.iter().all(|(address, value)| {
+            store
+                .account(address, version)
+                .is_ok_and(|info| info.as_ref().map(AccountInfo::clone_no_code) == *value)
+        }) && self.storage.iter().all(|(address, key, value)| {
+            store.storage(address, key, version).is_ok_and(|v| v == *value)
+        })
     }
 }
 
@@ -1266,6 +1376,11 @@ struct Results<S> {
     workers: AtomicUsize,
     /// Each worker's buffers, handed back by the committer.
     pools: Box<[CachePadded<Mutex<Vec<Buffers>>>]>,
+    /// Index of the transaction the committer is committing: workers leave it and every earlier
+    /// result alone.
+    committing: CachePadded<AtomicUsize>,
+    /// Index of the next result for an idle worker to validate against the latest writes.
+    revalidate: CachePadded<AtomicUsize>,
 }
 
 impl<S> Results<S> {
@@ -1277,6 +1392,8 @@ impl<S> Results<S> {
             waiting: AtomicUsize::new(usize::MAX),
             workers: AtomicUsize::new(workers),
             pools: (0..workers).map(|_| CachePadded::default()).collect(),
+            committing: CachePadded(AtomicUsize::new(0)),
+            revalidate: CachePadded(AtomicUsize::new(0)),
         }
     }
 
@@ -1295,6 +1412,7 @@ impl<S> Results<S> {
     /// Takes the result of the transaction at `index`, waiting for it, or returns `None` once
     /// every worker exited without producing it.
     fn take(&self, index: usize) -> Option<S> {
+        self.committing.store(index, Ordering::Relaxed);
         let slot = self.slots.get(index);
         let mut spins = 0;
         while !slot.ready.load(Ordering::Acquire) {
@@ -1320,6 +1438,20 @@ impl<S> Results<S> {
         }
         self.waiting.store(usize::MAX, Ordering::Relaxed);
         slot.value.lock().expect("lock poisoned").take()
+    }
+
+    /// Runs `f` on the result at `index` while it holds the result's lock, if the result is
+    /// stored, the committer has not taken it and no other worker holds it. The committer waits
+    /// for `f` to finish before it takes the result.
+    fn update(&self, index: usize, f: impl FnOnce(&mut S)) {
+        let slot = self.slots.get(index);
+        if !slot.ready.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(mut value) = slot.value.try_lock() else { return };
+        if let Some(result) = value.as_mut() {
+            f(result);
+        }
     }
 
     /// Returns buffers for `worker`, with empty reads and writes, from its `stash`, which it

@@ -48,8 +48,8 @@ use evm2::{
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountInfo as EvmAccountInfo, BUILDER_DEPOSIT_REQUEST_ADDRESS,
-        BUILDER_EXIT_REQUEST_ADDRESS, Bal, CONSOLIDATION_REQUEST_ADDRESS, DbStats, DbStatsCounts,
-        InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
+        BUILDER_EXIT_REQUEST_ADDRESS, Bal, CONSOLIDATION_REQUEST_ADDRESS, DbResult, DbStats,
+        DbStatsCounts, DynDatabase, DynDatabaseRef, InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
     },
 };
 #[cfg(feature = "jit")]
@@ -59,7 +59,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write,
     mem,
+    num::NonZeroUsize,
     path::Path,
+    sync::Arc,
 };
 
 pub use crate::execution::ExecutionMode;
@@ -99,6 +101,12 @@ pub struct ExecuteConfig {
     pub mode: ExecutionMode,
     /// Whether to print database method call counts.
     pub db_stats: bool,
+    /// Executes each block's transactions in parallel on this many worker threads with
+    /// [`EthBlockExecutor::execute_transactions_parallel`], which commits exactly the result of
+    /// sequential execution. `None` executes them one by one. Blocks that trace, collect database
+    /// statistics, carry a block access list or need per-transaction state roots (pre-Byzantium
+    /// receipts) execute sequentially.
+    pub parallel_threads: Option<NonZeroUsize>,
 }
 
 impl Default for ExecuteConfig {
@@ -112,6 +120,7 @@ impl Default for ExecuteConfig {
             dump_state: false,
             mode: ExecutionMode::Interpreter,
             db_stats: false,
+            parallel_threads: None,
         }
     }
 }
@@ -355,6 +364,7 @@ fn execute_case(
             compare_state_root,
             config.compare_receipt_root,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
+            config.parallel_threads,
         ) {
             Ok(()) => hook.block_finished(BlockFinished {
                 block_index,
@@ -445,6 +455,7 @@ fn execute_block<'a>(
     compare_state_root: bool,
     compare_receipt_root: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
+    parallel_threads: Option<NonZeroUsize>,
 ) -> Result<(), TestError> {
     let db_stats = db_stats_counts.is_some();
     let should_fail = block.expect_exception.is_some();
@@ -515,12 +526,31 @@ fn execute_block<'a>(
     let initial_database = mem::take(database);
     let receipt_base = (compare_receipt_root && !spec.enables(SpecId::BYZANTIUM))
         .then(|| initial_database.clone());
-    let mut evm = if db_stats {
+    // Parallel execution reads the pre-block state through a shared view, so the block's EVM
+    // borrows the database instead of owning it.
+    let parallel_threads = parallel_threads.filter(|_| {
+        !db_stats && !trace && receipt_base.is_none() && block_access_list(block).is_none()
+    });
+    let (shared_database, owned_database) = if parallel_threads.is_some() {
+        (Some(initial_database), None)
+    } else {
+        (None, Some(initial_database))
+    };
+    let shared = shared_database.map(|database| SharedCache(Arc::new(database)));
+    let mut evm = if let Some(shared) = &shared {
         Evm::<BaseEvmTypes>::new(
             spec,
             next_block_env,
             ethereum_tx_registry(spec),
-            DbStats::new(initial_database),
+            shared.clone(),
+            Precompiles::base(spec),
+        )
+    } else if db_stats {
+        Evm::<BaseEvmTypes>::new(
+            spec,
+            next_block_env,
+            ethereum_tx_registry(spec),
+            DbStats::new(owned_database.expect("sequential block owns its database")),
             Precompiles::base(spec),
         )
     } else {
@@ -528,7 +558,7 @@ fn execute_block<'a>(
             spec,
             next_block_env,
             ethereum_tx_registry(spec),
-            initial_database,
+            owned_database.expect("sequential block owns its database"),
             Precompiles::base(spec),
         )
     };
@@ -595,7 +625,81 @@ fn execute_block<'a>(
 
         let transactions = block_transactions(block);
         let mut post_state_roots = Vec::new();
-        for (transaction_index, raw_tx) in transactions.iter().enumerate() {
+        if let (Some(threads), Some(shared)) = (parallel_threads, &shared) {
+            let mut decoded = Vec::with_capacity(transactions.len());
+            for (transaction_index, raw_tx) in transactions.iter().enumerate() {
+                match build_tx(raw_tx, spec, validate) {
+                    Ok(tx) => decoded.push(tx),
+                    Err(_err) if should_fail => return Ok(BlockResolution::Discard),
+                    Err(err) => {
+                        hook.transaction_failed(TransactionFailed {
+                            block_index,
+                            total_blocks,
+                            block_number,
+                            transaction_index,
+                            total_transactions,
+                            error: &err,
+                        });
+                        return Err(TestError::case(path, name, err));
+                    }
+                }
+            }
+            let parallel_result = executor.execute_transactions_parallel(
+                decoded.iter().map(|(tx_env, tx)| (tx_env.clone(), tx)),
+                shared,
+                |database| {
+                    let mut evm = Evm::<BaseEvmTypes>::new(
+                        spec,
+                        next_block_env,
+                        ethereum_tx_registry(spec),
+                        database,
+                        Precompiles::base(spec),
+                    );
+                    resources.configure_evm(&mut evm);
+                    evm
+                },
+                threads,
+                None,
+                |_, _| {},
+            );
+            if let Err(err) = parallel_result {
+                if should_fail {
+                    return Ok(BlockResolution::Discard);
+                }
+                return Err(TestError::case(
+                    path,
+                    name,
+                    TestErrorKind::UnexpectedFailure(err.to_string()),
+                ));
+            }
+            let mut cumulative = 0;
+            for (transaction_index, receipt) in executor.receipts.iter().enumerate() {
+                hook.transaction_started(TransactionStarted {
+                    block_index,
+                    total_blocks,
+                    block_number,
+                    transaction_index,
+                    total_transactions,
+                });
+                let gas_used = receipt.cumulative_gas_used() - cumulative;
+                cumulative = receipt.cumulative_gas_used();
+                hook.transaction_finished(TransactionFinished {
+                    block_index,
+                    total_blocks,
+                    block_number,
+                    transaction_index,
+                    total_transactions,
+                    gas_used,
+                    execution_gas_used: gas_used,
+                    state_gas_used: 0,
+                    success: receipt.is_success(),
+                    logs: receipt.logs(),
+                });
+            }
+        }
+        for (transaction_index, raw_tx) in
+            transactions.iter().enumerate().filter(|_| parallel_threads.is_none())
+        {
             hook.transaction_started(TransactionStarted {
                 block_index,
                 total_blocks,
@@ -822,7 +926,12 @@ fn execute_block<'a>(
     // invalid blocks leave the caller's state unchanged.
     let mut evm = executor.evm;
     let block_state = executor.block_state;
-    let (mut restored_database, block_db_stats_counts) = if db_stats {
+    let (mut restored_database, block_db_stats_counts) = if parallel_threads.is_some() {
+        // The block's EVM only read the database; its writes are in `block_state`.
+        drop(evm);
+        let shared = shared.expect("parallel block shares its database").0;
+        (Arc::try_unwrap(shared).expect("parallel block's EVMs are dropped"), None)
+    } else if db_stats {
         let stats = evm
             .database_as_mut::<DbStats<InMemoryDB>>()
             .expect("block EVM database should be DbStats<InMemoryDB>");
@@ -2319,5 +2428,55 @@ mod tests {
         assert_eq!(fail["pass"], false);
         assert_eq!(fail["stateRoot"], serde_json::to_value(B256::ZERO).unwrap());
         assert!(fail["errorMsg"].as_str().unwrap().contains("boom"));
+    }
+}
+
+/// The pre-block state, read through a shared reference: the database of a block executed in
+/// parallel and of its workers.
+#[derive(Clone, Debug)]
+struct SharedCache(Arc<InMemoryDB>);
+
+impl DynDatabaseRef for SharedCache {
+    fn get_account(&self, address: &Address) -> DbResult<Option<EvmAccountInfo>> {
+        Ok(self.0.cache.accounts.get(address).cloned().flatten().map(|mut info| {
+            if info.code_hash.is_zero() {
+                info.code_hash = alloy_primitives::KECCAK256_EMPTY;
+            }
+            info
+        }))
+    }
+
+    fn get_code_by_hash(&self, code_hash: &B256) -> DbResult<evm2::bytecode::Bytecode> {
+        Ok(self.0.cache.contracts.get(code_hash).cloned().unwrap_or_default())
+    }
+
+    fn get_storage(&self, address: &Address, key: &U256) -> DbResult<U256> {
+        let Some(storage) = self.0.cache.storage.get(address) else { return Ok(U256::ZERO) };
+        Ok(storage.slots.get(key).copied().unwrap_or_default())
+    }
+
+    fn get_block_hash(&self, number: &U256) -> DbResult<B256> {
+        match self.0.cache.block_hashes.get(number) {
+            Some(hash) => Ok(*hash),
+            None => DynDatabase::get_block_hash(&mut evm2::evm::EmptyDB::default(), number),
+        }
+    }
+}
+
+impl DynDatabase for SharedCache {
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<EvmAccountInfo>> {
+        DynDatabaseRef::get_account(self, address)
+    }
+
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<evm2::bytecode::Bytecode> {
+        DynDatabaseRef::get_code_by_hash(self, code_hash)
+    }
+
+    fn get_storage(&mut self, address: &Address, key: &U256) -> DbResult<U256> {
+        DynDatabaseRef::get_storage(self, address, key)
+    }
+
+    fn get_block_hash(&mut self, number: &U256) -> DbResult<B256> {
+        DynDatabaseRef::get_block_hash(self, number)
     }
 }
