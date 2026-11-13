@@ -64,8 +64,8 @@ use alloy_consensus::{
 };
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{
-    Address, B256,
-    map::{AddressMap, B256Map, HashMap},
+    Address, B256, KECCAK256_EMPTY,
+    map::{AddressMap, B256Map, HashMap, HashSet},
 };
 use core::{
     borrow::Borrow,
@@ -466,9 +466,10 @@ where
                     // Later results may have read the stale writes: have idle workers check them
                     // again.
                     results.revalidate.fetch_min(index + 1, Ordering::AcqRel);
+                    let committed = committed.into_iter().collect::<HashSet<_>>();
                     store.unpublish(
                         version,
-                        writes.iter().filter(|write| !committed.contains(write)),
+                        writes.iter().filter(|write| !committed.contains(*write)),
                     );
                     dependencies.record(index, &result.pending_state);
                     self.commit_transaction(EthTransactionResultWithState::new(
@@ -511,7 +512,9 @@ where
         // The transaction read or wrote the beneficiary itself, so the reward would land on
         // state it already changed: let the sequential EVM order the two.
         let beneficiary = self.evm.block_env().beneficiary;
-        if outcome.pending_state.accounts.contains_key(&beneficiary) {
+        if outcome.pending_state.accounts.contains_key(&beneficiary)
+            || reads.accounts.iter().any(|(address, _)| *address == beneficiary)
+        {
             return None;
         }
         // Credit the reward as the default settlement would have: load, touch, add.
@@ -524,10 +527,18 @@ where
                 }
                 Some(info.clone())
             }
+            // Before EIP-161, touching an absent account creates it empty: let the sequential
+            // EVM do it.
+            None if reward.is_zero() && !self.evm.feature(EvmFeatures::EIP161) => return None,
             None if reward.is_zero() => None,
             Some(info) => {
                 let mut info = info.clone();
                 info.balance = info.balance.wrapping_add(reward);
+                // A reward that wraps the balance to zero leaves an empty account, which EIP-161
+                // deletes.
+                if info.is_empty() && self.evm.feature(EvmFeatures::EIP161) {
+                    return None;
+                }
                 Some(info)
             }
             None => Some(AccountInfo { balance: reward, ..AccountInfo::empty() }),
@@ -562,6 +573,9 @@ fn run_worker<T, F, H>(
     H: Fn(usize, TxStateChanges<'_>),
 {
     let _exit = WorkerExit(results);
+    // A panic outside the guarded execution, such as in `make_evm` or `on_speculative`, must not
+    // leave transactions waiting on one this worker never finishes: stop the block instead.
+    let _abort = AbortOnUnwind(scheduler);
     let view_version = Cell::new(0);
     let reads = RefCell::new(ReadSet::default());
     let mut stash = Vec::new();
@@ -585,6 +599,9 @@ fn run_worker<T, F, H>(
         let Buffers { reads: pooled, mut writes, pending } = results.buffers(worker, &mut stash);
         *reads.borrow_mut() = pooled;
         // Install a recycled pending state's allocations, emptied, for the transaction to fill.
+        // Reset the withheld reward, so that a transaction settled without the default settlement
+        // reads none rather than the previous transaction's.
+        worker_evm.set_defer_beneficiary_reward(true);
         let state = worker_evm.state_mut();
         state.set_pending_state(pending);
         state.clear_transaction_state();
@@ -652,6 +669,7 @@ fn run_worker<T, F, H>(
             let Buffers { reads: pooled, mut writes, pending } =
                 results.buffers(worker, &mut stash);
             *reads.borrow_mut() = pooled;
+            evm.set_defer_beneficiary_reward(true);
             let state = evm.state_mut();
             state.set_pending_state(pending);
             state.clear_transaction_state();
@@ -920,7 +938,8 @@ impl DependencyTracker {
     fn record(&mut self, index: usize, pending: &PendingState) {
         let index = u32::try_from(index).expect("block has fewer than 2^32 transactions");
         // Slots only the transaction's end loaded, to resolve its deferred storage.
-        let resolved = |key: &(Address, Word)| pending.deferred.resolved.contains(key);
+        let resolved = pending.deferred.resolved.iter().copied().collect::<HashSet<_>>();
+        let resolved = |key: &(Address, Word)| resolved.contains(key);
         let mut dependencies = Vec::new();
         // Each key is visited once, so reading its last writer and then recording this transaction
         // as the writer, in one lookup, is the same as reading every key before writing any.
@@ -1013,6 +1032,18 @@ impl ReadSet {
             if evm.read_account_info(address)? != *value {
                 return Ok(false);
             }
+            // A worker reads every slot of an account it read as absent as zero, without asking
+            // the store, while the executor still sees committed slots of such an account.
+            if value.is_none()
+                && evm
+                    .overlay_db()
+                    .cache
+                    .storage
+                    .get(address)
+                    .is_some_and(|storage| !storage.slots.is_empty())
+            {
+                return Ok(false);
+            }
         }
         for (address, key, value) in &self.storage {
             if evm.read_storage(address, key)? != *value {
@@ -1042,7 +1073,7 @@ impl ReadSet {
 }
 
 /// A key a transaction published to the multi-version store.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum WriteKey {
     Account(Address),
     Storage(Address, Word),
@@ -1311,7 +1342,14 @@ struct TxView<'m, 's, B: ?Sized> {
 
 impl<B: DynDatabaseRef + Sync + ?Sized> DynDatabase for TxView<'_, '_, B> {
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        let info = self.store.account(address, self.version.get())?;
+        let mut info = self.store.account(address, self.version.get())?;
+        // Record the account as the executor's database returns it, which maps a zero code hash
+        // to the empty one.
+        if let Some(info) = &mut info
+            && info.code_hash.is_zero()
+        {
+            info.code_hash = KECCAK256_EMPTY;
+        }
         let read = info.as_ref().map(AccountInfo::clone_no_code);
         self.reads.borrow_mut().accounts.push((*address, read));
         Ok(info)
@@ -1489,6 +1527,17 @@ struct ResultSlot<S> {
 impl<S> Default for ResultSlot<S> {
     fn default() -> Self {
         Self { ready: AtomicBool::new(false), value: Mutex::new(None) }
+    }
+}
+
+/// Stops the scheduler when a worker unwinds.
+struct AbortOnUnwind<'s>(&'s Scheduler);
+
+impl Drop for AbortOnUnwind<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.abort();
+        }
     }
 }
 

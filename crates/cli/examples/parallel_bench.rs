@@ -535,8 +535,9 @@ fn main() {
     let mut threads = vec![1, 2, 4, 8, 16, 32]
         .into_iter()
         .filter(|&t| t < cpus)
-        .chain([cpus - 1])
+        .chain([cpus.saturating_sub(1).max(1)])
         .collect::<Vec<_>>();
+    threads.dedup();
     let mut works = vec![0u64, 64, 256];
     let mut txs = 4_300usize;
     let mut runs = 5usize;

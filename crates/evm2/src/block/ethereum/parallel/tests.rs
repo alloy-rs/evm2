@@ -702,7 +702,7 @@ fn streamed_public_mix_benchmark() {
                     receiver,
                     &snapshot,
                     |database| evm(database),
-                    NonZeroUsize::new(threads - 1).unwrap(),
+                    NonZeroUsize::new(threads.saturating_sub(1).max(1)).unwrap(),
                     |_, _| {},
                 )
                 .unwrap();
