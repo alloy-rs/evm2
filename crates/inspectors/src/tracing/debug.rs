@@ -1,6 +1,6 @@
 use crate::tracing::{
     Erc7562Inspector, FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
-    MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
+    MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig, TransactionContext,
     utils::transaction_info,
 };
 use alloc::vec::Vec;
@@ -176,6 +176,38 @@ impl DebugInspector {
         };
 
         Ok(this)
+    }
+
+    /// Applies the limits to the tracers that record trace data, see [`Self::set_limits`].
+    pub fn with_limits(mut self, limits: TraceLimits) -> Self {
+        self.set_limits(limits);
+        self
+    }
+
+    /// Applies the limits to the tracers that record trace data, and keeps them across
+    /// [`Self::fuse`].
+    ///
+    /// The erc7562 tracer applies them to the call inputs it retains. Its preimages and those of
+    /// the keccak256 preimage tracer keep their own limit, which defaults to
+    /// [`DEFAULT_MAX_RECORDED_BYTES`](crate::tracing::DEFAULT_MAX_RECORDED_BYTES), so limits
+    /// without a maximum do not lift it. Each tracer of a mux tracer has its own budget. The
+    /// 4byte, noop, state-gas and JavaScript tracers record no unbounded byte data and ignore the
+    /// limits.
+    pub fn set_limits(&mut self, limits: TraceLimits) {
+        match self {
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.set_limits(limits),
+            Self::Erc7562Tracer(inspector) => inspector.set_call_limits(limits),
+            Self::Mux(inspector, _) => inspector.set_limits(limits),
+            Self::FourByte(_)
+            | Self::Keccak256Preimage(_)
+            | Self::Noop(_)
+            | Self::StateGasTracer(_) => {}
+            #[cfg(feature = "js-tracer")]
+            Self::Js(_) => {}
+        }
     }
 
     /// Prepares inspector for executing the next transaction. This will remove any state from
@@ -431,7 +463,7 @@ pub enum DebugInspectorError {
     /// The keccak256 preimage tracer reached its limit of recorded bytes
     #[error(transparent)]
     Keccak256Preimage(#[from] crate::tracing::Keccak256PreimageLimitExceeded),
-    /// The erc7562 tracer reached its limit of recorded preimage bytes or failed to read the state
+    /// The erc7562 tracer reached a limit of recorded bytes or failed to read the state
     #[error(transparent)]
     Erc7562(#[from] crate::tracing::Erc7562Error),
     /// Error from JS inspector
