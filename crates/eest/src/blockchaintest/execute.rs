@@ -1713,6 +1713,56 @@ const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
     })
 }
 
+/// The pre-block state, read through a shared reference: the database of a block executed in
+/// parallel and of its workers.
+#[derive(Clone, Debug)]
+struct SharedCache(Arc<InMemoryDB>);
+
+impl DynDatabaseRef for SharedCache {
+    fn get_account(&self, address: &Address) -> DbResult<Option<EvmAccountInfo>> {
+        Ok(self.0.cache.accounts.get(address).cloned().flatten().map(|mut info| {
+            if info.code_hash.is_zero() {
+                info.code_hash = alloy_primitives::KECCAK256_EMPTY;
+            }
+            info
+        }))
+    }
+
+    fn get_code_by_hash(&self, code_hash: &B256) -> DbResult<evm2::bytecode::Bytecode> {
+        Ok(self.0.cache.contracts.get(code_hash).cloned().unwrap_or_default())
+    }
+
+    fn get_storage(&self, address: &Address, key: &U256) -> DbResult<U256> {
+        let Some(storage) = self.0.cache.storage.get(address) else { return Ok(U256::ZERO) };
+        Ok(storage.slots.get(key).copied().unwrap_or_default())
+    }
+
+    fn get_block_hash(&self, number: &U256) -> DbResult<B256> {
+        match self.0.cache.block_hashes.get(number) {
+            Some(hash) => Ok(*hash),
+            None => DynDatabase::get_block_hash(&mut evm2::evm::EmptyDB::default(), number),
+        }
+    }
+}
+
+impl DynDatabase for SharedCache {
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<EvmAccountInfo>> {
+        DynDatabaseRef::get_account(self, address)
+    }
+
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<evm2::bytecode::Bytecode> {
+        DynDatabaseRef::get_code_by_hash(self, code_hash)
+    }
+
+    fn get_storage(&mut self, address: &Address, key: &U256) -> DbResult<U256> {
+        DynDatabaseRef::get_storage(self, address, key)
+    }
+
+    fn get_block_hash(&mut self, number: &U256) -> DbResult<B256> {
+        DynDatabaseRef::get_block_hash(self, number)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2428,55 +2478,5 @@ mod tests {
         assert_eq!(fail["pass"], false);
         assert_eq!(fail["stateRoot"], serde_json::to_value(B256::ZERO).unwrap());
         assert!(fail["errorMsg"].as_str().unwrap().contains("boom"));
-    }
-}
-
-/// The pre-block state, read through a shared reference: the database of a block executed in
-/// parallel and of its workers.
-#[derive(Clone, Debug)]
-struct SharedCache(Arc<InMemoryDB>);
-
-impl DynDatabaseRef for SharedCache {
-    fn get_account(&self, address: &Address) -> DbResult<Option<EvmAccountInfo>> {
-        Ok(self.0.cache.accounts.get(address).cloned().flatten().map(|mut info| {
-            if info.code_hash.is_zero() {
-                info.code_hash = alloy_primitives::KECCAK256_EMPTY;
-            }
-            info
-        }))
-    }
-
-    fn get_code_by_hash(&self, code_hash: &B256) -> DbResult<evm2::bytecode::Bytecode> {
-        Ok(self.0.cache.contracts.get(code_hash).cloned().unwrap_or_default())
-    }
-
-    fn get_storage(&self, address: &Address, key: &U256) -> DbResult<U256> {
-        let Some(storage) = self.0.cache.storage.get(address) else { return Ok(U256::ZERO) };
-        Ok(storage.slots.get(key).copied().unwrap_or_default())
-    }
-
-    fn get_block_hash(&self, number: &U256) -> DbResult<B256> {
-        match self.0.cache.block_hashes.get(number) {
-            Some(hash) => Ok(*hash),
-            None => DynDatabase::get_block_hash(&mut evm2::evm::EmptyDB::default(), number),
-        }
-    }
-}
-
-impl DynDatabase for SharedCache {
-    fn get_account(&mut self, address: &Address) -> DbResult<Option<EvmAccountInfo>> {
-        DynDatabaseRef::get_account(self, address)
-    }
-
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<evm2::bytecode::Bytecode> {
-        DynDatabaseRef::get_code_by_hash(self, code_hash)
-    }
-
-    fn get_storage(&mut self, address: &Address, key: &U256) -> DbResult<U256> {
-        DynDatabaseRef::get_storage(self, address, key)
-    }
-
-    fn get_block_hash(&mut self, number: &U256) -> DbResult<B256> {
-        DynDatabaseRef::get_block_hash(self, number)
     }
 }
