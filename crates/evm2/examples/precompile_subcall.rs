@@ -1,12 +1,15 @@
 //! Custom precompile that performs an interpreter subcall.
 
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, Bytes};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     env::BlockEnvExt,
     evm::{AccountInfo, InMemoryDB, precompile::PrecompileOutput},
-    interpreter::{GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, Word, op},
+    interpreter::{
+        GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, Word,
+        instructions::execute_call_message, op,
+    },
     precompiles::{Precompile, PrecompileError, PrecompileHalt, PrecompileId, PrecompileResult},
     registry::TxRegistry,
 };
@@ -65,29 +68,21 @@ fn staticcall_precompile(
 ) -> PrecompileResult {
     gas.spend(100)?;
 
-    let loaded = Host::load_account(evm, &SUBCALL_TARGET, true, false)?;
-    let child_gas_limit = gas.remaining().min(50_000);
-    gas.spend(child_gas_limit)?;
-
+    // `execute_call_message` charges what `STATICCALL` would: the account access, an EIP-7702
+    // delegate and at most all but one 64th of the remaining gas forwarded.
     let mut child = MessageExt {
         kind: MessageKind::StaticCall,
         depth: message.depth.saturating_add(1),
-        gas_limit: child_gas_limit,
-        reservoir: gas.reservoir(),
+        gas_limit: 50_000,
         destination: SUBCALL_TARGET,
         call_target: SUBCALL_TARGET,
         caller: message.destination,
         input: Bytes::copy_from_slice(evm.message_input(message)).into(),
-        value: U256::ZERO,
-        code: loaded.code,
-        code_address: SUBCALL_TARGET,
         caller_is_static: message.caller_is_static
             || matches!(message.kind, MessageKind::StaticCall),
         ..MessageExt::default()
     };
-
-    let result = Host::execute_message(evm, &mut child)?;
-    gas.merge_child_gas(result.gas, result.stop);
+    let result = execute_call_message(evm, gas, &mut child)?;
 
     match result.stop {
         stop if stop.is_success() => Ok(PrecompileOutput::new(result.output)),
