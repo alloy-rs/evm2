@@ -59,11 +59,6 @@ impl Keccak256PreimageInspector {
         Self { inner: HashMap::default(), budget: TraceBudget { limits, ..Default::default() } }
     }
 
-    /// Sets the limits that bound the bytes of the recorded preimages.
-    pub const fn set_limits(&mut self, limits: TraceLimits) {
-        self.budget.limits = limits;
-    }
-
     /// Returns whether a preimage was omitted after reaching the byte limit.
     pub const fn limit_exceeded(&self) -> bool {
         self.budget.exceeded()

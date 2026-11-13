@@ -187,19 +187,24 @@ impl DebugInspector {
     /// Applies the limits to the tracers that record trace data, and keeps them across
     /// [`Self::fuse`].
     ///
-    /// This replaces the default limits of the keccak256 preimage and erc7562 tracers. Each tracer
-    /// of a mux tracer has its own budget. The 4byte, noop, state-gas and JavaScript tracers
-    /// record no unbounded byte data and ignore the limits.
+    /// The erc7562 tracer applies them to the call inputs it retains. Its preimages and those of
+    /// the keccak256 preimage tracer keep their own limit, which defaults to
+    /// [`DEFAULT_MAX_RECORDED_BYTES`](crate::tracing::DEFAULT_MAX_RECORDED_BYTES), so limits
+    /// without a maximum do not lift it. Each tracer of a mux tracer has its own budget. The
+    /// 4byte, noop, state-gas and JavaScript tracers record no unbounded byte data and ignore the
+    /// limits.
     pub fn set_limits(&mut self, limits: TraceLimits) {
         match self {
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector, _)
             | Self::Default(inspector, _) => inspector.set_limits(limits),
-            Self::Erc7562Tracer(inspector) => inspector.set_limits(limits),
-            Self::Keccak256Preimage(inspector) => inspector.set_limits(limits),
+            Self::Erc7562Tracer(inspector) => inspector.set_call_limits(limits),
             Self::Mux(inspector, _) => inspector.set_limits(limits),
-            Self::FourByte(_) | Self::Noop(_) | Self::StateGasTracer(_) => {}
+            Self::FourByte(_)
+            | Self::Keccak256Preimage(_)
+            | Self::Noop(_)
+            | Self::StateGasTracer(_) => {}
             #[cfg(feature = "js-tracer")]
             Self::Js(_) => {}
         }
@@ -458,7 +463,7 @@ pub enum DebugInspectorError {
     /// The keccak256 preimage tracer reached its limit of recorded bytes
     #[error(transparent)]
     Keccak256Preimage(#[from] crate::tracing::Keccak256PreimageLimitExceeded),
-    /// The erc7562 tracer reached its limit of recorded preimage bytes or failed to read the state
+    /// The erc7562 tracer reached a limit of recorded bytes or failed to read the state
     #[error(transparent)]
     Erc7562(#[from] crate::tracing::Erc7562Error),
     /// Error from JS inspector

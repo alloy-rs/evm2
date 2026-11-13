@@ -138,12 +138,13 @@ impl TracingInspector {
         self.budget.limits = limits;
     }
 
-    /// Returns the number of retained or copied bytes counted against the budget.
+    /// Returns the number of bytes counted against the budget, see
+    /// [`TraceLimits::max_recorded_bytes`].
     pub const fn recorded_bytes(&self) -> usize {
         self.budget.recorded
     }
 
-    /// Returns whether recording omitted a byte buffer after reaching the budget.
+    /// Returns whether recording omitted a step or a byte buffer after reaching the budget.
     pub const fn limit_exceeded(&self) -> bool {
         self.budget.exceeded()
     }

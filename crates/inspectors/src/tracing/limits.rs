@@ -6,13 +6,14 @@ use evm2::{EvmTypes, ExecutionError, interpreter::Interpreter};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TraceLimitBehavior {
-    /// Continue execution but omit byte buffers that would exceed the limit.
-    /// The resulting trace can contain empty fields. Check
+    /// Continue execution but omit the steps and byte buffers that would exceed the limit, and
+    /// every step after them. The resulting trace can miss steps and contain empty fields. Check
     /// [`TracingInspector::limit_exceeded`](super::TracingInspector::limit_exceeded)
     /// to detect this.
     #[default]
     Skip,
-    /// Abort execution with a fatal evm2 error when a byte buffer would exceed the limit.
+    /// Abort execution with a fatal evm2 error when a step or a byte buffer would exceed the
+    /// limit.
     Halt,
 }
 
