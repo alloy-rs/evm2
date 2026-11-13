@@ -1,10 +1,11 @@
-//! Cooperative cancellation at EVM and JavaScript callback boundaries.
+//! Cooperative cancellation of EVM execution and running JavaScript callbacks.
 
 use super::*;
 use alloy_consensus::TxLegacy;
 use alloy_primitives::hex;
 use boa_engine::NativeFunction;
 use boa_gc::{Finalize, Trace};
+use core::time::Duration;
 use evm2::{
     BaseEvmTypes, Precompiles, SpecId,
     block::ethereum::execution::execute_transaction_without_commit,
@@ -14,6 +15,7 @@ use evm2::{
     evm::{AccountInfo, EmptyDB, InMemoryDB},
     registry::HandlerError,
 };
+use std::thread;
 
 const TRACER: &str = "{ fault: function() {}, result: function() { return 42; } }";
 const TARGET: Address = Address::with_last_byte(0x42);
@@ -70,7 +72,7 @@ fn interrupt_stops_steps_without_js_step_callback() {
     let message = Message::<BaseEvmTypes>::default();
     let mut interp = Interpreter::<BaseEvmTypes>::new(&message);
     // Signal from another thread after the inspector has been created.
-    std::thread::spawn(move || interrupt.interrupt()).join().unwrap();
+    thread::spawn(move || interrupt.interrupt()).join().unwrap();
     inspector.step(&mut interp);
     assert_eq!(interp.result(), Err(InstrStop::FatalExternalError));
 }
@@ -178,7 +180,9 @@ fn interrupt_rejects_result_collection() {
     for script in [
         TRACER,
         "{fault: function() {}, result: function() { interrupt(); return 42; }}",
+        "{fault: function() {}, result: function() { interrupt(); (function() {})(); return 42; }}",
         "{fault: function() {}, result: function() { return {toJSON: function() { interrupt(); return 42; }}; }}",
+        "{fault: function() {}, result: function() { return {toJSON: function() { interrupt(); (function() {})(); return 42; }}; }}",
     ] {
         let (mut inspector, result) = run(interruptible(script), &hex!("00"), TxKind::Call(TARGET));
         let result = result.unwrap();
@@ -222,10 +226,16 @@ fn drop_guard_interrupts_when_request_future_is_dropped() {
 struct InterruptSignal(#[unsafe_ignore_trace] JsInspectorInterrupt);
 
 fn interruptible(script: &str) -> JsInspector {
-    let interrupt = JsInspectorInterrupt::new();
     let mut inspector = JsInspector::new(script.into(), serde_json::Value::Null)
         .unwrap()
-        .with_interrupt(interrupt.clone());
+        .with_interrupt(JsInspectorInterrupt::new());
+    register_interrupt(&mut inspector);
+    inspector
+}
+
+/// Registers a global `interrupt()` that signals the inspector's interrupt handle.
+fn register_interrupt(inspector: &mut JsInspector) {
+    let interrupt = inspector.interrupt.clone().unwrap();
     inspector
         .ctx
         .register_global_builtin_callable(
@@ -240,7 +250,6 @@ fn interruptible(script: &str) -> JsInspector {
             ),
         )
         .unwrap();
-    inspector
 }
 
 fn run(
@@ -310,4 +319,68 @@ fn hook_error_skips_all_later_callbacks() {
     assert_eq!(result.unwrap().result.stop, InstrStop::InvalidFEOpcode);
     let count = inspector.ctx.eval(Source::from_bytes("callbacks")).unwrap();
     assert_eq!(count.as_number(), Some(1.0));
+}
+
+#[test]
+fn interrupt_stops_a_running_callback() {
+    for (code, callback) in [
+        (&hex!("00")[..], "step"),
+        (&hex!("5f5f5f5f5f600461fffff100")[..], "enter"),
+        (&hex!("5f5f5f5f5f600461fffff100")[..], "exit"),
+        (&hex!("fe")[..], "fault"),
+    ] {
+        let body = |name| {
+            if name == callback { "interrupt(); (function() {})(); completed = true;" } else { "" }
+        };
+        let script = format!(
+            "{{ step: function() {{ {} }}, enter: function() {{ {} }}, exit: function() {{ {} }},
+                fault: function() {{ {} }}, result: function() {{ return 42; }} }}",
+            body("step"),
+            body("enter"),
+            body("exit"),
+            body("fault"),
+        );
+        let mut clone = interruptible(&script).try_clone().unwrap();
+        register_interrupt(&mut clone);
+        for inspector in [interruptible(&script), clone] {
+            let (mut inspector, result) = run(inspector, code, TxKind::Call(TARGET));
+            assert_interrupted(result);
+            assert!(inspector.hook_error.is_none(), "{callback}");
+            let global = inspector.ctx.global_object();
+            assert!(
+                !global.has_own_property(js_string!("completed"), &mut inspector.ctx).unwrap(),
+                "{callback}"
+            );
+        }
+    }
+}
+
+#[test]
+fn interrupt_stops_setup_on_fuse() {
+    let mut inspector = interruptible(
+        "{ setup: function() { if (globalThis.ready) { interrupt(); (function() {})(); }
+                                globalThis.ready = true; },
+           fault: function() {}, result: function() {} }",
+    );
+    assert!(matches!(inspector.fuse(), Err(JsInspectorError::Interrupted)));
+}
+
+#[test]
+fn interrupt_from_another_thread_stops_unbounded_callback() {
+    // Recursion without loops, which stays within the recursion limit.
+    let script =
+        "{ step: function() { function f(n) { if (n > 0) { f(n - 1); f(n - 1); } } f(100); },
+                    fault: function() {}, result: function() {} }";
+    let interrupt = JsInspectorInterrupt::new();
+    let inspector = JsInspector::new(script.into(), serde_json::Value::Null)
+        .unwrap()
+        .with_interrupt(interrupt.clone());
+    let interrupter = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(10));
+        interrupt.interrupt();
+    });
+    let (inspector, result) = run(inspector, &hex!("00"), TxKind::Call(TARGET));
+    interrupter.join().unwrap();
+    assert_interrupted(result);
+    assert!(inspector.hook_error.is_none());
 }
