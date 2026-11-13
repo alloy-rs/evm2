@@ -133,6 +133,11 @@ impl TracingInspector {
         self
     }
 
+    /// Sets the byte budget for recorded trace data, see [`Self::with_limits`].
+    pub const fn set_limits(&mut self, limits: TraceLimits) {
+        self.budget.limits = limits;
+    }
+
     /// Returns the number of retained or copied bytes counted against the budget.
     pub const fn recorded_bytes(&self) -> usize {
         self.budget.recorded

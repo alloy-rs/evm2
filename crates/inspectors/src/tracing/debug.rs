@@ -1,6 +1,6 @@
 use crate::tracing::{
     Erc7562Inspector, FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
-    MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
+    MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig, TransactionContext,
     utils::transaction_info,
 };
 use alloc::vec::Vec;
@@ -176,6 +176,33 @@ impl DebugInspector {
         };
 
         Ok(this)
+    }
+
+    /// Applies the limits to the tracers that record trace data, see [`Self::set_limits`].
+    pub fn with_limits(mut self, limits: TraceLimits) -> Self {
+        self.set_limits(limits);
+        self
+    }
+
+    /// Applies the limits to the tracers that record trace data, and keeps them across
+    /// [`Self::fuse`].
+    ///
+    /// This replaces the default limits of the keccak256 preimage and erc7562 tracers. Each tracer
+    /// of a mux tracer has its own budget. The 4byte, noop, state-gas and JavaScript tracers
+    /// record no unbounded byte data and ignore the limits.
+    pub fn set_limits(&mut self, limits: TraceLimits) {
+        match self {
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.set_limits(limits),
+            Self::Erc7562Tracer(inspector) => inspector.set_limits(limits),
+            Self::Keccak256Preimage(inspector) => inspector.set_limits(limits),
+            Self::Mux(inspector, _) => inspector.set_limits(limits),
+            Self::FourByte(_) | Self::Noop(_) | Self::StateGasTracer(_) => {}
+            #[cfg(feature = "js-tracer")]
+            Self::Js(_) => {}
+        }
     }
 
     /// Prepares inspector for executing the next transaction. This will remove any state from

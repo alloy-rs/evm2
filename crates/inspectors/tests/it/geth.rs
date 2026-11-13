@@ -3574,3 +3574,45 @@ fn tracing_inspector_traces_the_same_with_the_steps_it_asks_for_and_with_every_s
         }
     }
 }
+
+#[test]
+fn debug_inspector_limits_halt_struct_logs_and_preimages() {
+    // `JUMPDEST PUSH0 JUMP` loops without memory, `KECCAK256` of 32 zero bytes records a preimage.
+    for (tracer, code) in
+        [(None, &hex!("5b5f56")[..]), (Some(KECCAK256_PREIMAGE_TRACER), &hex!("60205f2000")[..])]
+    {
+        let account = address!("1000000000000000000000000000000000000001");
+        let run = |limits: Option<TraceLimits>| {
+            let opts = GethDebugTracingOptions {
+                tracer: tracer.map(|tracer| GethDebugTracerType::JsTracer(tracer.to_string())),
+                ..Default::default()
+            };
+            let mut inspector = DebugInspector::new(opts).unwrap();
+            if let Some(limits) = limits {
+                inspector = inspector.with_limits(limits);
+            }
+            let context =
+                Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+                    db.insert_account_info(
+                        &account,
+                        AccountInfo {
+                            code: Some(Bytecode::new_raw(code.to_vec().into())),
+                            ..Default::default()
+                        },
+                    );
+                });
+            let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+            evm.inspect_tx(TxEnv {
+                gas_limit: 1_000_000,
+                kind: TransactTo::Call(account),
+                ..Default::default()
+            })
+            .is_ok()
+        };
+        assert!(run(None), "tracer={tracer:?}");
+        let limits = TraceLimits::default()
+            .set_max_recorded_bytes(Some(0))
+            .set_behavior(TraceLimitBehavior::Halt);
+        assert!(!run(Some(limits)), "tracer={tracer:?}");
+    }
+}

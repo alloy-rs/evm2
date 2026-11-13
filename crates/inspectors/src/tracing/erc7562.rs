@@ -127,8 +127,13 @@ impl Erc7562Inspector {
     /// Bounds the bytes of the preimages that the inspector retains by the given limits, which
     /// default to [`DEFAULT_MAX_RECORDED_BYTES`].
     pub const fn with_limits(mut self, limits: TraceLimits) -> Self {
-        self.budget.limits = limits;
+        self.set_limits(limits);
         self
+    }
+
+    /// Sets the limits that bound the bytes of the retained preimages, see [`Self::with_limits`].
+    pub const fn set_limits(&mut self, limits: TraceLimits) {
+        self.budget.limits = limits;
     }
 
     /// Returns whether a preimage was omitted after reaching the byte limit.
