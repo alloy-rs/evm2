@@ -22,7 +22,15 @@ impl<'a> BytecodeRef<'a> {
         }
     }
 
-    /// Returns a pointer to the start of the bytecode.
+    /// Returns this view over the copy of the code at `base`, which has the same layout.
+    #[inline]
+    pub(crate) const fn with_base(mut self, base: NonNull<u8>) -> Self {
+        self.base = base;
+        self
+    }
+
+    /// Returns a pointer to the start of the code the frame runs on: the bytecode, or its fused
+    /// copy.
     #[inline]
     pub const fn as_ptr(&self) -> *const u8 {
         self.base.as_ptr()

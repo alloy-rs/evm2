@@ -89,7 +89,7 @@ fn return_inner<T: EvmTypesHost>(
 #[instruction]
 pub fn invalid(cx: _) -> Result {
     cold_path();
-    let opcode = cx.pc.op();
+    let opcode = cx.state.original_opcode(*cx.pc);
     Err(if opcode == op::INVALID {
         InstrStop::InvalidFEOpcode
     } else if OpCode::new(opcode).is_some() {

@@ -3,7 +3,12 @@
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypesHost, OpcodeConfig,
     evm::config::SelectorOpcodeConfig,
-    interpreter::{Interpreter, InterpreterState, Pc, RawStack, op},
+    interpreter::{
+        Interpreter, InterpreterState, Pc, RawStack,
+        fusion::{self, MAX_PATTERN_LEN, PATTERNS, Pattern},
+        op,
+        private::{InstructionFlags, InstructionImplFn},
+    },
     trustme,
 };
 
@@ -161,6 +166,94 @@ where
     crate::for_each_spec!([] make_selector_tables)
 }
 
+/// Builds the table that runs fused code for config `C`: `plain`, with the handlers of the
+/// superinstructions at their ids. Returns `None` if the config runs without superinstructions.
+///
+/// `previous` is the fused table and the opcode config of the spec before, or of the base config.
+/// A superinstruction whose opcodes are the same in both configs reuses that table's handler.
+const fn make_fused_table<T, C>(
+    plain: &InstrTable<T>,
+    previous: Option<(&InstrTable<T>, &OpcodeConfig<T>)>,
+) -> Option<InstrTable<T>>
+where
+    T: EvmTypesHost,
+    C: EvmConfig<T>,
+{
+    let config = C::OPCODE_CONFIG;
+    let base = SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
+        [C::BASE_SPEC_ID as usize];
+    if !fusion::enabled(config, base) {
+        return None;
+    }
+    let mut table = *plain;
+
+    macro_rules! assign_superinstructions {
+        ($($index:literal,)*) => {
+            $(
+                let pattern = &PATTERNS[$index];
+                table[fusion::pattern_id($index) as usize] = if !fusion::fusable(config, base, pattern) {
+                    // The first instruction alone, as in the plain table.
+                    plain[pattern.op(0) as usize]
+                } else if let Some((previous_table, previous_config)) = previous
+                    && !pattern_changed(config, previous_config, pattern)
+                {
+                    previous_table[fusion::pattern_id($index) as usize]
+                } else {
+                    imp::dispatch_fused::<
+                        T,
+                        C,
+                        { PATTERNS[$index].len() },
+                        { PATTERNS[$index].op(0) },
+                        { PATTERNS[$index].op(1) },
+                        { PATTERNS[$index].op(2) },
+                        { PATTERNS[$index].op(3) },
+                    > as imp::RawInstrFn<T>
+                };
+            )*
+        };
+    }
+
+    fusion::for_each_pattern_index!(assign_superinstructions);
+    Some(table)
+}
+
+const fn make_selector_fused_tables<T, F, const CUSTOM_SPEC_ID: u32>()
+-> [Option<InstrTable<T>>; crate::SpecId::COUNT]
+where
+    T: EvmTypesHost,
+    F: EvmConfigSelector<T>,
+{
+    macro_rules! make_selector_fused_tables {
+        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {{
+            make_selector_fused_tables!(@build [] [none]; $($spec $name,)*)
+        }};
+        (@build [$($tables:ident,)*] [$($previous_table:tt)*]; $spec:ident $name:ident, $($rest:ident $rest_name:ident,)*) => {{
+            let $name = make_fused_table::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>>(
+                &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[crate::SpecId::$spec as usize],
+                make_selector_fused_tables!(@previous [$($previous_table)*] $spec),
+            );
+            make_selector_fused_tables!(@build [$($tables,)* $name,] [some $name]; $($rest $rest_name,)*)
+        }};
+        (@build [$($tables:ident,)*] [$($previous_table:tt)*];) => {
+            [$($tables,)*]
+        };
+        (@previous [none] $spec:ident) => {
+            None
+        };
+        (@previous [some $previous_table:ident] $spec:ident) => {
+            match (&$previous_table, crate::SpecId::$spec.prev()) {
+                (Some(table), Some(previous)) => Some((
+                    table,
+                    crate::evm::config::SelectorOpcodeConfig::<T, F, CUSTOM_SPEC_ID>::OPCODE_CONFIG[previous as usize],
+                )),
+                _ => None,
+            }
+        };
+    }
+
+    crate::for_each_spec!([] make_selector_fused_tables)
+}
+
 pub(crate) struct ConfigInstrTables<T, C>(core::marker::PhantomData<fn() -> (T, C)>);
 
 impl<T, C> ConfigInstrTables<T, C>
@@ -188,6 +281,19 @@ where
                 [C::BASE_SPEC_ID as usize],
         ),
     );
+    pub(crate) const FUSED_INSTRUCTIONS: &'static Option<InstrTable<T>> = &make_fused_table::<T, C>(
+        Self::INSTRUCTIONS,
+        match &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::FUSED_INSTRUCTIONS
+            [C::BASE_SPEC_ID as usize]
+        {
+            Some(table) => Some((
+                table,
+                SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
+                    [C::BASE_SPEC_ID as usize],
+            )),
+            None => None,
+        },
+    );
 }
 
 pub(crate) struct SelectorInstrTables<T, F, const CUSTOM_SPEC_ID: u32>(
@@ -203,6 +309,8 @@ where
         &make_selector_tables::<T, F, NoInspector, CUSTOM_SPEC_ID>();
     pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
         &make_selector_tables::<T, F, DynInspector, CUSTOM_SPEC_ID>();
+    pub(crate) const FUSED_INSTRUCTIONS: &'static [Option<InstrTable<T>>; crate::SpecId::COUNT] =
+        &make_selector_fused_tables::<T, F, CUSTOM_SPEC_ID>();
 }
 
 const fn instruction_changed<T: EvmTypesHost>(
@@ -214,6 +322,72 @@ const fn instruction_changed<T: EvmTypesHost>(
         return true;
     };
     opcode_config.revision(op) != previous_opcode_config.revision(op)
+}
+
+/// Returns whether an instruction of `pattern` differs between the two configs.
+const fn pattern_changed<T: EvmTypesHost>(
+    opcode_config: &OpcodeConfig<T>,
+    previous_opcode_config: &OpcodeConfig<T>,
+    pattern: &Pattern,
+) -> bool {
+    let mut i = 0;
+    while i < pattern.len() {
+        if instruction_changed(opcode_config, Some(previous_opcode_config), pattern.op(i)) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// One instruction of a superinstruction of config `C`.
+struct FusedStep<T: EvmTypesHost> {
+    instr: InstructionImplFn<T>,
+    static_gas: u64,
+    dynamic_gas: bool,
+    /// Set where the handler checks the remaining gas: before the first instruction, and after
+    /// each one that charges dynamic gas. It is the static gas of this instruction and the ones
+    /// after it, up to and including the next one that charges dynamic gas.
+    group_gas: Option<u64>,
+}
+
+impl<T: EvmTypesHost> FusedStep<T> {
+    /// Returns instruction `index` of the run `ops[..len]`.
+    const fn new<C: EvmConfig<T>>(ops: [u8; MAX_PATTERN_LEN], len: usize, index: usize) -> Self {
+        let config = C::OPCODE_CONFIG;
+        let instruction = config.instruction(ops[index]);
+        if index >= len {
+            return Self {
+                instr: instruction.instr,
+                static_gas: 0,
+                dynamic_gas: false,
+                group_gas: None,
+            };
+        }
+        assert!(!instruction.flags.contains(InstructionFlags::HOOKED));
+        let starts_group = index == 0
+            || config.instruction(ops[index - 1]).flags.contains(InstructionFlags::DYNAMIC_GAS);
+        let group_gas = if starts_group {
+            let mut gas = 0;
+            let mut i = index;
+            while i < len {
+                gas += config.static_gas(ops[i]) as u64;
+                if config.instruction(ops[i]).flags.contains(InstructionFlags::DYNAMIC_GAS) {
+                    break;
+                }
+                i += 1;
+            }
+            Some(gas)
+        } else {
+            None
+        };
+        Self {
+            instr: instruction.instr,
+            static_gas: config.static_gas(ops[index]) as u64,
+            dynamic_gas: instruction.flags.contains(InstructionFlags::DYNAMIC_GAS),
+            group_gas,
+        }
+    }
 }
 
 trait InspectMode<T: EvmTypesHost> {

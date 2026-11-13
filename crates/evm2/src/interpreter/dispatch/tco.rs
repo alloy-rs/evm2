@@ -1,4 +1,4 @@
-use super::{InspectMode, run_state};
+use super::{FusedStep, InspectMode, NoInspector, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
@@ -123,6 +123,90 @@ extern_table! {
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
             }
         }
+        // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
+        let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
+        let instr = instructions_t[pc.op() as usize];
+        tail_return!(instr(pc, stack, remaining_gas, state, instructions));
+    }
+}
+
+extern_table! {
+    /// Runs the instructions `A`, `B`, `D` and `E`, of which the first `N` are real, like their
+    /// own handlers would, and dispatches once after the last.
+    #[cfg_attr(target_arch = "x86_64", rustc_align(64))]
+    pub(super) fn dispatch_fused<
+        T: EvmTypesHost,
+        C: EvmConfig<T>,
+        const N: usize,
+        const A: u8,
+        const B: u8,
+        const D: u8,
+        const E: u8,
+    >(
+        mut pc: Pc,
+        mut stack: RawStack<'_>,
+        mut remaining_gas: RemainingGas,
+        state: &mut InterpreterState<'_, '_, T>,
+        instructions: *const (),
+    ) {
+        macro_rules! step {
+            ($index:literal, $op:ident) => {
+                if N > $index {
+                    let step = const { FusedStep::<T>::new::<C>([A, B, D, E], N, $index) };
+                    if let Some(group_gas) = step.group_gas
+                        && remaining_gas.get() < group_gas
+                    {
+                        // One of the next instructions runs out of gas. Their own handlers find
+                        // which one.
+                        cold_path();
+                        if $index == 0 {
+                            tail_return!(dispatch::<T, C, NoInspector, A>(
+                                pc,
+                                stack,
+                                remaining_gas,
+                                state,
+                                instructions,
+                            ));
+                        }
+                        // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
+                        let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
+                        let instr = instructions_t[pc.op() as usize];
+                        tail_return!(instr(pc, stack, remaining_gas, state, instructions));
+                    }
+                    remaining_gas.set(remaining_gas.get().wrapping_sub(step.static_gas));
+                    if step.dynamic_gas {
+                        state.gas_mut().set_remaining(remaining_gas.get());
+                    }
+                    let (r, stack_len) = {
+                        // SAFETY: This is the only stack borrow outside inspector callbacks.
+                        let mut stack_view = unsafe { stack.borrow() };
+                        let r = (step.instr)(&mut pc, stack_view.as_mut(), state);
+                        (r, stack_view.len)
+                    };
+                    stack.set_len(stack_len);
+                    if step.dynamic_gas {
+                        remaining_gas.set(state.gas_mut().remaining());
+                    }
+                    if let Err(e) = r {
+                        cold_path();
+                        state.set_result(Err(e));
+                        tail_return!(tail_call_restore(
+                            pc,
+                            stack,
+                            remaining_gas,
+                            state,
+                            instructions,
+                        ));
+                    }
+                    super::inc_pc(&mut pc, $op);
+                }
+            };
+        }
+
+        step!(0, A);
+        step!(1, B);
+        step!(2, D);
+        step!(3, E);
         // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
         let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
         let instr = instructions_t[pc.op() as usize];

@@ -22,6 +22,8 @@ pub struct OpcodeConfig<T: EvmTypesHost> {
     instruction_sets: [u8; 256],
     /// The base spec whose table this config started from.
     origin: SpecId,
+    /// Whether the interpreter may run superinstructions, if set explicitly.
+    superinstructions: Option<bool>,
 }
 
 pub(crate) struct InstructionInfo<T: EvmTypesHost> {
@@ -50,6 +52,7 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
             instruction_impls: InstructionImplTable::empty(),
             revisions: [0; 256],
             instruction_sets: [0; 256],
+            superinstructions: None,
         }
     }
 
@@ -169,6 +172,29 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
     #[inline(always)]
     const fn bump_revision(&mut self, opcode: u8) {
         self.revisions[opcode as usize] += 1;
+    }
+
+    /// Returns whether superinstructions were turned on or off explicitly.
+    #[inline]
+    pub(crate) const fn superinstructions(&self) -> Option<bool> {
+        self.superinstructions
+    }
+
+    /// Sets whether the interpreter may run superinstructions with this config.
+    ///
+    /// A superinstruction runs several consecutive instructions in one dispatch, with the same
+    /// results, gas and halt reasons as running them one by one. The interpreter finds them by
+    /// scanning the code as the jump destination analysis does, where only `PUSH1..=PUSH32`,
+    /// `DUPN`, `SWAPN` and `EXCHANGE` are followed by immediate bytes.
+    ///
+    /// They are on by default for a config with the instructions of its base spec, whatever
+    /// their static gas. A config that adds or overrides instructions turns them on here, which
+    /// is correct only if none of its instructions reads immediate bytes from the code. They
+    /// stay off for a config that defines an opcode in `0xa5..=0xdf`, which the interpreter uses
+    /// for the superinstructions.
+    #[inline]
+    pub const fn set_superinstructions(&mut self, enabled: bool) {
+        self.superinstructions = Some(enabled);
     }
 }
 

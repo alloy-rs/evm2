@@ -1,4 +1,4 @@
-use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
+use super::{DynInspector, FusedStep, InspectMode, NoInspector, inc_pc, run_state};
 use crate::{
     EvmConfig, EvmTypesHost, OpcodeSet,
     interpreter::{
@@ -19,7 +19,7 @@ core::cfg_select! {
     }
 }
 
-pub(super) use imp::{RawInstrFn, dispatch};
+pub(super) use imp::{RawInstrFn, dispatch, dispatch_fused};
 
 /// Table instruction dispatch table.
 pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
@@ -68,6 +68,16 @@ trait DispatchGas: Copy {
         state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
     );
+
+    /// Returns whether at least `gas` remains.
+    fn has<T: EvmTypesHost>(&self, state: &mut InterpreterState<'_, '_, T>, gas: u64) -> bool;
+
+    /// Spends `gas`, which [`Self::has`] found to remain.
+    fn spend_unchecked<T: EvmTypesHost>(
+        &mut self,
+        state: &mut InterpreterState<'_, '_, T>,
+        gas: u64,
+    );
 }
 
 impl DispatchGas for () {
@@ -94,6 +104,21 @@ impl DispatchGas for () {
         _state: &mut InterpreterState<'_, '_, T>,
         _dynamic_gas: bool,
     ) {
+    }
+
+    #[inline(always)]
+    fn has<T: EvmTypesHost>(&self, state: &mut InterpreterState<'_, '_, T>, gas: u64) -> bool {
+        state.gas_mut().remaining() >= gas
+    }
+
+    #[inline(always)]
+    fn spend_unchecked<T: EvmTypesHost>(
+        &mut self,
+        state: &mut InterpreterState<'_, '_, T>,
+        gas: u64,
+    ) {
+        let spent = state.gas_mut().spend(gas);
+        debug_assert!(spent.is_ok());
     }
 }
 
@@ -145,6 +170,71 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
         return (Pc::new(core::ptr::null()), gas);
     }
     (pc, gas)
+}
+
+/// Runs the instructions `A`, `B`, `D` and `E`, of which the first `N` are real, like
+/// [`dispatch_inner`] would one by one. The caller checked the gas of the first group.
+///
+/// Returns early, at the instruction to continue with, when the remaining gas does not cover the
+/// next group: their own handlers find which instruction runs out.
+#[cold] // Not cold, but avoids MIR inlining.
+#[inline(always)]
+fn dispatch_fused_inner<
+    T: EvmTypesHost,
+    C: EvmConfig<T>,
+    G: DispatchGas,
+    const N: usize,
+    const A: u8,
+    const B: u8,
+    const D: u8,
+    const E: u8,
+>(
+    mut pc: Pc,
+    mut stack: StackMut<'_>,
+    mut gas: G,
+    state: &mut InterpreterState<'_, '_, T>,
+) -> (Pc, G) {
+    macro_rules! step {
+        ($index:literal, $op:ident) => {
+            if N > $index {
+                let step = const { FusedStep::<T>::new::<C>([A, B, D, E], N, $index) };
+                if $index != 0
+                    && let Some(group_gas) = step.group_gas
+                    && !gas.has(state, group_gas)
+                {
+                    cold_path();
+                    return (pc, gas);
+                }
+                gas.spend_unchecked(state, step.static_gas);
+                gas.sync_before_exec(state, step.dynamic_gas);
+                let r = (step.instr)(&mut pc, stack.reborrow(), state);
+                gas.sync_after_exec(state, step.dynamic_gas);
+                if let Err(e) = r {
+                    state.set_result(Err(e));
+                    cold_path();
+                    return (Pc::new(core::ptr::null()), gas);
+                }
+                inc_pc(&mut pc, $op);
+            }
+        };
+    }
+
+    step!(0, A);
+    step!(1, B);
+    step!(2, D);
+    step!(3, E);
+    (pc, gas)
+}
+
+/// Returns the gas a superinstruction's handler checks before its first instruction.
+const fn fused_entry_gas<T: EvmTypesHost, C: EvmConfig<T>>(
+    ops: [u8; crate::interpreter::fusion::MAX_PATTERN_LEN],
+    len: usize,
+) -> u64 {
+    match FusedStep::<T>::new::<C>(ops, len, 0).group_gas {
+        Some(gas) => gas,
+        None => unreachable!(),
+    }
 }
 
 #[inline(always)]
