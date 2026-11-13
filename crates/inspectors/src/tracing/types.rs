@@ -111,7 +111,7 @@ pub struct CallTrace {
     pub gas_used: u64,
     /// The gas limit of the call.
     pub gas_limit: u64,
-    /// The cumulative refund counter for the entire transaction context at the end of this call.
+    /// The refund counter of this call's frame at its end.
     pub gas_refund_counter: u64,
     /// The final status of the call.
     pub status: Option<InstrStop>,
@@ -666,7 +666,10 @@ pub struct CallTraceStep {
     pub returndata: Bytes,
     /// Remaining gas before step execution
     pub gas_remaining: u64,
-    /// Gas refund counter before step execution
+    /// Transaction-wide refund counter before step execution.
+    ///
+    /// Geth reads it after the gas function of the opcode, so its `SSTORE` and `SELFDESTRUCT`
+    /// steps already include their own refund.
     pub gas_refund_counter: u64,
     /// The storage access of an SLOAD/SSTORE. Only set if state diffs are recorded.
     pub storage_change: Option<Box<StorageChange>>,
