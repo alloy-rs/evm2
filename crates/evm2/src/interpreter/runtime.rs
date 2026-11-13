@@ -1,6 +1,6 @@
 use super::{
     BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageInput, Pc, Result, StackBacking,
-    StackMut, StackRef, Word,
+    StackMut, StackRef, Word, fusion,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
@@ -161,8 +161,19 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let Some(fused) = self.bytecode.fused_slice() else {
             return false;
         };
-        let fused = fused.as_ptr();
         let pc = self.pc();
+        // Immediates are not rewritten, so one that holds a pattern id would run as a
+        // superinstruction where the code halts: a frame started inside one, as `set_pc` can,
+        // runs on the bytecode.
+        if self
+            .bytecode
+            .bytes_slice()
+            .get(pc)
+            .is_some_and(|&byte| byte > fusion::ESCAPE && byte <= fusion::RESERVED_LAST)
+        {
+            return false;
+        }
+        let fused = fused.as_ptr();
         // SAFETY: The fused code has the length of the bytecode, which `pc` is in bounds of.
         self.pc = unsafe { fused.add(pc) };
         self.fused_base = fused;

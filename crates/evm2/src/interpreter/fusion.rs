@@ -263,6 +263,20 @@ pub(crate) const fn enabled<T: EvmTypesHost>(
         }
         opcode += 1;
     }
+    // The fused code replaces the first opcode of each pattern with the pattern's id. A pattern
+    // the config does not fuse runs that opcode's own instruction on the id, so an overridden or
+    // hooked instruction there would read the id instead of its opcode.
+    let mut index = 0;
+    while index < PATTERNS.len() {
+        let first = PATTERNS[index].op(0);
+        if config.is_defined(first)
+            && (config.is_overridden(base, first)
+                || config.instruction(first).flags.contains(InstructionFlags::HOOKED))
+        {
+            return false;
+        }
+        index += 1;
+    }
     match config.superinstructions() {
         Some(enabled) => enabled,
         None => !own_instructions,
@@ -920,6 +934,10 @@ mod tests {
         config.set_superinstructions(true)
     });
     test_config!(RepricedAdd, |config| config.set_static_gas(ADD, 11));
+    test_config!(OverriddenAndOptIn, |config| {
+        config.set_instruction::<add_one_more<TestTypes>>(AND, 3);
+        config.set_superinstructions(true)
+    });
 
     fn fuses<C: EvmConfig<TestTypes>>() -> bool {
         ExecutionConfig::<TestTypes>::for_config::<C>().fused_instructions.is_some()
@@ -944,27 +962,30 @@ mod tests {
         assert!(fuses::<AddedOpcodeOptIn>());
         assert!(!fuses::<OptOut>());
         assert!(!fuses::<OverriddenAdd>());
-        assert!(fuses::<OverriddenAddOptIn>());
+        // `ADD` starts a pattern, whose fused code would hide it from its instruction.
+        assert!(PATTERNS.iter().any(|pattern| pattern.op(0) == ADD));
+        assert!(!fuses::<OverriddenAddOptIn>());
+        assert!(fuses::<OverriddenAndOptIn>());
         assert!(fuses::<RepricedAdd>());
     }
 
     #[test]
     fn overridden_instruction_is_not_fused() {
-        let (base, config) = (&osaka(), OverriddenAddOptIn::OPCODE_CONFIG);
+        let (base, config) = (&osaka(), OverriddenAndOptIn::OPCODE_CONFIG);
         for pattern in &PATTERNS {
-            let has_add = pattern.ops[..pattern.len()].contains(&ADD);
-            assert_eq!(fusable(config, base, pattern), !has_add, "{pattern:?}");
+            let has_and = pattern.ops[..pattern.len()].contains(&AND);
+            assert_eq!(fusable(config, base, pattern), !has_and, "{pattern:?}");
         }
 
-        // `PUSH1 ADD` and `DUP2 ADD` are patterns, and the config's `ADD` adds one more.
-        let code = [PUSH1, 2, PUSH1, 3, ADD, PUSH1, 4, DUP2, ADD, STOP];
+        // `DUP2 AND` is a pattern, and the config's `AND` adds its operands and one more.
+        let code = [PUSH1, 2, PUSH1, 3, DUP2, AND, STOP];
         let fused = fuse(&pad(&code), code.len());
-        assert_eq!((fused[2], fused[7]), (id(&[PUSH1, ADD]), id(&[DUP2, ADD])));
-        let execution_config = ExecutionConfig::<TestTypes>::for_config::<OverriddenAddOptIn>();
+        assert_eq!(fused[4], id(&[DUP2, AND]));
+        let execution_config = ExecutionConfig::<TestTypes>::for_config::<OverriddenAndOptIn>();
         for inspect in [false, true] {
             let interp = run_with(RunConfig::new(code), execution_config.clone(), inspect);
-            assert_eq!(interp.stack(), [Word::from(6), Word::from(11)]);
-            assert_eq!(interp.gas_remaining(), 10_000 - 6 * 3);
+            assert_eq!(interp.stack(), [Word::from(2), Word::from(6)]);
+            assert_eq!(interp.gas_remaining(), 10_000 - 4 * 3);
         }
     }
 
@@ -992,7 +1013,7 @@ mod tests {
     fn superinstructions_match_plain_handlers_of_custom_configs() {
         assert_matches_plain_handlers(0xc0f1, 1_500, |round| {
             let config = match round % 3 {
-                0 => ExecutionConfig::for_config::<OverriddenAddOptIn>(),
+                0 => ExecutionConfig::for_config::<OverriddenAndOptIn>(),
                 1 => ExecutionConfig::for_config::<RepricedAdd>(),
                 _ => ExecutionConfig::for_config::<AddedOpcodeOptIn>(),
             };
