@@ -8,7 +8,13 @@ use evm2::{
 };
 use evm2_jit_builtins::Builtin;
 use evm2_jit_codegen::HostLayout;
-use std::{any::TypeId, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    any::TypeId,
+    path::PathBuf,
+    str::FromStr,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 const JIT_MODE_ENV: &str = "EVM2_JIT_MODE";
 const JIT_HELPER_PATH_ENV: &str = "EVM2_JIT_HELPER_PATH";
@@ -99,6 +105,18 @@ pub struct RuntimeConfig {
 
     /// Host ABI used by in-process compiled code.
     pub host: HostConfig,
+
+    /// Secret key that authenticates AOT artifacts in [`store`](Self::store).
+    ///
+    /// The runtime signs each artifact it persists with this key and links a stored artifact only
+    /// if its digest matches, so a writer of the store cannot get code executed. Keep it out of
+    /// the store and out of reach of the compiler helper. To reuse artifacts across restarts,
+    /// pass the same key each time; artifacts signed with another key are recompiled.
+    ///
+    /// Defaults to `None`: a random key per process, so artifacts from earlier processes are
+    /// recompiled rather than trusted.
+    #[debug(skip)]
+    pub artifact_auth_key: Option<B256>,
 
     /// AOT mode: observed misses are promoted to AOT compilation instead of JIT.
     ///
@@ -219,6 +237,13 @@ impl RuntimeConfig {
         }
         Ok(self)
     }
+
+    /// Returns the key that authenticates AOT artifacts:
+    /// [`artifact_auth_key`](Self::artifact_auth_key), or a random key drawn once per process.
+    pub(crate) fn auth_key(&self) -> B256 {
+        static PROCESS_KEY: OnceLock<B256> = OnceLock::new();
+        self.artifact_auth_key.unwrap_or_else(|| *PROCESS_KEY.get_or_init(B256::random))
+    }
 }
 
 impl Default for RuntimeConfig {
@@ -235,6 +260,7 @@ impl Default for RuntimeConfig {
             no_dse: false,
             gas_params: None,
             host: HostConfig::for_types::<BaseEvmTypes>(),
+            artifact_auth_key: None,
             aot: false,
             jit_mode: JitMode::default(),
             jit_helper_path: None,
