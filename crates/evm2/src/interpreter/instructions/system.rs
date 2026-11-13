@@ -2,17 +2,19 @@
 
 use super::require_non_staticcall;
 use crate::{
-    EvmFeatures, EvmTypesHost,
+    EvmFeatures, EvmTypesHost, ExecutionError, HostError, Version,
     bytecode::Bytecode,
+    evm::AccountLoad,
     interpreter::{
-        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, MessageResult,
-        Result, StackMut, Word, create_preaccess_failure, derive_create_destination,
+        Gas, GasTracker, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind,
+        MessageResult, MessageResultExt, Result, StackMut, Word, create_preaccess_failure,
+        derive_create_destination, op,
     },
     utils::WordExt,
-    version::GasId,
+    version::{GasId, GasParams},
 };
 use alloy_primitives::{Address, B256, Bytes};
-use core::{cmp::min, ops::Range};
+use core::{cmp::min, marker::PhantomData, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
@@ -64,23 +66,93 @@ fn memory_range_bytes<T: EvmTypesHost>(
     Ok(Bytes::copy_from_slice(state.memory().slice(range.start, range.len())))
 }
 
-fn load_acc_and_calc_gas<T: EvmTypesHost>(
-    gas: &mut Gas,
-    state: &mut InterpreterState<'_, '_, T>,
+/// What charging a call opcode reads: the gas parameters, the features and account loads.
+///
+/// [`InterpreterState`] provides them for the call opcodes, and [`HostCallEnv`] for
+/// [`execute_call_message`].
+trait CallEnv {
+    fn gas_params(&self) -> &GasParams;
+
+    fn feature(&self, feature: EvmFeatures) -> bool;
+
+    fn load_account(&mut self, address: &Address, skip_cold_load: bool) -> Result<AccountLoad>;
+}
+
+impl<T: EvmTypesHost> CallEnv for InterpreterState<'_, '_, T> {
+    #[inline]
+    fn gas_params(&self) -> &GasParams {
+        Self::gas_params(self)
+    }
+
+    #[inline]
+    fn feature(&self, feature: EvmFeatures) -> bool {
+        Self::feature(self, feature)
+    }
+
+    #[inline]
+    fn load_account(&mut self, address: &Address, skip_cold_load: bool) -> Result<AccountLoad> {
+        self.host().load_account(address, true, skip_cold_load).map_err(|error| self.fail(error))
+    }
+}
+
+/// The [`CallEnv`] of a call made through a host from outside an interpreter frame.
+struct HostCallEnv<'a, T, H: ?Sized> {
+    host: &'a mut H,
+    version: Version,
+    /// The error that stopped an account load with [`InstrStop::FatalExternalError`].
+    error: Option<ExecutionError>,
+    _types: PhantomData<fn() -> T>,
+}
+
+impl<T, H: ?Sized> HostCallEnv<'_, T, H> {
+    /// Converts a stop into the host error it stands for.
+    fn host_error(&mut self, stop: InstrStop) -> HostError {
+        match self.error.take() {
+            Some(error) => HostError::Execution(error),
+            None => HostError::Halt(stop),
+        }
+    }
+}
+
+impl<T: EvmTypesHost, H: Host<T> + ?Sized> CallEnv for HostCallEnv<'_, T, H> {
+    #[inline]
+    fn gas_params(&self) -> &GasParams {
+        &self.version.gas_params
+    }
+
+    #[inline]
+    fn feature(&self, feature: EvmFeatures) -> bool {
+        self.version.features.contains(feature)
+    }
+
+    #[inline]
+    fn load_account(&mut self, address: &Address, skip_cold_load: bool) -> Result<AccountLoad> {
+        self.host.load_account(address, true, skip_cold_load).map_err(|error| match error {
+            HostError::Halt(stop) => stop,
+            HostError::Execution(error) => {
+                self.error = Some(error);
+                InstrStop::FatalExternalError
+            }
+        })
+    }
+}
+
+fn load_acc_and_calc_gas(
+    gas: &mut GasTracker,
+    env: &mut impl CallEnv,
     to: Address,
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
 ) -> Result<(u64, u64, Bytecode, Address)> {
     if transfers_value {
-        gas.spend(state.gas_params().get(GasId::TransferValueCost))?;
+        gas.spend(env.gas_params().get(GasId::TransferValueCost))?;
     }
 
-    let additional_cold_cost = state.gas_params().cold_account_additional_cost();
+    let additional_cold_cost = env.gas_params().cold_account_additional_cost();
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account =
-        state.host().load_account(&to, true, skip_cold_load).map_err(|error| state.fail(error))?;
+    let account = env.load_account(&to, skip_cold_load)?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -88,18 +160,15 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     }
     let mut code = account.code;
     let mut code_address = to;
-    if state.feature(EvmFeatures::EIP7702)
+    if env.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
-        cost += state.gas_params().get(GasId::WarmStorageReadCost);
+        cost += env.gas_params().get(GasId::WarmStorageReadCost);
         if cost > remaining_gas {
             return Err(InstrStop::OutOfGas);
         }
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
-        let delegated_account = state
-            .host()
-            .load_account(&delegated_address, true, skip_cold_load)
-            .map_err(|error| state.fail(error))?;
+        let delegated_account = env.load_account(&delegated_address, skip_cold_load)?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
@@ -109,33 +178,55 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let mut new_account_state_gas = 0;
     if create_empty_account
         && should_charge_new_account_gas(
-            state.feature(EvmFeatures::EIP161),
+            env.feature(EvmFeatures::EIP161),
             transfers_value,
             account.is_empty_for_new_account_gas,
         )
     {
-        cost += state.gas_params().get(GasId::NewAccountCost);
+        cost += env.gas_params().get(GasId::NewAccountCost);
         // EIP-8037: value transfer to a new account also charges state gas from
         // the reservoir. Charged before the 63/64 child gas split below.
-        if state.feature(EvmFeatures::EIP8037) && transfers_value {
-            new_account_state_gas = state.gas_params().new_account_state_gas();
+        if env.feature(EvmFeatures::EIP8037) && transfers_value {
+            new_account_state_gas = env.gas_params().new_account_state_gas();
         }
     }
     gas.spend(cost)?;
     gas.spend_state(new_account_state_gas)?;
 
-    let mut gas_limit = if state.feature(EvmFeatures::EIP150) {
-        min(state.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)
+    let mut gas_limit = if env.feature(EvmFeatures::EIP150) {
+        min(env.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
     };
     gas.spend(gas_limit)?;
 
     if transfers_value {
-        gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend));
+        gas_limit = gas_limit.saturating_add(env.gas_params().get(GasId::CallStipend));
     }
 
     Ok((gas_limit, new_account_state_gas, code, code_address))
+}
+
+/// Merges a returned child into its caller's gas, as the call opcodes do after
+/// [`load_acc_and_calc_gas`].
+#[inline]
+const fn merge_call_gas<E>(
+    gas: &mut GasTracker,
+    result: &MessageResultExt<E>,
+    new_account_state_gas: u64,
+) -> Result {
+    if result.stop.is_fatal() {
+        return Err(result.stop);
+    }
+    gas.merge_child_gas(result.gas, result.stop);
+    // EIP-8037: a value-bearing CALL that creates the target charges NEW_ACCOUNT state
+    // gas upfront on this frame. If the call does not succeed (depth/balance failure,
+    // child revert or halt) the target is not created, so refund the upfront charge to
+    // the reservoir (execution-specs `credit_state_gas_refund`), mirroring CREATE.
+    if new_account_state_gas != 0 && !result.is_success() {
+        gas.refill_reservoir(new_account_state_gas);
+    }
+    Ok(())
 }
 
 #[inline(never)]
@@ -172,7 +263,7 @@ fn prepare_call<T: EvmTypesHost>(
     )?;
     let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address) =
         load_acc_and_calc_gas(
-            gas,
+            gas.tracker_mut(),
             state,
             to,
             has_transfer,
@@ -291,17 +382,7 @@ pub fn call_with<T: EvmTypesHost>(
 
     let mut result =
         state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
-    if result.stop.is_fatal() {
-        return Err(result.stop);
-    }
-    gas.merge_child_gas(result.gas, result.stop);
-    // EIP-8037: a value-bearing CALL that creates the target charges NEW_ACCOUNT state
-    // gas upfront on this frame. If the call does not succeed (depth/balance failure,
-    // child revert or halt) the target is not created, so refund the upfront charge to
-    // the reservoir (execution-specs `credit_state_gas_refund`), mirroring CREATE.
-    if new_account_state_gas != 0 && !result.is_success() {
-        gas.refill_reservoir(new_account_state_gas);
-    }
+    merge_call_gas(gas.tracker_mut(), &result, new_account_state_gas)?;
     after(gas, state, &message, &result)?;
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
@@ -312,6 +393,68 @@ pub fn call_with<T: EvmTypesHost>(
     stack.push_u64(result.is_success() as u64)?;
     // A stop a hook set.
     state.result()
+}
+
+/// Executes a call message through `host` from outside an interpreter frame, such as from a
+/// precompile, with the charges of the call opcode of its kind.
+///
+/// Fill in [`MessageExt::kind`] (a call kind), [`call_target`](MessageExt::call_target),
+/// [`destination`](MessageExt::destination), [`caller`](MessageExt::caller),
+/// [`value`](MessageExt::value), [`input`](MessageExt::input), [`depth`](MessageExt::depth),
+/// [`caller_is_static`](MessageExt::caller_is_static) and [`ext`](MessageExt::ext) as the opcode
+/// does, with the gas to forward in [`gas_limit`](MessageExt::gas_limit). This charges `gas` for
+/// the opcode's static gas, a value transfer, the account access of the target and of its
+/// EIP-7702 delegate and a new account, forwards at most all but one 64th of the remaining gas,
+/// sets the message's code, code address, gas limit and reservoir, executes it and merges the
+/// child's gas into `gas`, as [`call_with`] does.
+///
+/// A child that reverts or halts returns a result that is not a success. A charge that runs out
+/// of gas, a value transfer inside a static frame and a fatal child stop return
+/// [`HostError::Halt`].
+///
+/// # Panics
+///
+/// Panics if the message kind is not a call kind.
+pub fn execute_call_message<T: EvmTypesHost, H: Host<T> + ?Sized>(
+    host: &mut H,
+    gas: &mut GasTracker,
+    message: &mut Message<T>,
+) -> core::result::Result<MessageResult<T>, HostError> {
+    let kind = message.kind;
+    let opcode = match kind {
+        MessageKind::Call => op::CALL,
+        MessageKind::CallCode => op::CALLCODE,
+        MessageKind::DelegateCall => op::DELEGATECALL,
+        MessageKind::StaticCall => op::STATICCALL,
+        _ => panic!("{kind:?} is not a call kind"),
+    };
+    let config = host.execution_config();
+    let version = *config.version();
+    gas.spend(config.opcode_config().static_gas(opcode).into())?;
+
+    let transfers_value =
+        matches!(kind, MessageKind::Call | MessageKind::CallCode) && !message.value.is_zero();
+    if message.caller_is_static && kind == MessageKind::Call && transfers_value {
+        return Err(InstrStop::CallNotAllowedInsideStatic.into());
+    }
+    let mut env = HostCallEnv { host, version, error: None, _types: PhantomData };
+    let (gas_limit, new_account_state_gas, code, code_address) = load_acc_and_calc_gas(
+        gas,
+        &mut env,
+        message.call_target,
+        transfers_value,
+        kind == MessageKind::Call,
+        message.gas_limit,
+    )
+    .map_err(|stop| env.host_error(stop))?;
+    message.gas_limit = gas_limit;
+    message.reservoir = gas.reservoir();
+    message.code = code;
+    message.code_address = code_address;
+
+    let result = env.host.execute_message(message)?;
+    merge_call_gas(gas, &result, new_account_state_gas)?;
+    Ok(result)
 }
 
 #[inline(never)]
@@ -521,12 +664,15 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig, EvmConfig, ExecutionConfig, ExecutionError, SpecId,
+        BaseEvmConfig, BaseEvmTypes, Evm, EvmConfig, ExecutionConfig, Precompiles, SpecId,
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
-        interpreter::{Interpreter, MessageResultExt, op},
+        env::BlockEnvExt,
+        evm::{AccountInfo, InMemoryDB},
+        interpreter::Interpreter,
+        registry::TxRegistry,
         test_utils::{
             RunConfig, TestHost, TestInterpreter, TestTypes, create_code, legacy_bytecode, push,
-            push_all, run,
+            push_all, return_top_word, run,
         },
         utils::address_to_word,
         version::OpcodeConfig,
@@ -1259,5 +1405,141 @@ mod tests {
         assert_eq!(hooked.stack(), [Word::ZERO]);
         assert!(host.calls.is_empty());
         assert_eq!(hooked.gas_remaining(), base.gas_remaining());
+    }
+
+    /// The opcode [`host_call`] is installed at.
+    const HOST_CALL: u8 = 0xb0;
+
+    /// `CALL` made through [`execute_call_message`], without memory input or output.
+    #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
+    fn host_call(cx: _) -> Result {
+        let [gas_limit, to, value, _, _, _, _] = stack.popn::<7>()?;
+        let to = to.to_address();
+        let current = cx.state.message();
+        let mut message = MessageExt {
+            kind: MessageKind::Call,
+            depth: current.depth + 1,
+            gas_limit: gas_limit.saturating_to(),
+            destination: to,
+            call_target: to,
+            caller: current.destination,
+            value,
+            caller_is_static: cx.state.is_static(),
+            ..Default::default()
+        };
+        let result = execute_call_message(cx.state.host(), cx.gas.tracker_mut(), &mut message)
+            .map_err(|error| cx.state.fail(error))?;
+        stack.push_u64(result.is_success() as u64)
+    }
+
+    /// The base config with [`host_call`] installed at [`HOST_CALL`], which charges its own static
+    /// gas.
+    struct HostCallConfig;
+
+    impl EvmConfig<BaseEvmTypes> for HostCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<host_call>(HOST_CALL, 0);
+            config
+        };
+    }
+
+    /// Runs a frame with `gas_limit` that calls `target` with `value` and `call_gas` through
+    /// `opcode`, and returns its success word.
+    fn run_call<C: EvmConfig<BaseEvmTypes>>(
+        opcode: u8,
+        database: InMemoryDB,
+        target: Address,
+        value: u64,
+        call_gas: Word,
+        gas_limit: u64,
+    ) -> MessageResult<BaseEvmTypes> {
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::ZERO; 4]);
+        push_all(&mut code, [Word::from(value), address_to_word(&target), call_gas]);
+        code.push(opcode);
+        return_top_word(&mut code);
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_config::<C>(),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let mut message =
+            MessageExt { gas_limit, code: legacy_bytecode(code), ..Default::default() };
+        Host::execute_message(&mut evm, &mut message).unwrap()
+    }
+
+    #[test]
+    fn execute_call_message_charges_as_call_opcode() {
+        let (callee, reverting, delegator) =
+            (Address::repeat_byte(0xc0), Address::repeat_byte(0xc1), Address::repeat_byte(0xde));
+        let empty = Address::repeat_byte(0xe0);
+        let database = || {
+            let mut database = InMemoryDB::default();
+            // The calling frame's own account pays for value transfers.
+            database.insert_account_info(
+                &Address::ZERO,
+                AccountInfo { balance: Word::from(1_000_000), ..Default::default() },
+            );
+            database.insert_account_info(
+                &callee,
+                AccountInfo::default().with_code(legacy_bytecode([
+                    op::PUSH0,
+                    op::PUSH0,
+                    op::RETURN,
+                ])),
+            );
+            database.insert_account_info(
+                &reverting,
+                AccountInfo::default().with_code(legacy_bytecode([
+                    op::PUSH0,
+                    op::PUSH0,
+                    op::REVERT,
+                ])),
+            );
+            database.insert_account_info(
+                &delegator,
+                AccountInfo::default().with_code(Bytecode::new_eip7702(callee)),
+            );
+            database
+        };
+
+        for (target, value, call_gas, gas_limit) in [
+            (callee, 0, Word::from(10_000), 100_000),
+            // All but one 64th of what is left.
+            (callee, 0, Word::MAX, 100_000),
+            (reverting, 0, Word::from(10_000), 100_000),
+            (delegator, 0, Word::from(10_000), 100_000),
+            (callee, 1, Word::from(10_000), 100_000),
+            // A value transfer to a new account.
+            (empty, 1, Word::from(10_000), 100_000),
+            // Out of gas for the cold account access.
+            (callee, 0, Word::from(10_000), 2_000),
+            // Out of gas for the delegate's access.
+            (delegator, 0, Word::from(10_000), 2_700),
+        ] {
+            let expected = run_call::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>(
+                op::CALL,
+                database(),
+                target,
+                value,
+                call_gas,
+                gas_limit,
+            );
+            let result = run_call::<HostCallConfig>(
+                HOST_CALL,
+                database(),
+                target,
+                value,
+                call_gas,
+                gas_limit,
+            );
+            assert_eq!(result, expected, "{target} {value} {call_gas} {gas_limit}");
+        }
     }
 }
