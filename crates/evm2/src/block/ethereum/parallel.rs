@@ -445,8 +445,8 @@ where
                         // The worker published every write but the credited reward, which workers
                         // never read, and what resolving its deferred storage at commit wrote.
                         stats.speculative += 1;
-                        // Commit as `commit_transaction` does, but keep the pending state to hand its
-                        // allocations back to the worker.
+                        // Commit as `commit_transaction` does, but keep the pending state to hand
+                        // its allocations back to the worker.
                         let TxResultWithState { result, pending_state, .. } = result;
                         // Later transactions read the balances it changed as deltas over earlier
                         // ones at what it committed, not at what its execution saw.
@@ -477,8 +477,8 @@ where
                         // reading in between must never fall through to an older version.
                         let mut committed = Vec::new();
                         store.publish(version, &result.pending_state, &mut committed);
-                        // Later results may have read the stale writes: have idle workers check them
-                        // again.
+                        // Later results may have read the stale writes: have idle workers check
+                        // them again.
                         results.revalidate.fetch_min(index + 1, Ordering::AcqRel);
                         let committed = committed.into_iter().collect::<HashSet<_>>();
                         store.unpublish(
