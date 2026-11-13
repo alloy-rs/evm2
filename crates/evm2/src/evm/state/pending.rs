@@ -5,7 +5,10 @@ use super::{
     StateChangeSource, StorageSlot, Tracked,
 };
 use crate::interpreter::Word;
-use alloy_primitives::{Address, map::AddressMap};
+use alloy_primitives::{
+    Address,
+    map::{AddressMap, AddressSet},
+};
 
 /// A transaction's finalized-but-uncommitted state, moved out of the EVM.
 ///
@@ -34,6 +37,9 @@ pub struct PendingState {
     /// [`State::set_defer_storage_resolution`](super::State::set_defer_storage_resolution)),
     /// and the slots their resolution loaded.
     pub(crate) deferred: DeferredStorage,
+    /// How the transaction's execution depended on account balances, when the EVM tracked it
+    /// (see [`State::set_track_balance_reads`](super::State::set_track_balance_reads)).
+    pub(crate) balance_reads: BalanceReads,
 }
 
 impl PendingState {
@@ -249,5 +255,27 @@ mod tests {
         assert!(changes.selfdestructed);
         assert!(changes.is_changed());
         assert!(state.account_changes_for(&Address::with_last_byte(0xcc)).is_none());
+    }
+}
+
+/// How a transaction's execution depended on account balances.
+///
+/// A balance the transaction only credited, or debited after checking that it covers the debit,
+/// did not decide its outcome beyond that check. An earlier change to such a balance leaves the
+/// execution valid while the balance still covers every check and the account's emptiness is the
+/// same, and the transaction's own change applies on top of it, as a delta.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BalanceReads {
+    /// Accounts whose exact balance the execution read.
+    pub(crate) observed: AddressSet,
+    /// The lowest balance at the transaction's start for which every check of an account's balance
+    /// passes as it did.
+    pub(crate) floors: AddressMap<Word>,
+}
+
+impl BalanceReads {
+    pub(crate) fn clear(&mut self) {
+        self.observed.clear();
+        self.floors.clear();
     }
 }

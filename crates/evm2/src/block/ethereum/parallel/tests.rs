@@ -39,6 +39,10 @@ const WRITER_CODE: [u8; 5] = [0x60, 0x01, 0x33, 0x55, 0x00];
 /// Stores the beneficiary balance in slot 0.
 const COINBASE_READER: Address = Address::repeat_byte(0xc2);
 const COINBASE_READER_CODE: [u8; 6] = [0x41, 0x31, 0x60, 0x00, 0x55, 0x00];
+/// Stores the balance of `user(0)` in slot 0.
+const BALANCE_READER: Address = Address::repeat_byte(0xc3);
+/// Accepts value and does nothing else.
+const SINK: Address = Address::repeat_byte(0xc4);
 
 /// The pre-block state as a shared database for the workers.
 struct Snapshot(Cache);
@@ -83,6 +87,8 @@ fn database(beneficiary: Option<AccountInfo>) -> InMemoryDB {
         (COUNTER, Bytes::from_static(&COUNTER_CODE)),
         (WRITER, Bytes::from_static(&WRITER_CODE)),
         (COINBASE_READER, Bytes::from_static(&COINBASE_READER_CODE)),
+        (BALANCE_READER, balance_reader_code()),
+        (SINK, Bytes::from_static(&[0x00])),
     ] {
         let code = Bytecode::new_legacy(code);
         database.insert_account_info(&address, AccountInfo::default().with_code(code));
@@ -91,6 +97,13 @@ fn database(beneficiary: Option<AccountInfo>) -> InMemoryDB {
         database.insert_account_info(&BENEFICIARY, info);
     }
     database
+}
+
+fn balance_reader_code() -> Bytes {
+    let mut code = vec![0x73];
+    code.extend_from_slice(user(0).as_slice());
+    code.extend_from_slice(&[0x31, 0x60, 0x00, 0x55, 0x00]);
+    code.into()
 }
 
 fn block() -> BlockEnvExt {
@@ -868,4 +881,49 @@ fn reads_of_deferred_op_writes_match_sequential() {
         let sequential = assert_matches_sequential_with(ledger_database(), &txs, 1, None);
         assert_eq!(sequential.dependencies, first.dependencies);
     }
+}
+
+#[test]
+fn credits_to_one_account_commit_without_conflicts() {
+    // Every transaction sends value to the same account or contract, which none of them reads.
+    for to in [user(0), SINK] {
+        let txs: Vec<_> = (1..ACCOUNTS)
+            .map(|index| tx(user(index), 0, TxKind::Call(to), 1 + u64::from(index), 1, vec![]))
+            .collect();
+        for threads in [2, 4, 8] {
+            let run = assert_matches_sequential_with(database(None), &txs, threads, None);
+            assert_eq!(run.stats.reexecuted, 0, "to {to}, {threads} threads");
+        }
+    }
+}
+
+#[test]
+fn balance_reads_of_credited_accounts_match_sequential() {
+    // Credits to user 0 mixed with reads of its balance, transfers it sends, which check its
+    // balance, and value sent from a contract it calls.
+    let mut reexecuted = 0;
+    for seed in 0..30_u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let mut nonces = [0u64; ACCOUNTS as usize];
+        let txs: Vec<_> = (0..96)
+            .map(|_| {
+                let sender = rng.below(u64::from(ACCOUNTS)) as u8;
+                let nonce = nonces[sender as usize];
+                nonces[sender as usize] += 1;
+                let from = user(sender);
+                let value = 1 + rng.below(1_000_000);
+                match rng.below(6) {
+                    0 | 1 => tx(from, nonce, TxKind::Call(user(0)), value, 1, vec![]),
+                    2 => tx(from, nonce, TxKind::Call(BALANCE_READER), 0, 1, vec![]),
+                    3 => tx(from, nonce, TxKind::Call(SINK), value, 1, vec![]),
+                    _ => tx(from, nonce, TxKind::Call(user(1 + sender % 3)), value, 1, vec![]),
+                }
+            })
+            .collect();
+        for threads in [2, 5, 8] {
+            reexecuted += assert_matches_sequential(database(None), &txs, threads).reexecuted;
+        }
+    }
+    // Readers of the balance conflict with the credits before them.
+    assert!(reexecuted > 0);
 }

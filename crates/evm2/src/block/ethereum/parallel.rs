@@ -439,47 +439,61 @@ where
             let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
             self.validate_transaction_blob_gas(blob_gas_used)?;
 
-            let pending = match self.accept_speculative(outcome, reward, &reads) {
-                Some(result) => {
-                    // The worker published every write but the credited reward, which workers
-                    // never read, and what resolving its deferred storage at commit wrote.
-                    stats.speculative += 1;
-                    // Commit as `commit_transaction` does, but keep the pending state to hand its
-                    // allocations back to the worker.
-                    let TxResultWithState { result, pending_state, .. } = result;
-                    if !pending_state.deferred.resolved.is_empty() {
-                        store.publish_resolved(version, &pending_state);
+            let pending =
+                match self.accept_speculative(outcome, reward, &mut reads, evm_tx.signer()) {
+                    Some(result) => {
+                        // The worker published every write but the credited reward, which workers
+                        // never read, and what resolving its deferred storage at commit wrote.
+                        stats.speculative += 1;
+                        // Commit as `commit_transaction` does, but keep the pending state to hand its
+                        // allocations back to the worker.
+                        let TxResultWithState { result, pending_state, .. } = result;
+                        // Later transactions read the balances it changed as deltas over earlier
+                        // ones at what it committed, not at what its execution saw.
+                        for (address, ..) in &reads.rebase {
+                            if let Some(account) = pending_state.accounts.get(address)
+                                && account.is_changed()
+                            {
+                                store.republish_account(
+                                    version,
+                                    *address,
+                                    account.present.as_ref(),
+                                );
+                            }
+                        }
+                        if !pending_state.deferred.resolved.is_empty() {
+                            store.publish_resolved(version, &pending_state);
+                        }
+                        dependencies.record(index, &pending_state);
+                        self.commit_pending_state(&pending_state);
+                        self.record_receipt(tx.tx_type(), blob_gas_used, result);
+                        pending_state
                     }
-                    dependencies.record(index, &pending_state);
-                    self.commit_pending_state(&pending_state);
-                    self.record_receipt(tx.tx_type(), blob_gas_used, result);
-                    pending_state
-                }
-                None => {
-                    stats.reexecuted += 1;
-                    let result = execute_transaction_without_commit(&mut self.evm, evm_tx)
-                        .map_err(|error| map_transaction_error(error, *tx.tx_hash()))?;
-                    // Overwrite the speculative writes before dropping stale ones: a worker
-                    // reading in between must never fall through to an older version.
-                    let mut committed = Vec::new();
-                    store.publish(version, &result.pending_state, &mut committed);
-                    // Later results may have read the stale writes: have idle workers check them
-                    // again.
-                    results.revalidate.fetch_min(index + 1, Ordering::AcqRel);
-                    let committed = committed.into_iter().collect::<HashSet<_>>();
-                    store.unpublish(
-                        version,
-                        writes.iter().filter(|write| !committed.contains(*write)),
-                    );
-                    dependencies.record(index, &result.pending_state);
-                    self.commit_transaction(EthTransactionResultWithState::new(
-                        result,
-                        tx.tx_type(),
-                        blob_gas_used,
-                    ))?;
-                    PendingState::default()
-                }
-            };
+                    None => {
+                        stats.reexecuted += 1;
+                        let result = execute_transaction_without_commit(&mut self.evm, evm_tx)
+                            .map_err(|error| map_transaction_error(error, *tx.tx_hash()))?;
+                        // Overwrite the speculative writes before dropping stale ones: a worker
+                        // reading in between must never fall through to an older version.
+                        let mut committed = Vec::new();
+                        store.publish(version, &result.pending_state, &mut committed);
+                        // Later results may have read the stale writes: have idle workers check them
+                        // again.
+                        results.revalidate.fetch_min(index + 1, Ordering::AcqRel);
+                        let committed = committed.into_iter().collect::<HashSet<_>>();
+                        store.unpublish(
+                            version,
+                            writes.iter().filter(|write| !committed.contains(*write)),
+                        );
+                        dependencies.record(index, &result.pending_state);
+                        self.commit_transaction(EthTransactionResultWithState::new(
+                            result,
+                            tx.tx_type(),
+                            blob_gas_used,
+                        ))?;
+                        PendingState::default()
+                    }
+                };
             reads.clear();
             writes.clear();
             results.recycle(worker, Buffers { reads, writes, pending });
@@ -493,11 +507,30 @@ where
         &mut self,
         outcome: Option<TxResultWithState<T>>,
         reward: Word,
-        reads: &ReadSet,
+        reads: &mut ReadSet,
+        sender: Address,
     ) -> Option<TxResultWithState<T>> {
         let mut outcome = outcome?;
-        if !reads.validate(&mut self.evm).unwrap_or(false) {
+        if !reads.validate(&mut self.evm, &outcome.pending_state, &sender).unwrap_or(false) {
             return None;
+        }
+        // Apply the balance changes it made without reading the balance exactly over the balances
+        // earlier transactions left.
+        for &(address, read, now) in &reads.rebase {
+            let Some(account) = outcome.pending_state.accounts.get_mut(&address) else { continue };
+            let (Some(original), Some(present)) = (&mut account.original, &mut account.present)
+            else {
+                return None;
+            };
+            if original.balance != read {
+                return None;
+            }
+            original.balance = now;
+            present.balance = present.balance.wrapping_sub(read).wrapping_add(now);
+            // Emptiness decides EIP-161 deletion, which the execution settled on its balances.
+            if present.is_empty() {
+                return None;
+            }
         }
         // Resolve blind adds and deferred storage operations against the committed state, as the
         // transaction's end would have: its execution did not read what they change.
@@ -588,6 +621,7 @@ fn run_worker<T, F, H>(
             let mut evm = make_evm(Box::new(view));
             evm.set_defer_beneficiary_reward(true);
             evm.set_defer_storage_resolution(true);
+            evm.set_track_balance_reads(true);
             evm
         });
         // Values cached at the previous transaction's version are stale; code is
@@ -658,7 +692,14 @@ fn run_worker<T, F, H>(
         let mut stop = false;
         results.update(index, |speculative| {
             let version = version(index);
-            if speculative.outcome.is_some() && speculative.reads.validate_at(store, version) {
+            if let Some(outcome) = &speculative.outcome
+                && speculative.reads.validate_at(
+                    store,
+                    version,
+                    &outcome.pending_state,
+                    &queue.get(index).signer(),
+                )
+            {
                 return;
             }
             let evm_tx = queue.get(index);
@@ -1017,20 +1058,43 @@ struct Speculative<T: EvmTypes> {
 struct ReadSet {
     accounts: Vec<(Address, Option<AccountInfo>)>,
     storage: Vec<(Address, Word, Word)>,
+    /// Accounts whose committed balance differs from the one read, which the execution did not
+    /// read exactly: the balance read and the committed one, filled by [`Self::validate`].
+    rebase: Vec<(Address, Word, Word)>,
 }
 
 impl ReadSet {
     fn clear(&mut self) {
         self.accounts.clear();
         self.storage.clear();
+        self.rebase.clear();
     }
 
     /// Returns whether every read sees the same value in the committed state of `evm`, the
-    /// executor's EVM, which holds the sequential state.
-    fn validate<T: EvmTypes>(&self, evm: &mut Evm<'_, T>) -> DbResult<bool> {
-        for (address, value) in &self.accounts {
-            if evm.read_account_info(address)? != *value {
-                return Ok(false);
+    /// executor's EVM, which holds the sequential state, or only a balance the execution of
+    /// `pending`, sent by `sender`, did not read exactly, which it records to rebase.
+    fn validate<T: EvmTypes>(
+        &mut self,
+        evm: &mut Evm<'_, T>,
+        pending: &PendingState,
+        sender: &Address,
+    ) -> DbResult<bool> {
+        let Self { accounts, storage, rebase } = self;
+        rebase.clear();
+        for (address, value) in accounts.iter() {
+            let now = evm.read_account_info(address)?;
+            if now != *value {
+                let Some(floor) = delta_floor(pending, sender, address) else { return Ok(false) };
+                let (Some(read), Some(committed)) = (value, &now) else { return Ok(false) };
+                if !balance_only_change(read, committed, floor) {
+                    return Ok(false);
+                }
+                match rebase.iter().find(|(rebased, ..)| rebased == address) {
+                    // Reads of one account at different versions cannot both be rebased.
+                    Some(&(_, balance, _)) if balance != read.balance => return Ok(false),
+                    Some(_) => {}
+                    None => rebase.push((*address, read.balance, committed.balance)),
+                }
             }
             // A worker reads every slot of an account it read as absent as zero, without asking
             // the store, while the executor still sees committed slots of such an account.
@@ -1045,7 +1109,7 @@ impl ReadSet {
                 return Ok(false);
             }
         }
-        for (address, key, value) in &self.storage {
+        for (address, key, value) in storage.iter() {
             if evm.read_storage(address, key)? != *value {
                 return Ok(false);
             }
@@ -1061,15 +1125,43 @@ impl ReadSet {
         &self,
         store: &MvStore<'_, B>,
         version: u32,
+        pending: &PendingState,
+        sender: &Address,
     ) -> bool {
         self.accounts.iter().all(|(address, value)| {
-            store
-                .account(address, version)
-                .is_ok_and(|info| info.as_ref().map(AccountInfo::clone_no_code) == *value)
+            store.account(address, version).is_ok_and(|info| {
+                let info = info.as_ref().map(AccountInfo::clone_no_code);
+                info == *value
+                    || matches!((value, &info), (Some(read), Some(now))
+                        if delta_floor(pending, sender, address)
+                            .is_some_and(|floor| balance_only_change(read, now, floor)))
+            })
         }) && self.storage.iter().all(|(address, key, value)| {
             store.storage(address, key, version).is_ok_and(|v| v == *value)
         })
     }
+}
+
+/// Returns the lowest balance of `address` the execution of `pending`, sent by `sender`, needs
+/// when it did not read the balance exactly, or `None` when it did. The sender's balance pays
+/// for gas, which the execution checks exactly.
+fn delta_floor(pending: &PendingState, sender: &Address, address: &Address) -> Option<Word> {
+    let reads = &pending.balance_reads;
+    if address == sender || reads.observed.contains(address) {
+        return None;
+    }
+    Some(reads.floors.get(address).copied().unwrap_or_default())
+}
+
+/// Returns whether an account read as `read` and now `now` differs at most in a balance that
+/// still covers `floor`, with the same emptiness, which EIP-161 and new-account gas depend on.
+fn balance_only_change(read: &AccountInfo, now: &AccountInfo, floor: Word) -> bool {
+    if now.balance < floor || read.is_empty() != now.is_empty() {
+        return false;
+    }
+    let mut rebased = read.clone();
+    rebased.balance = now.balance;
+    rebased == *now
 }
 
 /// A key a transaction published to the multi-version store.
@@ -1310,6 +1402,13 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 }
             }
         }
+    }
+
+    /// Replaces the account a committed transaction published at `version` with the one it
+    /// committed.
+    fn republish_account(&self, version: u32, address: Address, info: Option<&AccountInfo>) {
+        let mut shard = self.account_shard(&address).write().expect("lock poisoned");
+        shard.entry(address).or_default().insert(version, info.map(AccountInfo::clone_no_code));
     }
 
     /// Publishes at `version` the slots that resolving a committed transaction's deferred storage

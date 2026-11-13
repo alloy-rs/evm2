@@ -1176,6 +1176,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.state.set_defer_storage_resolution(defer);
     }
 
+    /// Sets whether the state records how each transaction depends on account balances. See
+    /// [`State::set_track_balance_reads`].
+    #[cfg(all(feature = "block", feature = "std"))]
+    #[inline]
+    pub(crate) const fn set_track_balance_reads(&mut self, track: bool) {
+        self.state.set_track_balance_reads(track);
+    }
+
     /// Sets the optional external interpreter runner.
     #[inline]
     pub fn set_interpreter_runner<R: InterpreterRunner<T>>(&mut self, runner: R) {
@@ -1636,6 +1644,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let nested = message.depth > self.initial_call_depth;
         // A too-deep create fails on depth alone, without reading the creator.
         let info = if message.depth <= self.max_call_depth() && (message.value > 0 || nested) {
+            if message.value > 0 {
+                self.state.observe_balance(&message.caller);
+            }
             self.state.account_info_untracked(&message.caller)?
         } else {
             None
@@ -2035,6 +2046,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError> {
+        // Loads without code are for the balance (`BALANCE`, `SELFBALANCE`, a creator or a
+        // destructed contract) or the code hash; loads with code are for calls, which use the
+        // balance only through the account's emptiness.
+        if !load_code {
+            self.state.observe_balance(address);
+        }
         let mut account = match self.state.account_with_skip(address, skip_cold_load) {
             Ok(account) => account,
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
@@ -2170,6 +2187,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
                 Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
                 Err(code) => return Err(code.into()),
             };
+        self.state.observe_balance(contract);
         let (previously_destroyed, balance, should_destroy) = {
             let account = self.state.account(contract)?;
             let should_destroy = !features.contains(EvmFeatures::EIP6780) || account.is_created();

@@ -20,6 +20,7 @@ pub use deferred::{DeferredStorageAccess, DeferredStorageOp};
 #[cfg(feature = "account-ext")]
 pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
+pub(crate) use pending::BalanceReads;
 pub use pending::{PendingState, TxStateChanges};
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
 pub use stream::{
@@ -65,6 +66,11 @@ pub struct State<'a> {
     /// Whether the end of a transaction leaves its blind adds and deferred storage operations
     /// unresolved. See [`Self::set_defer_storage_resolution`].
     defer_storage_resolution: bool,
+    /// Whether to record how the transaction depends on account balances. See
+    /// [`Self::set_track_balance_reads`].
+    track_balance_reads: bool,
+    /// How the current transaction depended on account balances, when tracked.
+    balance_reads: BalanceReads,
 }
 
 /// Owned in-memory state without a backing database.
@@ -103,6 +109,8 @@ impl StateSnapshot {
                 deferred: self.deferred,
             },
             defer_storage_resolution: false,
+            track_balance_reads: false,
+            balance_reads: BalanceReads::default(),
         }
     }
 }
@@ -162,6 +170,8 @@ impl State<'_> {
                 deferred: DeferredStorage::default(),
             },
             defer_storage_resolution: false,
+            track_balance_reads: false,
+            balance_reads: BalanceReads::default(),
         }
     }
 }
@@ -259,6 +269,8 @@ impl<'a> State<'a> {
                 deferred: DeferredStorage::default(),
             },
             defer_storage_resolution: false,
+            track_balance_reads: false,
+            balance_reads: BalanceReads::default(),
         }
     }
 
@@ -586,6 +598,7 @@ impl<'a> State<'a> {
         journal.clear();
         logs.clear();
         deferred.clear();
+        self.balance_reads.clear();
     }
 
     /// Loads an account without skipping cold accesses.
@@ -778,22 +791,36 @@ impl<'a> State<'a> {
         }
 
         if from == to {
-            let mut account = self.account(from)?;
-            if account.balance() < *value {
-                return Ok(false);
-            }
-            account.touch();
-            return Ok(true);
+            let (original, balance, covered) = {
+                let mut account = self.account(from)?;
+                let (original, balance) =
+                    (account.original().map(|info| info.balance), account.balance());
+                let covered = balance >= *value;
+                if covered {
+                    account.touch();
+                }
+                (original, balance, covered)
+            };
+            self.record_balance_check(from, original, balance, value, covered);
+            return Ok(covered);
         }
 
-        {
+        let (original, balance, covered) = {
             let mut from_account = self.account(from)?;
-            let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
-                return Ok(false);
-            };
-            // `set_balance` touches the account, matching the touch the prior `transfer` performed.
-            from_account.set_balance(new_from_balance);
-            from_account.touch();
+            let original = from_account.original().map(|info| info.balance);
+            let balance = from_account.balance();
+            let covered = balance >= *value;
+            if covered {
+                // `set_balance` touches the account, matching the touch the prior `transfer`
+                // performed.
+                from_account.set_balance(balance - *value);
+                from_account.touch();
+            }
+            (original, balance, covered)
+        };
+        self.record_balance_check(from, original, balance, value, covered);
+        if !covered {
+            return Ok(false);
         }
         {
             let mut to_account = self.account(to)?;
@@ -830,6 +857,7 @@ impl<'a> State<'a> {
         // Deduct the endowment from the caller. A zero endowment moves nothing and leaves the
         // caller untouched, matching the prior `transfer` behaviour.
         if !value.is_zero() {
+            self.observe_balance(caller);
             let mut caller_account = self.account(caller)?;
             let Some(new_caller_balance) = caller_account.balance().checked_sub(*value) else {
                 return Ok(Err(InstrStop::OutOfFunds));
@@ -1070,6 +1098,7 @@ impl<'a> State<'a> {
         PendingState {
             accounts: mem::take(&mut self.accounts),
             deferred: mem::take(&mut self.inner.deferred),
+            balance_reads: mem::take(&mut self.balance_reads),
         }
     }
 
@@ -1088,6 +1117,7 @@ impl<'a> State<'a> {
         }
         self.accounts = pending.accounts;
         self.inner.deferred = pending.deferred;
+        self.balance_reads = pending.balance_reads;
     }
 
     /// Accepts the current transaction's state transition into the accepted overlay.
@@ -1101,6 +1131,7 @@ impl<'a> State<'a> {
             "deferred storage must be resolved before the transaction commits"
         );
         self.inner.deferred.clear();
+        self.balance_reads.clear();
         // The transaction overlay is folded into the accepted-overlay database directly, without
         // detaching it.
         self.inner.database.commit(&self.accounts);
@@ -1155,6 +1186,54 @@ impl<'a> State<'a> {
     #[inline]
     pub const fn set_defer_storage_resolution(&mut self, defer: bool) {
         self.defer_storage_resolution = defer;
+    }
+
+    /// Sets whether to record how each transaction depends on account balances: the accounts
+    /// whose exact balance it read, and for the others the lowest starting balance its checks
+    /// need. Parallel block execution uses it to apply a transaction's balance changes as deltas
+    /// over the balances earlier transactions left.
+    ///
+    /// Defaults to `false`.
+    #[cfg(all(feature = "block", feature = "std"))]
+    #[inline]
+    pub(crate) const fn set_track_balance_reads(&mut self, track: bool) {
+        self.track_balance_reads = track;
+    }
+
+    /// Records that the current transaction read the exact balance of `address`.
+    #[inline]
+    pub(crate) fn observe_balance(&mut self, address: &Address) {
+        if self.track_balance_reads {
+            self.balance_reads.observed.insert(*address);
+        }
+    }
+
+    /// Records a check of whether the balance of `address`, `current` and `original` at the
+    /// transaction's start, covers `value`.
+    #[inline]
+    fn record_balance_check(
+        &mut self,
+        address: &Address,
+        original: Option<Word>,
+        current: Word,
+        value: &Word,
+        covered: bool,
+    ) {
+        if !self.track_balance_reads {
+            return;
+        }
+        // The check passes for any starting balance at least `original + value - current`: the
+        // transaction's own changes before it are deltas. A failed check decides the outcome on
+        // the exact balance.
+        if covered
+            && let Some(original) = original
+            && let Some(needed) = original.checked_add(*value)
+        {
+            let floor = self.balance_reads.floors.entry(*address).or_default();
+            *floor = (*floor).max(needed.saturating_sub(current));
+        } else {
+            self.balance_reads.observed.insert(*address);
+        }
     }
 
     /// Resolves the deferred storage that `pending`, detached from a transaction executed with
