@@ -317,8 +317,14 @@ impl ParityTraceBuilder {
         let mut sub_stack = Vec::with_capacity(self.nodes.len());
 
         // Excluded precompile calls are not attached to their parent; collect them in call order.
+        // Those made by a step the parent left out pair with none of its steps.
         let mut precompiles = HashMap::<usize, Vec<&CallTraceNode>>::default();
-        for (node, _) in self.nodes.iter().zip(&self.excluded).filter(|(_, excluded)| **excluded) {
+        for (node, _) in self
+            .nodes
+            .iter()
+            .zip(&self.excluded)
+            .filter(|(node, excluded)| **excluded && !node.trace.parent_step_omitted)
+        {
             if let Some(parent) = node.parent
                 && !self.excluded[parent]
             {
@@ -349,6 +355,7 @@ impl ParityTraceBuilder {
 
                     // A child is recorded right after the step that called it, so a call step
                     // without a following child either halted or called an excluded precompile.
+                    // A child whose step the frame left out follows an unrelated step instead.
                     let mut ordering = current.ordering.iter().peekable();
                     let mut deltas = current.trace.step_deltas.iter().peekable();
                     while let Some(member) = ordering.next() {
@@ -359,12 +366,26 @@ impl ParityTraceBuilder {
                         if !began_executing(step, current.trace.bytecode.as_ref()) {
                             continue;
                         }
+                        let mut forwarded_gas = 0;
                         let maybe_sub_call = if step.is_call_like_op() && !step.is_error() {
-                            match ordering.next_if(|next| matches!(next, TraceMemberOrder::Call(_)))
-                            {
+                            let made_by_step = |child: usize| {
+                                !self.nodes[current.children[child]].trace.parent_step_omitted
+                            };
+                            match ordering.next_if(|next| {
+                                matches!(next, TraceMemberOrder::Call(child) if made_by_step(*child))
+                            }) {
                                 Some(TraceMemberOrder::Call(child)) => {
+                                    // Parity counts the gas a creation gives its child in the
+                                    // step cost, also when the creation fails its precheck. Geth
+                                    // struct logs leave it out, and a call's cost has it already.
+                                    if step.is_create_op() {
+                                        forwarded_gas =
+                                            self.nodes[current.children[*child]].trace.gas_limit;
+                                    }
                                     children.get_mut(*child).and_then(Option::take)
                                 }
+                                // Only a call can reach a precompile.
+                                _ if step.is_create_op() => None,
                                 _ => precompiles
                                     .next()
                                     .filter(|node| entered_frame(node))
@@ -374,7 +395,12 @@ impl ParityTraceBuilder {
                             None
                         };
 
-                        instructions.push(self.make_instruction(step, delta, maybe_sub_call));
+                        instructions.push(self.make_instruction(
+                            step,
+                            delta,
+                            maybe_sub_call,
+                            forwarded_gas,
+                        ));
                     }
 
                     match current.parent {
@@ -399,12 +425,13 @@ impl ParityTraceBuilder {
     }
 
     /// Creates a VM instruction from a [CallTraceStep] and a [VmTrace] for the subcall if there is
-    /// one
+    /// one, adding the gas a creation forwarded to its child to the step cost
     fn make_instruction(
         &self,
         step: &CallTraceStep,
         delta: Option<&StepDelta>,
         maybe_sub_call: Option<VmTrace>,
+        forwarded_gas: u64,
     ) -> VmInstruction {
         // A halted step has no effects to report, while a `REVERT` executes like any other step.
         let halted = step.status.is_some_and(|status| status.is_halt());
@@ -419,7 +446,7 @@ impl ParityTraceBuilder {
 
         VmInstruction {
             pc: step.pc,
-            cost: step.gas_cost,
+            cost: step.gas_cost + forwarded_gas,
             ex: maybe_execution,
             sub: maybe_sub_call,
             op: Some(step.op.to_string()),
