@@ -339,7 +339,8 @@ pub struct RuntimeTuning {
 
     /// Maximum total resident compiled code size in bytes. `0` = no limit.
     ///
-    /// When exceeded, least-recently-used entries are evicted.
+    /// When exceeded, least-recently-used entries are evicted. Owning references held by
+    /// callers and active executions can retain machine code after map eviction.
     ///
     /// Defaults to 1 GiB.
     pub resident_code_cache_bytes: usize,
@@ -360,6 +361,15 @@ pub struct RuntimeTuning {
     ///
     /// Defaults to `1000`.
     pub compiler_recycle_threshold: usize,
+
+    /// Use thread-owned counters and SPSC event lanes in interpreter dispatch.
+    ///
+    /// Each worker retains up to 64 compiled programs behind its own mutex. The coordinator
+    /// revokes these references during clearing and eviction, retrying active workers. Dispatch
+    /// temporarily falls back to interpretation while reclamation is pending. Each lane
+    /// has `channel_capacity` slots rounded up to a power of two. Blocking lookups continue to
+    /// use the synchronous path. Defaults to `true`.
+    pub worker_owned_lookup: bool,
 }
 
 impl RuntimeTuning {
@@ -401,6 +411,7 @@ impl Default for RuntimeTuning {
             idle_evict_duration: Some(Duration::from_secs(600)),
             eviction_sweep_interval: Duration::from_secs(60),
             compiler_recycle_threshold: 1000,
+            worker_owned_lookup: true,
         }
     }
 }

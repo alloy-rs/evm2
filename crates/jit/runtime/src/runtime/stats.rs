@@ -89,6 +89,17 @@ pub struct RuntimeStatsSnapshot {
     pub resident_entries: u64,
     /// Number of lookup events currently queued for the backend.
     pub events_queued: u64,
+    /// Number of registered execution-thread event lanes.
+    ///
+    /// Worker queue gauges reflect the most recent coordinator tick.
+    pub execution_worker_lanes: u64,
+    /// Number of owning program references held in execution-thread cache slots.
+    /// The coordinator revokes slots during clearing and eviction.
+    pub execution_worker_cached_programs: u64,
+    /// Total allocated event slots across registered execution-thread lanes.
+    pub execution_worker_queue_slots: u64,
+    /// Bytes occupied by payload slots in registered execution-thread event lanes.
+    pub execution_worker_queue_bytes: u64,
     /// Number of pending control commands queued for the backend.
     pub command_queue_len: u64,
     /// Number of compilation jobs currently in flight (dispatched but not yet completed).
@@ -168,6 +179,10 @@ impl RuntimeStats {
             commands_dropped: self.commands_dropped.load(Ordering::Relaxed),
             resident_entries: gauges.resident_entries,
             events_queued: gauges.events_queued,
+            execution_worker_lanes: 0,
+            execution_worker_cached_programs: 0,
+            execution_worker_queue_slots: 0,
+            execution_worker_queue_bytes: 0,
             command_queue_len: gauges.command_queue_len,
             pending_jobs,
             jit_code_bytes,

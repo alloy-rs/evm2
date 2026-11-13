@@ -250,6 +250,11 @@ struct BackendState {
     inner: Arc<super::BackendShared>,
     /// Per-key metadata for eviction (backend-only).
     resident_meta: HashMap<RuntimeCacheKey, ResidentMeta>,
+    /// Reused staging storage while worker lanes are unlocked for event handling.
+    execution_events: Vec<super::execution_worker::PendingEvent>,
+    execution_lanes: super::execution_worker::Lanes,
+    /// Alternates the extra drain slot between queue families for odd budgets.
+    shared_events_first: bool,
     /// Per-key tracking state (backend-only).
     entries: HashMap<RuntimeCacheKey, EntryState>,
     /// Oldest and newest cold entries in insertion order.
@@ -295,8 +300,17 @@ impl BackendState {
     }
 
     fn tick(&mut self) {
+        self.inner.execution_workers.revoke_caches(&mut self.execution_lanes, false);
         self.drain_events();
-        self.run_eviction_sweep();
+        let sweep_completed = self.run_eviction_sweep();
+        // A worker may finish after the sweep was deferred. Retry eviction once before
+        // reopening caching so old resident code is removed without another timer wait.
+        if !self.inner.execution_workers.revoke_caches(&mut self.execution_lanes, false)
+            && (sweep_completed || self.run_eviction_sweep())
+        {
+            self.inner.execution_workers.finish_revocation();
+        }
+        self.inner.execution_workers.publish_stats(&self.execution_lanes);
     }
 
     /// Drains all currently-queued lookup events.
@@ -304,7 +318,31 @@ impl BackendState {
         // Cap per-iteration drain so a flood of events can't starve other
         // work (commands, worker results, sweeps). Surplus events stay in the
         // queue and are picked up next iteration.
-        for _ in 0..self.tuning.max_events_per_drain {
+        let limit = self.tuning.max_events_per_drain;
+        let mut taken = 0;
+        let shared_budget = if self.shared_events_first { limit.div_ceil(2) } else { limit / 2 };
+        self.shared_events_first = !self.shared_events_first;
+        for _ in 0..shared_budget {
+            let Some(event) = self.inner.events.pop() else { break };
+            taken += 1;
+            self.handle_lookup_observed(event);
+        }
+        let mut worker_events = std::mem::take(&mut self.execution_events);
+        let generation = self.inner.event_generation.load(Ordering::Acquire);
+        self.inner.execution_workers.drain_into(
+            &mut self.execution_lanes,
+            limit.saturating_sub(taken),
+            &mut worker_events,
+        );
+        taken += worker_events.len();
+        for mut event in worker_events.drain(..) {
+            if let Some(lookup) = event.take_lookup(generation) {
+                self.handle_lookup_observed(lookup);
+            }
+        }
+        self.inner.execution_workers.finish_retired(&mut self.execution_lanes, &self.inner);
+        self.execution_events = worker_events;
+        for _ in taken..limit {
             let Some(event) = self.inner.events.pop() else { break };
             self.handle_lookup_observed(event);
         }
@@ -432,15 +470,21 @@ impl BackendState {
             return;
         }
 
-        let prefix = match kind {
-            CompilationKind::Jit => "jit",
-            CompilationKind::Aot => "aot",
-        };
         let opt_level = match kind {
             CompilationKind::Jit => self.tuning.jit_opt_level,
             CompilationKind::Aot => self.tuning.aot_opt_level,
         };
-        let symbol = format!("{prefix}_{:x}_{:?}", key.code_hash, key.spec_id);
+        // Old owning references may keep a previous definition linked after eviction/clear.
+        // Each dispatched JIT job therefore needs a fresh name in the reused compiler dylib.
+        let symbol = match kind {
+            CompilationKind::Jit => format!(
+                "jit_{:x}_{:?}_{}",
+                key.code_hash,
+                key.spec_id,
+                self.inner.stats.compilations_dispatched.load(Ordering::Relaxed),
+            ),
+            CompilationKind::Aot => format!("aot_{:x}_{:?}", key.code_hash, key.spec_id),
+        };
         let job = CompileJob {
             kind,
             key,
@@ -525,6 +569,10 @@ impl BackendState {
 
     fn handle_clear_resident(&mut self) {
         self.workers.cancel_in_flight();
+        let inner = Arc::clone(&self.inner);
+        let _publication = inner.publication();
+        inner.event_generation.fetch_add(1, Ordering::AcqRel);
+        self.inner.execution_workers.revoke_caches(&mut self.execution_lanes, true);
         self.inner.resident.clear();
         self.resident_meta.clear();
         self.cold_head = None;
@@ -537,7 +585,7 @@ impl BackendState {
         }
         // Discard pending lookup events: they were observed before the clear
         // and would otherwise get processed against the new generation.
-        while self.inner.events.pop().is_some() {}
+        self.inner.execution_workers.clear(&mut self.execution_lanes, &self.inner);
         // Bump generation so in-flight worker results from before the clear are discarded.
         self.generation += 1;
         debug!(generation = self.generation, "resident map cleared");
@@ -559,11 +607,13 @@ impl BackendState {
     }
 
     fn insert_resident(&mut self, key: RuntimeCacheKey, program: Arc<CompiledProgram>) {
+        let _publication = self.inner.publication();
         self.inner.resident.insert(key, program);
         self.resident_meta.insert(key, ResidentMeta { last_hit_at: Instant::now() });
     }
 
     fn remove_resident(&mut self, key: &RuntimeCacheKey) {
+        let _publication = self.inner.publication();
         self.inner.resident.remove(key);
         self.resident_meta.remove(key);
     }
@@ -782,9 +832,11 @@ impl BackendState {
     }
 
     /// Runs an eviction sweep: removes idle entries and enforces the memory budget.
-    fn run_eviction_sweep(&mut self) {
+    ///
+    /// Returns whether eviction completed without waiting for worker-cache reclamation.
+    fn run_eviction_sweep(&mut self) -> bool {
         if !self.should_sweep() {
-            return;
+            return true;
         }
 
         let now = Instant::now();
@@ -812,6 +864,9 @@ impl BackendState {
                 self.remove_evicted_entry(key);
                 self.inner.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
+            if !idle_keys.is_empty() {
+                self.inner.execution_workers.revoke_caches(&mut self.execution_lanes, true);
+            }
         }
 
         // Phase 2: evict stale cold entries that never became hot enough to compile, and failed
@@ -837,6 +892,9 @@ impl BackendState {
 
         // Phase 3: enforce memory budget by evicting LRU entries.
         if budget > 0 && jit_total_bytes() > budget {
+            if self.inner.execution_workers.revoke_caches(&mut self.execution_lanes, true) {
+                return false;
+            }
             // Collect entries sorted by last_hit_at ascending (oldest first). AOT entries count
             // too: their linked objects are part of `jit_total_bytes()`, and an evicted one
             // reloads from the store.
@@ -858,6 +916,7 @@ impl BackendState {
                 self.inner.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
         }
+        true
     }
 
     /// Returns whether eviction is configured and a sweep is due.
@@ -979,6 +1038,9 @@ pub(crate) fn run(
     let mut state = BackendState {
         inner,
         resident_meta: preload_meta,
+        execution_events: Vec::new(),
+        execution_lanes: Default::default(),
+        shared_events_first: true,
         entries: HashMap::default(),
         cold_head: None,
         cold_tail: None,
@@ -1030,6 +1092,12 @@ pub(crate) fn run(
     shutdown
 }
 
+impl Drop for BackendState {
+    fn drop(&mut self) {
+        self.inner.execution_workers.shutdown(&mut self.execution_lanes, &self.inner);
+    }
+}
+
 #[cfg(test)]
 mod notifier_tests {
     use super::*;
@@ -1047,6 +1115,9 @@ mod notifier_tests {
             resident: ResidentMap::default(),
             events: EventQueue::new(config.tuning.channel_capacity),
             pause_depth: AtomicUsize::new(0),
+            publication_epoch: AtomicUsize::new(0),
+            event_generation: AtomicUsize::new(0),
+            execution_workers: crate::runtime::execution_worker::Registry::default(),
             stats: Arc::new(RuntimeStats::default()),
         });
         let (result_tx, result_rx) = chan::unbounded();
@@ -1054,6 +1125,9 @@ mod notifier_tests {
         BackendState {
             inner,
             resident_meta: HashMap::default(),
+            execution_events: Vec::new(),
+            execution_lanes: Default::default(),
+            shared_events_first: true,
             entries: HashMap::default(),
             cold_head: None,
             cold_tail: None,
