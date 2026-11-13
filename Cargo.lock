@@ -47,6 +47,7 @@ dependencies = [
  "alloy-primitives",
  "num_enum",
  "phf",
+ "serde",
 ]
 
 [[package]]
@@ -2686,6 +2687,31 @@ dependencies = [
  "thiserror 2.0.21",
  "walkdir",
  "zstd",
+]
+
+[[package]]
+name = "evm2-fork"
+version = "0.1.0"
+dependencies = [
+ "alloy-chains",
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-hardforks",
+ "alloy-json-rpc",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-client",
+ "alloy-rpc-types-eth",
+ "alloy-sol-types",
+ "alloy-transport",
+ "evm2",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
