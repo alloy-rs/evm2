@@ -20,11 +20,13 @@ pub enum TraceLimitBehavior {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TraceLimits {
-    /// Maximum cumulative byte-buffer lengths between resets. `None` means unlimited.
+    /// Maximum cumulative recorded bytes between resets. `None` means unlimited.
     ///
-    /// Counts retained child call inputs, copied memory snapshots, immediate bytes, and memory
-    /// deltas. Shared buffer clones other than child inputs, stack/trace vector elements, and
-    /// allocator overhead are not counted. Checked before retaining or copying each buffer.
+    /// Counts retained child call inputs, copied memory snapshots, immediate bytes, memory
+    /// deltas, and for each recorded opcode step its record and stack snapshots, so the limit
+    /// also bounds step-only traces such as parity `vmTrace`. Shared buffer clones other than
+    /// child inputs, call trace records, and allocator overhead are not counted. Checked before
+    /// recording each step and before retaining or copying each buffer.
     pub max_recorded_bytes: Option<usize>,
     /// What to do when a recording would exceed `max_recorded_bytes`.
     pub behavior: TraceLimitBehavior,
