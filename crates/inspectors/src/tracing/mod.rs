@@ -175,6 +175,10 @@ impl TracingInspector {
             for node in traces.nodes_mut() {
                 // move out and store the reusable steps vec
                 let mut steps = mem::take(&mut node.trace.steps);
+                // Only allocations are worth keeping; the synthetic root of a batch never took one.
+                if steps.capacity() == 0 {
+                    continue;
+                }
                 // ensure steps are cleared
                 steps.clear();
                 reusable_step_vecs.push(steps);
@@ -299,7 +303,8 @@ impl TracingInspector {
     /// precompiles without value, see [PrecompileExclusion::ZeroValue].
     #[inline]
     pub fn into_parity_builder(self) -> ParityTraceBuilder {
-        ParityTraceBuilder::new(self.traces.arena, PrecompileExclusion::ZeroValue)
+        let CallTraceArena { arena, nested } = self.traces;
+        ParityTraceBuilder::with_nested_root(arena, PrecompileExclusion::ZeroValue, nested)
     }
 
     /// Consumes the Inspector and returns a [ParityTraceBuilder] for geth's flatCallTracer.
@@ -313,13 +318,15 @@ impl TracingInspector {
         } else {
             PrecompileExclusion::CallAndStaticCall
         };
-        ParityTraceBuilder::new(self.traces.arena, exclusion)
+        let CallTraceArena { arena, nested } = self.traces;
+        ParityTraceBuilder::with_nested_root(arena, exclusion, nested)
     }
 
     /// Consumes the Inspector and returns a [GethTraceBuilder].
     #[inline]
     pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
-        GethTraceBuilder::new(self.traces.arena).with_features(self.features)
+        let CallTraceArena { arena, nested } = self.traces;
+        GethTraceBuilder::new(arena).with_features(self.features).with_nested_root(nested)
     }
 
     /// Returns the  [GethTraceBuilder] for the recorded traces without consuming the type.
@@ -329,7 +336,9 @@ impl TracingInspector {
     /// starting a new transaction: [`Self::fuse`]
     #[inline]
     pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
-        GethTraceBuilder::new_borrowed(self.traces.nodes()).with_features(self.features)
+        GethTraceBuilder::new_borrowed(self.traces.nodes())
+            .with_features(self.features)
+            .with_nested_root(self.traces.nested)
     }
 
     /// Returns the last trace [CallTrace] index from the stack.
@@ -428,6 +437,11 @@ impl TracingInspector {
         // overridden it, so it wins over the address recorded when the create started.
         if let Some(address) = result.created_address {
             trace.address = address;
+        }
+
+        // Under a synthetic root every call that empties the stack is one of the batch's own.
+        if self.traces.nested && self.trace_stack.is_empty() {
+            self.traces.settle_batch_call(trace_idx);
         }
     }
 

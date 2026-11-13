@@ -1,6 +1,7 @@
 use super::types::{CallTrace, CallTraceNode, TraceMemberOrder};
 use alloc::vec::Vec;
 use alloy_primitives::Address;
+use evm2::interpreter::InstrStop;
 
 /// An arena of recorded traces.
 ///
@@ -10,11 +11,14 @@ use alloy_primitives::Address;
 pub struct CallTraceArena {
     /// The arena of recorded trace nodes
     pub(crate) arena: Vec<CallTraceNode>,
+    /// Whether the root is synthetic, holding the top-level calls of a batch.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) nested: bool,
 }
 
 impl Default for CallTraceArena {
     fn default() -> Self {
-        let mut this = Self { arena: Vec::with_capacity(8) };
+        let mut this = Self { arena: Vec::with_capacity(8), nested: false };
         this.clear();
         this
     }
@@ -45,6 +49,7 @@ impl CallTraceArena {
     pub fn clear(&mut self) {
         self.arena.clear();
         self.arena.push(Default::default());
+        self.nested = false;
     }
 
     /// Returns __all__ addresses in the recorded traces, that is addresses of the trace and the
@@ -56,29 +61,35 @@ impl CallTraceArena {
     /// Pushes a new trace into the arena as a child of `parent`, returning the trace ID
     ///
     /// This appends a new trace to the arena, and also inserts a new entry in the node's parent
-    /// node children set.
+    /// node children set, one level below the parent.
     ///
-    /// A trace without a parent at depth 0 replaces the root node. A trace without a parent at a
-    /// greater depth is attached to the root node instead, which stays an empty placeholder, as in
-    /// revm-inspectors: top-level messages that start below an implicit parent, such as the calls
-    /// of a batch transaction, then share one root.
-    pub(crate) fn push_trace(&mut self, parent: Option<usize>, new_trace: CallTrace) -> usize {
+    /// A trace without a parent at depth 0 fills the root node, or joins the earlier top-level
+    /// calls under a synthetic root when the transaction runs several ([`Self::nest_root`]). A
+    /// trace without a parent at a greater depth is attached to the root node instead, which stays
+    /// an empty placeholder, as in revm-inspectors: top-level messages that start below an
+    /// implicit parent, such as the calls of a batch transaction, then share one root.
+    pub(crate) fn push_trace(&mut self, parent: Option<usize>, mut new_trace: CallTrace) -> usize {
         let parent = match parent {
-            Some(parent) => {
-                debug_assert_eq!(
-                    self.arena[parent].trace.depth + 1,
-                    new_trace.depth,
-                    "parent must be exactly one level above the new trace"
-                );
-                parent
-            }
+            Some(parent) => parent,
+            None if self.nested || new_trace.depth > 0 => 0,
             // The entry node, just update it.
-            None if new_trace.depth == 0 => {
+            None if self.arena[0].trace.status.is_none() => {
                 self.arena[0].trace = new_trace;
                 return 0;
             }
-            None => 0,
+            None => {
+                self.nest_root();
+                0
+            }
         };
+        if self.nested {
+            // The synthetic root shifted every call a level down.
+            new_trace.depth = self.arena[parent].trace.depth + 1;
+        }
+        debug_assert!(
+            parent == 0 || self.arena[parent].trace.depth + 1 == new_trace.depth,
+            "parent must be exactly one level above the new trace"
+        );
 
         let idx = self.arena.len();
         self.arena.push(CallTraceNode {
@@ -95,6 +106,46 @@ impl CallTraceArena {
         parent.children.push(idx);
 
         idx
+    }
+
+    /// Moves the recorded root and its subtree down a level under a synthetic root at index 0,
+    /// which keeps the root's depth, caller and gas limit.
+    fn nest_root(&mut self) {
+        let CallTrace { depth, caller, gas_limit, .. } = self.arena[0].trace;
+        // Shift every node by one so parents still precede their children.
+        for node in &mut self.arena {
+            node.idx += 1;
+            node.trace.depth += 1;
+            node.parent = Some(node.parent.map_or(0, |parent| parent + 1));
+            for child in &mut node.children {
+                *child += 1;
+            }
+        }
+        let trace = CallTrace { depth, caller, gas_limit, ..Default::default() };
+        let root = CallTraceNode {
+            children: alloc::vec![1],
+            ordering: alloc::vec![TraceMemberOrder::Call(0)],
+            trace,
+            ..Default::default()
+        };
+        self.arena.insert(0, root);
+        self.settle_batch_call(1);
+        self.nested = true;
+    }
+
+    /// Folds a finished top-level call into the synthetic root: the gas of every call, the
+    /// outcome of the last one. The root destroys nothing itself, so a self-destruct counts as a
+    /// stop.
+    pub(crate) fn settle_batch_call(&mut self, idx: usize) {
+        let (root, calls) = self.arena.split_at_mut(1);
+        let (root, call) = (&mut root[0].trace, &calls[idx - 1].trace);
+        root.gas_used += call.gas_used;
+        root.success = call.success;
+        root.status = call.status.map(|status| match status {
+            InstrStop::SelfDestruct => InstrStop::Stop,
+            status => status,
+        });
+        root.output = call.output.clone();
     }
 }
 

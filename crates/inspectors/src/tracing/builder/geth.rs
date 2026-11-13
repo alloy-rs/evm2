@@ -99,24 +99,32 @@ pub struct GethTraceBuilder<'a> {
     nodes: Cow<'a, [CallTraceNode]>,
     /// EVM features used to produce the trace.
     features: EvmFeatures,
+    /// Whether the root is the synthetic root of a batch.
+    nested: bool,
 }
 
 impl GethTraceBuilder<'static> {
     /// Returns a new instance of the builder from [`Cow::Owned`]
     pub const fn new(nodes: Vec<CallTraceNode>) -> Self {
-        Self { nodes: Cow::Owned(nodes), features: EvmFeatures::empty() }
+        Self { nodes: Cow::Owned(nodes), features: EvmFeatures::empty(), nested: false }
     }
 }
 
 impl<'a> GethTraceBuilder<'a> {
     /// Returns a new instance of the builder from [`Cow::Borrowed`]
     pub const fn new_borrowed(nodes: &'a [CallTraceNode]) -> Self {
-        Self { nodes: Cow::Borrowed(nodes), features: EvmFeatures::empty() }
+        Self { nodes: Cow::Borrowed(nodes), features: EvmFeatures::empty(), nested: false }
     }
 
     /// Sets the EVM features used to produce the trace.
     pub const fn with_features(mut self, features: EvmFeatures) -> Self {
         self.features = features;
+        self
+    }
+
+    /// Sets whether the root is the synthetic root of a batch.
+    pub(crate) const fn with_nested_root(mut self, nested: bool) -> Self {
+        self.nested = nested;
         self
     }
 
@@ -149,6 +157,11 @@ impl<'a> GethTraceBuilder<'a> {
         // call depth rather than step count, and a trace without subcalls needs no allocation.
         let mut steps = main_trace_node.steps_with_children();
         let mut parents = Vec::new();
+        // A batch root runs no opcodes itself, so its calls follow one another instead.
+        if self.nested {
+            let children = main_trace_node.children.iter().rev();
+            parents.extend(children.map(|&child| self.nodes[child].steps_with_children()));
+        }
         let mut json_len = 0u64;
 
         loop {
@@ -165,7 +178,7 @@ impl<'a> GethTraceBuilder<'a> {
 
             // We increment the depth by one because steps that are part of call at depth N should
             // have depth N + 1. For example, steps inside of a top-level call should
-            // have depth 1.
+            // have depth 1. The calls of a batch already sit one level below its root.
             let stack = if !opts.is_stack_enabled() {
                 None
             } else if let Some(stacks) = stacks.as_deref_mut() {
@@ -173,8 +186,8 @@ impl<'a> GethTraceBuilder<'a> {
             } else {
                 step.stack.as_deref().map(<[U256]>::to_vec)
             };
-            let mut log =
-                step.convert_to_geth_struct_log(opts, trace_node.trace.depth as u64 + 1, stack);
+            let depth = trace_node.trace.depth as u64 + u64::from(!self.nested);
+            let mut log = step.convert_to_geth_struct_log(opts, depth, stack);
 
             // geth snapshots the storage of the contract, with the slots of all its earlier
             // SLOADs and SSTOREs, unless the opcode fails before it runs.
