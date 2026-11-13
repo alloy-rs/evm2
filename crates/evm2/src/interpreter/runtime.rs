@@ -230,15 +230,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Returns the original active bytecode as a byte slice.
     #[inline]
-    pub fn original_bytecode_slice(&self) -> &'frame [u8] {
+    pub fn original_bytecode_slice(&self) -> &[u8] {
         self.bytecode.original_byte_slice()
-    }
-
-    /// Returns the frame's active bytecode, padded and analyzed, which outlives the borrow of the
-    /// interpreter.
-    #[inline]
-    pub const fn active_bytecode(&self) -> &'frame Bytecode {
-        self.bytecode
     }
 
     /// Calculates or returns the cached hash of the original active bytecode.

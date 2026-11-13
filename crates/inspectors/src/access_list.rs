@@ -7,7 +7,6 @@ use alloy_primitives::{
 };
 use evm2::{
     Evm, EvmTypes, Inspector,
-    evm::PrewarmSet,
     interpreter::{Interpreter, Message, MessageResult, op},
     utils::WordExt,
 };
@@ -17,11 +16,8 @@ use evm2::{
 /// This can be used to construct an [AccessList] for a transaction via `eth_createAccessList`
 #[derive(Debug, Default)]
 pub struct AccessListInspector {
-    /// Addresses that should be excluded from the final accesslist, other than precompiles
+    /// All addresses that should be excluded from the final accesslist
     excluded: HashSet<Address>,
-    /// The warm precompile addresses, which are also excluded. After a precompile move these are
-    /// the addresses from before the move, as in geth.
-    precompiles: PrewarmSet,
     /// All addresses and touched slots
     touched_slots: HashMap<Address, BTreeSet<B256>>,
     /// Whether the seeded entries of excluded addresses were removed, which happens once, before
@@ -44,7 +40,7 @@ impl AccessListInspector {
         for item in access_list.0 {
             touched_slots.entry(item.address).or_default().extend(item.storage_keys);
         }
-        Self { touched_slots, ..Default::default() }
+        Self { excluded: Default::default(), touched_slots, seeds_pruned: false }
     }
 
     /// Excludes additional addresses from the final access list.
@@ -76,8 +72,7 @@ impl AccessListInspector {
         self.with_excluded(authorities)
     }
 
-    /// Returns the excluded addresses other than precompiles, which are excluded through
-    /// [`PrecompileProvider::warm_addresses`](evm2::precompile::PrecompileProvider::warm_addresses).
+    /// Returns the excluded addresses.
     pub const fn excluded(&self) -> &HashSet<Address> {
         &self.excluded
     }
@@ -124,22 +119,15 @@ impl AccessListInspector {
     /// calls, such as an account-abstraction batch, entries touched by earlier calls are kept even
     /// if a later call targets their address.
     fn collect_excluded_addresses<T: EvmTypes>(&mut self, message: &Message<T>, host: &Evm<'_, T>) {
-        self.excluded.extend([message.caller, message.destination]);
-        self.precompiles.clear();
-        host.precompiles().warm_addresses(&mut self.precompiles);
+        self.excluded.extend(
+            [message.caller, message.destination].into_iter().chain(host.precompiles().addresses()),
+        );
         if !self.seeds_pruned {
             self.seeds_pruned = true;
             // Remove seeded excluded entries; SLOAD/SSTORE can re-add slots accessed during
             // execution.
-            let Self { excluded, precompiles, touched_slots, .. } = self;
-            touched_slots
-                .retain(|address, _| !excluded.contains(address) && !precompiles.is_warm(address));
+            self.touched_slots.retain(|address, _| !self.excluded.contains(address));
         }
-    }
-
-    /// Returns whether `address` is excluded from the access list.
-    fn is_excluded(&self, address: &Address) -> bool {
-        self.excluded.contains(address) || self.precompiles.is_warm(address)
     }
 }
 
@@ -159,7 +147,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
             | op::SELFDESTRUCT => {
                 if let Some([slot]) = interp.stack().peekn() {
                     let addr = slot.to_address();
-                    if !self.is_excluded(&addr) {
+                    if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
                 }
@@ -169,7 +157,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
                 // then underflows.
                 if let Some([_, slot, _, _, _]) = interp.stack().peekn() {
                     let addr = slot.to_address();
-                    if !self.is_excluded(&addr) {
+                    if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
                 }

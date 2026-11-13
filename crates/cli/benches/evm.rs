@@ -32,6 +32,20 @@ const REPLAY_WARM_UP: Duration = Duration::from_secs(3);
 const REPLAY_MEASUREMENT_SECS: u64 = 15;
 const REPLAY_SAMPLE_SIZE: usize = 20;
 
+/// Mainnet contract fixtures, which the `jit-mainnet` CodSpeed shard runs apart from the rest.
+const MAINNET_CONTRACTS: &[&str] = &[
+    "usdt",
+    "universal_router",
+    "aggregation_router_v6",
+    "entry_point_v0_7",
+    "uniswap_v3_pool",
+    "uniswap_v4_pool_manager",
+    "curve_3pool",
+    "curve_tricrypto2",
+    "balancer_vault",
+    "succinct_staking",
+];
+
 fn evm(c: &mut Criterion) {
     let mut group = c.benchmark_group("evm");
     apply_default_budget(&mut group);
@@ -53,8 +67,8 @@ fn evm(c: &mut Criterion) {
         .iter()
         .copied()
         .filter(|bench| match shard.as_deref() {
-            Some("jit") => !bench.mainnet,
-            Some("jit-mainnet") => bench.mainnet,
+            Some("jit") => !MAINNET_CONTRACTS.contains(&bench.name),
+            Some("jit-mainnet") => MAINNET_CONTRACTS.contains(&bench.name),
             _ => true,
         })
         .collect::<Vec<_>>();
@@ -138,13 +152,15 @@ fn expand_cases(benches: &[evm_bench::Bench], suites: &fixture::Suites) -> Vec<B
     for bench in benches {
         match bench.kind {
             BenchKind::Transaction { spec } => {
-                cases.push(BenchCase::transaction(bench.name, spec, bench.fixture_path, bench.jit));
+                cases.push(BenchCase::transaction(bench.name, spec, bench.fixture_path));
             }
             BenchKind::TransactionSuite { spec } => {
                 let suite = suites.get(bench.fixture_path);
-                cases.extend(suite.case_names().map(|name| {
-                    BenchCase::transaction(name.to_owned(), spec, bench.fixture_path, bench.jit)
-                }));
+                cases.extend(
+                    suite.case_names().map(|name| {
+                        BenchCase::transaction(name.to_owned(), spec, bench.fixture_path)
+                    }),
+                );
             }
             BenchKind::BlockchainReplay => {
                 cases.push(BenchCase::blockchain_replay(bench.name, bench.fixture_path));

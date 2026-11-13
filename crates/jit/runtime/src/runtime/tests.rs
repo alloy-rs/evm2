@@ -86,15 +86,15 @@ impl TestBackend {
     }
 
     /// Builds a [`LookupRequest`] for the given bytecode and spec.
-    fn req(bytecode: &[u8], spec_id: SpecId) -> LookupRequest<'_> {
+    fn req(bytecode: &[u8], spec_id: SpecId) -> LookupRequest {
         LookupRequest {
             key: RuntimeCacheKey { code_hash: alloy_primitives::keccak256(bytecode), spec_id },
-            code: bytecode.into(),
+            code: Bytes::copy_from_slice(bytecode),
         }
     }
 
     /// Builds a [`LookupRequest`] with [`SpecId::CANCUN`].
-    fn req_cancun(bytecode: &[u8]) -> LookupRequest<'_> {
+    fn req_cancun(bytecode: &[u8]) -> LookupRequest {
         Self::req(bytecode, SpecId::CANCUN)
     }
 
@@ -469,10 +469,16 @@ fn set_enabled_toggle() {
     let tb = TestBackend::disabled_with_tuning(Default::default());
     let req = TestBackend::req_cancun(&[0x00]);
 
-    assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::Disabled)));
+    assert!(matches!(
+        tb.lookup(req.clone()),
+        LookupDecision::Unavailable(LookupMissReason::Disabled)
+    ));
 
     tb.set_enabled(true).unwrap();
-    assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::NotReady)));
+    assert!(matches!(
+        tb.lookup(req.clone()),
+        LookupDecision::Unavailable(LookupMissReason::NotReady)
+    ));
 
     tb.set_enabled(false).unwrap();
     assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::Disabled)));
@@ -487,7 +493,10 @@ fn pause_processes_lookup_events() {
     tb.pause();
     tb.pause();
     assert!(tb.is_paused());
-    assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::NotReady)));
+    assert!(matches!(
+        tb.lookup(req.clone()),
+        LookupDecision::Unavailable(LookupMissReason::NotReady)
+    ));
 
     let stats = tb.wait_stats(|s| s.lookup_misses == 1);
     assert_eq!(stats.lookup_misses, 1);
@@ -1269,7 +1278,7 @@ fn memory_budget_eviction() {
     // evictions counter instead.
     let req = TestBackend::req_cancun(BYTECODE_RET42);
     poll_until(std::time::Duration::from_secs(10), || {
-        let _ = tb.lookup(req);
+        let _ = tb.lookup(req.clone());
         if tb.stats().evictions >= 1 { Some(()) } else { None }
     });
 }
@@ -1617,12 +1626,12 @@ fn failed_aot_persist_allows_jit_retry() {
         let req = TestBackend::req_cancun(BYTECODE_RET42);
         tb.prepare_aot_sync(AotRequest {
             code_hash: req.key.code_hash,
-            code: req.code.to_bytes(),
+            code: req.code.clone(),
             spec_id: req.key.spec_id,
         })
         .unwrap();
         assert_eq!(tb.stats().compilations_failed, 1);
-        tb.compile_jit_sync(req).unwrap();
+        tb.compile_jit_sync(req.clone()).unwrap();
         assert_eq!(
             tb.get_compiled(req.key.code_hash, req.key.spec_id).unwrap().kind,
             ProgramKind::Jit
@@ -2005,7 +2014,7 @@ fn prepare_aot_preserves_jit_resident_on_failure() {
         ..Default::default()
     });
     let req = TestBackend::req_cancun(BYTECODE_RET42);
-    tb.compile_jit_sync(req).unwrap();
+    tb.compile_jit_sync(req.clone()).unwrap();
     let jit = tb.get_compiled(req.key.code_hash, req.key.spec_id).unwrap();
     assert_eq!(jit.kind, ProgramKind::Jit);
     let before = tb.stats();
@@ -2013,7 +2022,7 @@ fn prepare_aot_preserves_jit_resident_on_failure() {
     // EmptyStore accepts writes but cannot return the artifact for loading.
     tb.prepare_aot_sync(AotRequest {
         code_hash: req.key.code_hash,
-        code: req.code.to_bytes(),
+        code: req.code,
         spec_id: req.key.spec_id,
     })
     .unwrap();

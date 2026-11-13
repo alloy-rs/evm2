@@ -503,10 +503,13 @@ pub fn charge_upfront<'a, T: EvmTypes>(
 
 /// Returns `(execution_gas_limit, reservoir)` for the first frame.
 ///
-/// `initial_state_gas` is the EIP-8037 state gas charged at the intrinsic phase by hooks. It is
-/// deducted from the reservoir, spilling into the execution budget when the reservoir is
-/// insufficient. It is zero without EIP-8037; under EIP-2780 the EIP-7702 authorization state
-/// charges are metered at the runtime gas phase instead ([`prepare_initial_frame`]).
+/// `initial_state_gas` is the EIP-8037 state gas charged at the intrinsic phase (the pre-EIP-2780
+/// pessimistic EIP-7702 authorization state gas, or hook-added charges). It is deducted from the
+/// reservoir, spilling into the execution budget when the reservoir is insufficient. It is zero
+/// without EIP-8037; under EIP-2780 the state-dependent charges are metered at the runtime gas
+/// phase instead ([`prepare_initial_frame`]). The pre-EIP-2780 EIP-7702 state-gas refund is not an
+/// input here: per execution-specs it is credited directly back to the reservoir after the
+/// authorizations are applied, not applied to execution gas first.
 pub fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
@@ -833,6 +836,7 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         gas_limit: tx_gas_limit,
         floor_gas,
         initial_state_gas,
+        state_refund,
         result,
     } = settlement;
 
@@ -842,8 +846,12 @@ pub fn finalize_gas<'a, T: EvmTypes>(
     // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor: block-level
     // execution gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
     // execution-specs, without the floor clamp.
+    //
+    // The per-authorization `state_refund` is EIP-7702 state gas returned on top of the settled
+    // tracker's.
     let (total_gas_spent, state_gas_spent) =
         gas_spent_breakdown(tx_gas_limit, &result.gas, initial_state_gas);
+    let state_gas_spent = state_gas_spent.saturating_sub(state_refund);
     Ok(TxResultExt {
         status: result.is_success(),
         total_gas_spent,

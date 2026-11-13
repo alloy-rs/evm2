@@ -1,5 +1,5 @@
 use crate::tracing::{
-    DebugInspector, DebugInspectorError, FourByteInspector, TraceLimits, TracingInspector,
+    DebugInspector, DebugInspectorError, FourByteInspector, TracingInspector,
     TracingInspectorConfig, TransactionContext, utils::transaction_info,
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -140,20 +140,8 @@ impl MuxInspector {
         })
     }
 
-    /// Applies the limits to the shared recording and to each nested tracer, see
-    /// [`DebugInspector::set_limits`]. Each of them has its own budget.
-    pub fn set_limits(&mut self, limits: TraceLimits) {
-        if let Some(inspector) = &mut self.tracing {
-            inspector.set_limits(limits);
-        }
-        for (_, child) in &mut self.children {
-            child.set_limits(limits);
-        }
-    }
-
     /// Prepares the inspector for executing the next transaction. This removes any state from the
-    /// previous transaction, except the global state of JavaScript tracers, see
-    /// [`DebugInspector::fuse`].
+    /// previous transaction.
     pub fn fuse(&mut self) -> Result<(), Error> {
         if let Some(inspector) = &mut self.four_byte {
             core::mem::take(inspector);
