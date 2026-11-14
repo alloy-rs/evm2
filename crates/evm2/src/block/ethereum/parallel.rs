@@ -820,12 +820,13 @@ where
                     let mut keys = Vec::new();
                     if had_outcome {
                         for (address, value) in &reads.accounts {
-                            let now = store.account(address, version).ok().flatten().map(|mut info| {
-                                if info.code_hash.is_zero() {
-                                    info.code_hash = KECCAK256_EMPTY;
-                                }
-                                info.clone_no_code()
-                            });
+                            let now =
+                                store.account(address, version).ok().flatten().map(|mut info| {
+                                    if info.code_hash.is_zero() {
+                                        info.code_hash = KECCAK256_EMPTY;
+                                    }
+                                    info.clone_no_code()
+                                });
                             if now != *value {
                                 keys.push((*address, None));
                             }
@@ -836,7 +837,13 @@ where
                             }
                         }
                     }
-                    let reason = if !had_outcome { 0 } else if keys.is_empty() { 2 } else { 1 };
+                    let reason = if !had_outcome {
+                        0
+                    } else if keys.is_empty() {
+                        2
+                    } else {
+                        1
+                    };
                     REEXEC_DIAG.lock().unwrap().push(ReexecDiag { index, reason, keys });
                     // It may read the beneficiary: publish the rewards credited since.
                     if let Some(info) = rewarded.take() {
@@ -1441,7 +1448,8 @@ where
 
 /// Validates the next result shortly ahead of the committer against the store, once every result
 /// up to it is in, recording the store's write log length beforehand so the committer can tell
-/// whether a later write could have changed a value read. A result that failed or read stale state
+/// whether a later write could have changed a value read, one worker at a time and in order. A
+/// result that failed or read stale state
 /// executes again with `execute_again`, which returns whether it did, rather than on the
 /// committer. Returns whether it claimed a result.
 fn prevalidate_next<T: EvmTypes>(
@@ -1450,6 +1458,12 @@ fn prevalidate_next<T: EvmTypes>(
     results: &Results<Speculative<T>>,
     execute_again: impl FnOnce(usize, &mut Speculative<T>) -> bool,
 ) -> bool {
+    if results.prevalidating.load(Ordering::Relaxed)
+        || results.prevalidating.swap(true, Ordering::Acquire)
+    {
+        return false;
+    }
+    let _release = Release(&results.prevalidating);
     let len = queue.len.load(Ordering::Acquire);
     let committing = results.committing.load(Ordering::Acquire);
     let claimed = results.prevalidate.load(Ordering::Acquire);
@@ -1479,6 +1493,15 @@ fn prevalidate_next<T: EvmTypes>(
         speculative.prevalidated = Some((mark, valid));
     });
     true
+}
+
+/// Clears a flag when dropped.
+struct Release<'a>(&'a AtomicBool);
+
+impl Drop for Release<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// A transaction for [`EthBlockExecutor::execute_transaction_stream`], with its dependencies on
@@ -2398,6 +2421,9 @@ struct Results<S> {
     revalidate: CachePadded<AtomicUsize>,
     /// Index of the next result for an idle worker to validate ahead of a batched commit.
     prevalidate: CachePadded<AtomicUsize>,
+    /// Whether a worker is validating a result ahead of a batched commit: one at a time, in
+    /// order, so that a result executed again reads every earlier result as validated.
+    prevalidating: CachePadded<AtomicBool>,
     /// Number of leading results stored.
     ready: CachePadded<AtomicUsize>,
     /// Whether the committer commits in batch, so idle workers validate ahead of it.
@@ -2416,6 +2442,7 @@ impl<S> Results<S> {
             committing: CachePadded(AtomicUsize::new(0)),
             revalidate: CachePadded(AtomicUsize::new(0)),
             prevalidate: CachePadded(AtomicUsize::new(0)),
+            prevalidating: CachePadded(AtomicBool::new(false)),
             ready: CachePadded(AtomicUsize::new(0)),
             batched,
         }
