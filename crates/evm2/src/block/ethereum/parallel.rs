@@ -403,6 +403,7 @@ where
                     &mut stats,
                     &make_evm,
                     &mut on_commit,
+                    &mut |_, _| {},
                 )
             } else {
                 self.commit_in_order(
@@ -413,6 +414,7 @@ where
                     &mut stats,
                     &mut dependencies,
                     &mut on_commit,
+                    &mut |_, _| {},
                 )
             };
             scheduler.abort();
@@ -442,15 +444,26 @@ where
     /// [`ParallelHints`]). Workers start ready transactions in arrival order: priorities need the
     /// whole block.
     ///
+    /// `on_commit` works as in [`Self::execute_transactions_parallel`], and `on_receipt` sees each
+    /// transaction's receipt, by index and in block order, as soon as it is recorded, so a
+    /// receipt-root task can hash the block's receipts while later transactions still execute.
+    /// When [`Self::commits_batched`], the commit is batched as in
+    /// [`Self::execute_transactions_parallel`], with the same guarantees on failure: the executor
+    /// then forgets the receipts `on_receipt` saw, and executing the block again one transaction at
+    /// a time records the same receipts for the transactions before the failure.
+    ///
     /// When the block fails to execute, no new transaction starts, but the call returns only once
     /// `transactions` yields its next item or ends.
-    pub fn execute_transaction_stream<'s, Tx, I, B, F, H>(
+    #[expect(clippy::too_many_arguments)]
+    pub fn execute_transaction_stream<'s, Tx, I, B, F, H, C, P>(
         &mut self,
         transactions: I,
         base: &'s B,
         make_evm: F,
         threads: NonZeroUsize,
         on_speculative: H,
+        mut on_commit: C,
+        mut on_receipt: P,
     ) -> Result<ParallelExecutionOutput, BlockExecutionError>
     where
         Tx: ExecutableTx<Self, Tx: Send>,
@@ -458,14 +471,19 @@ where
         B: DynDatabaseRef + Sync + ?Sized,
         F: for<'x> Fn(Box<dyn DynDatabase + 'x>) -> Evm<'x, T> + Sync,
         H: Fn(usize, TxStateChanges<'_>) + Sync,
+        C: FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
+        P: FnMut(usize, &R::Receipt),
     {
         let mut stats = ParallelExecutionStats::default();
         let mut dependencies = DependencyTracker::new(self.evm.block_env().beneficiary);
-        if threads.get() == 1 {
+        let batched = self.commits_batched();
+        if threads.get() == 1 && !batched {
             for (index, streamed) in transactions.into_iter().enumerate() {
                 let output = self.execute_transaction_without_commit(streamed.tx)?;
+                on_commit(index, &output.result().result)?;
                 dependencies.record(index, &output.result().pending_state);
                 self.commit_transaction(output)?;
+                self.emit_receipt(index, &mut on_receipt);
                 stats.transactions += 1;
                 stats.reexecuted += 1;
             }
@@ -475,10 +493,11 @@ where
         let scheduler = Scheduler::default();
         let queue = TxQueue::default();
         let store = MvStore::new(self.evm.overlay_db().cache.clone(), base);
-        let results = Results::new(threads.get(), false);
+        let results = Results::new(threads.get(), batched);
+        let totals = batched.then(|| self.totals());
         let (tx_sender, tx_receiver) = mpsc::channel();
         let transactions = transactions.into_iter();
-        std::thread::scope(|scope| {
+        let output = std::thread::scope(|scope| {
             let (scheduler, queue) = (&scheduler, &queue);
             scope.spawn(move || {
                 for StreamedTx { tx, dependencies } in transactions {
@@ -502,19 +521,46 @@ where
                     run_worker(store, scheduler, queue, make_evm, on_speculative, results, worker);
                 });
             }
-            let result = self.commit_in_order(
-                &store,
-                queue,
-                tx_receiver,
-                &results,
-                &mut stats,
-                &mut dependencies,
-                &mut |_, _| Ok(()),
-            );
+            let result = if batched {
+                self.commit_batched(
+                    &store,
+                    queue,
+                    tx_receiver,
+                    &results,
+                    &mut stats,
+                    &make_evm,
+                    &mut on_commit,
+                    &mut on_receipt,
+                )
+            } else {
+                self.commit_in_order(
+                    &store,
+                    queue,
+                    tx_receiver,
+                    &results,
+                    &mut stats,
+                    &mut dependencies,
+                    &mut on_commit,
+                    &mut on_receipt,
+                )
+            };
             scheduler.abort();
             result
-        })?;
+        });
+        if let (Err(_), Some(totals)) = (&output, totals) {
+            // Nothing was committed: forget the receipts and gas of the transactions before the
+            // failure.
+            self.restore_totals(totals);
+        }
+        output?;
         Ok(ParallelExecutionOutput { stats, dependencies: dependencies.finish() })
+    }
+
+    /// Hands the receipt the transaction at `index` just recorded to `on_receipt`.
+    fn emit_receipt(&self, index: usize, on_receipt: &mut impl FnMut(usize, &R::Receipt)) {
+        if let Some(receipt) = self.receipts.last() {
+            on_receipt(index, receipt);
+        }
     }
 
     /// Validates and commits speculative executions in block order, executing invalid ones again.
@@ -531,6 +577,7 @@ where
         stats: &mut ParallelExecutionStats,
         dependencies: &mut DependencyTracker,
         on_commit: &mut impl FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
+        on_receipt: &mut impl FnMut(usize, &R::Receipt),
     ) -> Result<(), BlockExecutionError> {
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
@@ -602,6 +649,7 @@ where
                         PendingState::default()
                     }
                 };
+            self.emit_receipt(index, on_receipt);
             reads.clear();
             writes.clear();
             results.recycle(worker, Buffers { reads, writes, pending });
@@ -667,6 +715,7 @@ where
         stats: &mut ParallelExecutionStats,
         make_evm: &F,
         on_commit: &mut impl FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
+        on_receipt: &mut impl FnMut(usize, &R::Receipt),
     ) -> Result<(), BlockExecutionError>
     where
         X: Borrow<R::Transaction>,
@@ -782,6 +831,7 @@ where
                     PendingState::default()
                 }
             };
+            self.emit_receipt(index, on_receipt);
             let mut pending = pending;
             pending.deferred.clear();
             reads.clear();

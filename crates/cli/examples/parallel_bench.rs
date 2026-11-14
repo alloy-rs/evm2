@@ -507,6 +507,8 @@ fn stream_tail(
                 |database| engine.evm(database),
                 NonZeroUsize::new(threads).unwrap(),
                 |_, _| {},
+                |_, _| Ok(()),
+                |_, _| {},
             )
             .unwrap();
         let done = Instant::now();

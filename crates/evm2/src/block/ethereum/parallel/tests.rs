@@ -674,6 +674,8 @@ fn stream(
             |database| evm(database),
             NonZeroUsize::new(threads).unwrap(),
             |_, _| {},
+            |_, _| Ok(()),
+            |_, _| {},
         )
         .unwrap();
     let output = executor.finish().unwrap();
@@ -746,6 +748,8 @@ fn streamed_transactions_commit_before_the_block_arrives() {
                 |database| evm(database),
                 NonZeroUsize::new(4).unwrap(),
                 |_, _| {},
+                |_, _| Ok(()),
+                |_, _| {},
             )
             .unwrap();
         let committed = producer.join().unwrap();
@@ -800,6 +804,8 @@ fn streamed_public_mix_benchmark() {
                     &snapshot,
                     |database| evm(database),
                     NonZeroUsize::new(threads.saturating_sub(1).max(1)).unwrap(),
+                    |_, _| {},
+                    |_, _| Ok(()),
                     |_, _| {},
                 )
                 .unwrap();
@@ -1101,6 +1107,86 @@ fn rejected_batched_commit_leaves_the_executor_unchanged() {
             assert_eq!(updates[..streamed], expected.updates[..streamed]);
             assert_eq!(updates[streamed + rejected_updates..], expected.updates[streamed..]);
             assert_streams_final_state(&updates, &expected.output);
+        }
+    }
+}
+
+fn stream_batched(database: InMemoryDB, txs: &[Tx], threads: usize) -> (Run, Vec<ReceiptEnvelope>) {
+    let snapshot = Snapshot(database.cache.clone());
+    let updates = Updates::default();
+    let mut executor = executor(database, &updates);
+    executor.set_parallel_commit(ParallelCommit::Batched);
+    let mut receipts = Vec::new();
+    let ParallelExecutionOutput { stats, dependencies } = executor
+        .execute_transaction_stream(
+            txs.iter().map(StreamedTx::new).collect::<Vec<_>>(),
+            &snapshot,
+            |database| evm(database),
+            NonZeroUsize::new(threads).unwrap(),
+            |_, _| {},
+            |_, _| Ok(()),
+            |index, receipt: &ReceiptEnvelope| {
+                assert_eq!(index, receipts.len());
+                receipts.push(receipt.clone());
+            },
+        )
+        .unwrap();
+    let output = executor.finish().unwrap();
+    (Run { output, updates: normalize(&updates), stats, dependencies }, receipts)
+}
+
+#[test]
+fn streamed_batched_blocks_match_sequential() {
+    for seed in 0..30 {
+        let txs = random_block(seed, 96);
+        let expected = sequential(database(None), &txs);
+        for threads in [1, 4, 7] {
+            let (actual, receipts) = stream_batched(database(None), &txs, threads);
+            assert_eq!(actual.output, expected.output, "seed {seed}, {threads} threads");
+            assert_streams_final_state(&actual.updates, &actual.output);
+            assert_eq!(receipts, expected.output.result.receipts, "seed {seed}, {threads} threads");
+            assert_eq!(actual.stats.transactions, txs.len());
+            assert_eq!(actual.stats.speculative + actual.stats.reexecuted, txs.len());
+        }
+    }
+}
+
+#[test]
+fn rejected_streamed_batched_commit_leaves_the_executor_unchanged() {
+    let txs = random_block(11, 48);
+    let expected = sequential(database(None), &txs);
+    for threads in [1, 4] {
+        for reject in [0, 30, txs.len() - 1] {
+            let database = database(None);
+            let snapshot = Snapshot(database.cache.clone());
+            let updates = Updates::default();
+            let mut executor = executor(database, &updates);
+            executor.set_parallel_commit(ParallelCommit::Batched);
+            let mut receipts = Vec::new();
+            let rejected = executor.execute_transaction_stream(
+                txs.iter().map(StreamedTx::new).collect::<Vec<_>>(),
+                &snapshot,
+                |database| evm(database),
+                NonZeroUsize::new(threads).unwrap(),
+                |_, _| {},
+                |index, _| {
+                    if index == reject {
+                        Err(BlockValidationError::msg("rejected").into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                |_, receipt: &ReceiptEnvelope| receipts.push(receipt.clone()),
+            );
+            assert!(rejected.is_err());
+            assert!(executor.receipts.is_empty());
+            assert_eq!(executor.cumulative_gas_used, 0);
+            // The receipts seen before the rejection are those of sequential execution.
+            assert_eq!(receipts[..], expected.output.result.receipts[..reject]);
+            for tx in &txs {
+                executor.execute_transaction(tx).unwrap();
+            }
+            assert_eq!(executor.finish().unwrap(), expected.output);
         }
     }
 }
