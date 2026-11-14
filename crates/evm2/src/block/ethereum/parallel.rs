@@ -1345,25 +1345,46 @@ fn run_worker<T, F, H>(
     let view_version = Cell::new(0);
     let reads = RefCell::new(ReadSet::default());
     let mut stash = Vec::new();
+    let new_evm = || {
+        let view = TxView { store, version: &view_version, reads: &reads };
+        let mut evm = make_evm(Box::new(view));
+        evm.set_defer_beneficiary_reward(true);
+        evm.set_defer_storage_resolution(true);
+        evm.set_track_balance_reads(true);
+        evm
+    };
     let mut evm = None;
     loop {
-        // Validate a result near the committer before executing more: the committer then only
-        // checks the writes logged since.
+        // Validate a result near the committer before executing more, and execute it again if it
+        // is stale: the committer then only checks the writes logged since.
         if results.batched {
-            prevalidate_next(store, queue, results);
+            prevalidate_next(store, queue, results, |index, speculative| {
+                let worker_evm = evm.get_or_insert_with(new_evm);
+                let executed = execute_again(
+                    worker_evm,
+                    &view_version,
+                    &reads,
+                    &mut stash,
+                    store,
+                    queue,
+                    results,
+                    on_speculative,
+                    worker,
+                    index,
+                    speculative,
+                );
+                if !executed {
+                    // The EVM may be left inconsistent: rebuild it.
+                    evm = None;
+                }
+                executed
+            });
             warm_deferred(store, results);
         }
         let Some(index) = scheduler.next() else { break };
         let evm_tx = queue.get(index);
         let version = version(index);
-        let worker_evm = evm.get_or_insert_with(|| {
-            let view = TxView { store, version: &view_version, reads: &reads };
-            let mut evm = make_evm(Box::new(view));
-            evm.set_defer_beneficiary_reward(true);
-            evm.set_defer_storage_resolution(true);
-            evm.set_track_balance_reads(true);
-            evm
-        });
+        let worker_evm = evm.get_or_insert_with(new_evm);
         // Values cached at the previous transaction's version are stale; code is
         // content-addressed and stays valid.
         let cache = &mut worker_evm.overlay_db_mut().cache;
@@ -1407,9 +1428,28 @@ fn run_worker<T, F, H>(
     let Some(evm) = &mut evm else { return };
     let mut idle = 0;
     while !scheduler.is_stopped() {
+        let mut stop = false;
         if results.batched
-            && (prevalidate_next(store, queue, results) || warm_deferred(store, results))
+            && (prevalidate_next(store, queue, results, |index, speculative| {
+                stop = !execute_again(
+                    evm,
+                    &view_version,
+                    &reads,
+                    &mut stash,
+                    store,
+                    queue,
+                    results,
+                    on_speculative,
+                    worker,
+                    index,
+                    speculative,
+                );
+                !stop
+            }) || warm_deferred(store, results))
         {
+            if stop {
+                return;
+            }
             idle = 0;
             continue;
         }
@@ -1449,49 +1489,18 @@ fn run_worker<T, F, H>(
             {
                 return;
             }
-            let evm_tx = queue.get(index);
-            let cache = &mut evm.overlay_db_mut().cache;
-            cache.accounts.clear();
-            cache.storage.clear();
-            view_version.set(version);
-            let Buffers { reads: pooled, mut writes, pending } =
-                results.buffers(worker, &mut stash);
-            *reads.borrow_mut() = pooled;
-            evm.set_defer_beneficiary_reward(true);
-            let state = evm.state_mut();
-            state.set_pending_state(pending);
-            state.clear_transaction_state();
-            let executed = catch_unwind(AssertUnwindSafe(|| {
-                evm.transact(evm_tx).ok().map(|executed| executed.detach())
-            }));
-            let Ok(outcome) = executed else {
-                // The EVM may be left inconsistent: keep the stale result and stop.
-                reads.borrow_mut().clear();
-                stop = true;
-                return;
-            };
-            let reward = evm.deferred_beneficiary_reward().unwrap_or_default();
-            if let Some(outcome) = &outcome {
-                store.publish(version, &outcome.pending_state, &mut writes);
-                on_speculative(index, outcome.pending_state.changes());
-            }
-            store.unpublish(
-                version,
-                speculative.writes.iter().filter(|write| !writes.contains(write)),
-            );
-            store.log_writes(version, writes.iter().chain(&speculative.writes).copied());
-            let reads = core::mem::take(&mut *reads.borrow_mut());
-            let stale = core::mem::replace(
+            stop = !execute_again(
+                evm,
+                &view_version,
+                &reads,
+                &mut stash,
+                store,
+                queue,
+                results,
+                on_speculative,
+                worker,
+                index,
                 speculative,
-                Speculative { worker, outcome, reward, reads, writes, prevalidated: None },
-            );
-            let Speculative { worker: owner, reads: mut old_reads, writes: mut old_writes, .. } =
-                stale;
-            old_reads.clear();
-            old_writes.clear();
-            results.recycle(
-                owner,
-                Buffers { reads: old_reads, writes: old_writes, ..Default::default() },
             );
         });
         if stop {
@@ -1500,13 +1509,77 @@ fn run_worker<T, F, H>(
     }
 }
 
+/// Executes the result at `index` again on the worker's `evm` over the store, replacing
+/// `speculative` with the new result: its writes replace the stale ones in the store, and the
+/// keys either wrote are logged. Returns `false` when the execution panicked, which may leave the
+/// EVM inconsistent, keeping the stale result.
+#[expect(clippy::too_many_arguments)]
+fn execute_again<T, H>(
+    evm: &mut Evm<'_, T>,
+    view_version: &Cell<u32>,
+    reads: &RefCell<ReadSet>,
+    stash: &mut Vec<Buffers>,
+    store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
+    queue: &TxQueue<T::Tx>,
+    results: &Results<Speculative<T>>,
+    on_speculative: &H,
+    worker: usize,
+    index: usize,
+    speculative: &mut Speculative<T>,
+) -> bool
+where
+    T: EvmTypes<Tx: Typed2718>,
+    H: Fn(usize, TxStateChanges<'_>),
+{
+    let version = version(index);
+    let evm_tx = queue.get(index);
+    let cache = &mut evm.overlay_db_mut().cache;
+    cache.accounts.clear();
+    cache.storage.clear();
+    view_version.set(version);
+    let Buffers { reads: pooled, mut writes, pending } = results.buffers(worker, stash);
+    *reads.borrow_mut() = pooled;
+    evm.set_defer_beneficiary_reward(true);
+    let state = evm.state_mut();
+    state.set_pending_state(pending);
+    state.clear_transaction_state();
+    let executed = catch_unwind(AssertUnwindSafe(|| {
+        evm.transact(evm_tx).ok().map(|executed| executed.detach())
+    }));
+    let Ok(outcome) = executed else {
+        // The EVM may be left inconsistent: keep the stale result.
+        reads.borrow_mut().clear();
+        return false;
+    };
+    let reward = evm.deferred_beneficiary_reward().unwrap_or_default();
+    if let Some(outcome) = &outcome {
+        store.publish(version, &outcome.pending_state, &mut writes);
+        on_speculative(index, outcome.pending_state.changes());
+    }
+    store.unpublish(version, speculative.writes.iter().filter(|write| !writes.contains(write)));
+    store.log_writes(version, writes.iter().chain(&speculative.writes).copied());
+    let reads = core::mem::take(&mut *reads.borrow_mut());
+    let stale = core::mem::replace(
+        speculative,
+        Speculative { worker, outcome, reward, reads, writes, prevalidated: None },
+    );
+    let Speculative { worker: owner, reads: mut old_reads, writes: mut old_writes, .. } = stale;
+    old_reads.clear();
+    old_writes.clear();
+    results.recycle(owner, Buffers { reads: old_reads, writes: old_writes, ..Default::default() });
+    true
+}
+
 /// Validates the next result shortly ahead of the committer against the store, once every result
 /// up to it is in, recording the store's write log length beforehand so the committer can tell
-/// whether a later write could have changed a value read. Returns whether it claimed a result.
+/// whether a later write could have changed a value read. A result that failed or read stale state
+/// executes again with `execute_again`, which returns whether it did, rather than on the
+/// committer. Returns whether it claimed a result.
 fn prevalidate_next<T: EvmTypes>(
     store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
     queue: &TxQueue<T::Tx>,
     results: &Results<Speculative<T>>,
+    execute_again: impl FnOnce(usize, &mut Speculative<T>) -> bool,
 ) -> bool {
     let len = queue.len.load(Ordering::Acquire);
     let committing = results.committing.load(Ordering::Acquire);
@@ -1524,13 +1597,16 @@ fn prevalidate_next<T: EvmTypes>(
     }
     let mark = store.log_mark();
     results.update(index, |speculative| {
-        let Some(outcome) = &speculative.outcome else { return };
-        let valid = speculative.reads.validate_store(
-            store,
-            version(index),
-            &outcome.pending_state,
-            &queue.get(index).signer(),
-        );
+        let valid = speculative.outcome.as_ref().is_some_and(|outcome| {
+            speculative.reads.validate_store(
+                store,
+                version(index),
+                &outcome.pending_state,
+                &queue.get(index).signer(),
+            )
+        });
+        // The values the execution reads were in the store at `mark`, or were logged since.
+        let valid = valid || execute_again(index, speculative);
         speculative.prevalidated = Some((mark, valid));
     });
     true
