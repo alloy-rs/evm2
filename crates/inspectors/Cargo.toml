@@ -29,7 +29,7 @@ thiserror.workspace = true
 
 # serde
 serde = { workspace = true, optional = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["alloc"] }
+serde_json = { workspace = true, features = ["alloc", "raw_value"] }
 
 # js-tracer
 boa_engine = { workspace = true, optional = true }

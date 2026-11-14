@@ -1,6 +1,7 @@
 //! Geth tests
 
 mod consistency;
+mod raw_struct_logs;
 mod runtime_oog;
 
 use crate::utils::{

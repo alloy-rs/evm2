@@ -73,7 +73,10 @@ mod mux;
 pub use mux::{Error as MuxError, MuxInspector};
 
 mod debug;
-pub use debug::{DebugInspector, DebugInspectorError};
+pub use debug::{DebugInspector, DebugInspectorError, DebugTrace, StructLogMode};
+
+mod raw_struct_log;
+pub use raw_struct_log::{RawDefaultFrame, RawStructLogInspector};
 
 /// An inspector that collects call traces.
 ///
