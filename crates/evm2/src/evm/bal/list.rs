@@ -495,7 +495,10 @@ mod tests {
         overlay.slots.insert(U256::from(5), storage_slot(U256::ZERO, U256::from(42)));
         overlay.slots.insert(U256::from(6), storage_slot(U256::from(7), U256::from(7)));
         let account = Account { storage: overlay, ..account };
-        let pending = PendingState { accounts: AddressMap::from_iter([(address, account)]) };
+        let pending = PendingState {
+            accounts: AddressMap::from_iter([(address, account)]),
+            ..Default::default()
+        };
 
         let mut bal = Bal::new();
         bal.commit(idx(1), pending);
@@ -530,7 +533,10 @@ mod tests {
         let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
         overlay.slots.insert(U256::from(5), storage_slot(U256::from(42), U256::from(42)));
         let account = Account { storage: overlay, flags: AccountFlags::DESTROYED, ..account };
-        let pending = PendingState { accounts: AddressMap::from_iter([(address, account)]) };
+        let pending = PendingState {
+            accounts: AddressMap::from_iter([(address, account)]),
+            ..Default::default()
+        };
 
         let mut bal = Bal::new();
         bal.commit(idx(2), pending);
@@ -561,7 +567,10 @@ mod tests {
             storage: overlay,
             ..Default::default()
         };
-        let pending = PendingState { accounts: AddressMap::from_iter([(address, account)]) };
+        let pending = PendingState {
+            accounts: AddressMap::from_iter([(address, account)]),
+            ..Default::default()
+        };
 
         let mut bal = Bal::new();
         bal.commit(idx(1), pending);
