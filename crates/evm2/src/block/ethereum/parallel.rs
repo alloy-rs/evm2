@@ -55,7 +55,7 @@
 //! ring buffer insert, run at commit against the committed state.
 
 use super::{
-    EthBlockExecutor, EthTransactionResultWithState, emit_state,
+    EthBlockExecutor, EthTransactionResultWithState,
     execution::{execute_transaction_without_commit, map_transaction_error},
 };
 use crate::{
@@ -127,6 +127,9 @@ const COMMIT_SPINS: u32 = 1 << 10;
 /// How far ahead of the committer idle workers run deferred storage operations to warm the slots
 /// they read in batched commits.
 const WARM_AHEAD: usize = 64;
+
+/// Most threads that read a batched commit's final state.
+const MATERIALIZE_THREADS: usize = 8;
 
 /// How often a batched commit streams the state its committed prefix changed to the state hook.
 /// Tests stream after every transaction.
@@ -424,6 +427,8 @@ where
             scheduler.abort();
             result
         });
+        store.drop_in_background();
+        results.drop_buffers_in_background();
         if let (Err(_), Some(totals)) = (&output, totals) {
             // Nothing was committed: forget the receipts and gas of the transactions before the
             // failure.
@@ -551,6 +556,8 @@ where
             scheduler.abort();
             result
         });
+        store.drop_in_background();
+        results.drop_buffers_in_background();
         if let (Err(_), Some(totals)) = (&output, totals) {
             // Nothing was committed: forget the receipts and gas of the transactions before the
             // failure.
@@ -733,8 +740,9 @@ where
         F: for<'x> Fn(Box<dyn DynDatabase + 'x>) -> Evm<'x, T>,
     {
         let Some(hook) = self.state_update_hook.take() else {
-            return self
-                .commit_batched_with(store, queue, txs, results, stats, make_evm, on_commit, None);
+            return self.commit_batched_with(
+                store, queue, txs, results, stats, make_evm, on_commit, on_receipt, None,
+            );
         };
         std::thread::scope(|scope| {
             let (sender, batches) = mpsc::channel();
@@ -747,6 +755,7 @@ where
                 stats,
                 make_evm,
                 on_commit,
+                on_receipt,
                 Some(&sender),
             );
             drop(sender);
@@ -772,6 +781,7 @@ where
         stats: &mut ParallelExecutionStats,
         make_evm: &F,
         on_commit: &mut impl FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
+        on_receipt: &mut impl FnMut(usize, &R::Receipt),
         streamer: Option<&mpsc::Sender<StreamBatch>>,
     ) -> Result<(), BlockExecutionError>
     where
@@ -902,10 +912,8 @@ where
             {
                 stream.last = Instant::now();
                 let running = rewarded.as_ref().map(|info| (beneficiary, info.clone()));
-                let keys = core::mem::replace(
-                    &mut stream.keys,
-                    Vec::with_capacity(stream.keys.capacity()),
-                );
+                let capacity = stream.keys.capacity();
+                let keys = core::mem::replace(&mut stream.keys, Vec::with_capacity(capacity));
                 // The streamer only stops early on an error, which it reports when joined.
                 let _ = streamer.send(StreamBatch { keys, version: version + 1, running });
             }
@@ -1277,7 +1285,8 @@ fn warm_deferred<T: EvmTypes>(
         ops = speculative
             .outcome
             .as_ref()
-            .map(|outcome| outcome.pending_state.deferred.ops.clone());
+            .and_then(|outcome| outcome.pending_state.deferred())
+            .map(|deferred| deferred.ops.clone());
     }) {
         return false;
     }
@@ -2297,37 +2306,38 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     }
 
     /// Returns the block's changes once every transaction committed: each account and slot written
-    /// from its state before the block to its latest value.
+    /// from its state before the block to its latest value. Threads read the shards' values in
+    /// parallel.
     fn materialize(&self, lifecycle: &AddressMap<Lifecycle>) -> DbResult<PendingState> {
+        let threads = std::thread::available_parallelism()
+            .map_or(1, NonZeroUsize::get)
+            .clamp(1, MATERIALIZE_THREADS);
+        let chunk = SHARDS.div_ceil(threads);
+        let parts = std::thread::scope(|scope| {
+            let spawned = (1..threads)
+                .map(|part| scope.spawn(move || self.materialize_shards(part * chunk, chunk)))
+                .collect::<Vec<_>>();
+            let mut parts = vec![self.materialize_shards(0, chunk)];
+            for handle in spawned {
+                parts.push(handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
+            }
+            parts
+        });
         let mut state = PendingState::default();
-        for shard in &self.accounts {
-            for (address, versions) in shard.read().expect("lock poisoned").iter() {
-                let Some((_, present)) = versions.latest_below(u32::MAX) else { continue };
-                let original = self.account_initial(address)?;
-                let mut present = present.clone();
-                if let Some(info) = &mut present
-                    && original.as_ref().is_none_or(|original| original.code_hash != info.code_hash)
-                    && info.code_hash != KECCAK256_EMPTY
-                    && !info.code_hash.is_zero()
-                {
-                    info.code = Some(self.code(&info.code_hash)?);
-                }
-                state.insert_account(*address, original, present);
+        let mut slots = Vec::new();
+        for part in parts {
+            let (accounts, part_slots) = part?;
+            for (address, original, present) in accounts {
+                state.insert_account(address, original, present);
             }
+            slots.push(part_slots);
         }
-        for shard in &self.storage {
-            for ((address, key), versions) in shard.read().expect("lock poisoned").iter() {
-                if versions.latest_below(u32::MAX).is_none() {
-                    continue;
-                }
-                if !state.accounts.contains_key(address) {
-                    let info = self.account_initial(address)?;
-                    state.insert_account(*address, info.clone(), info);
-                }
-                let current = self.storage(address, key, u32::MAX)?;
-                let original = self.storage_initial(address, key)?;
-                state.insert_storage(*address, *key, original, current);
+        for (address, key, original, current) in slots.into_iter().flatten() {
+            if !state.accounts.contains_key(&address) {
+                let info = self.account_initial(&address)?;
+                state.insert_account(address, info.clone(), info);
             }
+            state.insert_storage(address, key, original, current);
         }
         for (address, lifecycle) in lifecycle {
             if !state.accounts.contains_key(address) {
@@ -2341,6 +2351,55 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             }
         }
         Ok(state)
+    }
+
+    /// Reads the accounts and slots written in `len` account and storage shards from `start`: each
+    /// account before the block and at its latest value, and each slot before the block and at its
+    /// latest value.
+    #[expect(clippy::type_complexity)]
+    fn materialize_shards(
+        &self,
+        start: usize,
+        len: usize,
+    ) -> DbResult<(
+        Vec<(Address, Option<AccountInfo>, Option<AccountInfo>)>,
+        Vec<(Address, Word, Word, Word)>,
+    )> {
+        let range = start.min(SHARDS)..(start + len).min(SHARDS);
+        let mut accounts = Vec::new();
+        for shard in &self.accounts[range.clone()] {
+            for (address, versions) in shard.read().expect("lock poisoned").iter() {
+                let Some((_, present)) = versions.latest_below(u32::MAX) else { continue };
+                let original = self.account_initial(address)?;
+                let mut present = present.clone();
+                if let Some(info) = &mut present
+                    && original.as_ref().is_none_or(|original| original.code_hash != info.code_hash)
+                    && info.code_hash != KECCAK256_EMPTY
+                    && !info.code_hash.is_zero()
+                {
+                    info.code = Some(self.code(&info.code_hash)?);
+                }
+                accounts.push((*address, original, present));
+            }
+        }
+        let mut slots = Vec::new();
+        for shard in &self.storage[range] {
+            for ((address, key), versions) in shard.read().expect("lock poisoned").iter() {
+                if versions.latest_below(u32::MAX).is_none() {
+                    continue;
+                }
+                let current = self.storage(address, key, u32::MAX)?;
+                let original = self.storage_initial(address, key)?;
+                slots.push((*address, *key, original, current));
+            }
+        }
+        Ok((accounts, slots))
+    }
+
+    /// Frees the store's versions on a background thread.
+    fn drop_in_background(self) {
+        let Self { initial, accounts, storage, wipes, contracts, log, .. } = self;
+        drop_in_background((initial, accounts, storage, wipes, contracts, log));
     }
 
     /// Publishes at `version` the slots that resolving a committed transaction's deferred storage
@@ -2564,6 +2623,16 @@ impl<S> Results<S> {
             core::mem::swap(stash, &mut *self.pools[worker].lock().expect("lock poisoned"));
         }
         stash.pop().unwrap_or_default()
+    }
+
+    /// Frees the buffers handed back on a background thread.
+    fn drop_buffers_in_background(&self) {
+        let buffers = self
+            .pools
+            .iter()
+            .map(|pool| core::mem::take(&mut *pool.lock().expect("lock poisoned")))
+            .collect::<Vec<_>>();
+        drop_in_background(buffers);
     }
 
     /// Hands buffers, with emptied reads and writes, back to the `worker` that filled them.
