@@ -618,7 +618,10 @@ where
                                 );
                             }
                         }
-                        if !pending_state.deferred.resolved.is_empty() {
+                        if pending_state
+                            .deferred()
+                            .is_some_and(|deferred| !deferred.resolved.is_empty())
+                        {
                             store.publish_resolved(version, &pending_state);
                         }
                         on_commit(index, &result)?;
@@ -887,7 +890,9 @@ where
             };
             self.emit_receipt(index, on_receipt);
             let mut pending = pending;
-            pending.deferred.clear();
+            if let Some(parallel) = &mut pending.parallel {
+                parallel.deferred.clear();
+            }
             reads.clear();
             writes.clear();
             results.recycle(worker, Buffers { reads, writes, pending });
@@ -1070,11 +1075,13 @@ fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
     pending: &mut PendingState,
     stream: Option<&mut PrefixStream>,
 ) -> Result<(), BlockExecutionError> {
-    if pending.deferred.ops.is_empty() {
+    let Some(parallel) =
+        pending.parallel.as_deref_mut().filter(|parallel| !parallel.deferred.ops.is_empty())
+    else {
         return Ok(());
-    }
+    };
     let mut access = StoreAccess { store, version, stream };
-    for op in core::mem::take(&mut pending.deferred.ops) {
+    for op in core::mem::take(&mut parallel.deferred.ops) {
         op.run_on(&mut access).map_err(map_database_error)?;
     }
     Ok(())
@@ -1747,7 +1754,10 @@ impl DependencyTracker {
     fn record(&mut self, index: usize, pending: &PendingState) {
         let index = u32::try_from(index).expect("block has fewer than 2^32 transactions");
         // Slots only the transaction's end loaded, to resolve its deferred storage.
-        let resolved = pending.deferred.resolved.iter().copied().collect::<HashSet<_>>();
+        let resolved = pending
+            .deferred()
+            .map(|deferred| deferred.resolved.iter().copied().collect::<HashSet<_>>())
+            .unwrap_or_default();
         let resolved = |key: &(Address, Word)| resolved.contains(key);
         let mut dependencies = Vec::new();
         // Each key is visited once, so reading its last writer and then recording this transaction
@@ -1980,8 +1990,11 @@ impl ReadSet {
 /// when it did not read the balance exactly, or `None` when it did. The sender's balance pays
 /// for gas, which the execution checks exactly.
 fn delta_floor(pending: &PendingState, sender: &Address, address: &Address) -> Option<Word> {
-    let reads = &pending.balance_reads;
-    if address == sender || reads.observed.contains(address) {
+    if address == sender {
+        return None;
+    }
+    let Some(reads) = pending.balance_reads() else { return Some(Word::ZERO) };
+    if reads.observed.contains(address) {
         return None;
     }
     Some(reads.floors.get(address).copied().unwrap_or_default())
@@ -2216,7 +2229,9 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             }
         }
         // Unresolved blind adds publish as deltas, unless the transaction loaded the slot too.
-        for (key, pending_delta) in &pending.deferred.deltas {
+        for (key, pending_delta) in
+            pending.deferred().into_iter().flat_map(|deferred| &deferred.deltas)
+        {
             if pending_delta.delta.is_zero() {
                 continue;
             }
@@ -2332,7 +2347,9 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     /// changed: the values of blind adds it never read and the slots its deferred operations wrote,
     /// which its speculative execution could not publish.
     fn publish_resolved(&self, version: u32, pending: &PendingState) {
-        for &(address, key) in &pending.deferred.resolved {
+        for &(address, key) in
+            pending.deferred().into_iter().flat_map(|deferred| &deferred.resolved)
+        {
             if let Some(account) = pending.accounts.get(&address)
                 && let Some(slot) = account.storage.slots.get(&key)
                 && (slot.value.is_changed() || account.storage.wiped)

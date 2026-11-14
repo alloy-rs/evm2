@@ -23,7 +23,7 @@ pub use deferred::{DeferredStorageAccess, DeferredStorageOp};
 #[cfg(feature = "account-ext")]
 pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
-pub(crate) use pending::BalanceReads;
+pub(crate) use pending::{BalanceReads, PendingParallel};
 pub use pending::{PendingState, TxStateChanges};
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
 pub use stream::{
@@ -1077,11 +1077,15 @@ impl<'a> State<'a> {
     /// The remaining transaction scratch (journal, logs, warm sets, transient storage) is left for
     /// [`Self::clear_transaction_state`].
     pub(crate) fn take_pending_state(&mut self) -> PendingState {
-        PendingState {
-            accounts: mem::take(&mut self.accounts),
-            deferred: mem::take(&mut self.inner.deferred),
-            balance_reads: mem::take(&mut self.balance_reads),
-        }
+        let parallel = if self.inner.deferred.is_empty() && self.balance_reads.is_empty() {
+            None
+        } else {
+            Some(Box::new(PendingParallel {
+                deferred: mem::take(&mut self.inner.deferred),
+                balance_reads: mem::take(&mut self.balance_reads),
+            }))
+        };
+        PendingState { accounts: mem::take(&mut self.accounts), parallel }
     }
 
     /// Reattaches a detached [`PendingState`] as the current transaction overlay, replacing it.
@@ -1098,8 +1102,14 @@ impl<'a> State<'a> {
             self.storage_pool.clear_overlay(&mut account.storage);
         }
         self.accounts = pending.accounts;
-        self.inner.deferred = pending.deferred;
-        self.balance_reads = pending.balance_reads;
+        if let Some(parallel) = pending.parallel {
+            let PendingParallel { deferred, balance_reads } = *parallel;
+            self.inner.deferred = deferred;
+            self.balance_reads = balance_reads;
+        } else {
+            self.inner.deferred.clear();
+            self.balance_reads.clear();
+        }
     }
 
     /// Accepts the current transaction's state transition into the accepted overlay.
@@ -1231,7 +1241,7 @@ impl<'a> State<'a> {
     ///
     /// Call it between transactions, on the state the transaction is to commit on.
     pub fn resolve_pending_state(&mut self, pending: &mut PendingState) -> DbResult<()> {
-        if !pending.deferred.is_pending() {
+        if !pending.has_deferred_storage() {
             return Ok(());
         }
         let journal_len = self.inner.journal.len();

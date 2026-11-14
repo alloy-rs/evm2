@@ -200,10 +200,45 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         key: Word,
         skip_cold_load: bool,
     ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
-        if !self.inner.deferred.deltas.is_empty() {
-            return self.into_slot_resolving::<WARM>(key, skip_cold_load);
+        // Blind adds are only pending under parallel execution: keep their handling out of the
+        // sequential path, which only tests for them.
+        if !self.inner.deferred.deltas.is_empty()
+            && let Some(pending) = Self::pending_for_load(
+                self.address,
+                self.storage,
+                self.inner,
+                &key,
+                skip_cold_load,
+            )?
+        {
+            let (slot, is_cold) = self.load_slot::<WARM>(key, false)?;
+            return Ok(slot.resolve_pending_delta::<WARM>(pending, is_cold));
         }
         self.load_slot::<WARM>(key, skip_cold_load)
+    }
+
+    /// Returns the slot's pending blind adds, or [`LoadError::ColdLoadSkipped`] when the load
+    /// must skip a cold slot that has some.
+    #[cold]
+    #[inline(never)]
+    fn pending_for_load(
+        address: &Address,
+        storage: &StorageOverlay,
+        inner: &StateInner<'_>,
+        key: &Word,
+        skip_cold_load: bool,
+    ) -> Result<Option<StorageDelta>, LoadError> {
+        let Some(pending) = inner.deferred.deltas.get(&StorageKey::new(*address, *key)).copied()
+        else {
+            return Ok(None);
+        };
+        let is_warm = pending.warm
+            || storage.slots.get(key).is_some_and(|slot| slot.is_warm)
+            || inner.prewarm_set.is_storage_warm(address, key);
+        if skip_cold_load && !is_warm {
+            return Err(LoadError::ColdLoadSkipped);
+        }
+        Ok(Some(pending))
     }
 
     #[inline(always)]
@@ -312,38 +347,6 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         }
         deltas.get(&StorageKey::new(*self.address, *key)).copied()
     }
-
-    /// Loads a slot as [`Self::into_slot_inner`] does, first applying its pending blind adds to
-    /// the loaded value.
-    #[cold]
-    #[inline(never)]
-    fn into_slot_resolving<const WARM: bool>(
-        self,
-        key: Word,
-        skip_cold_load: bool,
-    ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
-        let Some(pending) = self.pending_delta(&key) else {
-            return self.load_slot::<WARM>(key, skip_cold_load);
-        };
-        if skip_cold_load && !self.is_warm(&key) {
-            return Err(LoadError::ColdLoadSkipped);
-        }
-        let (mut slot, _) = self.load_slot::<false>(key, false)?;
-        let address = *slot.address;
-        slot.inner.deferred.deltas.remove(&StorageKey::new(address, key));
-        slot.inner.push_journal(|| JournalEntry::StorageDeltaResolved {
-            address,
-            key,
-            delta: pending.delta,
-            warm: pending.warm,
-        });
-        if pending.warm {
-            slot.warm();
-        }
-        let is_cold = WARM && slot.warm();
-        slot.set(slot.current().wrapping_add(pending.delta));
-        Ok((slot, is_cold))
-    }
 }
 
 /// A mutable, journaled handle to a single, loaded persistent storage slot.
@@ -451,6 +454,31 @@ impl StorageSlotHandle<'_, '_> {
         let present_value = self.slot.value.current;
         self.set(value);
         (original_value, present_value)
+    }
+
+    /// Applies the slot's pending blind adds, which [`StorageHandle::into_slot_inner`] found
+    /// before loading it, and returns the handle with whether the access was cold: a blind add
+    /// that warmed the slot made it warm.
+    #[cold]
+    #[inline(never)]
+    fn resolve_pending_delta<const WARM: bool>(
+        mut self,
+        pending: StorageDelta,
+        is_cold: bool,
+    ) -> (Self, bool) {
+        let (address, key) = (*self.address, self.key);
+        self.inner.deferred.deltas.remove(&StorageKey::new(address, key));
+        self.inner.push_journal(|| JournalEntry::StorageDeltaResolved {
+            address,
+            key,
+            delta: pending.delta,
+            warm: pending.warm,
+        });
+        if pending.warm {
+            self.warm();
+        }
+        self.set(self.current().wrapping_add(pending.delta));
+        (self, WARM && is_cold && !pending.warm)
     }
 }
 
