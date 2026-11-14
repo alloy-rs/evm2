@@ -124,6 +124,10 @@ const PREVALIDATE_AHEAD: usize = 8;
 /// Times the committer polls for the next result before parking.
 const COMMIT_SPINS: u32 = 1 << 10;
 
+/// How far ahead of the committer idle workers run deferred storage operations to warm the slots
+/// they read in batched commits.
+const WARM_AHEAD: usize = 64;
+
 /// How often a batched commit streams the state its committed prefix changed to the state hook.
 /// Tests stream after every transaction.
 const STREAM_INTERVAL: Duration =
@@ -705,6 +709,9 @@ where
     /// Validates and settles speculative executions in block order against `store` alone,
     /// executing invalid ones again over it, then commits the block's final state to the executor
     /// at once. See [`ParallelCommit::Batched`].
+    ///
+    /// The state hook runs on a streamer thread, which reads the values the committed prefix
+    /// wrote from the store, so the committer only hands it the keys.
     #[expect(clippy::too_many_arguments)]
     fn commit_batched<X, B, F>(
         &mut self,
@@ -722,6 +729,53 @@ where
         B: DynDatabaseRef + Sync + ?Sized,
         F: for<'x> Fn(Box<dyn DynDatabase + 'x>) -> Evm<'x, T>,
     {
+        let Some(hook) = self.state_update_hook.take() else {
+            return self
+                .commit_batched_with(store, queue, txs, results, stats, make_evm, on_commit, None);
+        };
+        std::thread::scope(|scope| {
+            let (sender, batches) = mpsc::channel();
+            let streamer = scope.spawn(move || stream_updates(store, &batches, hook));
+            let committed = self.commit_batched_with(
+                store,
+                queue,
+                txs,
+                results,
+                stats,
+                make_evm,
+                on_commit,
+                Some(&sender),
+            );
+            drop(sender);
+            let (hook, streamed) = match streamer.join() {
+                Ok(joined) => joined,
+                Err(panic) => std::panic::resume_unwind(panic),
+            };
+            self.state_update_hook = Some(hook);
+            committed?;
+            streamed.map_err(map_database_error)
+        })
+    }
+
+    /// Commits as [`Self::commit_batched`], sending the keys each committed prefix wrote to
+    /// `streamer` when the commit streams state.
+    #[expect(clippy::too_many_arguments)]
+    fn commit_batched_with<X, B, F>(
+        &mut self,
+        store: &MvStore<'_, B>,
+        queue: &TxQueue<T::Tx>,
+        txs: impl IntoIterator<Item = X>,
+        results: &Results<Speculative<T>>,
+        stats: &mut ParallelExecutionStats,
+        make_evm: &F,
+        on_commit: &mut impl FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
+        streamer: Option<&mpsc::Sender<StreamBatch>>,
+    ) -> Result<(), BlockExecutionError>
+    where
+        X: Borrow<R::Transaction>,
+        B: DynDatabaseRef + Sync + ?Sized,
+        F: for<'x> Fn(Box<dyn DynDatabase + 'x>) -> Evm<'x, T>,
+    {
         let beneficiary = self.evm.block_env().beneficiary;
         let fee_charge = self.evm.feature(EvmFeatures::FEE_CHARGE);
         let eip161 = self.evm.feature(EvmFeatures::EIP161);
@@ -733,7 +787,7 @@ where
         let mut last_version = 0;
         // Accounts created or whose storage was wiped, as their transactions committed them.
         let mut lifecycle = AddressMap::<Lifecycle>::default();
-        let mut stream = self.state_update_hook.is_some().then(PrefixStream::default);
+        let mut stream = streamer.is_some().then(PrefixStream::default);
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
             let Speculative { worker, outcome, reward, mut reads, mut writes, prevalidated } =
@@ -837,33 +891,31 @@ where
             reads.clear();
             writes.clear();
             results.recycle(worker, Buffers { reads, writes, pending });
-            if let Some(stream) = &mut stream
+            if let (Some(stream), Some(streamer)) = (&mut stream, streamer)
                 && stream.last.elapsed() >= STREAM_INTERVAL
+                && !stream.keys.is_empty()
             {
-                let running = rewarded.as_ref().map(|info| (beneficiary, info.as_ref()));
-                let update =
-                    stream.take(store, version + 1, running).map_err(map_database_error)?;
-                if !update.is_empty() {
-                    emit_state(&mut self.state_update_hook, update);
-                }
+                stream.last = Instant::now();
+                let running = rewarded.as_ref().map(|info| (beneficiary, info.clone()));
+                let keys = core::mem::replace(
+                    &mut stream.keys,
+                    Vec::with_capacity(stream.keys.capacity()),
+                );
+                // The streamer only stops early on an error, which it reports when joined.
+                let _ = streamer.send(StreamBatch { keys, version: version + 1, running });
             }
         }
         if let Some(info) = rewarded.take() {
             store.republish_account(last_version, beneficiary, info.as_ref());
         }
-        let state = store.materialize(&lifecycle).map_err(map_database_error)?;
-        let Some(mut stream) = stream else {
-            self.commit_pending_state(&state);
-            return Ok(());
-        };
-        let update = stream.take(store, last_version + 1, None).map_err(map_database_error)?;
-        if !update.is_empty() {
-            emit_state(&mut self.state_update_hook, update);
+        if let (Some(stream), Some(streamer)) = (&mut stream, streamer) {
+            let keys = core::mem::take(&mut stream.keys);
+            let _ = streamer.send(StreamBatch { keys, version: last_version + 1, running: None });
         }
-        // The hook already received every change: commit without streaming it again.
-        let hook = self.state_update_hook.take();
+        let state = store.materialize(&lifecycle).map_err(map_database_error)?;
+        // The hook, when there is one, receives every change from the streamer.
         self.commit_pending_state(&state);
-        self.state_update_hook = hook;
+        drop_in_background(state);
         Ok(())
     }
 
@@ -1143,6 +1195,119 @@ impl PrefixStream {
     }
 }
 
+/// The keys a batched commit's prefix wrote since its last batch, for the streamer to read at
+/// `version`, where every earlier transaction committed.
+struct StreamBatch {
+    keys: Vec<WriteKey>,
+    version: u32,
+    /// The beneficiary's latest value when the store does not hold it yet.
+    running: Option<(Address, Option<AccountInfo>)>,
+}
+
+/// Streams the state each batch of committed keys reached to `hook`, in order, coalescing the
+/// batches that queued while the previous update was taken. Returns the hook and the first error,
+/// after which it only drains the batches.
+fn stream_updates<B: DynDatabaseRef + Sync + ?Sized>(
+    store: &MvStore<'_, B>,
+    batches: &mpsc::Receiver<StreamBatch>,
+    mut hook: Box<dyn FnMut(StateUpdate) + Send>,
+) -> (Box<dyn FnMut(StateUpdate) + Send>, DbResult<()>) {
+    let mut stream = PrefixStream::default();
+    let mut result = Ok(());
+    while let Ok(mut batch) = batches.recv() {
+        if result.is_err() {
+            continue;
+        }
+        stream.keys.append(&mut batch.keys);
+        while let Ok(mut next) = batches.try_recv() {
+            stream.keys.append(&mut next.keys);
+            batch = next;
+        }
+        let running = batch.running.as_ref().map(|(address, info)| (*address, info.as_ref()));
+        match stream.take(store, batch.version, running) {
+            Ok(update) if !update.is_empty() => hook(update),
+            Ok(_) => {}
+            Err(error) => result = Err(error),
+        }
+    }
+    (hook, result)
+}
+
+/// Drops `value` on a background thread, off the critical path, or here when no thread spawns.
+fn drop_in_background<V: Send + 'static>(value: V) {
+    let _ = std::thread::Builder::new().name("evm2-drop".into()).spawn(move || drop(value));
+}
+
+/// The deferred storage operations an idle worker last ran ahead of the committer, to read the
+/// slots the committer will read into the base database's caches.
+#[derive(Debug, Default)]
+struct DeferredWarmer {
+    /// Index of the next result whose operations to run.
+    next: usize,
+    /// The slots the operations run so far wrote.
+    slots: HashMap<(Address, Word), Word>,
+}
+
+/// Runs the deferred storage operations of the next result ahead of the committer against the
+/// store and the writes of the operations run before it, discarding their writes, so the slots
+/// they read are loaded before the committer runs them. Returns whether it ran a result's.
+fn warm_deferred<T: EvmTypes>(
+    store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
+    results: &Results<Speculative<T>>,
+) -> bool {
+    let Ok(mut warmer) = results.warmer.try_lock() else { return false };
+    let committing = results.committing.load(Ordering::Acquire);
+    if warmer.next <= committing {
+        warmer.next = committing + 1;
+        warmer.slots.clear();
+    }
+    let index = warmer.next;
+    if index >= results.ready_prefix() || index > committing + WARM_AHEAD {
+        return false;
+    }
+    let mut ops = None;
+    if !results.update(index, |speculative| {
+        ops = speculative
+            .outcome
+            .as_ref()
+            .map(|outcome| outcome.pending_state.deferred.ops.clone());
+    }) {
+        return false;
+    }
+    warmer.next = index + 1;
+    let Some(ops) = ops else { return true };
+    let warmer = &mut *warmer;
+    let mut access = WarmAccess { store, version: version(index), slots: &mut warmer.slots };
+    for op in &ops {
+        if op.run_on(&mut access).is_err() {
+            break;
+        }
+    }
+    true
+}
+
+/// A deferred storage operation's view of the store ahead of the committer: the store at its
+/// transaction's version beneath the writes of the operations run before it.
+struct WarmAccess<'m, 's, B: ?Sized> {
+    store: &'m MvStore<'s, B>,
+    version: u32,
+    slots: &'m mut HashMap<(Address, Word), Word>,
+}
+
+impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for WarmAccess<'_, '_, B> {
+    fn sload(&mut self, address: &Address, key: Word) -> DbResult<Word> {
+        if let Some(value) = self.slots.get(&(*address, key)) {
+            return Ok(*value);
+        }
+        self.store.storage(address, &key, self.version + 1)
+    }
+
+    fn sstore(&mut self, address: &Address, key: Word, value: Word) -> DbResult<()> {
+        self.slots.insert((*address, key), value);
+        Ok(())
+    }
+}
+
 /// Executes transactions speculatively until none are left or the committer stops.
 fn run_worker<T, F, H>(
     store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
@@ -1170,6 +1335,7 @@ fn run_worker<T, F, H>(
         // checks the writes logged since.
         if results.batched {
             prevalidate_next(store, queue, results);
+            warm_deferred(store, results);
         }
         let Some(index) = scheduler.next() else { break };
         let evm_tx = queue.get(index);
@@ -1225,7 +1391,9 @@ fn run_worker<T, F, H>(
     let Some(evm) = &mut evm else { return };
     let mut idle = 0;
     while !scheduler.is_stopped() {
-        if results.batched && prevalidate_next(store, queue, results) {
+        if results.batched
+            && (prevalidate_next(store, queue, results) || warm_deferred(store, results))
+        {
             idle = 0;
             continue;
         }
@@ -2273,6 +2441,8 @@ struct Results<S> {
     ready: CachePadded<AtomicUsize>,
     /// Whether the committer commits in batch, so idle workers validate ahead of it.
     batched: bool,
+    /// The deferred storage operations idle workers run ahead of a batched commit.
+    warmer: Mutex<DeferredWarmer>,
 }
 
 impl<S> Results<S> {
@@ -2289,6 +2459,7 @@ impl<S> Results<S> {
             prevalidate: CachePadded(AtomicUsize::new(0)),
             ready: CachePadded(AtomicUsize::new(0)),
             batched,
+            warmer: Mutex::default(),
         }
     }
 
@@ -2355,16 +2526,18 @@ impl<S> Results<S> {
 
     /// Runs `f` on the result at `index` while it holds the result's lock, if the result is
     /// stored, the committer has not taken it and no other worker holds it. The committer waits
-    /// for `f` to finish before it takes the result.
-    fn update(&self, index: usize, f: impl FnOnce(&mut S)) {
+    /// for `f` to finish before it takes the result. Returns `false` when the result is not
+    /// stored yet or another thread holds it.
+    fn update(&self, index: usize, f: impl FnOnce(&mut S)) -> bool {
         let slot = self.slots.get(index);
         if !slot.ready.load(Ordering::Acquire) {
-            return;
+            return false;
         }
-        let Ok(mut value) = slot.value.try_lock() else { return };
+        let Ok(mut value) = slot.value.try_lock() else { return false };
         if let Some(result) = value.as_mut() {
             f(result);
         }
+        true
     }
 
     /// Returns buffers for `worker`, with empty reads and writes, from its `stash`, which it
