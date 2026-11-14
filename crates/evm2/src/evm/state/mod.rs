@@ -1190,6 +1190,13 @@ impl<'a> State<'a> {
         self.defer_storage_resolution = defer;
     }
 
+    /// Returns whether a transaction's end leaves its deferred storage unresolved. See
+    /// [`Self::set_defer_storage_resolution`].
+    #[inline]
+    pub const fn defers_storage_resolution(&self) -> bool {
+        self.defer_storage_resolution
+    }
+
     /// Sets whether to record how each transaction depends on account balances: the accounts
     /// whose exact balance it read, and for the others the lowest starting balance its checks
     /// need. Parallel block execution uses it to apply a transaction's balance changes as deltas

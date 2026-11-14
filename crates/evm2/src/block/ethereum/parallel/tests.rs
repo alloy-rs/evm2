@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     Precompiles, SpecId,
     block::{
-        BlockExecutionOutput, StateUpdate,
+        BlockExecutionOutput, BlockValidationError, StateUpdate,
         ethereum::{EthBlockExecutionCtx, EthBlockRules, EthReceiptBuilder},
     },
     env::BlockEnvExt,
@@ -212,6 +212,7 @@ fn parallel_with(
             NonZeroUsize::new(threads).unwrap(),
             hints,
             |_, _| {},
+            |_, _| Ok(()),
         )
         .unwrap();
     let output = executor.finish().unwrap();
@@ -570,6 +571,7 @@ fn public_mix_benchmark() {
                             NonZeroUsize::new(workers).unwrap(),
                             hints,
                             |_, _| {},
+                            |_, _| Ok(()),
                         )
                         .unwrap();
                     executor.finish().unwrap();
@@ -950,4 +952,92 @@ fn balance_reads_of_credited_accounts_match_sequential() {
     }
     // Readers of the balance conflict with the credits before them.
     assert!(reexecuted > 0);
+}
+
+#[test]
+fn commit_hook_sees_every_transaction_in_order() {
+    let txs = random_block(7, 48);
+    for commit in [ParallelCommit::InOrder, ParallelCommit::Batched] {
+        for threads in [1, 4] {
+            let database = database(None);
+            let snapshot = Snapshot(database.cache.clone());
+            let updates = Updates::default();
+            let mut executor = executor(database, &updates);
+            executor.set_parallel_commit(commit);
+            let mut seen = Vec::new();
+            executor
+                .execute_transactions_parallel(
+                    &txs,
+                    &snapshot,
+                    |database| evm(database),
+                    NonZeroUsize::new(threads).unwrap(),
+                    None,
+                    |_, _| {},
+                    |index, result| {
+                        seen.push((index, result.tx_gas_used()));
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            let gas = executor
+                .receipts
+                .iter()
+                .scan(0, |previous, receipt| {
+                    let cumulative = receipt.cumulative_gas_used();
+                    let used = cumulative - *previous;
+                    *previous = cumulative;
+                    Some(used)
+                })
+                .enumerate()
+                .collect::<Vec<_>>();
+            assert_eq!(seen, gas, "{commit:?} with {threads} threads");
+        }
+    }
+}
+
+#[test]
+fn rejected_batched_commit_leaves_the_executor_unchanged() {
+    let txs = random_block(11, 48);
+    let expected = sequential(database(None), &txs);
+    let chain =
+        ParallelHints::from_dependencies((0..txs.len() as u32).map(|index| index.checked_sub(1)));
+    // Batched commit runs, and restores, on one thread and with serial hints too.
+    for (threads, hints) in [(4, None), (1, None), (4, Some(&chain))] {
+        for reject in [0, 30, txs.len() - 1] {
+            let database = database(None);
+            let snapshot = Snapshot(database.cache.clone());
+            let updates = Updates::default();
+            let mut executor = executor(database, &updates);
+            let streamed = updates.lock().unwrap().len();
+            executor.set_parallel_commit(ParallelCommit::Batched);
+            let rejected = executor.execute_transactions_parallel(
+                &txs,
+                &snapshot,
+                |database| evm(database),
+                NonZeroUsize::new(threads).unwrap(),
+                hints,
+                |_, _| {},
+                |index, _| {
+                    if index == reject {
+                        Err(BlockValidationError::msg("rejected").into())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(rejected.is_err());
+            assert!(executor.receipts.is_empty());
+            assert_eq!(executor.cumulative_gas_used, 0);
+            assert_eq!(executor.block_regular_gas_used, 0);
+            assert_eq!(executor.block_state_gas_used, 0);
+            assert_eq!(executor.blob_gas_used, 0);
+            assert_eq!(updates.lock().unwrap().len(), streamed, "rejected block streamed state");
+            // The block executes again from the start.
+            for tx in &txs {
+                executor.execute_transaction(tx).unwrap();
+            }
+            assert_eq!(executor.finish().unwrap(), expected.output);
+            assert_eq!(normalize(&updates), expected.updates);
+        }
+    }
 }

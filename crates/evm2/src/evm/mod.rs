@@ -1178,6 +1178,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.state.set_defer_storage_resolution(defer);
     }
 
+    /// Returns whether a transaction's end leaves its deferred storage unresolved. See
+    /// [`Self::set_defer_storage_resolution`].
+    #[inline]
+    pub const fn defers_storage_resolution(&self) -> bool {
+        self.state.defers_storage_resolution()
+    }
+
     /// Sets whether the state records how each transaction depends on account balances. See
     /// [`State::set_track_balance_reads`].
     #[cfg(all(feature = "block", feature = "std"))]

@@ -661,6 +661,7 @@ fn execute_block<'a>(
                 threads,
                 None,
                 |_, _| {},
+                |_, _| Ok(()),
             );
             if let Err(err) = parallel_result {
                 if should_fail {

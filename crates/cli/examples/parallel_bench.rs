@@ -466,6 +466,7 @@ fn parallel(
             NonZeroUsize::new(threads).unwrap(),
             hints,
             |_, _| {},
+            |_, _| Ok(()),
         )
         .unwrap();
     executor.finish().unwrap();

@@ -54,7 +54,7 @@ use super::{
     execution::{execute_transaction_without_commit, map_transaction_error},
 };
 use crate::{
-    Evm, EvmFeatures, EvmTypes, TxResultWithState, TxStateChanges,
+    Evm, EvmFeatures, EvmTypes, TxResult, TxResultWithState, TxStateChanges,
     block::{BlockExecutionError, BlockExecutor, ExecutableTx, ReceiptBuilder, map_database_error},
     bytecode::Bytecode,
     evm::{
@@ -275,6 +275,13 @@ where
         self.parallel_commit = commit;
     }
 
+    /// Returns whether [`Self::execute_transactions_parallel`] commits in one batch: with
+    /// [`ParallelCommit::Batched`] and no block access list builder, which needs in-order commit.
+    pub const fn commits_batched(&self) -> bool {
+        matches!(self.parallel_commit, ParallelCommit::Batched)
+            && !self.block_access_list_builder_enabled()
+    }
+
     /// Executes and commits `transactions` in parallel, with exactly the result of executing
     /// them one by one with [`BlockExecutor::execute_transaction`].
     ///
@@ -293,11 +300,21 @@ where
     /// - `on_speculative` observes each speculative execution's changes, by transaction index, as
     ///   soon as a worker finishes it and before it is validated: hints for prefetching, not
     ///   committed state. Committed changes stream through the executor's state hook.
+    /// - `on_commit` sees each transaction's final result, by index and in block order, before it
+    ///   commits, and rejects the block by returning an error: for checks a wrapping executor runs
+    ///   in [`BlockExecutor::commit_transaction`], such as block section or lane budgets.
+    ///
+    /// When [`Self::commits_batched`], a failure leaves the executor's receipts, gas counters and
+    /// state as they were before the call, so the caller can execute the block again one
+    /// transaction at a time, for the exact error sequential execution reports; batched commit then
+    /// runs even on one thread or with serial hints. Otherwise a failure leaves the transactions
+    /// before it committed, and the executor must be discarded.
     ///
     /// Call it after [`BlockExecutor::apply_pre_execution_changes`] and before any transaction of
     /// the block. Do not attach a block access list for reads: a block with one executes in
     /// parallel from it directly (see the `bal_parallel` example).
-    pub fn execute_transactions_parallel<'s, Tx, B, F, H>(
+    #[expect(clippy::too_many_arguments)]
+    pub fn execute_transactions_parallel<'s, Tx, B, F, H, C>(
         &mut self,
         transactions: impl IntoIterator<Item = Tx>,
         base: &'s B,
@@ -305,21 +322,25 @@ where
         threads: NonZeroUsize,
         hints: Option<&ParallelHints>,
         on_speculative: H,
+        mut on_commit: C,
     ) -> Result<ParallelExecutionOutput, BlockExecutionError>
     where
         Tx: ExecutableTx<Self>,
         B: DynDatabaseRef + Sync + ?Sized,
         F: for<'x> Fn(Box<dyn DynDatabase + 'x>) -> Evm<'x, T> + Sync,
         H: Fn(usize, TxStateChanges<'_>) + Sync,
+        C: FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
     {
         let (evm_txs, txs): (Vec<_>, Vec<_>) =
             transactions.into_iter().map(ExecutableTx::into_parts).unzip();
         let mut stats = ParallelExecutionStats { transactions: txs.len(), ..Default::default() };
         let mut dependencies = DependencyTracker::new(self.evm.block_env().beneficiary);
+        let batched = self.commits_batched();
         let serial = hints.is_some_and(|hints| hints.critical_path() * 2 > txs.len());
-        if threads.get() == 1 || txs.len() < 2 || serial {
+        if txs.is_empty() || (!batched && (threads.get() == 1 || txs.len() < 2 || serial)) {
             for (index, (evm_tx, tx)) in evm_txs.into_iter().zip(txs).enumerate() {
                 let output = self.execute_transaction_without_commit((evm_tx, tx))?;
+                on_commit(index, &output.result().result)?;
                 dependencies.record(index, &output.result().pending_state);
                 self.commit_transaction(output)?;
             }
@@ -347,10 +368,9 @@ where
         };
         let store = MvStore::new(self.evm.overlay_db().cache.clone(), base);
         let workers = threads.get().min(txs.len());
-        let batched = self.parallel_commit == ParallelCommit::Batched
-            && !self.block_access_list_builder_enabled();
         let results = Results::new(workers, batched);
-        std::thread::scope(|scope| {
+        let totals = batched.then(|| self.totals());
+        let output = std::thread::scope(|scope| {
             for worker in 0..workers {
                 let (store, scheduler, queue, results) = (&store, &scheduler, &queue, &results);
                 let (make_evm, on_speculative) = (&make_evm, &on_speculative);
@@ -359,13 +379,35 @@ where
                 });
             }
             let result = if batched {
-                self.commit_batched(&store, &queue, txs, &results, &mut stats, &make_evm)
+                self.commit_batched(
+                    &store,
+                    &queue,
+                    txs,
+                    &results,
+                    &mut stats,
+                    &make_evm,
+                    &mut on_commit,
+                )
             } else {
-                self.commit_in_order(&store, &queue, txs, &results, &mut stats, &mut dependencies)
+                self.commit_in_order(
+                    &store,
+                    &queue,
+                    txs,
+                    &results,
+                    &mut stats,
+                    &mut dependencies,
+                    &mut on_commit,
+                )
             };
             scheduler.abort();
             result
-        })?;
+        });
+        if let (Err(_), Some(totals)) = (&output, totals) {
+            // Nothing was committed: forget the receipts and gas of the transactions before the
+            // failure.
+            self.restore_totals(totals);
+        }
+        output?;
         Ok(ParallelExecutionOutput { stats, dependencies: dependencies.finish() })
     }
 
@@ -451,6 +493,7 @@ where
                 &results,
                 &mut stats,
                 &mut dependencies,
+                &mut |_, _| Ok(()),
             );
             scheduler.abort();
             result
@@ -462,6 +505,7 @@ where
     ///
     /// `txs` yields the consensus transactions in block order; the transaction at an index is in
     /// `queue` before `txs` yields it.
+    #[expect(clippy::too_many_arguments)]
     fn commit_in_order<X: Borrow<R::Transaction>>(
         &mut self,
         store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
@@ -470,6 +514,7 @@ where
         results: &Results<Speculative<T>>,
         stats: &mut ParallelExecutionStats,
         dependencies: &mut DependencyTracker,
+        on_commit: &mut impl FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
     ) -> Result<(), BlockExecutionError> {
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
@@ -509,6 +554,7 @@ where
                         if !pending_state.deferred.resolved.is_empty() {
                             store.publish_resolved(version, &pending_state);
                         }
+                        on_commit(index, &result)?;
                         dependencies.record(index, &pending_state);
                         self.commit_pending_state(&pending_state);
                         self.record_receipt(tx.tx_type(), blob_gas_used, result);
@@ -530,6 +576,7 @@ where
                             version,
                             writes.iter().filter(|write| !committed.contains(*write)),
                         );
+                        on_commit(index, &result.result)?;
                         dependencies.record(index, &result.pending_state);
                         self.commit_transaction(EthTransactionResultWithState::new(
                             result,
@@ -594,6 +641,7 @@ where
     /// Validates and settles speculative executions in block order against `store` alone,
     /// executing invalid ones again over it, then commits the block's final state to the executor
     /// at once. See [`ParallelCommit::Batched`].
+    #[expect(clippy::too_many_arguments)]
     fn commit_batched<X, B, F>(
         &mut self,
         store: &MvStore<'_, B>,
@@ -602,6 +650,7 @@ where
         results: &Results<Speculative<T>>,
         stats: &mut ParallelExecutionStats,
         make_evm: &F,
+        on_commit: &mut impl FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
     ) -> Result<(), BlockExecutionError>
     where
         X: Borrow<R::Transaction>,
@@ -660,6 +709,7 @@ where
                         }
                     }
                     run_deferred_ops(store, version, &mut pending_state)?;
+                    on_commit(index, &result)?;
                     record_lifecycle(&mut lifecycle, &pending_state);
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
                     pending_state
@@ -697,6 +747,7 @@ where
                     );
                     store.log_writes(version, committed.into_iter().chain(writes.iter().copied()));
                     run_deferred_ops(store, version, &mut pending_state)?;
+                    on_commit(index, &result)?;
                     record_lifecycle(&mut lifecycle, &pending_state);
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
                     PendingState::default()
@@ -715,6 +766,36 @@ where
         self.commit_pending_state(&state);
         Ok(())
     }
+
+    /// Returns the receipt count and gas counters, to restore with [`Self::restore_totals`].
+    const fn totals(&self) -> Totals {
+        Totals {
+            receipts: self.receipts.len(),
+            cumulative_gas_used: self.cumulative_gas_used,
+            block_regular_gas_used: self.block_regular_gas_used,
+            block_state_gas_used: self.block_state_gas_used,
+            blob_gas_used: self.blob_gas_used,
+        }
+    }
+
+    /// Drops the receipts recorded since `totals` and restores the gas counters.
+    fn restore_totals(&mut self, totals: Totals) {
+        self.receipts.truncate(totals.receipts);
+        self.cumulative_gas_used = totals.cumulative_gas_used;
+        self.block_regular_gas_used = totals.block_regular_gas_used;
+        self.block_state_gas_used = totals.block_state_gas_used;
+        self.blob_gas_used = totals.blob_gas_used;
+    }
+}
+
+/// The receipt count and gas counters of an executor, from before a batched commit.
+#[derive(Clone, Copy, Debug)]
+struct Totals {
+    receipts: usize,
+    cumulative_gas_used: u64,
+    block_regular_gas_used: u64,
+    block_state_gas_used: u64,
+    blob_gas_used: u64,
 }
 
 /// Whether a block's committed transactions created an account or wiped its storage.
