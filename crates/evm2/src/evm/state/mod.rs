@@ -15,6 +15,8 @@ mod tracked;
 pub(crate) use account::Account;
 pub use account::{AccountFlags, AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
+#[cfg(all(feature = "std", feature = "block"))]
+pub(crate) use deferred::DeferredStorageStore;
 pub(crate) use deferred::{DeferredStorage, StorageDelta};
 pub use deferred::{DeferredStorageAccess, DeferredStorageOp};
 #[cfg(feature = "account-ext")]

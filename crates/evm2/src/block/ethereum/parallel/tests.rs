@@ -190,9 +190,20 @@ fn parallel(
     threads: usize,
     hints: Option<&ParallelHints>,
 ) -> Run {
+    parallel_with(database, txs, threads, hints, ParallelCommit::InOrder)
+}
+
+fn parallel_with(
+    database: InMemoryDB,
+    txs: &[Tx],
+    threads: usize,
+    hints: Option<&ParallelHints>,
+    commit: ParallelCommit,
+) -> Run {
     let snapshot = Snapshot(database.cache.clone());
     let updates = Updates::default();
     let mut executor = executor(database, &updates);
+    executor.set_parallel_commit(commit);
     let ParallelExecutionOutput { stats, dependencies } = executor
         .execute_transactions_parallel(
             txs,
@@ -222,6 +233,19 @@ fn assert_matches_sequential_with(
     hints: Option<&ParallelHints>,
 ) -> Run {
     let expected = sequential(database.clone(), txs);
+    let batched = parallel_with(database.clone(), txs, threads, hints, ParallelCommit::Batched);
+    assert_eq!(batched.output.result, expected.output.result, "batched receipts differ");
+    for (address, account) in expected.output.state.state() {
+        let other = batched.output.state.state().get(address);
+        assert_eq!(other, Some(account), "batched account {address} differs");
+    }
+    for (address, account) in batched.output.state.state() {
+        let other = expected.output.state.state().get(address);
+        assert_eq!(other, Some(account), "batched account {address} differs");
+    }
+    assert_eq!(batched.output, expected.output, "batched block output differs");
+    assert_eq!(batched.stats.transactions, txs.len());
+    assert_eq!(batched.stats.speculative + batched.stats.reexecuted, txs.len());
     let actual = parallel(database, txs, threads, hints);
     assert_eq!(actual.output, expected.output, "block output differs");
     assert_eq!(actual.updates, expected.updates, "streamed state updates differ");

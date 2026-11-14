@@ -67,8 +67,31 @@ impl DeferredStorageOp {
 
     /// Runs the operation against `state`.
     pub(crate) fn run(&self, state: &mut State<'_>) -> DbResult<()> {
-        (self.0)(&mut DeferredStorageAccess { state })
+        (self.0)(&mut DeferredStorageAccess { backend: Backend::State(state) })
     }
+
+    /// Runs the operation against `store`.
+    #[cfg(all(feature = "std", feature = "block"))]
+    pub(crate) fn run_on(&self, store: &mut dyn DeferredStorageStore) -> DbResult<()> {
+        (self.0)(&mut DeferredStorageAccess { backend: Backend::Store(store) })
+    }
+}
+
+/// Storage a [`DeferredStorageOp`] can run against instead of a [`State`].
+#[cfg(all(feature = "std", feature = "block"))]
+pub(crate) trait DeferredStorageStore {
+    /// Reads a storage slot.
+    fn sload(&mut self, address: &Address, key: Word) -> DbResult<Word>;
+
+    /// Writes a storage slot.
+    fn sstore(&mut self, address: &Address, key: Word, value: Word) -> DbResult<()>;
+}
+
+/// What a running [`DeferredStorageOp`] reads and writes.
+enum Backend<'s, 'a> {
+    State(&'s mut State<'a>),
+    #[cfg(all(feature = "std", feature = "block"))]
+    Store(&'s mut dyn DeferredStorageStore),
 }
 
 impl fmt::Debug for DeferredStorageOp {
@@ -89,7 +112,7 @@ impl Eq for DeferredStorageOp {}
 /// Storage access of a running [`DeferredStorageOp`]: reads and writes persistent storage slots
 /// of the state the transaction leaves, without gas.
 pub struct DeferredStorageAccess<'s, 'a> {
-    state: &'s mut State<'a>,
+    backend: Backend<'s, 'a>,
 }
 
 impl fmt::Debug for DeferredStorageAccess<'_, '_> {
@@ -101,22 +124,34 @@ impl fmt::Debug for DeferredStorageAccess<'_, '_> {
 impl DeferredStorageAccess<'_, '_> {
     /// Reads a storage slot.
     pub fn sload(&mut self, address: &Address, key: Word) -> DbResult<Word> {
-        self.note(address, key);
-        Ok(self.state.storage_slot(address, key)?.current())
+        match &mut self.backend {
+            Backend::State(state) => {
+                note(state, address, key);
+                Ok(state.storage_slot(address, key)?.current())
+            }
+            #[cfg(all(feature = "std", feature = "block"))]
+            Backend::Store(store) => store.sload(address, key),
+        }
     }
 
     /// Writes a storage slot.
     pub fn sstore(&mut self, address: &Address, key: Word, value: Word) -> DbResult<()> {
-        self.note(address, key);
-        self.state.storage_slot(address, key)?.set(value);
-        Ok(())
-    }
-
-    /// Records a slot the transaction's execution did not load.
-    fn note(&mut self, address: &Address, key: Word) {
-        if !self.state.is_storage_loaded(address, &key) {
-            self.state.inner.deferred.resolved.push((*address, key));
+        match &mut self.backend {
+            Backend::State(state) => {
+                note(state, address, key);
+                state.storage_slot(address, key)?.set(value);
+                Ok(())
+            }
+            #[cfg(all(feature = "std", feature = "block"))]
+            Backend::Store(store) => store.sstore(address, key, value),
         }
+    }
+}
+
+/// Records a slot the transaction's execution did not load.
+fn note(state: &mut State<'_>, address: &Address, key: Word) {
+    if !state.is_storage_loaded(address, &key) {
+        state.inner.deferred.resolved.push((*address, key));
     }
 }
 

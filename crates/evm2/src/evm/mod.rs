@@ -176,6 +176,8 @@ pub use tx::{ExecutedTx, TxResult, TxResultExt, TxResultWithState};
 mod state;
 #[cfg(feature = "account-ext")]
 pub use state::AccountExtension;
+#[cfg(all(feature = "std", feature = "block"))]
+pub(crate) use state::DeferredStorageStore;
 pub use state::{
     AccountChangeRef, AccountChanges, AccountFlags, AccountHandle, AccountInfo,
     BlockStateAccumulator, DeferredStorageAccess, DeferredStorageOp, JournalEntry, NoopChangeSink,
