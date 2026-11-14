@@ -191,6 +191,7 @@ where
     /// Total blob gas used.
     pub blob_gas_used: u64,
     bal_index_offset: u64,
+    #[cfg(feature = "std")]
     parallel_commit: parallel::ParallelCommit,
 }
 
@@ -227,6 +228,7 @@ where
             separate_block_gas,
             blob_gas_used: 0,
             bal_index_offset: 0,
+            #[cfg(feature = "std")]
             parallel_commit: parallel::ParallelCommit::default(),
         }
     }
