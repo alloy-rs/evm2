@@ -36,10 +36,20 @@ impl DeferredStorage {
         !self.deltas.is_empty() || !self.ops.is_empty()
     }
 
+    #[inline]
     pub(crate) fn clear(&mut self) {
+        if self.is_empty() {
+            return;
+        }
         self.deltas.clear();
         self.ops.clear();
         self.resolved.clear();
+    }
+
+    /// Returns whether nothing is pending or recorded.
+    #[inline]
+    pub(crate) fn is_empty(&self) -> bool {
+        !self.is_pending() && self.resolved.is_empty()
     }
 }
 
@@ -209,7 +219,7 @@ mod tests {
         let (expected, actual) = (expected.take_pending_state(), actual.take_pending_state());
         assert_eq!(actual.accounts, expected.accounts);
         assert!(!actual.has_deferred_storage());
-        let mut resolved = actual.deferred.resolved;
+        let mut resolved = actual.deferred().unwrap().resolved.clone();
         resolved.sort_unstable();
         assert_eq!(resolved, [(ADDRESS, Word::ONE), (ADDRESS, Word::from(2))]);
     }
@@ -293,7 +303,10 @@ mod tests {
         let slots = &pending.accounts[&ADDRESS].storage.slots;
         assert_eq!(slots[&Word::ONE].value, Tracked::from_parts(Word::from(20), Word::from(25)));
         assert_eq!(slots[&pointer].value, Tracked::from_parts(Word::from(7), Word::from(8)));
-        assert_eq!(pending.deferred.resolved, [(ADDRESS, Word::ONE), (ADDRESS, pointer)]);
+        assert_eq!(
+            pending.deferred().unwrap().resolved,
+            [(ADDRESS, Word::ONE), (ADDRESS, pointer)]
+        );
         assert!(committed.journal().is_empty());
     }
 

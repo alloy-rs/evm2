@@ -5,6 +5,7 @@ use super::{
     StateChangeSource, StorageSlot, Tracked,
 };
 use crate::interpreter::Word;
+use alloc::boxed::Box;
 use alloy_primitives::{
     Address,
     map::{AddressMap, AddressSet},
@@ -32,6 +33,14 @@ pub struct PendingState {
     /// Accounts loaded by the transaction: transaction-boundary original info, present info, and
     /// account-lifetime flags.
     pub(crate) accounts: AddressMap<Account>,
+    /// Parallel execution's per-transaction metadata, boxed and only when non-empty, so that the
+    /// pending state sequential execution moves around stays small.
+    pub(crate) parallel: Option<Box<PendingParallel>>,
+}
+
+/// The parts of a [`PendingState`] only parallel execution fills.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PendingParallel {
     /// Storage effects deferred to the transaction's end: left unresolved by an EVM that defers
     /// their resolution (see
     /// [`State::set_defer_storage_resolution`](super::State::set_defer_storage_resolution)),
@@ -124,7 +133,19 @@ impl PendingState {
     /// before it commits.
     #[inline]
     pub fn has_deferred_storage(&self) -> bool {
-        self.deferred.is_pending()
+        self.deferred().is_some_and(DeferredStorage::is_pending)
+    }
+
+    /// Returns the storage effects the transaction deferred, if any.
+    #[inline]
+    pub(crate) fn deferred(&self) -> Option<&DeferredStorage> {
+        self.parallel.as_deref().map(|parallel| &parallel.deferred)
+    }
+
+    /// Returns how the transaction depended on account balances, if tracked.
+    #[inline]
+    pub(crate) fn balance_reads(&self) -> Option<&BalanceReads> {
+        self.parallel.as_deref().map(|parallel| &parallel.balance_reads)
     }
 }
 
@@ -274,8 +295,17 @@ pub(crate) struct BalanceReads {
 }
 
 impl BalanceReads {
+    #[inline]
     pub(crate) fn clear(&mut self) {
+        if self.is_empty() {
+            return;
+        }
         self.observed.clear();
         self.floors.clear();
+    }
+
+    #[inline]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.observed.is_empty() && self.floors.is_empty()
     }
 }
