@@ -1794,6 +1794,12 @@ type AccountShard = RwLock<AddressMap<Versions<Option<AccountInfo>>>>;
 /// One lock shard of storage slot versions.
 type StorageShard = RwLock<HashMap<(Address, Word), Versions<SlotWrite>>>;
 
+/// One lock shard of accounts read from the base database.
+type BaseAccountShard = RwLock<AddressMap<Option<AccountInfo>>>;
+
+/// One lock shard of storage slots read from the base database.
+type BaseStorageShard = RwLock<HashMap<(Address, Word), Word>>;
+
 /// A transaction's write to a storage slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlotWrite {
@@ -1807,9 +1813,10 @@ enum SlotWrite {
 ///
 /// Transaction `i` publishes its writes at version `i + 1`. Reading at version `v` returns the
 /// latest write below `v`, then the state before the first transaction: the executor's overlay at
-/// the start (pre-execution changes), then the base database. A storage wipe at a version shadows
-/// every slot write of that account below it, as in [`CacheDB`](crate::evm::CacheDB). A slot
-/// reads as its latest value below `v` plus every blind-add delta published above that value.
+/// the start (pre-execution changes), then the base database, which it reads once per account and
+/// slot: executions, validations and the commit read it many times. A storage wipe at a version
+/// shadows every slot write of that account below it, as in [`CacheDB`](crate::evm::CacheDB). A
+/// slot reads as its latest value below `v` plus every blind-add delta published above that value.
 struct MvStore<'s, B: ?Sized> {
     /// Executor overlay before the first transaction.
     initial: Cache,
@@ -1817,6 +1824,10 @@ struct MvStore<'s, B: ?Sized> {
     base: &'s B,
     accounts: Box<[CachePadded<AccountShard>]>,
     storage: Box<[CachePadded<StorageShard>]>,
+    /// Accounts read from the base database.
+    base_accounts: Box<[CachePadded<BaseAccountShard>]>,
+    /// Storage slots read from the base database.
+    base_storage: Box<[CachePadded<BaseStorageShard>]>,
     wipes: RwLock<AddressMap<BTreeSet<u32>>>,
     has_wipes: AtomicBool,
     contracts: RwLock<B256Map<Bytecode>>,
@@ -1833,6 +1844,8 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             base,
             accounts: (0..SHARDS).map(|_| CachePadded::default()).collect(),
             storage: (0..SHARDS).map(|_| CachePadded::default()).collect(),
+            base_accounts: (0..SHARDS).map(|_| CachePadded::default()).collect(),
+            base_storage: (0..SHARDS).map(|_| CachePadded::default()).collect(),
             wipes: RwLock::default(),
             has_wipes: AtomicBool::new(false),
             contracts: RwLock::default(),
@@ -1880,8 +1893,19 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     fn account_initial(&self, address: &Address) -> DbResult<Option<AccountInfo>> {
         match self.initial.accounts.get(address) {
             Some(info) => Ok(info.clone()),
-            None => self.base.get_account(address),
+            None => self.base_account(address),
         }
+    }
+
+    /// Returns an account of the base database, reading it from the database only the first time.
+    fn base_account(&self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        let shard = &self.base_accounts[address[19] as usize % SHARDS];
+        if let Some(info) = shard.read().expect("lock poisoned").get(address) {
+            return Ok(info.clone());
+        }
+        let info = self.base.get_account(address)?;
+        shard.write().expect("lock poisoned").entry(*address).or_insert_with(|| info.clone());
+        Ok(info)
     }
 
     /// Reads an account at `version`.
@@ -1942,7 +1966,19 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         if let Some(None) = self.initial.accounts.get(address) {
             return Ok(Word::ZERO);
         }
-        self.base.get_storage(address, key)
+        self.base_slot(address, key)
+    }
+
+    /// Returns a slot of the base database, reading it from the database only the first time.
+    fn base_slot(&self, address: &Address, key: &Word) -> DbResult<Word> {
+        let shard =
+            &self.base_storage[(address[19] as usize ^ key.as_limbs()[0] as usize) % SHARDS];
+        if let Some(value) = shard.read().expect("lock poisoned").get(&(*address, *key)) {
+            return Ok(*value);
+        }
+        let value = self.base.get_storage(address, key)?;
+        shard.write().expect("lock poisoned").insert((*address, *key), value);
+        Ok(value)
     }
 
     /// Reads bytecode by hash: deployed in this block, before it, or in the base database.

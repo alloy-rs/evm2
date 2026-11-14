@@ -1104,3 +1104,64 @@ fn rejected_batched_commit_leaves_the_executor_unchanged() {
         }
     }
 }
+
+/// Counts the reads of each account and slot of the pre-block state.
+struct CountingSnapshot {
+    snapshot: Snapshot,
+    accounts: Mutex<AddressMap<usize>>,
+    storage: Mutex<HashMap<(Address, Word), usize>>,
+}
+
+impl DynDatabaseRef for CountingSnapshot {
+    fn get_account(&self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        *self.accounts.lock().unwrap().entry(*address).or_default() += 1;
+        self.snapshot.get_account(address)
+    }
+
+    fn get_code_by_hash(&self, code_hash: &B256) -> DbResult<Bytecode> {
+        self.snapshot.get_code_by_hash(code_hash)
+    }
+
+    fn get_storage(&self, address: &Address, key: &Word) -> DbResult<Word> {
+        *self.storage.lock().unwrap().entry((*address, *key)).or_default() += 1;
+        self.snapshot.get_storage(address, key)
+    }
+
+    fn get_block_hash(&self, number: &Word) -> DbResult<B256> {
+        self.snapshot.get_block_hash(number)
+    }
+}
+
+#[test]
+fn base_database_is_read_once_per_key() {
+    let txs = random_block(7, 96);
+    for commit in [ParallelCommit::Batched, ParallelCommit::InOrder] {
+        let database = database(None);
+        let expected = sequential(database.clone(), &txs);
+        let snapshot = CountingSnapshot {
+            snapshot: Snapshot(database.cache.clone()),
+            accounts: Mutex::default(),
+            storage: Mutex::default(),
+        };
+        let updates = Updates::default();
+        let mut executor = executor(database, &updates);
+        executor.set_parallel_commit(commit);
+        executor
+            .execute_transactions_parallel(
+                &txs,
+                &snapshot,
+                |database| evm(database),
+                NonZeroUsize::new(4).unwrap(),
+                None,
+                |_, _| {},
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(executor.finish().unwrap(), expected.output);
+        let accounts = snapshot.accounts.into_inner().unwrap();
+        let storage = snapshot.storage.into_inner().unwrap();
+        assert!(!accounts.is_empty());
+        assert!(accounts.values().all(|&reads| reads == 1), "{accounts:?}");
+        assert!(storage.values().all(|&reads| reads == 1), "{storage:?}");
+    }
+}
