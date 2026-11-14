@@ -731,7 +731,7 @@ where
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
                     if let Some(stream) = &mut stream {
                         stream.keys.extend(writes.iter().copied());
-                        if fee_charge {
+                        if fee_charge && !reward.is_zero() {
                             stream.keys.push(WriteKey::Account(beneficiary));
                         }
                     }
@@ -742,6 +742,9 @@ where
                     // It may read the beneficiary: publish the rewards credited since.
                     if let Some(info) = rewarded.take() {
                         store.republish_account(version - 1, beneficiary, info.as_ref());
+                        if let Some(stream) = &mut stream {
+                            stream.keys.push(WriteKey::Account(beneficiary));
+                        }
                     }
                     let evm = evm.get_or_insert_with(|| {
                         let view = TxView { store, version: &view_version, reads: &view_reads };
@@ -770,7 +773,6 @@ where
                     );
                     if let Some(stream) = &mut stream {
                         stream.keys.extend(committed.iter().copied());
-                        stream.keys.push(WriteKey::Account(beneficiary));
                     }
                     store.log_writes(version, committed.into_iter().chain(writes.iter().copied()));
                     run_deferred_ops(store, version, &mut pending_state, stream.as_mut())?;
@@ -1061,6 +1063,9 @@ impl PrefixStream {
                 None if account_written => store.account_initial(&address)?,
                 None => current.clone(),
             };
+            if keys.is_empty() && original == current {
+                continue;
+            }
             if account_written {
                 self.accounts.insert(address, current.clone());
             }
