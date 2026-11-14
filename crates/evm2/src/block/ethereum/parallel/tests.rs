@@ -245,6 +245,7 @@ fn assert_matches_sequential_with(
         assert_eq!(other, Some(account), "batched account {address} differs");
     }
     assert_eq!(batched.output, expected.output, "batched block output differs");
+    assert_streams_final_state(&batched.updates, &batched.output);
     assert_eq!(batched.stats.transactions, txs.len());
     assert_eq!(batched.stats.speculative + batched.stats.reexecuted, txs.len());
     let actual = parallel(database, txs, threads, hints);
@@ -254,6 +255,63 @@ fn assert_matches_sequential_with(
     assert_eq!(actual.stats.speculative + actual.stats.reexecuted, txs.len());
     assert_eq!(actual.dependencies.dependencies().len(), txs.len());
     actual
+}
+
+/// Applies streamed updates in order, as a state-root task does, and checks that they reach the
+/// block's final state: every changed account and slot at its final value, and every other one
+/// streamed back at its value before the block.
+fn assert_streams_final_state(
+    updates: &[StateUpdate],
+    output: &BlockExecutionOutput<ReceiptEnvelope>,
+) {
+    let no_code = |info: &Option<AccountInfo>| info.as_ref().map(AccountInfo::clone_no_code);
+    // The value first streamed as original, and the value last streamed.
+    let mut accounts = AddressMap::<(Option<AccountInfo>, Option<AccountInfo>)>::default();
+    let mut slots = HashMap::<(Address, U256), (U256, U256)>::default();
+    for update in updates {
+        for account in &update.accounts {
+            let entry = accounts
+                .entry(account.address)
+                .or_insert_with(|| (account.original.clone(), account.original.clone()));
+            entry.1 = account.current.clone();
+            for (key, slot) in &account.storage {
+                slots
+                    .entry((account.address, *key))
+                    .or_insert((slot.previous_or_original_value, slot.present_value))
+                    .1 = slot.present_value;
+            }
+        }
+    }
+    let state = output.state.state();
+    for (address, account) in state {
+        if no_code(&account.info) != no_code(&account.original_info) {
+            let streamed = accounts.get(address).map(|(_, current)| current.clone());
+            assert_eq!(streamed, Some(no_code(&account.info)), "streamed account {address}");
+        }
+        if account.info.is_none() {
+            continue;
+        }
+        for (key, slot) in &account.storage {
+            if slot.is_changed() {
+                let streamed = slots.get(&(*address, *key)).map(|(_, current)| *current);
+                assert_eq!(streamed, Some(slot.present_value), "streamed slot {address} {key}");
+            }
+        }
+    }
+    for (address, (first, current)) in &accounts {
+        let expected = state.get(address).map_or(first.clone(), |account| no_code(&account.info));
+        assert_eq!(current, &expected, "streamed account {address} ends wrong");
+    }
+    for ((address, key), (first, current)) in &slots {
+        if accounts.get(address).is_some_and(|(_, current)| current.is_none()) {
+            continue;
+        }
+        let expected = state
+            .get(address)
+            .and_then(|account| account.storage.get(key))
+            .map_or(*first, |slot| slot.present_value);
+        assert_eq!(*current, expected, "streamed slot {address} {key} ends wrong");
+    }
 }
 
 /// Deterministic xorshift generator.
@@ -1031,13 +1089,18 @@ fn rejected_batched_commit_leaves_the_executor_unchanged() {
             assert_eq!(executor.block_regular_gas_used, 0);
             assert_eq!(executor.block_state_gas_used, 0);
             assert_eq!(executor.blob_gas_used, 0);
-            assert_eq!(updates.lock().unwrap().len(), streamed, "rejected block streamed state");
+            // The hook may have seen the committed prefix before the rejection, which executing
+            // the block again streams again.
+            let rejected_updates = updates.lock().unwrap().len() - streamed;
             // The block executes again from the start.
             for tx in &txs {
                 executor.execute_transaction(tx).unwrap();
             }
             assert_eq!(executor.finish().unwrap(), expected.output);
-            assert_eq!(normalize(&updates), expected.updates);
+            let updates = normalize(&updates);
+            assert_eq!(updates[..streamed], expected.updates[..streamed]);
+            assert_eq!(updates[streamed + rejected_updates..], expected.updates[streamed..]);
+            assert_streams_final_state(&updates, &expected.output);
         }
     }
 }

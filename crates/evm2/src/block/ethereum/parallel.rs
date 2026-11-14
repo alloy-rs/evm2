@@ -28,6 +28,11 @@
 //! the step only checks the keys written since, runs deferred storage operations against the
 //! store and records the receipt. Blind adds stay deltas in the store, transactions that read stale
 //! state execute again over it, and the block's final state reaches the executor once, at the end.
+//! The state hook still streams: whenever [`STREAM_INTERVAL`] passed since its last update, the
+//! committer sends it the latest value, read from the store, of every key the transactions
+//! committed since wrote, so a state-root task hashes the block's prefix while the rest executes,
+//! and a key many transactions write, such as a fee balance, is sent once per update rather than
+//! once per transaction.
 //! For blocks of cheap transactions, such as payments, the in-order step is the bound on
 //! throughput.
 //!
@@ -50,12 +55,15 @@
 //! ring buffer insert, run at commit against the committed state.
 
 use super::{
-    EthBlockExecutor, EthTransactionResultWithState,
+    EthBlockExecutor, EthTransactionResultWithState, emit_state,
     execution::{execute_transaction_without_commit, map_transaction_error},
 };
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult, TxResultWithState, TxStateChanges,
-    block::{BlockExecutionError, BlockExecutor, ExecutableTx, ReceiptBuilder, map_database_error},
+    block::{
+        AccountUpdate, BlockExecutionError, BlockExecutor, ExecutableTx, ReceiptBuilder,
+        StateUpdate, bundle_state::StorageSlot, map_database_error,
+    },
     bytecode::Bytecode,
     evm::{
         AccountFlags, AccountInfo, Cache, DbResult, DeferredStorageStore, DynDatabase,
@@ -92,6 +100,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Condvar, Mutex, OnceLock, RwLock, mpsc},
     thread::Thread,
+    time::{Duration, Instant},
 };
 
 /// Number of lock shards of the multi-version account and storage maps.
@@ -114,6 +123,11 @@ const PREVALIDATE_AHEAD: usize = 8;
 
 /// Times the committer polls for the next result before parking.
 const COMMIT_SPINS: u32 = 1 << 10;
+
+/// How often a batched commit streams the state its committed prefix changed to the state hook.
+/// Tests stream after every transaction.
+const STREAM_INTERVAL: Duration =
+    if cfg!(test) { Duration::ZERO } else { Duration::from_micros(200) };
 
 /// Counters of one parallel block execution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -307,8 +321,10 @@ where
     /// When [`Self::commits_batched`], a failure leaves the executor's receipts, gas counters and
     /// state as they were before the call, so the caller can execute the block again one
     /// transaction at a time, for the exact error sequential execution reports; batched commit then
-    /// runs even on one thread or with serial hints. Otherwise a failure leaves the transactions
-    /// before it committed, and the executor must be discarded.
+    /// runs even on one thread or with serial hints. The state hook may by then have seen state the
+    /// block's committed prefix changed, which executing it again streams again unchanged.
+    /// Otherwise a failure leaves the transactions before it committed, and the executor must be
+    /// discarded.
     ///
     /// Call it after [`BlockExecutor::apply_pre_execution_changes`] and before any transaction of
     /// the block. Do not attach a block access list for reads: a block with one executes in
@@ -668,6 +684,7 @@ where
         let mut last_version = 0;
         // Accounts created or whose storage was wiped, as their transactions committed them.
         let mut lifecycle = AddressMap::<Lifecycle>::default();
+        let mut stream = self.state_update_hook.is_some().then(PrefixStream::default);
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
             let Speculative { worker, outcome, reward, mut reads, mut writes, prevalidated } =
@@ -708,10 +725,16 @@ where
                             store.republish_account(version, *address, account.present.as_ref());
                         }
                     }
-                    run_deferred_ops(store, version, &mut pending_state)?;
+                    run_deferred_ops(store, version, &mut pending_state, stream.as_mut())?;
                     on_commit(index, &result)?;
                     record_lifecycle(&mut lifecycle, &pending_state);
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
+                    if let Some(stream) = &mut stream {
+                        stream.keys.extend(writes.iter().copied());
+                        if fee_charge {
+                            stream.keys.push(WriteKey::Account(beneficiary));
+                        }
+                    }
                     pending_state
                 }
                 None => {
@@ -745,8 +768,12 @@ where
                         version,
                         writes.iter().filter(|write| !committed.contains(*write)),
                     );
+                    if let Some(stream) = &mut stream {
+                        stream.keys.extend(committed.iter().copied());
+                        stream.keys.push(WriteKey::Account(beneficiary));
+                    }
                     store.log_writes(version, committed.into_iter().chain(writes.iter().copied()));
-                    run_deferred_ops(store, version, &mut pending_state)?;
+                    run_deferred_ops(store, version, &mut pending_state, stream.as_mut())?;
                     on_commit(index, &result)?;
                     record_lifecycle(&mut lifecycle, &pending_state);
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
@@ -758,12 +785,33 @@ where
             reads.clear();
             writes.clear();
             results.recycle(worker, Buffers { reads, writes, pending });
+            if let Some(stream) = &mut stream
+                && stream.last.elapsed() >= STREAM_INTERVAL
+            {
+                let running = rewarded.as_ref().map(|info| (beneficiary, info.as_ref()));
+                let update =
+                    stream.take(store, version + 1, running).map_err(map_database_error)?;
+                if !update.is_empty() {
+                    emit_state(&mut self.state_update_hook, update);
+                }
+            }
         }
         if let Some(info) = rewarded.take() {
             store.republish_account(last_version, beneficiary, info.as_ref());
         }
         let state = store.materialize(&lifecycle).map_err(map_database_error)?;
+        let Some(mut stream) = stream else {
+            self.commit_pending_state(&state);
+            return Ok(());
+        };
+        let update = stream.take(store, last_version + 1, None).map_err(map_database_error)?;
+        if !update.is_empty() {
+            emit_state(&mut self.state_update_hook, update);
+        }
+        // The hook already received every change: commit without streaming it again.
+        let hook = self.state_update_hook.take();
         self.commit_pending_state(&state);
+        self.state_update_hook = hook;
         Ok(())
     }
 
@@ -916,11 +964,12 @@ fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
     store: &MvStore<'_, B>,
     version: u32,
     pending: &mut PendingState,
+    stream: Option<&mut PrefixStream>,
 ) -> Result<(), BlockExecutionError> {
     if pending.deferred.ops.is_empty() {
         return Ok(());
     }
-    let mut access = StoreAccess { store, version };
+    let mut access = StoreAccess { store, version, stream };
     for op in core::mem::take(&mut pending.deferred.ops) {
         op.run_on(&mut access).map_err(map_database_error)?;
     }
@@ -932,6 +981,8 @@ fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
 struct StoreAccess<'m, 's, B: ?Sized> {
     store: &'m MvStore<'s, B>,
     version: u32,
+    /// Records the slots written, when the commit streams state.
+    stream: Option<&'m mut PrefixStream>,
 }
 
 impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for StoreAccess<'_, '_, B> {
@@ -941,6 +992,9 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for StoreAccess<'_,
 
     fn sstore(&mut self, address: &Address, key: Word, value: Word) -> DbResult<()> {
         self.store.write_slot(self.version, *address, key, value);
+        if let Some(stream) = &mut self.stream {
+            stream.keys.push(WriteKey::Storage(*address, key));
+        }
         Ok(())
     }
 }
@@ -950,6 +1004,88 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for StoreAccess<'_,
 #[inline]
 fn version(index: usize) -> u32 {
     u32::try_from(index + 1).expect("block has fewer than 2^32 transactions")
+}
+
+/// The state a batched commit has yet to stream to the state hook, and what it streamed.
+struct PrefixStream {
+    /// Keys the transactions committed since the last update wrote, with repeats.
+    keys: Vec<WriteKey>,
+    /// Each account's value as last streamed.
+    accounts: AddressMap<Option<AccountInfo>>,
+    /// Each slot's value as last streamed.
+    slots: HashMap<(Address, Word), Word>,
+    /// When the last update was taken.
+    last: Instant,
+}
+
+impl Default for PrefixStream {
+    fn default() -> Self {
+        Self {
+            keys: Vec::new(),
+            accounts: AddressMap::default(),
+            slots: HashMap::default(),
+            last: Instant::now(),
+        }
+    }
+}
+
+impl PrefixStream {
+    /// Takes the update that brings the hook from the state last streamed to the store's state
+    /// at `version`, where every earlier transaction committed: each account and slot written
+    /// since, once, at its value there. `running` is the beneficiary's latest value when the store
+    /// does not hold it yet.
+    fn take<B: DynDatabaseRef + Sync + ?Sized>(
+        &mut self,
+        store: &MvStore<'_, B>,
+        version: u32,
+        running: Option<(Address, Option<&AccountInfo>)>,
+    ) -> DbResult<StateUpdate> {
+        self.last = Instant::now();
+        let mut written = AddressMap::<(bool, Vec<Word>)>::default();
+        for key in self.keys.drain(..) {
+            match key {
+                WriteKey::Account(address) | WriteKey::Wipe(address) => {
+                    written.entry(address).or_default().0 = true;
+                }
+                WriteKey::Storage(address, key) => written.entry(address).or_default().1.push(key),
+            }
+        }
+        let mut update = StateUpdate { accounts: Vec::with_capacity(written.len()) };
+        for (address, (account_written, mut keys)) in written {
+            let current = match running {
+                Some((beneficiary, info)) if beneficiary == address => info.cloned(),
+                _ => store.account(&address, version)?,
+            };
+            let original = match self.accounts.get(&address) {
+                Some(info) => info.clone(),
+                None if account_written => store.account_initial(&address)?,
+                None => current.clone(),
+            };
+            if account_written {
+                self.accounts.insert(address, current.clone());
+            }
+            keys.sort_unstable();
+            keys.dedup();
+            let mut storage = Vec::with_capacity(keys.len());
+            for key in keys {
+                let value = store.storage(&address, &key, version)?;
+                let previous = match self.slots.insert((address, key), value) {
+                    Some(previous) => previous,
+                    None => store.storage_initial(&address, &key)?,
+                };
+                storage.push((key, StorageSlot::new_changed(previous, value)));
+            }
+            update.accounts.push(AccountUpdate {
+                address,
+                original,
+                current,
+                created: false,
+                wiped: false,
+                storage,
+            });
+        }
+        Ok(update)
+    }
 }
 
 /// Executes transactions speculatively until none are left or the committer stops.
