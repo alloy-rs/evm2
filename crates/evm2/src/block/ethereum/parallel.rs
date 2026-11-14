@@ -129,6 +129,34 @@ const COMMIT_SPINS: u32 = 1 << 10;
 const STREAM_INTERVAL: Duration =
     if cfg!(test) { Duration::ZERO } else { Duration::from_micros(200) };
 
+/// Diagnostics of one transaction the committer executed again.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReexecDiag {
+    /// Index of the transaction in the block.
+    pub index: usize,
+    /// 0: the speculative execution failed, 1: it read stale state, 2: no stale read (beneficiary
+    /// or rebase).
+    pub reason: u8,
+    /// The keys it read whose committed value differs: an account, or a storage slot.
+    pub keys: Vec<(Address, Option<Word>)>,
+}
+
+/// Re-executions the committer recorded since the last call.
+static REEXEC_DIAG: Mutex<Vec<ReexecDiag>> = Mutex::new(Vec::new());
+
+/// Results workers executed again in the tail phase since the last call.
+static WORKER_REEXEC: AtomicUsize = AtomicUsize::new(0);
+
+/// Takes the re-executions the committer recorded since the last call.
+pub fn take_reexec_diag() -> Vec<ReexecDiag> {
+    core::mem::take(&mut *REEXEC_DIAG.lock().unwrap())
+}
+
+/// Takes the count of results workers executed again since the last call.
+pub fn take_worker_reexec() -> usize {
+    WORKER_REEXEC.swap(0, Ordering::Relaxed)
+}
+
 /// Counters of one parallel block execution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ParallelExecutionStats {
@@ -752,6 +780,7 @@ where
             let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
             self.validate_transaction_blob_gas(blob_gas_used)?;
 
+            let had_outcome = outcome.is_some();
             let settled = outcome.and_then(|outcome| {
                 settle_batched(
                     outcome,
@@ -788,6 +817,27 @@ where
                 }
                 None => {
                     stats.reexecuted += 1;
+                    let mut keys = Vec::new();
+                    if had_outcome {
+                        for (address, value) in &reads.accounts {
+                            let now = store.account(address, version).ok().flatten().map(|mut info| {
+                                if info.code_hash.is_zero() {
+                                    info.code_hash = KECCAK256_EMPTY;
+                                }
+                                info.clone_no_code()
+                            });
+                            if now != *value {
+                                keys.push((*address, None));
+                            }
+                        }
+                        for (address, key, value) in &reads.storage {
+                            if store.storage(address, key, version).ok() != Some(*value) {
+                                keys.push((*address, Some(*key)));
+                            }
+                        }
+                    }
+                    let reason = if !had_outcome { 0 } else if keys.is_empty() { 2 } else { 1 };
+                    REEXEC_DIAG.lock().unwrap().push(ReexecDiag { index, reason, keys });
                     // It may read the beneficiary: publish the rewards credited since.
                     if let Some(info) = rewarded.take() {
                         store.republish_account(version - 1, beneficiary, info.as_ref());
@@ -1265,6 +1315,7 @@ fn run_worker<T, F, H>(
             {
                 return;
             }
+            WORKER_REEXEC.fetch_add(1, Ordering::Relaxed);
             let evm_tx = queue.get(index);
             let cache = &mut evm.overlay_db_mut().cache;
             cache.accounts.clear();
