@@ -133,7 +133,7 @@ use crate::{
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log};
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use core::ptr::NonNull;
 #[cfg(feature = "async")]
 use core::{any::TypeId, future::Future};
@@ -176,11 +176,14 @@ pub use tx::{ExecutedTx, TxResult, TxResultExt, TxResultWithState};
 mod state;
 #[cfg(feature = "account-ext")]
 pub use state::AccountExtension;
+#[cfg(all(feature = "std", feature = "block"))]
+pub(crate) use state::DeferredStorageStore;
 pub use state::{
     AccountChangeRef, AccountChanges, AccountFlags, AccountHandle, AccountInfo,
-    BlockStateAccumulator, JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink,
-    StateChangeSource, StateCheckpoint, StateInner, StateSnapshot, StorageChange, StorageHandle,
-    StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked, TxStateChanges,
+    BlockStateAccumulator, DeferredStorageAccess, DeferredStorageOp, JournalEntry, NoopChangeSink,
+    PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint, StateInner,
+    StateSnapshot, StorageChange, StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle,
+    Tee, Tracked, TxStateChanges,
 };
 
 pub(crate) mod prewarm_set;
@@ -236,6 +239,10 @@ pub struct Evm<'a, T: EvmTypesHost> {
     inspector: Option<InspectorSlot<'a, T>>,
     inspect_system_calls: bool,
     initial_call_depth: u16,
+    /// Beneficiary reward withheld by [`default_settle_gas`](crate::ethereum::default_settle_gas):
+    /// `None` credits the beneficiary as usual, `Some` holds the last settled transaction's reward
+    /// instead of crediting it.
+    deferred_beneficiary_reward: Option<U256>,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// Whether `interpreter_runner` is set and supports `execution_config`.
@@ -379,6 +386,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             inspector: None,
             inspect_system_calls: false,
             initial_call_depth: 0,
+            deferred_beneficiary_reward: None,
             interpreter_runner: None,
             runner_supported: false,
             current_frame: None,
@@ -689,6 +697,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.state.account_info_untracked(address)
     }
 
+    /// Returns a persistent storage slot visible through the accepted state overlay.
+    #[inline]
+    pub fn read_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        self.state.storage_slot_untracked(address, key)
+    }
+
     /// Applies borrowed changes to the accepted state overlay.
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
@@ -904,19 +918,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.precompiles = precompiles;
     }
 
-    /// Takes the precompile provider, leaving an empty provider in its place.
-    ///
-    /// Hosts can wrap the returned provider and reinstall it with [`Self::set_boxed_precompiles`].
-    /// Like other provider mutations, this must not be called during execution.
-    #[inline]
-    pub fn take_precompiles(&mut self) -> Box<dyn PrecompileProvider<T> + 'a> {
-        self.assert_precompiles_mutable();
-        core::mem::replace(
-            &mut self.precompiles,
-            boxed_precompile_provider(precompile::NoPrecompiles::default()),
-        )
-    }
-
     /// Returns the precompile provider as `P` if it has that concrete type.
     #[inline]
     pub fn precompiles_as<P: PrecompileProvider<T> + 'static>(&self) -> Option<&P>
@@ -1115,6 +1116,68 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     const fn max_call_depth(&self) -> u16 {
         self.initial_call_depth + CALL_DEPTH_LIMIT
+    }
+
+    /// Sets whether the default gas settlement withholds the beneficiary reward instead of
+    /// crediting it to the block beneficiary.
+    ///
+    /// With deferral on, a transaction never loads the beneficiary unless it reads it itself, so
+    /// transactions that only pay fees do not conflict on the beneficiary balance. The caller then
+    /// credits [`Self::deferred_beneficiary_reward`] itself, as parallel block execution does at
+    /// commit. Custom [`TxHandlerHooks::settle_transaction`](crate::handler::TxHandlerHooks)
+    /// implementations ignore this setting.
+    ///
+    /// Defaults to `false`.
+    #[inline]
+    pub const fn set_defer_beneficiary_reward(&mut self, defer: bool) {
+        self.deferred_beneficiary_reward = if defer { Some(U256::ZERO) } else { None };
+    }
+
+    /// Returns the beneficiary reward the last settled transaction withheld, or `None` when
+    /// deferral is off. See [`Self::set_defer_beneficiary_reward`].
+    #[inline]
+    pub const fn deferred_beneficiary_reward(&self) -> Option<U256> {
+        self.deferred_beneficiary_reward
+    }
+
+    /// Records the beneficiary reward withheld by the default gas settlement. Returns `false` when
+    /// deferral is off and the caller must credit the beneficiary.
+    #[inline]
+    pub(crate) const fn defer_beneficiary_reward(&mut self, reward: U256) -> bool {
+        match &mut self.deferred_beneficiary_reward {
+            Some(deferred) => {
+                *deferred = reward;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets whether a transaction's end leaves its blind adds to storage slots it did not read
+    /// ([`Host::sadd`]) and its deferred storage operations ([`State::defer_storage_op`])
+    /// unresolved in its detached pending state, for the caller to resolve with
+    /// [`State::resolve_pending_state`] against the state the transaction commits on, as parallel
+    /// block execution does at commit. See [`State::set_defer_storage_resolution`].
+    ///
+    /// Defaults to `false`.
+    #[inline]
+    pub const fn set_defer_storage_resolution(&mut self, defer: bool) {
+        self.state.set_defer_storage_resolution(defer);
+    }
+
+    /// Returns whether a transaction's end leaves its deferred storage unresolved. See
+    /// [`Self::set_defer_storage_resolution`].
+    #[inline]
+    pub const fn defers_storage_resolution(&self) -> bool {
+        self.state.defers_storage_resolution()
+    }
+
+    /// Sets whether the state records how each transaction depends on account balances. See
+    /// [`State::set_track_balance_reads`].
+    #[cfg(all(feature = "block", feature = "std"))]
+    #[inline]
+    pub(crate) const fn set_track_balance_reads(&mut self, track: bool) {
+        self.state.set_track_balance_reads(track);
     }
 
     /// Sets the optional external interpreter runner.
@@ -1577,6 +1640,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let nested = message.depth > self.initial_call_depth;
         // A too-deep create fails on depth alone, without reading the creator.
         let info = if message.depth <= self.max_call_depth() && (message.value > 0 || nested) {
+            if message.value > 0 {
+                self.state.observe_balance(&message.caller);
+            }
             self.state.account_info_untracked(&message.caller)?
         } else {
             None
@@ -1976,6 +2042,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError> {
+        // Loads without code are for the balance (`BALANCE`, `SELFBALANCE`, a creator or a
+        // destructed contract) or the code hash; loads with code are for calls, which use the
+        // balance only through the account's emptiness.
+        if !load_code {
+            self.state.observe_balance(address);
+        }
         let mut account = match self.state.account_with_skip(address, skip_cold_load) {
             Ok(account) => account,
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
@@ -2111,6 +2183,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
                 Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
                 Err(code) => return Err(code.into()),
             };
+        self.state.observe_balance(contract);
         let (previously_destroyed, balance, should_destroy) = {
             let account = self.state.account(contract)?;
             let should_destroy = !features.contains(EvmFeatures::EIP6780) || account.is_created();
@@ -2140,6 +2213,11 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             previously_destroyed,
             _non_exhaustive: (),
         })
+    }
+
+    fn sadd(&mut self, address: &Address, key: &Word, delta: &Word) -> Result<SAdd, HostError> {
+        let is_cold = self.state.storage_add(address, *key, *delta)?;
+        Ok(SAdd { is_cold: is_cold && self.feature(EvmFeatures::EIP2929), _non_exhaustive: () })
     }
 }
 
@@ -2249,6 +2327,15 @@ pub struct SelfDestructResult {
     /// Whether this account was already destroyed in this transaction.
     pub previously_destroyed: bool,
 
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
+}
+
+/// Result of a blind add to a storage slot. See [`Host::sadd`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SAdd {
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -2850,7 +2937,6 @@ mod tests {
         Mut,
         AsMut,
         Set,
-        Take,
     }
 
     fn run_precompile_access(access: PrecompileAccess) {
@@ -2867,10 +2953,6 @@ mod tests {
                 },
                 PrecompileAccess::Set => |evm, _, _| {
                     evm.set_precompiles(empty_precompiles());
-                    Ok(PrecompileOutput::new(Bytes::new()))
-                },
-                PrecompileAccess::Take => |evm, _, _| {
-                    let _ = evm.take_precompiles();
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
             },
@@ -3033,27 +3115,6 @@ mod tests {
         evm.set_boxed_precompiles(Box::new(precompiles_with([])));
 
         assert!(evm.precompiles_as::<Precompiles>().unwrap().as_map().is_empty());
-    }
-
-    #[test]
-    fn take_precompiles_preserves_provider_and_can_be_restored() {
-        let mut evm = lifecycle_evm();
-        let original_ids = evm.precompiles().precompile_ids();
-        assert!(!original_ids.is_empty());
-
-        let provider = evm.take_precompiles();
-        assert!(evm.precompiles().addresses().is_empty());
-        assert!(evm.precompiles().precompile_ids().is_empty());
-        assert_eq!(provider.precompile_ids(), original_ids);
-
-        evm.set_boxed_precompiles(provider);
-        assert_eq!(evm.precompiles().precompile_ids(), original_ids);
-    }
-
-    #[test]
-    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
-    fn take_precompiles_panics_during_execution() {
-        run_precompile_access(PrecompileAccess::Take);
     }
 
     #[test]
@@ -4762,7 +4823,7 @@ mod tests {
         let _ = evm.transact(&test_tx(0));
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", feature = "block"))]
     #[test]
     fn transact_restores_inspector_access_after_success_error_and_panic() {
         let mut evm = lifecycle_evm();
@@ -4797,7 +4858,6 @@ mod tests {
     #[rstest::rstest]
     #[case(PrecompileAccess::Mut)]
     #[case(PrecompileAccess::Set)]
-    #[case(PrecompileAccess::Take)]
     #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
     fn precompiles_cannot_be_modified_during_transact(#[case] access: PrecompileAccess) {
         let mut evm = lifecycle_evm();
@@ -4813,9 +4873,6 @@ mod tests {
                         }
                         PrecompileAccess::Set => req.host.set_precompiles(empty_precompiles()),
                         PrecompileAccess::AsMut => unreachable!(),
-                        PrecompileAccess::Take => {
-                            let _ = req.host.take_precompiles();
-                        }
                     }
                     Ok(TxResultExt::default())
                 },
@@ -5102,7 +5159,7 @@ mod tests {
         assert!(evm.clear_inspector().is_none());
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", feature = "block"))]
     #[test]
     fn transact_with_inspector_restores_previous_inspector_after_panic() {
         let mut evm = scoped_inspector_evm();
@@ -5121,7 +5178,7 @@ mod tests {
         assert_eq!(panicking.calls, 1);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", feature = "block"))]
     #[test]
     fn transact_with_inspector_clears_borrowed_inspector_after_panic() {
         let mut evm = scoped_inspector_evm();
@@ -5137,7 +5194,7 @@ mod tests {
         assert_eq!(panicking.calls, 1);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", feature = "block"))]
     #[test]
     fn transact_with_inspector_recovers_from_panic_inside_frame() {
         let mut evm = scoped_inspector_evm();
@@ -5154,7 +5211,7 @@ mod tests {
         assert_eq!(inspector.calls, 1);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", feature = "block"))]
     #[test]
     fn transact_with_inspector_discards_transaction_state_after_panic() {
         let mut evm = scoped_inspector_evm();

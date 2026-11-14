@@ -40,8 +40,8 @@ use thiserror::Error;
 /// The result of an [`Erc7562Inspector`] would be wrong.
 #[derive(Clone, Debug, Error)]
 pub enum Error {
-    /// The inspector reached a byte limit, so the result would miss preimages or call inputs.
-    #[error("erc7562Tracer reached its limit of recorded bytes")]
+    /// The inspector reached its byte limit, so the result would miss preimages.
+    #[error("erc7562Tracer reached its limit of recorded preimage bytes")]
     LimitExceeded,
     /// The inspector could not read the state that an instruction addressed, so a code size or a
     /// slot value would be wrong.
@@ -131,15 +131,9 @@ impl Erc7562Inspector {
         self
     }
 
-    /// Bounds the bytes of the call inputs that the inspector retains by the given limits, which
-    /// are unlimited by default. The preimages keep their own limits, see [`Self::with_limits`].
-    pub const fn set_call_limits(&mut self, limits: TraceLimits) {
-        self.calls.set_limits(limits);
-    }
-
-    /// Returns whether a preimage or a call input was omitted after reaching a byte limit.
+    /// Returns whether a preimage was omitted after reaching the byte limit.
     pub const fn limit_exceeded(&self) -> bool {
-        self.budget.exceeded() || self.calls.limit_exceeded()
+        self.budget.exceeded()
     }
 
     /// Clears what the inspector collected, to trace the next transaction.
@@ -161,14 +155,14 @@ impl Erc7562Inspector {
 
     /// Returns the result of the tracer for a transaction that ran with this inspector.
     ///
-    /// Fails if a byte limit was reached, because the result would miss preimages or call inputs,
-    /// or if a read of the state failed, because a code size or a slot value would be wrong.
+    /// Fails if the byte limit was reached, because the result would miss preimages, or if a read
+    /// of the state failed, because a code size or a slot value would be wrong.
     pub fn frame<E>(
         &mut self,
         tx: &Recovered<impl Transaction>,
         result: &TxResultExt<E>,
     ) -> Result<Erc7562Frame, Error> {
-        if self.limit_exceeded() {
+        if self.budget.exceeded() {
             return Err(Error::LimitExceeded);
         }
         if let Some(error) = &self.error {

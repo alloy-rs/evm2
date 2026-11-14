@@ -2,7 +2,7 @@
 
 use crate::tracing::{js::bindings::type_error, types::CallKind};
 use alloc::{borrow::Cow, format, rc::Rc, vec::Vec};
-use alloy_primitives::{Address, B256, FixedBytes, U256, hex};
+use alloy_primitives::{Address, B256, FixedBytes, U256, hex, map::AddressSet};
 use boa_engine::{
     Context, JsArgs, JsBigInt, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
     Source,
@@ -16,7 +16,6 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, Trace, empty_trace};
 use core::{borrow::Borrow, cell::RefCell};
-use evm2::evm::PrewarmSet;
 
 /// Converts the given `JsValue` to a `serde_json::Value`.
 ///
@@ -448,10 +447,9 @@ pub(crate) fn slice(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResul
 
 /// The active precompile addresses behind the `isPrecompiled` global callable.
 ///
-/// Unset until the transaction starts, like geth's list of active precompiles. These are the warm
-/// precompile addresses, so after a precompile move they are the addresses from before the move.
+/// Unset until the transaction starts, like geth's list of active precompiles.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PrecompileList(Rc<RefCell<Option<PrewarmSet>>>);
+pub(crate) struct PrecompileList(Rc<RefCell<Option<AddressSet>>>);
 
 impl PrecompileList {
     /// Registers the global callable `isPrecompiled`, which reads this list.
@@ -462,7 +460,7 @@ impl PrecompileList {
                 let buf = bytes_from_value(val, ctx)?;
                 let addr = bytes_to_address(&buf);
                 let precompiles = RefCell::borrow(&precompiles.0);
-                Ok(precompiles.as_ref().is_some_and(|list| list.is_warm(&addr)).into())
+                Ok(precompiles.as_ref().is_some_and(|list| list.contains(&addr)).into())
             },
             self.clone(),
         );
@@ -478,8 +476,8 @@ impl PrecompileList {
     }
 
     /// Sets the active precompile addresses.
-    pub(crate) fn set(&self, addresses: PrewarmSet) {
-        *self.0.borrow_mut() = Some(addresses);
+    pub(crate) fn set(&self, addresses: impl IntoIterator<Item = Address>) {
+        *self.0.borrow_mut() = Some(addresses.into_iter().collect());
     }
 
     /// Unsets the active precompile addresses.

@@ -254,8 +254,8 @@ pub unsafe fn __revmc_builtin_codecopy<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
-    let code = ecx.interpreter().original_bytecode_slice();
-    unsafe { copy_operation(ecx, sp, code) }
+    let bytecode = ecx.bytecode();
+    unsafe { copy_operation(ecx, sp, bytecode.as_ref()) }
 }
 
 #[inline]

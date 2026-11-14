@@ -1,11 +1,14 @@
 //! Owned pending transaction state detached from the EVM.
 
 use super::{
-    Account, AccountChanges, AccountFlags, AccountInfo, StateChangeSink, StateChangeSource,
-    StorageSlot, Tracked,
+    Account, AccountChanges, AccountFlags, AccountInfo, DeferredStorage, StateChangeSink,
+    StateChangeSource, StorageSlot, Tracked,
 };
 use crate::interpreter::Word;
-use alloy_primitives::{Address, map::AddressMap};
+use alloy_primitives::{
+    Address,
+    map::{AddressMap, AddressSet},
+};
 
 /// A transaction's finalized-but-uncommitted state, moved out of the EVM.
 ///
@@ -29,6 +32,14 @@ pub struct PendingState {
     /// Accounts loaded by the transaction: transaction-boundary original info, present info, and
     /// account-lifetime flags.
     pub(crate) accounts: AddressMap<Account>,
+    /// Storage effects deferred to the transaction's end: left unresolved by an EVM that defers
+    /// their resolution (see
+    /// [`State::set_defer_storage_resolution`](super::State::set_defer_storage_resolution)),
+    /// and the slots their resolution loaded.
+    pub(crate) deferred: DeferredStorage,
+    /// How the transaction's execution depended on account balances, when the EVM tracked it
+    /// (see [`State::set_track_balance_reads`](super::State::set_track_balance_reads)).
+    pub(crate) balance_reads: BalanceReads,
 }
 
 impl PendingState {
@@ -106,6 +117,14 @@ impl PendingState {
     #[inline]
     pub fn account_changes_for(&self, address: &Address) -> Option<AccountChanges<'_>> {
         self.changes().account_changes_for(address)
+    }
+
+    /// Returns whether the transaction left blind adds or deferred storage operations unresolved,
+    /// to resolve with [`State::resolve_pending_state`](super::State::resolve_pending_state)
+    /// before it commits.
+    #[inline]
+    pub fn has_deferred_storage(&self) -> bool {
+        self.deferred.is_pending()
     }
 }
 
@@ -236,5 +255,27 @@ mod tests {
         assert!(changes.selfdestructed);
         assert!(changes.is_changed());
         assert!(state.account_changes_for(&Address::with_last_byte(0xcc)).is_none());
+    }
+}
+
+/// How a transaction's execution depended on account balances.
+///
+/// A balance the transaction only credited, or debited after checking that it covers the debit,
+/// did not decide its outcome beyond that check. An earlier change to such a balance leaves the
+/// execution valid while the balance still covers every check and the account's emptiness is the
+/// same, and the transaction's own change applies on top of it, as a delta.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BalanceReads {
+    /// Accounts whose exact balance the execution read.
+    pub(crate) observed: AddressSet,
+    /// The lowest balance at the transaction's start for which every check of an account's balance
+    /// passes as it did.
+    pub(crate) floors: AddressMap<Word>,
+}
+
+impl BalanceReads {
+    pub(crate) fn clear(&mut self) {
+        self.observed.clear();
+        self.floors.clear();
     }
 }

@@ -31,7 +31,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, ExecutionError, Inspector, TxResultWithState,
     env::BlockEnv,
-    evm::{DynDatabase, PrewarmSet},
+    evm::DynDatabase,
     interpreter::{InstrStop, Interpreter, Message, MessageKind, MessageResult, opcode::op},
 };
 
@@ -453,9 +453,7 @@ impl JsInspector {
     /// Sets the active precompiles read by `isPrecompiled`.
     fn register_precompiles<T: EvmTypes>(&mut self, host: &Evm<'_, T>) {
         if !self.precompiles.is_set() {
-            let mut precompiles = PrewarmSet::new();
-            host.precompiles().warm_addresses(&mut precompiles);
-            self.precompiles.set(precompiles);
+            self.precompiles.set(host.precompiles().addresses());
         }
     }
 
@@ -1278,9 +1276,7 @@ mod tests {
             result: function() { return this.before; }
         }"#;
         let mut insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
-        let mut precompiles = PrewarmSet::new();
-        precompiles.warm(&Address::with_last_byte(1));
-        insp.precompiles.set(precompiles);
+        insp.precompiles.set([Address::with_last_byte(1)]);
         insp.fuse().unwrap();
         assert_eq!(try_run_tx(insp, None, true, U256::ZERO, legacy_tx(0)).unwrap(), json!(false));
     }

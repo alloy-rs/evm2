@@ -2,7 +2,7 @@ use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
     BaseEvmTypes, DatabaseError, EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, SAdd, SLoad, SStore, SelfDestructResult},
     utils::address_to_word,
 };
 use alloc::borrow::Cow;
@@ -193,6 +193,26 @@ pub trait Host<T: EvmTypesHost> {
         target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, HostError>;
+
+    /// Adds `delta` to a persistent storage slot, wrapping, without observing its value: a
+    /// commutative "blind add" for host code such as precompiles that update a shared accumulator.
+    ///
+    /// The result is that of loading the slot, adding `delta` and storing the sum: the slot's
+    /// value, the state changes and the slot's warmth end the same. The default implementation
+    /// does exactly that with [`Self::sload`] and [`Self::sstore`]. The EVM instead leaves the add
+    /// pending until the slot is next accessed or the transaction ends (see
+    /// [`State::storage_add`](crate::evm::State::storage_add)), so the value is read only when the
+    /// transaction reads it, and parallel block execution resolves the add when the transaction
+    /// commits: transactions that only add to the same slot do not conflict.
+    ///
+    /// There is no opcode for it and it charges no gas: the caller charges gas from
+    /// [`SAdd::is_cold`] alone (EIP-2929's cold or warm storage access cost plus a fixed write
+    /// cost, with no refund), never from the slot's value, which would have to be read.
+    fn sadd(&mut self, address: &Address, key: &Word, delta: &Word) -> Result<SAdd, HostError> {
+        let SLoad { value, is_cold, .. } = self.sload(address, key, false)?;
+        self.sstore(address, key, &value.wrapping_add(*delta), false)?;
+        Ok(SAdd { is_cold, _non_exhaustive: () })
+    }
 }
 
 #[cfg(test)]

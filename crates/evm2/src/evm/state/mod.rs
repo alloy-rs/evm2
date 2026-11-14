@@ -2,6 +2,7 @@
 
 mod account;
 mod block;
+mod deferred;
 #[cfg(feature = "account-ext")]
 mod extension;
 mod journal;
@@ -14,9 +15,15 @@ mod tracked;
 pub(crate) use account::Account;
 pub use account::{AccountFlags, AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
+pub(crate) use deferred::{DeferredStorage, StorageDelta};
+
+#[cfg(all(feature = "std", feature = "block"))]
+pub(crate) use deferred::DeferredStorageStore;
+pub use deferred::{DeferredStorageAccess, DeferredStorageOp};
 #[cfg(feature = "account-ext")]
 pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
+pub(crate) use pending::BalanceReads;
 pub use pending::{PendingState, TxStateChanges};
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
 pub use stream::{
@@ -59,6 +66,14 @@ pub struct State<'a> {
     transient_storage: StorageKeyMap<Word>,
     /// Inner state.
     inner: StateInner<'a>,
+    /// Whether the end of a transaction leaves its blind adds and deferred storage operations
+    /// unresolved. See [`Self::set_defer_storage_resolution`].
+    defer_storage_resolution: bool,
+    /// Whether to record how the transaction depends on account balances. See
+    /// [`Self::set_track_balance_reads`].
+    track_balance_reads: bool,
+    /// How the current transaction depended on account balances, when tracked.
+    balance_reads: BalanceReads,
 }
 
 /// Owned in-memory state without a backing database.
@@ -74,6 +89,7 @@ pub struct StateSnapshot {
     prewarm_set: PrewarmSet,
     journal: Vec<JournalEntry>,
     logs: Vec<Log>,
+    deferred: DeferredStorage,
 }
 
 impl StateSnapshot {
@@ -93,7 +109,11 @@ impl StateSnapshot {
                 prewarm_set: self.prewarm_set,
                 journal: self.journal,
                 logs: self.logs,
+                deferred: self.deferred,
             },
+            defer_storage_resolution: false,
+            track_balance_reads: false,
+            balance_reads: BalanceReads::default(),
         }
     }
 }
@@ -117,6 +137,7 @@ impl State<'_> {
             prewarm_set: self.prewarm_set.clone(),
             journal: self.journal.clone(),
             logs: self.logs.clone(),
+            deferred: self.deferred.clone(),
         }
     }
 
@@ -149,7 +170,11 @@ impl State<'_> {
                 journal: Vec::new(),
                 logs: Vec::new(),
                 prewarm_set: PrewarmSet::new(),
+                deferred: DeferredStorage::default(),
             },
+            defer_storage_resolution: false,
+            track_balance_reads: false,
+            balance_reads: BalanceReads::default(),
         }
     }
 }
@@ -187,6 +212,8 @@ pub struct StateInner<'a> {
     logs: Vec<Log>,
     /// Pre-warmed set: precompiles, coinbase, and the EIP-2930 access list.
     prewarm_set: PrewarmSet,
+    /// Storage effects the current transaction deferred to its end.
+    deferred: DeferredStorage,
 }
 
 impl StateInner<'_> {
@@ -242,7 +269,11 @@ impl<'a> State<'a> {
                 journal: Vec::new(),
                 logs: Vec::new(),
                 prewarm_set: PrewarmSet::new(),
+                deferred: DeferredStorage::default(),
             },
+            defer_storage_resolution: false,
+            track_balance_reads: false,
+            balance_reads: BalanceReads::default(),
         }
     }
 
@@ -412,7 +443,8 @@ impl<'a> State<'a> {
     ///
     /// This is a non-loading `&self` peek of the transaction overlay only: it does not consult the
     /// accepted overlay or backing database, so it returns `None` for a slot not touched this
-    /// transaction. Use [`Self::storage_slot_untracked`] to read through to the database.
+    /// transaction. Use [`Self::storage_slot_untracked`] to read through to the database. Pending
+    /// blind adds (see [`Self::storage_add`]) are not applied.
     #[inline]
     pub fn get_storage(&self, address: &Address, key: &Word) -> Option<Word> {
         self.accounts.get(address)?.storage.slots.get(key).map(|slot| slot.value.current)
@@ -459,43 +491,11 @@ impl<'a> State<'a> {
         }
     }
 
-    /// Clears the runtime warmth of every loaded account and storage slot without journaling the
-    /// change.
-    ///
-    /// This has the effect of [`Self::set_account_warm`] and [`Self::set_storage_warm`] with
-    /// `false` for everything that [`Self::loaded_accounts`] returns, in one pass over the
-    /// overlay. Values and the pre-warmed set are unchanged, so pre-warmed addresses and slots
-    /// remain effectively warm.
-    pub fn cool_loaded(&mut self) {
-        for account in self.accounts.values_mut() {
-            account.flags.remove(AccountFlags::WARM);
-            for slot in account.storage.slots.values_mut() {
-                slot.is_warm = false;
-            }
-        }
-    }
-
     /// Reads a storage slot from the committed state (accepted overlay and backing database),
     /// ignoring the in-flight transaction overlay.
     #[inline]
     pub fn read_committed_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         self.inner.database.get_storage(address, key)
-    }
-
-    /// Rereads a loaded storage slot as a first load would, making the value read both its
-    /// transaction-boundary original and its current value. Does nothing for an unloaded slot.
-    ///
-    /// A rollback never evicts a loaded slot, so a slot first loaded while its account's creation
-    /// discarded the old storage keeps the zero it read, as its original and current value, after
-    /// the creation is rolled back. An embedder that rolls back such a creation can reload the
-    /// slot to read its backing value again, with the original that `SSTORE` gas and refunds
-    /// depend on. Like a load, this records no revert entry and keeps the slot's warmth.
-    pub fn reload_storage_slot(&mut self, address: &Address, key: &Word) -> DbResult<()> {
-        let Some(account) = self.accounts.get_mut(address) else { return Ok(()) };
-        let reads_zero = account.storage.wiped || account.discards_storage();
-        let Some(slot) = account.storage.slots.get_mut(key) else { return Ok(()) };
-        slot.value = Tracked::new(self.inner.read_unloaded_slot(address, key, reads_zero)?);
-        Ok(())
     }
 
     /// Takes logs emitted by the current in-flight transaction.
@@ -557,7 +557,7 @@ impl<'a> State<'a> {
             accounts,
             storage_pool,
             transient_storage,
-            inner: StateInner { prewarm_set, journal, logs, database: _ },
+            inner: StateInner { prewarm_set, journal, logs, deferred, database: _ },
             ..
         } = self;
         for account in accounts.values_mut() {
@@ -568,6 +568,8 @@ impl<'a> State<'a> {
         prewarm_set.clear();
         journal.clear();
         logs.clear();
+        deferred.clear();
+        self.balance_reads.clear();
     }
 
     /// Loads an account without skipping cold accesses.
@@ -710,16 +712,23 @@ impl<'a> State<'a> {
     /// otherwise it reads the backing database directly without caching the result in the overlay.
     /// A slot of a wiped account, or of one whose creation discarded its old storage, that has not
     /// been loaded or written reads as zero, though an attached strict BAL must still cover it. Use
-    /// [`Self::storage`] when the slot should be loaded and preserved.
+    /// [`Self::storage`] when the slot should be loaded and preserved. Pending blind adds (see
+    /// [`Self::storage_add`]) are applied to the value returned.
     #[inline(never)]
     pub fn storage_slot_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        let deltas = &self.inner.deferred.deltas;
+        let delta = if deltas.is_empty() {
+            Word::ZERO
+        } else {
+            deltas.get(&StorageKey::new(*address, *key)).map_or(Word::ZERO, |pending| pending.delta)
+        };
         let account = self.accounts.get(address);
         if let Some(slot) = account.and_then(|account| account.storage.slots.get(key)) {
-            return Ok(slot.value.current);
+            return Ok(slot.value.current.wrapping_add(delta));
         }
         let reads_zero =
             account.is_some_and(|account| account.storage.wiped || account.discards_storage());
-        self.inner.read_unloaded_slot(address, key, reads_zero)
+        Ok(self.inner.read_unloaded_slot(address, key, reads_zero)?.wrapping_add(delta))
     }
 
     /// Returns an account's bytecode from the overlay or the backing database.
@@ -753,22 +762,36 @@ impl<'a> State<'a> {
         }
 
         if from == to {
-            let mut account = self.account(from)?;
-            if account.balance() < *value {
-                return Ok(false);
-            }
-            account.touch();
-            return Ok(true);
+            let (original, balance, covered) = {
+                let mut account = self.account(from)?;
+                let (original, balance) =
+                    (account.original().map(|info| info.balance), account.balance());
+                let covered = balance >= *value;
+                if covered {
+                    account.touch();
+                }
+                (original, balance, covered)
+            };
+            self.record_balance_check(from, original, balance, value, covered);
+            return Ok(covered);
         }
 
-        {
+        let (original, balance, covered) = {
             let mut from_account = self.account(from)?;
-            let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
-                return Ok(false);
-            };
-            // `set_balance` touches the account, matching the touch the prior `transfer` performed.
-            from_account.set_balance(new_from_balance);
-            from_account.touch();
+            let original = from_account.original().map(|info| info.balance);
+            let balance = from_account.balance();
+            let covered = balance >= *value;
+            if covered {
+                // `set_balance` touches the account, matching the touch the prior `transfer`
+                // performed.
+                from_account.set_balance(balance - *value);
+                from_account.touch();
+            }
+            (original, balance, covered)
+        };
+        self.record_balance_check(from, original, balance, value, covered);
+        if !covered {
+            return Ok(false);
         }
         {
             let mut to_account = self.account(to)?;
@@ -788,6 +811,10 @@ impl<'a> State<'a> {
         value: &Word,
         features: EvmFeatures,
     ) -> DbResult<Result<(), InstrStop>> {
+        // Creation discards the account's old storage, so apply pending blind adds to it first.
+        if !self.inner.deferred.deltas.is_empty() {
+            self.resolve_storage_deltas(|delta_address| delta_address == address, false)?;
+        }
         // TODO check order of operations, we could potentially simplify it and do a lot more with
         // only one hashmap lookup.
         if self
@@ -801,6 +828,7 @@ impl<'a> State<'a> {
         // Deduct the endowment from the caller. A zero endowment moves nothing and leaves the
         // caller untouched, matching the prior `transfer` behaviour.
         if !value.is_zero() {
+            self.observe_balance(caller);
             let mut caller_account = self.account(caller)?;
             let Some(new_caller_balance) = caller_account.balance().checked_sub(*value) else {
                 return Ok(Err(InstrStop::OutOfFunds));
@@ -872,9 +900,20 @@ impl<'a> State<'a> {
     /// This is intended for transaction-finalization policies that encode per-account pending
     /// work in EIP-1153 storage and must consume it before transaction scratch is cleared.
     pub fn take_transient_storage(&mut self, address: &Address) -> Vec<(Word, Word)> {
-        self.transient_storage
-            .extract_if(|key, _| key.address() == *address)
-            .map(|(key, value)| (key.key(), value))
+        let keys = self
+            .transient_storage
+            .keys()
+            .copied()
+            .filter(|key| key.address() == *address)
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .map(|key| {
+                let value = self
+                    .transient_storage
+                    .remove(&key)
+                    .expect("collected transient storage key must exist");
+                (key.key(), value)
+            })
             .collect()
     }
 
@@ -919,6 +958,22 @@ impl<'a> State<'a> {
                 },
                 JournalEntry::StorageWarmed { address, key } => {
                     self.set_storage_warm(&address, key, false);
+                }
+                JournalEntry::StorageDeltaAdded { address, key, delta, warmed } => {
+                    // The pending entry stays: a slot read, incremented and written in a reverted
+                    // frame stays loaded too.
+                    let key = StorageKey::new(address, key);
+                    if let Some(pending) = self.inner.deferred.deltas.get_mut(&key) {
+                        pending.delta = pending.delta.wrapping_sub(delta);
+                        pending.warm &= !warmed;
+                    }
+                }
+                JournalEntry::StorageDeltaResolved { address, key, delta, warm } => {
+                    let key = StorageKey::new(address, key);
+                    self.inner.deferred.deltas.insert(key, StorageDelta { delta, warm });
+                }
+                JournalEntry::StorageOpDeferred => {
+                    self.inner.deferred.ops.pop();
                 }
             }
         }
@@ -968,6 +1023,15 @@ impl<'a> State<'a> {
             }
         }
 
+        // Deferred storage resolves before accounts are deleted, as the read-add-writes it stands
+        // for would have. Left for the caller, it would land after the deletions instead.
+        let deferred = self.inner.deferred.is_pending();
+        if deferred
+            && (!self.defer_storage_resolution || !destroyed.is_empty() || !finalize.is_empty())
+        {
+            self.resolve_deferred_storage()?;
+        }
+
         let eip8246 = version.feature(EvmFeatures::EIP8246);
         for address in &destroyed {
             // EIP-8246: a self-destructed account that still holds balance is preserved as a
@@ -1013,7 +1077,11 @@ impl<'a> State<'a> {
     /// The remaining transaction scratch (journal, logs, warm sets, transient storage) is left for
     /// [`Self::clear_transaction_state`].
     pub(crate) fn take_pending_state(&mut self) -> PendingState {
-        PendingState { accounts: mem::take(&mut self.accounts) }
+        PendingState {
+            accounts: mem::take(&mut self.accounts),
+            deferred: mem::take(&mut self.inner.deferred),
+            balance_reads: mem::take(&mut self.balance_reads),
+        }
     }
 
     /// Reattaches a detached [`PendingState`] as the current transaction overlay, replacing it.
@@ -1030,6 +1098,8 @@ impl<'a> State<'a> {
             self.storage_pool.clear_overlay(&mut account.storage);
         }
         self.accounts = pending.accounts;
+        self.inner.deferred = pending.deferred;
+        self.balance_reads = pending.balance_reads;
     }
 
     /// Accepts the current transaction's state transition into the accepted overlay.
@@ -1038,6 +1108,12 @@ impl<'a> State<'a> {
     /// transaction account/storage layers. It does not take logs or write to the wrapped backing
     /// database.
     pub fn commit_transaction(&mut self) {
+        debug_assert!(
+            !self.inner.deferred.is_pending(),
+            "deferred storage must be resolved before the transaction commits"
+        );
+        self.inner.deferred.clear();
+        self.balance_reads.clear();
         // The transaction overlay is folded into the accepted-overlay database directly, without
         // detaching it.
         self.inner.database.commit(&self.accounts);
@@ -1045,6 +1121,166 @@ impl<'a> State<'a> {
             self.storage_pool.clear_overlay(&mut account.storage);
         }
         self.accounts.clear();
+    }
+
+    /// Adds `delta` to a persistent storage slot, wrapping, without reading it: a commutative
+    /// "blind add" for accumulators that every transaction updates but none reads, such as a fee
+    /// collector's balance. Returns whether the slot access was cold for EIP-2929 gas accounting,
+    /// and warms the slot.
+    ///
+    /// The transaction's result is exactly that of loading the slot, adding `delta` and writing
+    /// the sum: the slot's final value, the reported changes and the block access list are the
+    /// same. Its account is loaded like any slot's. A slot not loaded yet stays unloaded, with the
+    /// add pending, until it is next accessed, which loads it and applies its pending adds, or
+    /// until the transaction ends, which does so for every pending slot. The value is therefore
+    /// read only if the transaction reads the slot itself, and parallel block execution can leave
+    /// the add for the transaction's commit (see [`Self::set_defer_storage_resolution`]), so
+    /// transactions that only add to one slot do not conflict.
+    ///
+    /// Callers must charge gas that does not depend on the slot's value, or the value would have
+    /// to be read: the cold or warm access cost from the returned flag plus a fixed write cost, and
+    /// no refund, rather than `SSTORE`'s value-dependent schedule.
+    pub fn storage_add(&mut self, address: &Address, key: Word, delta: Word) -> DbResult<bool> {
+        self.storage(address)?.add(key, delta)
+    }
+
+    /// Defers a storage operation to the end of the current transaction. See
+    /// [`DeferredStorageOp`].
+    ///
+    /// Operations run in the order they were deferred, after the transaction's blind adds resolve
+    /// and before its accounts are finalized. Reverting the frame that deferred one drops it.
+    pub fn defer_storage_op(&mut self, op: DeferredStorageOp) {
+        self.inner.deferred.ops.push(op);
+        self.inner.push_journal(|| JournalEntry::StorageOpDeferred);
+    }
+
+    /// Sets whether the end of a transaction leaves its pending blind adds (see
+    /// [`Self::storage_add`]) and deferred storage operations (see [`Self::defer_storage_op`])
+    /// unresolved in its detached [`PendingState`] instead of resolving them against this state.
+    ///
+    /// Parallel block execution turns this on for its workers, which execute over speculative
+    /// state, and resolves each transaction's deferred storage with [`Self::resolve_pending_state`]
+    /// when it commits, against the state of every transaction before it. A transaction that
+    /// deletes accounts still resolves its deferred storage itself. Its pending state must be
+    /// resolved before it is committed.
+    ///
+    /// Defaults to `false`.
+    #[inline]
+    pub const fn set_defer_storage_resolution(&mut self, defer: bool) {
+        self.defer_storage_resolution = defer;
+    }
+
+    /// Returns whether a transaction's end leaves its deferred storage unresolved. See
+    /// [`Self::set_defer_storage_resolution`].
+    #[inline]
+    pub const fn defers_storage_resolution(&self) -> bool {
+        self.defer_storage_resolution
+    }
+
+    /// Sets whether to record how each transaction depends on account balances: the accounts
+    /// whose exact balance it read, and for the others the lowest starting balance its checks
+    /// need. Parallel block execution uses it to apply a transaction's balance changes as deltas
+    /// over the balances earlier transactions left.
+    ///
+    /// Defaults to `false`.
+    #[cfg(all(feature = "block", feature = "std"))]
+    #[inline]
+    pub(crate) const fn set_track_balance_reads(&mut self, track: bool) {
+        self.track_balance_reads = track;
+    }
+
+    /// Records that the current transaction read the exact balance of `address`.
+    #[inline]
+    pub(crate) fn observe_balance(&mut self, address: &Address) {
+        if self.track_balance_reads {
+            self.balance_reads.observed.insert(*address);
+        }
+    }
+
+    /// Records a check of whether the balance of `address`, `current` and `original` at the
+    /// transaction's start, covers `value`.
+    #[inline]
+    fn record_balance_check(
+        &mut self,
+        address: &Address,
+        original: Option<Word>,
+        current: Word,
+        value: &Word,
+        covered: bool,
+    ) {
+        if !self.track_balance_reads {
+            return;
+        }
+        // The check passes for any starting balance at least `original + value - current`: the
+        // transaction's own changes before it are deltas. A failed check decides the outcome on
+        // the exact balance.
+        if covered
+            && let Some(original) = original
+            && let Some(needed) = original.checked_add(*value)
+        {
+            let floor = self.balance_reads.floors.entry(*address).or_default();
+            *floor = (*floor).max(needed.saturating_sub(current));
+        } else {
+            self.balance_reads.observed.insert(*address);
+        }
+    }
+
+    /// Resolves the deferred storage that `pending`, detached from a transaction executed with
+    /// [`Self::set_defer_storage_resolution`], left unresolved, against this state, as the end of
+    /// that transaction would have against it.
+    ///
+    /// Call it between transactions, on the state the transaction is to commit on.
+    pub fn resolve_pending_state(&mut self, pending: &mut PendingState) -> DbResult<()> {
+        if !pending.deferred.is_pending() {
+            return Ok(());
+        }
+        let journal_len = self.inner.journal.len();
+        self.set_pending_state(mem::take(pending));
+        let result = self.resolve_deferred_storage();
+        *pending = self.take_pending_state();
+        self.inner.journal.truncate(journal_len);
+        result
+    }
+
+    /// Returns whether a storage slot is loaded in the transaction overlay.
+    #[inline]
+    pub(crate) fn is_storage_loaded(&self, address: &Address, key: &Word) -> bool {
+        self.accounts.get(address).is_some_and(|account| account.storage.slots.contains_key(key))
+    }
+
+    /// Applies every pending blind add and runs the deferred storage operations, recording the
+    /// slots this loads.
+    fn resolve_deferred_storage(&mut self) -> DbResult<()> {
+        self.resolve_storage_deltas(|_| true, true)?;
+        for op in mem::take(&mut self.inner.deferred.ops) {
+            op.run(self)?;
+        }
+        Ok(())
+    }
+
+    /// Applies the pending blind adds of the accounts `filter` selects by loading their slots.
+    /// With `record`, the slots this loads are recorded as resolved at the transaction's end.
+    fn resolve_storage_deltas(
+        &mut self,
+        filter: impl Fn(&Address) -> bool,
+        record: bool,
+    ) -> DbResult<()> {
+        let keys = self
+            .inner
+            .deferred
+            .deltas
+            .keys()
+            .filter(|key| filter(&key.address()))
+            .copied()
+            .collect::<Vec<_>>();
+        for key in keys {
+            let (address, key) = (key.address(), key.key());
+            if record && !self.is_storage_loaded(&address, &key) {
+                self.inner.deferred.resolved.push((address, key));
+            }
+            self.storage_slot(&address, key)?;
+        }
+        Ok(())
     }
 }
 
@@ -1570,38 +1806,6 @@ mod tests {
     }
 
     #[test]
-    fn cool_loaded_clears_runtime_warmth_only() {
-        let cooled = Address::with_last_byte(42);
-        let prewarmed = Address::with_last_byte(43);
-        let key = Word::ONE;
-        let mut state = State::new(EmptyDB::default());
-        state.prewarm_storage(&prewarmed, [key]);
-        for address in [cooled, prewarmed] {
-            let mut account = state.account(&address).unwrap();
-            account.set_balance(Word::from(7));
-            account.warm();
-            drop(account);
-            let mut slot = state.storage_slot(&address, key).unwrap();
-            slot.set(Word::from(9));
-            slot.warm();
-        }
-
-        state.cool_loaded();
-
-        assert!(!state.account(&cooled).unwrap().is_warm());
-        assert!(!state.storage(&cooled).unwrap().is_warm(&key));
-        assert!(state.account(&prewarmed).unwrap().is_warm());
-        assert!(state.storage(&prewarmed).unwrap().is_warm(&key));
-        for address in [cooled, prewarmed] {
-            assert_eq!(state.account(&address).unwrap().balance(), Word::from(7));
-            assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::from(9));
-        }
-        // The cooled slot warms again as a cold access; the pre-warmed one was never cold.
-        assert!(state.storage_slot(&cooled, key).unwrap().warm());
-        assert!(!state.storage_slot(&prewarmed, key).unwrap().warm());
-    }
-
-    #[test]
     fn rollback_after_snapshot_restore() {
         // Restoring a snapshot does not rebase active checkpoints. Only entries beyond each saved
         // cursor are reverted, even after the journal and logs regrow.
@@ -1752,32 +1956,5 @@ mod tests {
         state.rollback(checkpoint, EvmFeatures::empty());
 
         assert_eq!(sorted_loaded_accounts(&state), [(read, vec![Word::ONE])]);
-    }
-
-    #[test]
-    fn reload_storage_slot_rereads_slot_read_as_zero_under_rolled_back_creation() {
-        let caller = Address::with_last_byte(1);
-        let address = Address::with_last_byte(2);
-        let (key, unloaded) = (Word::ONE, Word::from(2));
-        let features = Version::base(crate::SpecId::CANCUN).features;
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
-        db.insert_account_storage(&address, &key, &Word::from(6));
-        let mut state = State::new(db);
-
-        let checkpoint = state.checkpoint();
-        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
-        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
-        // Under the creation, a first load reads zero.
-        state.reload_storage_slot(&address, &key).unwrap();
-        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
-        state.rollback(checkpoint, features);
-
-        state.reload_storage_slot(&address, &key).unwrap();
-        state.reload_storage_slot(&address, &unloaded).unwrap();
-        let slot = state.storage_slot(&address, key).unwrap();
-        assert_eq!((slot.original(), slot.current()), (Word::from(6), Word::from(6)));
-        assert!(!state.accounts[&address].storage.slots.contains_key(&unloaded));
-        assert!(!state.take_pending_state().is_changed());
     }
 }

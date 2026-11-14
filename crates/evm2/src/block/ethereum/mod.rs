@@ -32,6 +32,13 @@ use execution::{
     post_execution_system_call_state_changes, pre_execution_system_call_state_changes,
 };
 
+#[cfg(feature = "std")]
+pub mod parallel;
+#[cfg(feature = "std")]
+pub use parallel::{
+    AccessKey, ParallelExecutionOutput, ParallelExecutionStats, ParallelHints, StreamedTx,
+};
+
 #[cfg(test)]
 mod tests;
 
@@ -184,6 +191,7 @@ where
     /// Total blob gas used.
     pub blob_gas_used: u64,
     bal_index_offset: u64,
+    parallel_commit: parallel::ParallelCommit,
 }
 
 impl<'a, T, R> EthBlockExecutor<'a, T, R>
@@ -219,6 +227,7 @@ where
             separate_block_gas,
             blob_gas_used: 0,
             bal_index_offset: 0,
+            parallel_commit: parallel::ParallelCommit::default(),
         }
     }
 

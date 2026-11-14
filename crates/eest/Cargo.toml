@@ -14,7 +14,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-evm2 = { workspace = true, features = ["block"] }
+evm2 = { workspace = true, features = ["block", "std"] }
 evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
 
 alloy-consensus = { workspace = true, features = ["k256", "std"] }
