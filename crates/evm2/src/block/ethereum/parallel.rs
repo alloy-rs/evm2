@@ -117,11 +117,18 @@ const BUCKETS: usize = 32;
 /// Number of elements of the first bucket of a [`Buckets`].
 const FIRST_BUCKET: usize = 64;
 
-/// Times an idle worker polls for results to execute again before parking.
-const TAIL_SPINS: u32 = 1 << 8;
+/// Times an idle worker polls for results to execute again before yielding its core.
+const TAIL_SPINS: u32 = 1 << 6;
 
-/// How long an idle worker parks between polls for results to execute again.
-const TAIL_PARK: core::time::Duration = core::time::Duration::from_micros(20);
+/// Times an idle worker yields its core and polls again before parking until woken.
+const TAIL_YIELDS: u32 = 4;
+
+/// Longest an idle worker parks before polling again, should no wake reach it.
+const TAIL_PARK: core::time::Duration = core::time::Duration::from_millis(1);
+
+/// How many commits the committer advances before waking a parked idle worker to validate ahead
+/// of it.
+const IDLE_WAKE_COMMITS: usize = 4;
 
 /// How far ahead of the committer idle workers validate results in batched commits.
 const PREVALIDATE_AHEAD: usize = 8;
@@ -456,6 +463,7 @@ where
                 )
             };
             scheduler.abort();
+            results.wake_all_idle();
             result
         });
         store.drop_in_background();
@@ -603,6 +611,7 @@ where
                 )
             };
             scheduler.abort();
+            results.wake_all_idle();
             result
         });
         store.drop_in_background();
@@ -703,6 +712,7 @@ where
                         // Later results may have read the stale writes: have idle workers check
                         // them again.
                         results.revalidate.fetch_min(index + 1, Ordering::AcqRel);
+                        results.wake_idle();
                         let committed = committed.into_iter().collect::<HashSet<_>>();
                         store.unpublish(
                             version,
@@ -971,6 +981,7 @@ where
                     let mut committed = Vec::new();
                     store.publish(version, &pending_state, &mut committed);
                     results.revalidate.fetch_min(index + 1, Ordering::AcqRel);
+                    results.wake_idle();
                     let committed = committed.into_iter().collect::<HashSet<_>>();
                     store.unpublish(
                         version,
@@ -1623,22 +1634,31 @@ fn run_worker<T, F, H, K, Q>(
     // commit them instead of executing them itself.
     let Some(evm) = &mut evm else { return };
     let mut idle = 0;
+    let mut woken = false;
     while !scheduler.is_stopped() {
+        // Read before looking for work: work that appears after the search changes it, so that
+        // parking then returns at once.
+        let epoch = results.idle_epoch();
         if results.batched
             && (prevalidate_next(store, queue, results) || warm_deferred(store, results))
         {
             idle = 0;
+            woken = false;
             continue;
         }
         let index = results.revalidate.load(Ordering::Acquire);
-        if index >= queue.len.load(Ordering::Acquire) {
+        let len = queue.len.load(Ordering::Acquire);
+        if index >= len {
             // Wait for the committer to execute a transaction again, which can make later results
-            // stale, or to finish, without taking a core it may need.
+            // stale, or to commit further, or to finish, without taking a core it may need.
             idle += 1;
             if idle < TAIL_SPINS {
                 core::hint::spin_loop();
+            } else if idle < TAIL_SPINS + TAIL_YIELDS {
+                std::thread::yield_now();
             } else {
-                std::thread::park_timeout(TAIL_PARK);
+                results.park_idle(epoch);
+                woken = true;
             }
             continue;
         }
@@ -1650,6 +1670,10 @@ fn run_worker<T, F, H, K, Q>(
             continue;
         }
         idle = 0;
+        // The committer wakes one worker for results to check again: wake another to share them.
+        if core::mem::take(&mut woken) && index + 1 < len {
+            results.wake_idle();
+        }
         if index <= results.committing.load(Ordering::Acquire) {
             continue;
         }
@@ -3071,6 +3095,12 @@ struct Results<S> {
     batched: bool,
     /// The deferred storage operations idle workers run ahead of a batched commit.
     warmer: Mutex<DeferredWarmer>,
+    /// Advanced whenever work for idle workers may have appeared.
+    idle_epoch: CachePadded<AtomicUsize>,
+    /// Number of parked idle workers.
+    sleepers: CachePadded<AtomicUsize>,
+    /// The parked idle workers, for a wake to unpark.
+    sleeping: Mutex<Vec<Thread>>,
 }
 
 impl<S> Results<S> {
@@ -3088,6 +3118,9 @@ impl<S> Results<S> {
             ready: CachePadded(AtomicUsize::new(0)),
             batched,
             warmer: Mutex::default(),
+            idle_epoch: CachePadded(AtomicUsize::new(0)),
+            sleepers: CachePadded(AtomicUsize::new(0)),
+            sleeping: Mutex::default(),
         }
     }
 
@@ -3114,12 +3147,19 @@ impl<S> Results<S> {
         if self.waiting.load(Ordering::Relaxed) == index {
             self.committer.unpark();
         }
+        // A result next to the committer can be validated ahead of it.
+        self.wake_idle();
     }
 
     /// Takes the result of the transaction at `index`, waiting for it, or returns `None` once
     /// every worker exited without producing it.
     fn take(&self, index: usize) -> Option<S> {
         self.committing.store(index, Ordering::Relaxed);
+        // Committing further lets idle workers validate further ahead: wake one now and then,
+        // since it validates every result in reach.
+        if index.is_multiple_of(IDLE_WAKE_COMMITS) {
+            self.wake_idle();
+        }
         let slot = self.slots.get(index);
         let mut spins = 0;
         while !slot.ready.load(Ordering::Acquire) {
@@ -3145,6 +3185,60 @@ impl<S> Results<S> {
         }
         self.waiting.store(usize::MAX, Ordering::Relaxed);
         slot.value.lock().expect("lock poisoned").take()
+    }
+
+    /// Returns the idle epoch, which [`Self::park_idle`] waits to change.
+    fn idle_epoch(&self) -> usize {
+        self.idle_epoch.load(Ordering::SeqCst)
+    }
+
+    /// Parks the calling idle worker until a wake after the idle epoch was `epoch`, or at most
+    /// [`TAIL_PARK`]. Returns at once when the epoch changed already.
+    fn park_idle(&self, epoch: usize) {
+        let current = std::thread::current();
+        {
+            let mut sleeping = self.sleeping.lock().expect("lock poisoned");
+            // Count in before reading the epoch: a wake that advances it after the read then sees
+            // this worker counted and unparks it.
+            self.sleepers.fetch_add(1, Ordering::SeqCst);
+            if self.idle_epoch.load(Ordering::SeqCst) != epoch {
+                self.sleepers.fetch_sub(1, Ordering::Relaxed);
+                return;
+            }
+            sleeping.push(current.clone());
+        }
+        std::thread::park_timeout(TAIL_PARK);
+        let mut sleeping = self.sleeping.lock().expect("lock poisoned");
+        if let Some(position) = sleeping.iter().position(|thread| thread.id() == current.id()) {
+            sleeping.swap_remove(position);
+            self.sleepers.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Advances the idle epoch and unparks one parked idle worker, if any.
+    fn wake_idle(&self) {
+        self.idle_epoch.fetch_add(1, Ordering::SeqCst);
+        if self.sleepers.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        let mut sleeping = self.sleeping.lock().expect("lock poisoned");
+        let Some(thread) = sleeping.pop() else { return };
+        self.sleepers.fetch_sub(1, Ordering::Relaxed);
+        drop(sleeping);
+        thread.unpark();
+    }
+
+    /// Advances the idle epoch and unparks every parked idle worker.
+    fn wake_all_idle(&self) {
+        self.idle_epoch.fetch_add(1, Ordering::SeqCst);
+        let threads = {
+            let mut sleeping = self.sleeping.lock().expect("lock poisoned");
+            self.sleepers.store(0, Ordering::Relaxed);
+            core::mem::take(&mut *sleeping)
+        };
+        for thread in threads {
+            thread.unpark();
+        }
     }
 
     /// Returns the number of leading results stored.
