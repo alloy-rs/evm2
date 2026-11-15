@@ -5,7 +5,7 @@ use super::{DbResult, State};
 use crate::{interpreter::Word, storage_key::StorageKeyMap};
 use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::Address;
-use core::fmt;
+use core::{any::Any, fmt};
 
 /// The pending blind adds to one storage slot the transaction has not read. See
 /// [`State::storage_add`].
@@ -60,9 +60,17 @@ impl DeferredStorage {
 /// execution: whatever it reads, the transaction's gas, output and other writes are the same.
 /// Parallel block execution runs it when the transaction commits, against the state of every
 /// transaction before it, so transactions that each update one shared slot this way, such as a
-/// ring buffer's write pointer, do not conflict.
+/// ring buffer's write pointer, do not conflict. A batched operation (see [`Self::batched`])
+/// instead runs with those of every other transaction at the block's end.
 #[derive(Clone)]
-pub struct DeferredStorageOp(Arc<DeferredStorageFn>);
+pub struct DeferredStorageOp(DeferredStorageKind);
+
+/// What a [`DeferredStorageOp`] runs.
+#[derive(Clone)]
+enum DeferredStorageKind {
+    Fn(Arc<DeferredStorageFn>),
+    Batched(Arc<dyn BatchedStorageOp>),
+}
 
 /// The function a [`DeferredStorageOp`] runs.
 type DeferredStorageFn = dyn Fn(&mut DeferredStorageAccess<'_, '_>) -> DbResult<()> + Send + Sync;
@@ -72,18 +80,93 @@ impl DeferredStorageOp {
     pub fn new(
         op: impl Fn(&mut DeferredStorageAccess<'_, '_>) -> DbResult<()> + Send + Sync + 'static,
     ) -> Self {
-        Self(Arc::new(op))
+        Self(DeferredStorageKind::Fn(Arc::new(op)))
+    }
+
+    /// Creates a deferred storage operation that batched parallel commits run together with the
+    /// operations of the same type every other transaction of the block deferred, once, at the
+    /// block's end. See [`BatchedStorageOp`].
+    pub fn batched(op: impl BatchedStorageOp) -> Self {
+        Self(DeferredStorageKind::Batched(Arc::new(op)))
+    }
+
+    /// Returns the batched operation, if it is one of type `T`.
+    pub fn downcast_ref<T: BatchedStorageOp>(&self) -> Option<&T> {
+        match &self.0 {
+            DeferredStorageKind::Batched(op) => (&**op as &dyn Any).downcast_ref(),
+            DeferredStorageKind::Fn(_) => None,
+        }
+    }
+
+    /// Returns the batched operation, if it is one.
+    #[cfg(all(feature = "std", feature = "block"))]
+    pub(crate) fn as_batched(&self) -> Option<&dyn BatchedStorageOp> {
+        match &self.0 {
+            DeferredStorageKind::Batched(op) => Some(&**op),
+            DeferredStorageKind::Fn(_) => None,
+        }
     }
 
     /// Runs the operation against `state`.
     pub(crate) fn run(&self, state: &mut State<'_>) -> DbResult<()> {
-        (self.0)(&mut DeferredStorageAccess { backend: Backend::State(state) })
+        self.run_with(&mut DeferredStorageAccess { backend: Backend::State(state) })
     }
 
     /// Runs the operation against `store`.
     #[cfg(all(feature = "std", feature = "block"))]
     pub(crate) fn run_on(&self, store: &mut dyn DeferredStorageStore) -> DbResult<()> {
-        (self.0)(&mut DeferredStorageAccess { backend: Backend::Store(store) })
+        self.run_with(&mut DeferredStorageAccess { backend: Backend::Store(store) })
+    }
+
+    /// Runs the operation alone against `access`.
+    fn run_with(&self, access: &mut DeferredStorageAccess<'_, '_>) -> DbResult<()> {
+        match &self.0 {
+            DeferredStorageKind::Fn(op) => op(access),
+            DeferredStorageKind::Batched(op) => op.run(access),
+        }
+    }
+}
+
+/// A deferred storage operation that batched parallel commits run once for the whole block.
+///
+/// Sequential execution and in-order commits run each transaction's operation with
+/// [`Self::run`], as any [`DeferredStorageOp`]. A batched parallel commit instead checks each
+/// operation with [`Self::check`] as its transaction commits and, once every transaction
+/// committed, hands the operations of each type to [`Self::run_batch`] in block order, which
+/// writes the block's final state. The block's result must be the one running each operation at
+/// its transaction's end gives, which holds when no transaction's outcome depends on the values
+/// the operations write, and the slots they write are written by nothing else in the block.
+pub trait BatchedStorageOp: Any + Send + Sync {
+    /// Runs this operation alone against the state its transaction leaves.
+    fn run(&self, access: &mut DeferredStorageAccess<'_, '_>) -> DbResult<()>;
+
+    /// Checks, as its transaction commits, that the operation runs after `earlier`, the
+    /// operations of this type the block's earlier transactions deferred, in block order, as it
+    /// would at its transaction's end. An error fails the batched commit at this transaction, and
+    /// the block executes again sequentially.
+    fn check(&self, earlier: &[DeferredStorageOp]) -> DbResult<()>;
+
+    /// Writes the effects of `ops`, every operation of this type the block's transactions
+    /// deferred, in block order, once every transaction committed. Called on the first of them.
+    fn run_batch(&self, ops: &[DeferredStorageOp], access: &mut DeferredBatchAccess);
+}
+
+/// The writes of a running [`BatchedStorageOp::run_batch`] to the block's final state.
+#[derive(Debug, Default)]
+pub struct DeferredBatchAccess {
+    writes: Vec<(Address, Word, Word)>,
+}
+
+impl DeferredBatchAccess {
+    /// Writes a storage slot of the block's final state.
+    pub fn sstore(&mut self, address: &Address, key: Word, value: Word) {
+        self.writes.push((*address, key, value));
+    }
+
+    /// Returns the slots written, in order.
+    #[cfg(all(feature = "std", feature = "block"))]
+    pub(crate) fn into_writes(self) -> Vec<(Address, Word, Word)> {
+        self.writes
     }
 }
 
@@ -113,7 +196,11 @@ impl fmt::Debug for DeferredStorageOp {
 /// Operations are equal when they are the same operation.
 impl PartialEq for DeferredStorageOp {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        match (&self.0, &other.0) {
+            (DeferredStorageKind::Fn(a), DeferredStorageKind::Fn(b)) => Arc::ptr_eq(a, b),
+            (DeferredStorageKind::Batched(a), DeferredStorageKind::Batched(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
     }
 }
 
