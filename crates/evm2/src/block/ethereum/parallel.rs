@@ -66,8 +66,8 @@ use crate::{
     },
     bytecode::Bytecode,
     evm::{
-        AccountFlags, AccountInfo, Cache, DbResult, DeferredStorageStore, DynDatabase,
-        DynDatabaseRef, PendingState,
+        AccountFlags, AccountInfo, Cache, DbResult, DeferredBatchAccess, DeferredStorageOp,
+        DeferredStorageStore, DynDatabase, DynDatabaseRef, PendingState,
     },
     interpreter::{Host, Word},
 };
@@ -87,6 +87,7 @@ use alloy_primitives::{
     map::{AddressMap, B256Map, HashMap, HashSet},
 };
 use core::{
+    any::{Any, TypeId},
     borrow::Borrow,
     cell::{Cell, RefCell},
     cmp::Reverse,
@@ -833,6 +834,8 @@ where
         let mut stream = streamer.is_some().then(PrefixStream::default);
         // Each worker's committed buffers, handed back in batches.
         let mut spare = results.pools.iter().map(|_| Vec::new()).collect::<Vec<_>>();
+        // Batched deferred storage operations of the committed transactions, by type.
+        let mut batches = Vec::<(TypeId, Vec<DeferredStorageOp>)>::new();
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
             let Speculative {
@@ -880,7 +883,13 @@ where
                             store.republish_account(version, *address, account.present.as_ref());
                         }
                     }
-                    run_deferred_ops(store, version, &mut pending_state, stream.as_mut())?;
+                    run_deferred_ops(
+                        store,
+                        version,
+                        &mut pending_state,
+                        stream.as_mut(),
+                        &mut batches,
+                    )?;
                     on_commit(index, &result)?;
                     // Settling and deferred operations create no account and wipe no storage.
                     if created_or_wiped {
@@ -933,7 +942,13 @@ where
                         stream.keys.extend(committed.iter().copied());
                     }
                     store.log_writes(version, committed.into_iter().chain(writes.iter().copied()));
-                    run_deferred_ops(store, version, &mut pending_state, stream.as_mut())?;
+                    run_deferred_ops(
+                        store,
+                        version,
+                        &mut pending_state,
+                        stream.as_mut(),
+                        &mut batches,
+                    )?;
                     on_commit(index, &result)?;
                     record_lifecycle(&mut lifecycle, &pending_state);
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
@@ -964,6 +979,19 @@ where
         }
         if let Some(info) = rewarded.take() {
             store.republish_account(last_version, beneficiary, info.as_ref());
+        }
+        for (_, ops) in &batches {
+            let mut access = DeferredBatchAccess::default();
+            ops[0]
+                .as_batched()
+                .expect("batches hold batched operations")
+                .run_batch(ops, &mut access);
+            for (address, key, value) in access.into_writes() {
+                store.put_slot(last_version, address, key, value);
+                if let Some(stream) = &mut stream {
+                    stream.keys.push(WriteKey::Storage(address, key));
+                }
+            }
         }
         if let (Some(stream), Some(streamer)) = (&mut stream, streamer) {
             let keys = core::mem::take(&mut stream.keys);
@@ -1140,12 +1168,13 @@ fn credit_reward(
 }
 
 /// Runs a committed transaction's deferred storage operations against `store`, in order, at the
-/// transaction's `version`.
+/// transaction's `version`, and adds its batched ones to `batches`, to run at the block's end.
 fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
     store: &MvStore<'_, B>,
     version: u32,
     pending: &mut PendingState,
     stream: Option<&mut PrefixStream>,
+    batches: &mut Vec<(TypeId, Vec<DeferredStorageOp>)>,
 ) -> Result<(), BlockExecutionError> {
     let Some(parallel) =
         pending.parallel.as_deref_mut().filter(|parallel| !parallel.deferred.ops.is_empty())
@@ -1154,7 +1183,20 @@ fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
     };
     let mut access = StoreAccess { store, version, stream };
     for op in core::mem::take(&mut parallel.deferred.ops) {
-        op.run_on(&mut access).map_err(map_database_error)?;
+        let Some(batched) = op.as_batched() else {
+            op.run_on(&mut access).map_err(map_database_error)?;
+            continue;
+        };
+        let type_id = (batched as &dyn Any).type_id();
+        let ops = match batches.iter().position(|(id, _)| *id == type_id) {
+            Some(index) => &mut batches[index].1,
+            None => {
+                batches.push((type_id, Vec::new()));
+                &mut batches.last_mut().expect("pushed above").1
+            }
+        };
+        batched.check(ops).map_err(map_database_error)?;
+        ops.push(op);
     }
     Ok(())
 }
@@ -1409,7 +1451,8 @@ fn warm_deferred<T: EvmTypes>(
     let Some(ops) = ops else { return true };
     let warmer = &mut *warmer;
     let mut access = WarmAccess { store, version: version(index), slots: &mut warmer.slots };
-    for op in &ops {
+    // Batched operations run at the block's end.
+    for op in ops.iter().filter(|op| op.as_batched().is_none()) {
         if op.run_on(&mut access).is_err() {
             break;
         }
@@ -2598,11 +2641,14 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
 
     /// Writes a slot's value at `version`.
     fn write_slot(&self, version: u32, address: Address, key: Word, value: Word) {
-        {
-            let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
-            shard.entry((address, key)).or_default().insert(version, SlotWrite::Value(value));
-        }
+        self.put_slot(version, address, key, value);
         self.log_writes(version, [WriteKey::Storage(address, key)]);
+    }
+
+    /// Writes a slot's value at `version` without logging it, once nothing validates against it.
+    fn put_slot(&self, version: u32, address: Address, key: Word, value: Word) {
+        let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+        shard.entry((address, key)).or_default().insert(version, SlotWrite::Value(value));
     }
 
     /// Returns the block's changes once every transaction committed: each account and slot written

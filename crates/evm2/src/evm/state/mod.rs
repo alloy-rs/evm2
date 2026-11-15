@@ -19,7 +19,9 @@ pub(crate) use deferred::{DeferredStorage, StorageDelta};
 
 #[cfg(all(feature = "std", feature = "block"))]
 pub(crate) use deferred::DeferredStorageStore;
-pub use deferred::{DeferredStorageAccess, DeferredStorageOp};
+pub use deferred::{
+    BatchedStorageOp, DeferredBatchAccess, DeferredStorageAccess, DeferredStorageOp,
+};
 #[cfg(feature = "account-ext")]
 pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};

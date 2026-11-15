@@ -179,11 +179,11 @@ pub use state::AccountExtension;
 #[cfg(all(feature = "std", feature = "block"))]
 pub(crate) use state::DeferredStorageStore;
 pub use state::{
-    AccountChangeRef, AccountChanges, AccountFlags, AccountHandle, AccountInfo,
-    BlockStateAccumulator, DeferredStorageAccess, DeferredStorageOp, JournalEntry, NoopChangeSink,
-    PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint, StateInner,
-    StateSnapshot, StorageChange, StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle,
-    Tee, Tracked, TxStateChanges,
+    AccountChangeRef, AccountChanges, AccountFlags, AccountHandle, AccountInfo, BatchedStorageOp,
+    BlockStateAccumulator, DeferredBatchAccess, DeferredStorageAccess, DeferredStorageOp,
+    JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource,
+    StateCheckpoint, StateInner, StateSnapshot, StorageChange, StorageHandle, StorageOverlay,
+    StorageSlot, StorageSlotHandle, Tee, Tracked, TxStateChanges,
 };
 
 pub(crate) mod prewarm_set;

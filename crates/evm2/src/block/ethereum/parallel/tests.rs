@@ -8,7 +8,8 @@ use crate::{
     env::BlockEnvExt,
     ethereum::ethereum_tx_registry,
     evm::{
-        BEACON_ROOTS_ADDRESS, DeferredStorageOp, EmptyDB, HISTORY_STORAGE_ADDRESS, InMemoryDB,
+        BEACON_ROOTS_ADDRESS, BatchedStorageOp, DbResult, DeferredBatchAccess,
+        DeferredStorageAccess, DeferredStorageOp, EmptyDB, HISTORY_STORAGE_ADDRESS, InMemoryDB,
         precompile::PrecompileOutput,
     },
     interpreter::{GasTracker, Message},
@@ -832,8 +833,38 @@ fn streamed_public_mix_benchmark() {
 /// - 4: defers inserting the caller into the ring buffer and marking it seen, clearing the seen
 ///   mark of the entry it evicts.
 /// - 5: reads the ring pointer, which only deferred operations write, into the caller's slot.
+/// - 6: defers appending the caller to a log, as a batched operation (see [`Append`]).
 const LEDGER: Address = Address::repeat_byte(0x1d);
 const RING_CAPACITY: u64 = 4;
+/// Key spaces of [`Append`]'s log entries and its length.
+const LOG: U256 = U256::from_limbs([0, 0, 0, 1 << 11]);
+const LOG_LEN: U256 = U256::from_limbs([0, 0, 0, 1 << 12]);
+
+/// Appends a caller to the [`ledger`]'s log, which starts empty: batched commits write every
+/// transaction's entry once the block's transactions committed.
+struct Append {
+    caller: U256,
+}
+
+impl BatchedStorageOp for Append {
+    fn run(&self, storage: &mut DeferredStorageAccess<'_, '_>) -> DbResult<()> {
+        let len = storage.sload(&LEDGER, LOG_LEN)?;
+        storage.sstore(&LEDGER, LOG + len, self.caller)?;
+        storage.sstore(&LEDGER, LOG_LEN, len + U256::ONE)
+    }
+
+    fn check(&self, _earlier: &[DeferredStorageOp]) -> DbResult<()> {
+        Ok(())
+    }
+
+    fn run_batch(&self, ops: &[DeferredStorageOp], access: &mut DeferredBatchAccess) {
+        for (index, op) in ops.iter().enumerate() {
+            let caller = op.downcast_ref::<Self>().expect("batches hold one type").caller;
+            access.sstore(&LEDGER, LOG + U256::from(index), caller);
+        }
+        access.sstore(&LEDGER, LOG_LEN, U256::from(ops.len()));
+    }
+}
 
 fn ledger(
     evm: &mut Evm<'_, crate::BaseEvmTypes>,
@@ -877,6 +908,7 @@ fn ledger(
             let next = (pointer + U256::ONE) % U256::from(RING_CAPACITY);
             storage.sstore(&LEDGER, pointer_key, next)
         })),
+        6 => evm.state_mut().defer_storage_op(DeferredStorageOp::batched(Append { caller })),
         _ => {
             let pointer = Host::sload(evm, &LEDGER, &pointer_key, false)?.value;
             Host::sstore(evm, &LEDGER, &caller, &pointer, false)?;
@@ -910,7 +942,7 @@ fn ledger_block(seed: u64, len: usize, ops: &[u8]) -> Vec<Tx> {
 #[test]
 fn blind_adds_to_one_slot_commit_without_conflicts() {
     // Every transaction adds to the same accumulator, inserts into the same ring buffer, or both.
-    for ops in [&[0][..], &[4], &[0, 4]] {
+    for ops in [&[0][..], &[4], &[0, 4], &[6], &[0, 4, 6]] {
         let txs: Vec<_> = (0..ACCOUNTS)
             .map(|index| {
                 let op = ops[index as usize % ops.len()];
@@ -960,7 +992,7 @@ fn reads_of_deferred_op_writes_match_sequential() {
     // the operations before them committed and published, or are caught validating against the
     // committed state and execute again.
     for seed in 0..30 {
-        let txs = ledger_block(seed, 96, &[4, 4, 4, 5, 0, 3]);
+        let txs = ledger_block(seed, 96, &[4, 4, 4, 5, 0, 3, 6]);
         for threads in [2, 5, 8] {
             assert_matches_sequential(ledger_database(), &txs, threads);
         }
