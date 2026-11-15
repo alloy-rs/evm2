@@ -750,9 +750,13 @@ where
         F: for<'x> Fn(Box<dyn DynDatabase + 'x>) -> Evm<'x, T>,
     {
         let Some(hook) = self.state_update_hook.take() else {
-            return self.commit_batched_with(
+            let lifecycle = self.commit_batched_with(
                 store, queue, txs, results, stats, make_evm, on_commit, on_receipt, None,
-            );
+            )?;
+            let mut state = store.materialize().map_err(map_database_error)?;
+            store.apply_lifecycle(&mut state, &lifecycle).map_err(map_database_error)?;
+            self.commit_block_changes(state);
+            return Ok(());
         };
         std::thread::scope(|scope| {
             let (sender, batches) = mpsc::channel();
@@ -773,14 +777,23 @@ where
                 Ok(joined) => joined,
                 Err(panic) => std::panic::resume_unwind(panic),
             };
+            // The streamer built the block's changes as it streamed them: commit them before the
+            // hook is back, which already received every change.
+            let committed = committed.and_then(|lifecycle| {
+                let mut state = streamed.map_err(map_database_error)?;
+                store.apply_lifecycle(&mut state, &lifecycle).map_err(map_database_error)?;
+                self.commit_block_changes(state);
+                Ok(())
+            });
             self.state_update_hook = Some(hook);
-            committed?;
-            streamed.map_err(map_database_error)
+            committed
         })
     }
 
-    /// Commits as [`Self::commit_batched`], sending the keys each committed prefix wrote to
-    /// `streamer` when the commit streams state.
+    /// Validates and settles the block's transactions as [`Self::commit_batched`], sending the
+    /// keys each committed prefix wrote to `streamer` when the commit streams state, and returns
+    /// the accounts the transactions created or whose storage they wiped. The block's final state
+    /// is then in `store`, for the caller to commit.
     #[expect(clippy::too_many_arguments)]
     fn commit_batched_with<X, B, F>(
         &mut self,
@@ -793,7 +806,7 @@ where
         on_commit: &mut impl FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
         on_receipt: &mut impl FnMut(usize, &R::Receipt),
         streamer: Option<&mpsc::Sender<StreamBatch>>,
-    ) -> Result<(), BlockExecutionError>
+    ) -> Result<AddressMap<Lifecycle>, BlockExecutionError>
     where
         X: Borrow<R::Transaction>,
         B: DynDatabaseRef + Sync + ?Sized,
@@ -935,11 +948,23 @@ where
             let keys = core::mem::take(&mut stream.keys);
             let _ = streamer.send(StreamBatch { keys, version: last_version + 1, running: None });
         }
-        let state = store.materialize(&lifecycle).map_err(map_database_error)?;
-        // The hook, when there is one, receives every change from the streamer.
-        self.commit_pending_state(&state);
+        Ok(lifecycle)
+    }
+
+    /// Commits a batched commit's block changes to the block state and the EVM overlay, one on a
+    /// helper thread, without streaming them.
+    fn commit_block_changes(&mut self, state: PendingState) {
+        let (evm, block_state) = (&mut self.evm, &mut self.block_state);
+        std::thread::scope(|scope| {
+            let state = &state;
+            scope.spawn(move || {
+                for changes in state.account_changes() {
+                    block_state.commit_account_changes(changes, None);
+                }
+            });
+            evm.overlay_db_mut().commit_pending(state);
+        });
         drop_in_background(state);
-        Ok(())
     }
 
     /// Returns the receipt count and gas counters, to restore with [`Self::restore_totals`].
@@ -1139,10 +1164,12 @@ fn version(index: usize) -> u32 {
 struct PrefixStream {
     /// Keys the transactions committed since the last update wrote, with repeats.
     keys: Vec<WriteKey>,
-    /// Each account's value as last streamed.
-    accounts: AddressMap<Option<AccountInfo>>,
-    /// Each slot's value as last streamed.
-    slots: HashMap<(Address, Word), Word>,
+    /// Each account and slot streamed, from its value before the block to its value as last
+    /// streamed: once the last update is taken, the block's changes.
+    state: PendingState,
+    /// Accounts streamed with code they did not have before the block, to load it into
+    /// `state` at the end.
+    code: Vec<Address>,
     /// When the last update was taken.
     last: Instant,
 }
@@ -1151,8 +1178,8 @@ impl Default for PrefixStream {
     fn default() -> Self {
         Self {
             keys: Vec::new(),
-            accounts: AddressMap::default(),
-            slots: HashMap::default(),
+            state: PendingState::default(),
+            code: Vec::new(),
             last: Instant::now(),
         }
     }
@@ -1185,25 +1212,52 @@ impl PrefixStream {
                 Some((beneficiary, info)) if beneficiary == address => info.cloned(),
                 _ => store.account(&address, version)?,
             };
-            let original = match self.accounts.get(&address) {
-                Some(info) => info.clone(),
-                None if account_written => store.account_initial(&address)?,
-                None => current.clone(),
+            let original = match self.state.accounts.get_mut(&address) {
+                Some(account) => {
+                    let original = account.present.clone();
+                    if account_written {
+                        account.present = current.clone();
+                    }
+                    original
+                }
+                None => {
+                    let original = match account_written {
+                        true => store.account_initial(&address)?,
+                        false => current.clone(),
+                    };
+                    self.state.insert_account(address, original.clone(), current.clone());
+                    original
+                }
             };
+            if account_written
+                && let Some(info) = &current
+                && info.code_hash != KECCAK256_EMPTY
+                && !info.code_hash.is_zero()
+            {
+                self.code.push(address);
+            }
             if keys.is_empty() && original == current {
                 continue;
-            }
-            if account_written {
-                self.accounts.insert(address, current.clone());
             }
             keys.sort_unstable();
             keys.dedup();
             let mut storage = Vec::with_capacity(keys.len());
             for key in keys {
                 let value = store.storage(&address, &key, version)?;
-                let previous = match self.slots.insert((address, key), value) {
-                    Some(previous) => previous,
-                    None => store.storage_initial(&address, &key)?,
+                let slots = &mut self
+                    .state
+                    .accounts
+                    .get_mut(&address)
+                    .expect("inserted above")
+                    .storage
+                    .slots;
+                let previous = match slots.get_mut(&key) {
+                    Some(slot) => core::mem::replace(&mut slot.value.current, value),
+                    None => {
+                        let original = store.storage_initial(&address, &key)?;
+                        self.state.insert_storage(address, key, original, value);
+                        original
+                    }
                 };
                 storage.push((key, StorageSlot::new_changed(previous, value)));
             }
@@ -1218,6 +1272,28 @@ impl PrefixStream {
         }
         Ok(update)
     }
+
+    /// Returns the block's changes once the last update was taken: each account and slot written,
+    /// from its value before the block to its latest value, with the code of each account whose
+    /// code changed.
+    fn finish<B: DynDatabaseRef + Sync + ?Sized>(
+        mut self,
+        store: &MvStore<'_, B>,
+    ) -> DbResult<PendingState> {
+        for address in self.code {
+            if let Some(account) = self.state.accounts.get_mut(&address)
+                && let Some(info) = &mut account.present
+                && info.code.is_none()
+                && account
+                    .original
+                    .as_ref()
+                    .is_none_or(|original| original.code_hash != info.code_hash)
+            {
+                info.code = Some(store.code(&info.code_hash)?);
+            }
+        }
+        Ok(self.state)
+    }
 }
 
 /// The keys a batched commit's prefix wrote since its last batch, for the streamer to read at
@@ -1230,13 +1306,13 @@ struct StreamBatch {
 }
 
 /// Streams the state each batch of committed keys reached to `hook`, in order, coalescing the
-/// batches that queued while the previous update was taken. Returns the hook and the first error,
-/// after which it only drains the batches.
+/// batches that queued while the previous update was taken. Returns the hook and the block's
+/// changes, or the first error, after which it only drains the batches.
 fn stream_updates<B: DynDatabaseRef + Sync + ?Sized>(
     store: &MvStore<'_, B>,
     batches: &mpsc::Receiver<StreamBatch>,
     mut hook: Box<dyn FnMut(StateUpdate) + Send>,
-) -> (Box<dyn FnMut(StateUpdate) + Send>, DbResult<()>) {
+) -> (Box<dyn FnMut(StateUpdate) + Send>, DbResult<PendingState>) {
     let mut stream = PrefixStream::default();
     let mut result = Ok(());
     while let Ok(mut batch) = batches.recv() {
@@ -1255,7 +1331,7 @@ fn stream_updates<B: DynDatabaseRef + Sync + ?Sized>(
             Err(error) => result = Err(error),
         }
     }
-    (hook, result)
+    (hook, result.and_then(|()| stream.finish(store)))
 }
 
 /// Drops `value` on a background thread, off the critical path, or here when no thread spawns.
@@ -2424,7 +2500,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     /// Returns the block's changes once every transaction committed: each account and slot written
     /// from its state before the block to its latest value. Threads read the shards' values in
     /// parallel.
-    fn materialize(&self, lifecycle: &AddressMap<Lifecycle>) -> DbResult<PendingState> {
+    fn materialize(&self) -> DbResult<PendingState> {
         let threads = std::thread::available_parallelism()
             .map_or(1, NonZeroUsize::get)
             .clamp(1, MATERIALIZE_THREADS);
@@ -2455,6 +2531,16 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             }
             state.insert_storage(address, key, original, current);
         }
+        Ok(state)
+    }
+
+    /// Marks in the block's changes `state` the accounts its transactions created or whose
+    /// storage they wiped.
+    fn apply_lifecycle(
+        &self,
+        state: &mut PendingState,
+        lifecycle: &AddressMap<Lifecycle>,
+    ) -> DbResult<()> {
         for (address, lifecycle) in lifecycle {
             if !state.accounts.contains_key(address) {
                 let info = self.account_initial(address)?;
@@ -2466,7 +2552,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 account.mark_created_discarding_storage();
             }
         }
-        Ok(state)
+        Ok(())
     }
 
     /// Reads the accounts and slots written in `len` account and storage shards from `start`: each
