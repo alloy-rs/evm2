@@ -22,7 +22,7 @@ use alloy_consensus::{
     constants::ETH_TO_WEI,
 };
 use alloy_eips::{eip2935::HISTORY_STORAGE_CODE, eip4788::BEACON_ROOTS_CODE};
-use alloy_primitives::{Bytes, Signature, TxKind, U256};
+use alloy_primitives::{Bytes, Log, Signature, TxKind, U256};
 use std::sync::Mutex;
 
 type Tx = Recovered<EthereumTxEnvelope<TxEip4844>>;
@@ -676,7 +676,8 @@ fn stream(
             NonZeroUsize::new(threads).unwrap(),
             |_, _| {},
             |_, _| Ok(()),
-            |_, _| {},
+            |_, _| None::<()>,
+            |_, _, _| {},
         )
         .unwrap();
     let output = executor.finish().unwrap();
@@ -750,7 +751,8 @@ fn streamed_transactions_commit_before_the_block_arrives() {
                 NonZeroUsize::new(4).unwrap(),
                 |_, _| {},
                 |_, _| Ok(()),
-                |_, _| {},
+                |_, _| None::<()>,
+                |_, _, _| {},
             )
             .unwrap();
         let committed = producer.join().unwrap();
@@ -807,7 +809,8 @@ fn streamed_public_mix_benchmark() {
                     NonZeroUsize::new(threads.saturating_sub(1).max(1)).unwrap(),
                     |_, _| {},
                     |_, _| Ok(()),
-                    |_, _| {},
+                    |_, _| None::<()>,
+                    |_, _, _| {},
                 )
                 .unwrap();
             let done = std::time::Instant::now();
@@ -1158,8 +1161,12 @@ fn stream_batched(database: InMemoryDB, txs: &[Tx], threads: usize) -> (Run, Vec
             NonZeroUsize::new(threads).unwrap(),
             |_, _| {},
             |_, _| Ok(()),
-            |index, receipt: &ReceiptEnvelope| {
+            |_, result| Some(result.logs.clone()),
+            |index, receipt: &ReceiptEnvelope, copy: Option<Vec<Log>>| {
                 assert_eq!(index, receipts.len());
+                if let Some(copy) = copy {
+                    assert_eq!(copy, receipt.logs());
+                }
                 receipts.push(receipt.clone());
             },
         )
@@ -1209,7 +1216,8 @@ fn rejected_streamed_batched_commit_leaves_the_executor_unchanged() {
                         Ok(())
                     }
                 },
-                |_, receipt: &ReceiptEnvelope| receipts.push(receipt.clone()),
+                |_, _| None::<()>,
+                |_, receipt: &ReceiptEnvelope, _| receipts.push(receipt.clone()),
             );
             assert!(rejected.is_err());
             assert!(executor.receipts.is_empty());
