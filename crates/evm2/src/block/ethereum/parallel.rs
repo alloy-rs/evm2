@@ -95,17 +95,20 @@ use core::{
     num::NonZeroUsize,
     ops::Deref,
     ptr,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence},
 };
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Condvar, Mutex, OnceLock, RwLock, mpsc},
+    sync::{Condvar, Mutex, OnceLock, RwLock, RwLockWriteGuard, mpsc},
     thread::Thread,
     time::{Duration, Instant},
 };
 
 /// Number of lock shards of the multi-version account and storage maps.
 const SHARDS: usize = 64;
+
+/// Base-2 logarithm of the number of bits of each [`WriteFilter`] of a [`MvStore`].
+const FILTER_BITS: u32 = 18;
 
 /// Number of buckets of a [`Buckets`], each twice the size of the one before.
 const BUCKETS: usize = 32;
@@ -2364,6 +2367,59 @@ impl BaseMemo {
     }
 }
 
+/// The keys that may have a version in a [`MvStore`], by hash: a key whose bit is clear has none,
+/// so reading it skips the lock and the map of its shard. A key is marked before its first version
+/// is written and never unmarked.
+struct WriteFilter(Box<[AtomicU64]>);
+
+impl WriteFilter {
+    fn new() -> Self {
+        Self((0..1usize << (FILTER_BITS - 6)).map(|_| AtomicU64::new(0)).collect())
+    }
+
+    /// Returns the word holding the bit of `hash`, and the bit.
+    #[inline]
+    fn bit(&self, hash: u64) -> (&AtomicU64, u64) {
+        let index = (hash >> (64 - FILTER_BITS)) as usize;
+        (&self.0[index >> 6], 1 << (index & 63))
+    }
+
+    /// Marks `hash`, before a version of its key is written.
+    #[inline]
+    fn insert(&self, hash: u64) {
+        let (word, bit) = self.bit(hash);
+        // A marked bit is left alone, so that its cache line stays shared between readers.
+        if word.load(Ordering::Relaxed) & bit == 0 {
+            word.fetch_or(bit, Ordering::Release);
+        }
+    }
+
+    /// Returns whether the key of `hash` may have a version. A version written before the read,
+    /// such as by a transaction whose result the reader took, always sets the bit first.
+    #[inline]
+    fn contains(&self, hash: u64) -> bool {
+        let (word, bit) = self.bit(hash);
+        word.load(Ordering::Acquire) & bit != 0
+    }
+}
+
+/// Returns the [`WriteFilter`] hash of the account at `address`.
+#[inline]
+fn account_hash(address: &Address) -> u64 {
+    let low = u64::from_le_bytes(address[12..].try_into().expect("8 bytes"));
+    let high = u64::from_le_bytes(address[..8].try_into().expect("8 bytes"));
+    (low ^ high.rotate_left(32)).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+}
+
+/// Returns the [`WriteFilter`] hash of the slot `key` of `address`.
+#[inline]
+fn slot_hash(address: &Address, key: &Word) -> u64 {
+    let [a, b, c, d] = *key.as_limbs();
+    let key = (a ^ b.rotate_left(16) ^ c.rotate_left(32) ^ d.rotate_left(48))
+        .wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    account_hash(address) ^ key
+}
+
 /// Multi-version state of a block in execution.
 ///
 /// Transaction `i` publishes its writes at version `i + 1`. Reading at version `v` returns the
@@ -2380,6 +2436,10 @@ struct MvStore<'s, B: ?Sized> {
     id: usize,
     accounts: Box<[CachePadded<AccountShard>]>,
     storage: Box<[CachePadded<StorageShard>]>,
+    /// The accounts that may have a version in `accounts`.
+    written_accounts: WriteFilter,
+    /// The slots that may have a version in `storage`.
+    written_slots: WriteFilter,
     wipes: RwLock<AddressMap<BTreeSet<u32>>>,
     has_wipes: AtomicBool,
     contracts: RwLock<B256Map<Bytecode>>,
@@ -2397,6 +2457,8 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             id: NEXT_STORE_ID.fetch_add(1, Ordering::Relaxed),
             accounts: (0..SHARDS).map(|_| CachePadded::default()).collect(),
             storage: (0..SHARDS).map(|_| CachePadded::default()).collect(),
+            written_accounts: WriteFilter::new(),
+            written_slots: WriteFilter::new(),
             wipes: RwLock::default(),
             has_wipes: AtomicBool::new(false),
             contracts: RwLock::default(),
@@ -2438,8 +2500,31 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         &self.storage[(address[19] as usize ^ key.as_limbs()[0] as usize) % SHARDS]
     }
 
+    /// Locks the shard of the account at `address` to write a version of it, marking it written.
+    fn write_account_shard(
+        &self,
+        address: &Address,
+    ) -> RwLockWriteGuard<'_, AddressMap<Versions<Option<AccountInfo>>>> {
+        self.written_accounts.insert(account_hash(address));
+        self.account_shard(address).write().expect("lock poisoned")
+    }
+
+    /// Locks the shard of the slot `key` of `address` to write a version of it, marking it
+    /// written.
+    fn write_storage_shard(
+        &self,
+        address: &Address,
+        key: &Word,
+    ) -> RwLockWriteGuard<'_, HashMap<(Address, Word), Versions<SlotWrite>>> {
+        self.written_slots.insert(slot_hash(address, key));
+        self.storage_shard(address, key).write().expect("lock poisoned")
+    }
+
     /// Returns the latest account write below `version`.
     fn account_version(&self, address: &Address, version: u32) -> Option<Option<AccountInfo>> {
+        if !self.written_accounts.contains(account_hash(address)) {
+            return None;
+        }
         let shard = self.account_shard(address).read().expect("lock poisoned");
         let (_, info) = shard.get(address)?.latest_below(version)?;
         Some(info.clone())
@@ -2536,7 +2621,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             None
         };
         let (mut value, mut delta) = (None, Word::ZERO);
-        {
+        if self.written_slots.contains(slot_hash(address, key)) {
             let shard = self.storage_shard(address, key).read().expect("lock poisoned");
             if let Some(versions) = shard.get(&(*address, *key)) {
                 for (at, write) in versions.below(version) {
@@ -2616,7 +2701,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 writes.push(WriteKey::Wipe(address));
             }
             for (&key, slot) in storage.changed_slots() {
-                let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+                let mut shard = self.write_storage_shard(&address, &key);
                 shard
                     .entry((address, key))
                     .or_default()
@@ -2632,7 +2717,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             }
             if account.is_changed() {
                 let info = account.present.as_ref().map(AccountInfo::clone_no_code);
-                let mut shard = self.account_shard(&address).write().expect("lock poisoned");
+                let mut shard = self.write_account_shard(&address);
                 shard.entry(address).or_default().insert(version, info);
                 writes.push(WriteKey::Account(address));
             }
@@ -2653,7 +2738,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 }
                 None => SlotWrite::Delta(pending_delta.delta),
             };
-            let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+            let mut shard = self.write_storage_shard(&address, &key);
             shard.entry((address, key)).or_default().insert(version, write);
             writes.push(WriteKey::Storage(address, key));
         }
@@ -2690,7 +2775,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     /// committed.
     fn republish_account(&self, version: u32, address: Address, info: Option<&AccountInfo>) {
         {
-            let mut shard = self.account_shard(&address).write().expect("lock poisoned");
+            let mut shard = self.write_account_shard(&address);
             shard.entry(address).or_default().insert(version, info.map(AccountInfo::clone_no_code));
         }
         self.log_writes(version, [WriteKey::Account(address)]);
@@ -2704,7 +2789,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
 
     /// Writes a slot's value at `version` without logging it, once nothing validates against it.
     fn put_slot(&self, version: u32, address: Address, key: Word, value: Word) {
-        let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+        let mut shard = self.write_storage_shard(&address, &key);
         shard.entry((address, key)).or_default().insert(version, SlotWrite::Value(value));
     }
 
@@ -2826,7 +2911,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 && let Some(slot) = account.storage.slots.get(&key)
                 && (slot.value.is_changed() || account.storage.wiped)
             {
-                let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+                let mut shard = self.write_storage_shard(&address, &key);
                 shard
                     .entry((address, key))
                     .or_default()
