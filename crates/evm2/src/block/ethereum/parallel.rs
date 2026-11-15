@@ -71,12 +71,7 @@ use crate::{
     },
     interpreter::{Host, Word},
 };
-use alloc::{
-    boxed::Box,
-    collections::{BTreeSet, BinaryHeap},
-    vec,
-    vec::Vec,
-};
+use alloc::{boxed::Box, collections::BTreeSet, vec, vec::Vec};
 use alloy_consensus::{
     Transaction,
     transaction::{Recovered, TransactionEnvelope, TxHashRef},
@@ -95,7 +90,7 @@ use core::{
     num::NonZeroUsize,
     ops::Deref,
     ptr,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence},
 };
 use std::{
     hash::RandomState,
@@ -397,11 +392,11 @@ where
         let scheduler = if let Some(hints) = hints {
             let weights: Vec<_> = txs.iter().map(|tx| tx.borrow().gas_limit()).collect();
             let priorities = priorities(&weights, Some(hints));
-            let scheduler = Scheduler::default();
+            let scheduler = Scheduler::prioritized(&priorities);
             for (index, evm_tx) in evm_txs.into_iter().enumerate() {
                 queue.push(evm_tx);
                 let dependencies = hints.dependencies.get(index);
-                scheduler.add(priorities[index], dependencies.map_or(&[][..], Vec::as_slice));
+                scheduler.add(dependencies.map_or(&[][..], Vec::as_slice));
             }
             scheduler.close();
             scheduler
@@ -555,7 +550,7 @@ where
                     let (evm_tx, tx) = tx.into_parts();
                     // Publish the transaction before scheduling it, and to the committer last.
                     queue.push(evm_tx);
-                    scheduler.add(0, &dependencies);
+                    scheduler.add(&dependencies);
                     if tx_sender.send(tx).is_err() {
                         break;
                     }
@@ -1838,113 +1833,163 @@ impl<Tx> TxQueue<Tx> {
 
 /// Hands transactions to workers once their dependencies executed, highest priority first, then
 /// in block order. Transactions can be added while workers run.
+///
+/// Workers claim transactions without locking: a shared cursor walks the transactions in priority
+/// order, skipping the ones still waiting on a dependency, and moves back to a transaction when
+/// its last dependency executes. Only workers with nothing to claim take a lock, to sleep.
 #[derive(Debug, Default)]
 struct Scheduler {
-    state: Mutex<SchedulerState>,
+    tasks: Buckets<Task>,
+    /// Each position's transaction, highest priority first, or empty for block order.
+    order: Box<[u32]>,
+    /// Each transaction's position in `order`, or empty for block order.
+    positions: Box<[u32]>,
+    /// The next position to claim.
+    next: CachePadded<AtomicUsize>,
+    /// Transactions added.
+    added: CachePadded<AtomicUsize>,
+    /// Transactions handed out.
+    dispatched: CachePadded<AtomicUsize>,
+    /// Whether every transaction of the block was added.
+    closed: AtomicBool,
+    stopped: AtomicBool,
+    /// Workers asleep, or about to sleep, on `wake`.
+    sleepers: AtomicUsize,
+    sleep: Mutex<()>,
     /// Signalled when a transaction becomes ready, the block is closed or the scheduler stops.
     wake: Condvar,
-    stopped: AtomicBool,
-    /// The next transaction and the block's length when every transaction is known up front and
-    /// none waits on another: transactions are then handed out in block order without locking.
-    in_order: Option<(AtomicUsize, usize)>,
-}
-
-#[derive(Debug, Default)]
-struct SchedulerState {
-    /// Transactions ready to execute, by priority, then lowest index.
-    ready: BinaryHeap<(u64, Reverse<u32>)>,
-    /// Each transaction's priority.
-    priority: Vec<u64>,
-    /// Each transaction's dependencies not yet executed.
-    waiting_on: Vec<u32>,
-    /// Each unexecuted transaction's waiting dependents.
-    dependents: Vec<Vec<u32>>,
-    /// Whether each transaction executed.
-    finished: Vec<bool>,
-    /// Transactions handed out.
-    dispatched: usize,
-    /// Whether every transaction of the block was added.
-    closed: bool,
 }
 
 impl Scheduler {
     /// A scheduler that hands out the `len` transactions of a closed block in block order.
     fn in_order(len: usize) -> Self {
-        Self { in_order: Some((AtomicUsize::new(0), len)), ..Default::default() }
+        let scheduler = Self::default();
+        scheduler.added.store(len, Ordering::Relaxed);
+        scheduler.closed.store(true, Ordering::Relaxed);
+        scheduler
+    }
+
+    /// A scheduler that hands out ready transactions by descending `priorities`, then in block
+    /// order. Every transaction must be added before workers start.
+    fn prioritized(priorities: &[u64]) -> Self {
+        let mut order = (0..priorities.len() as u32).collect::<Box<[_]>>();
+        order.sort_by_key(|&index| (Reverse(priorities[index as usize]), index));
+        let mut positions = vec![0; order.len()].into_boxed_slice();
+        for (position, &index) in order.iter().enumerate() {
+            positions[index as usize] = position as u32;
+        }
+        Self { order, positions, ..Default::default() }
     }
 
     /// Adds the block's next transaction. Dependencies on itself or later transactions are
-    /// ignored.
-    fn add(&self, priority: u64, dependencies: &[u32]) {
-        let mut state = self.state.lock().expect("lock poisoned");
-        let index = state.priority.len() as u32;
-        let mut waiting = 0;
-        for &dependency in dependencies {
-            if dependency < index && !state.finished[dependency as usize] {
-                state.dependents[dependency as usize].push(index);
-                waiting += 1;
+    /// ignored. Transactions are added by one thread at a time.
+    fn add(&self, dependencies: &[u32]) {
+        let index = self.added.load(Ordering::Relaxed);
+        let unmet = dependencies.iter().filter(|&&dependency| (dependency as usize) < index);
+        let count = unmet.clone().count() as u32;
+        if count > 0 {
+            let task = self.tasks.get(index);
+            task.status.store(WAITING, Ordering::Relaxed);
+            // Held back by one until every dependency is registered.
+            task.waiting.store(count + 1, Ordering::Relaxed);
+            let mut met = 1;
+            for &dependency in unmet {
+                let parent = self.tasks.get(dependency as usize);
+                // Pairs with `finish`: either it sees the dependent or this sees it finished.
+                parent.has_dependents.store(true, Ordering::SeqCst);
+                let mut dependents = parent.dependents.lock().expect("lock poisoned");
+                if parent.finished.load(Ordering::SeqCst) {
+                    met += 1;
+                } else {
+                    dependents.push(index as u32);
+                }
+            }
+            if task.waiting.fetch_sub(met, Ordering::AcqRel) == met {
+                task.status.store(READY, Ordering::Release);
             }
         }
-        state.priority.push(priority);
-        state.waiting_on.push(waiting);
-        state.dependents.push(Vec::new());
-        state.finished.push(false);
-        if waiting == 0 {
-            state.ready.push((priority, Reverse(index)));
-            self.wake.notify_one();
-        }
+        self.added.store(index + 1, Ordering::SeqCst);
+        self.wake(false);
     }
 
     /// Marks the block complete: workers stop once every transaction was handed out.
     fn close(&self) {
-        self.state.lock().expect("lock poisoned").closed = true;
-        self.wake.notify_all();
+        self.closed.store(true, Ordering::SeqCst);
+        self.wake(true);
     }
 
     /// Returns the next transaction to execute, waiting for one to become ready, or `None` once
     /// the block is closed and every transaction was handed out, or the scheduler stopped.
     fn next(&self) -> Option<usize> {
-        if let Some((next, len)) = &self.in_order {
-            let index = next.fetch_add(1, Ordering::Relaxed);
-            return (index < *len && !self.is_stopped()).then_some(index);
-        }
-        let mut state = self.state.lock().expect("lock poisoned");
         loop {
             if self.is_stopped() {
                 return None;
             }
-            if let Some((_, Reverse(index))) = state.ready.pop() {
-                state.dispatched += 1;
-                return Some(index as usize);
+            let position = self.next.load(Ordering::Acquire);
+            if position < self.added.load(Ordering::Acquire) {
+                if self
+                    .next
+                    .compare_exchange_weak(
+                        position,
+                        position + 1,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+                let index = self.order.get(position).map_or(position, |&index| index as usize);
+                // A transaction still waiting is skipped: the cursor moves back to it once ready.
+                if self.tasks.get(index).status.compare_exchange(
+                    READY,
+                    DISPATCHED,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                ) == Ok(READY)
+                {
+                    self.dispatched.fetch_add(1, Ordering::SeqCst);
+                    return Some(index);
+                }
+                continue;
             }
-            if state.closed && state.dispatched == state.priority.len() {
+            if self.is_done() {
                 return None;
             }
-            state = self.wake.wait(state).expect("lock poisoned");
+            let guard = self.sleep.lock().expect("lock poisoned");
+            // Pairs with `wake`: either it sees this sleeper or this sees its change.
+            self.sleepers.fetch_add(1, Ordering::SeqCst);
+            let idle = !self.is_stopped()
+                && self.next.load(Ordering::SeqCst) >= self.added.load(Ordering::SeqCst)
+                && !self.is_done();
+            let guard = if idle { self.wake.wait(guard).expect("lock poisoned") } else { guard };
+            self.sleepers.fetch_sub(1, Ordering::SeqCst);
+            drop(guard);
         }
     }
 
     /// Marks a transaction executed, readying the dependents it was the last dependency of.
     fn finish(&self, index: usize) {
-        if self.in_order.is_some() {
-            return;
-        }
-        let mut state = self.state.lock().expect("lock poisoned");
-        state.finished[index] = true;
+        let task = self.tasks.get(index);
+        task.finished.store(true, Ordering::SeqCst);
         let mut released = false;
-        for dependent in core::mem::take(&mut state.dependents[index]) {
-            let waiting = &mut state.waiting_on[dependent as usize];
-            *waiting -= 1;
-            if *waiting == 0 {
-                let priority = state.priority[dependent as usize];
-                state.ready.push((priority, Reverse(dependent)));
-                released = true;
+        if task.has_dependents.load(Ordering::SeqCst) {
+            let dependents = core::mem::take(&mut *task.dependents.lock().expect("lock poisoned"));
+            for dependent in dependents {
+                let waiting = self.tasks.get(dependent as usize);
+                if waiting.waiting.fetch_sub(1, Ordering::AcqRel) == 1 {
+                    waiting.status.store(READY, Ordering::Release);
+                    let position = self
+                        .positions
+                        .get(dependent as usize)
+                        .map_or(dependent as usize, |&position| position as usize);
+                    self.next.fetch_min(position, Ordering::SeqCst);
+                    released = true;
+                }
             }
         }
-        let done = state.closed && state.dispatched == state.priority.len();
-        drop(state);
-        if released || done {
-            self.wake.notify_all();
+        if released || self.is_done() {
+            self.wake(true);
         }
     }
 
@@ -1954,10 +1999,51 @@ impl Scheduler {
 
     /// Stops handing out transactions.
     fn abort(&self) {
-        self.stopped.store(true, Ordering::Relaxed);
-        let _guard = self.state.lock().expect("lock poisoned");
-        self.wake.notify_all();
+        self.stopped.store(true, Ordering::SeqCst);
+        self.wake(true);
     }
+
+    /// Returns whether the block is closed and every transaction was handed out.
+    fn is_done(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+            && self.dispatched.load(Ordering::SeqCst) == self.added.load(Ordering::SeqCst)
+    }
+
+    /// Wakes one sleeping worker, or every one when `all`, if any sleeps.
+    fn wake(&self, all: bool) {
+        if self.sleepers.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        let _guard = self.sleep.lock().expect("lock poisoned");
+        if all {
+            self.wake.notify_all();
+        } else {
+            self.wake.notify_one();
+        }
+    }
+}
+
+/// A transaction's [`Task`] status: ready to execute.
+const READY: u8 = 0;
+
+/// A transaction's [`Task`] status: waiting on a dependency.
+const WAITING: u8 = 1;
+
+/// A transaction's [`Task`] status: handed out.
+const DISPATCHED: u8 = 2;
+
+/// One transaction's scheduling state in [`Scheduler`].
+#[derive(Debug, Default)]
+struct Task {
+    status: AtomicU8,
+    /// Dependencies not yet executed.
+    waiting: AtomicU32,
+    /// Whether the transaction executed.
+    finished: AtomicBool,
+    /// Whether a dependent may be registered in `dependents`.
+    has_dependents: AtomicBool,
+    /// Dependents waiting on the transaction.
+    dependents: Mutex<Vec<u32>>,
 }
 
 /// Derives each committed transaction's dependencies from the state it accessed.
