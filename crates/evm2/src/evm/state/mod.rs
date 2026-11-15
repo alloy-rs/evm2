@@ -692,6 +692,16 @@ impl<'a> State<'a> {
         self.storage(address)?.into_slot(key)
     }
 
+    /// Loads a storage slot like [`Self::storage_slot`], for deferred storage. See
+    /// [`StorageHandle::into_slot_deferred`].
+    pub(crate) fn deferred_storage_slot<'s>(
+        &'s mut self,
+        address: &'s Address,
+        key: Word,
+    ) -> DbResult<StorageSlotHandle<'s, 'a>> {
+        self.storage(address)?.into_slot_deferred(key)
+    }
+
     /// Returns account info from the overlay or the backing database.
     ///
     /// This is a non-loading peek: it returns the overlay account when one has been loaded this
@@ -1288,7 +1298,7 @@ impl<'a> State<'a> {
             if record && !self.is_storage_loaded(&address, &key) {
                 self.inner.deferred.resolved.push((address, key));
             }
-            self.storage_slot(&address, key)?;
+            self.deferred_storage_slot(&address, key)?;
         }
         Ok(())
     }

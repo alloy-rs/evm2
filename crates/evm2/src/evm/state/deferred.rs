@@ -137,7 +137,7 @@ impl DeferredStorageAccess<'_, '_> {
         match &mut self.backend {
             Backend::State(state) => {
                 note(state, address, key);
-                Ok(state.storage_slot(address, key)?.current())
+                Ok(state.deferred_storage_slot(address, key)?.current())
             }
             #[cfg(all(feature = "std", feature = "block"))]
             Backend::Store(store) => store.sload(address, key),
@@ -149,7 +149,7 @@ impl DeferredStorageAccess<'_, '_> {
         match &mut self.backend {
             Backend::State(state) => {
                 note(state, address, key);
-                state.storage_slot(address, key)?.set(value);
+                state.deferred_storage_slot(address, key)?.set(value);
                 Ok(())
             }
             #[cfg(all(feature = "std", feature = "block"))]

@@ -156,6 +156,17 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         })
     }
 
+    /// Loads a storage slot like [`Self::into_slot`], for deferred storage. Kept out of line, and
+    /// off the functions execution's slot loads inline, so their inlining is unchanged.
+    #[inline(never)]
+    pub(super) fn into_slot_deferred(self, key: Word) -> DbResult<StorageSlotHandle<'a, 'db>> {
+        self.into_slot_inner::<false>(key, false).map(|(slot, _)| slot).map_err(|error| match error
+        {
+            LoadError::Database(error) => error,
+            LoadError::ColdLoadSkipped => unreachable!("cold-load skipping is disabled"),
+        })
+    }
+
     /// Loads the slot at `key` into the overlay, reading the backing database on first access, and
     /// returns a journaled handle to it.
     ///
