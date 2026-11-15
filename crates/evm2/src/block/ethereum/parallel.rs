@@ -701,7 +701,7 @@ where
         // state it already changed: let the sequential EVM order the two.
         let beneficiary = self.evm.block_env().beneficiary;
         if outcome.pending_state.accounts.contains_key(&beneficiary)
-            || reads.accounts.iter().any(|(address, _)| *address == beneficiary)
+            || reads.accounts.iter().any(|(address, ..)| *address == beneficiary)
         {
             return None;
         }
@@ -1008,7 +1008,7 @@ fn settle_batched<T: EvmTypes, B: DynDatabaseRef + Sync + ?Sized>(
     let Some((beneficiary, reward, eip161, rewarded)) = beneficiary else { return Some(outcome) };
     // The transaction read or wrote the beneficiary itself: execute it again over the store.
     if outcome.pending_state.accounts.contains_key(&beneficiary)
-        || reads.accounts.iter().any(|(address, _)| *address == beneficiary)
+        || reads.accounts.iter().any(|(address, ..)| *address == beneficiary)
     {
         return None;
     }
@@ -1847,8 +1847,12 @@ struct Speculative<T: EvmTypes> {
 /// The values one speculative execution read.
 #[derive(Debug, Default)]
 struct ReadSet {
-    accounts: Vec<(Address, Option<AccountInfo>)>,
-    storage: Vec<(Address, Word, Word)>,
+    /// Each account read, the value read and whether it was the state before the first
+    /// transaction.
+    accounts: Vec<(Address, Option<AccountInfo>, bool)>,
+    /// Each slot read, the value read and the slot's value before the first transaction, when the
+    /// read needed it.
+    storage: Vec<(Address, Word, Word, Option<Word>)>,
     /// Accounts whose committed balance differs from the one read, which the execution did not
     /// read exactly: the balance read and the committed one, filled by [`Self::validate`].
     rebase: Vec<(Address, Word, Word)>,
@@ -1858,9 +1862,9 @@ impl ReadSet {
     /// Returns whether the execution read the value `key` writes.
     fn touches(&self, key: WriteKey) -> bool {
         match key {
-            WriteKey::Account(address) => self.accounts.iter().any(|(read, _)| *read == address),
+            WriteKey::Account(address) => self.accounts.iter().any(|(read, ..)| *read == address),
             WriteKey::Storage(address, key) => {
-                self.storage.iter().any(|(read, slot, _)| *read == address && *slot == key)
+                self.storage.iter().any(|(read, slot, ..)| *read == address && *slot == key)
             }
             WriteKey::Wipe(address) => self.storage.iter().any(|(read, ..)| *read == address),
         }
@@ -1883,7 +1887,7 @@ impl ReadSet {
     ) -> DbResult<bool> {
         let Self { accounts, storage, rebase } = self;
         rebase.clear();
-        for (address, value) in accounts.iter() {
+        for (address, value, _) in accounts.iter() {
             let now = evm.read_account_info(address)?;
             if now != *value {
                 let Some(floor) = delta_floor(pending, sender, address) else { return Ok(false) };
@@ -1911,7 +1915,7 @@ impl ReadSet {
                 return Ok(false);
             }
         }
-        for (address, key, value) in storage.iter() {
+        for (address, key, value, _) in storage.iter() {
             if evm.read_storage(address, key)? != *value {
                 return Ok(false);
             }
@@ -1934,25 +1938,31 @@ impl ReadSet {
     ) -> bool {
         let Self { accounts, storage, rebase } = self;
         rebase.clear();
-        for (address, value) in accounts.iter() {
-            let Ok(mut now) = store.account(address, version) else { return false };
-            if let Some(info) = &mut now
-                && info.code_hash.is_zero()
-            {
-                info.code_hash = KECCAK256_EMPTY;
-            }
-            let now = now.as_ref().map(AccountInfo::clone_no_code);
-            if now != *value {
-                let Some(floor) = delta_floor(pending, sender, address) else { return false };
-                let (Some(read), Some(committed)) = (value, &now) else { return false };
-                if !balance_only_change(read, committed, floor) {
-                    return false;
+        for (address, value, initial) in accounts.iter() {
+            // A read of the state before the first transaction still holds while no transaction
+            // below `version` wrote the account.
+            let Ok(now) = store.account_unless_initial(address, version, *initial) else {
+                return false;
+            };
+            if let Some(mut now) = now {
+                if let Some(info) = &mut now
+                    && info.code_hash.is_zero()
+                {
+                    info.code_hash = KECCAK256_EMPTY;
                 }
-                match rebase.iter().find(|(rebased, ..)| rebased == address) {
-                    // Reads of one account at different versions cannot both be rebased.
-                    Some(&(_, balance, _)) if balance != read.balance => return false,
-                    Some(_) => {}
-                    None => rebase.push((*address, read.balance, committed.balance)),
+                let now = now.as_ref().map(AccountInfo::clone_no_code);
+                if now != *value {
+                    let Some(floor) = delta_floor(pending, sender, address) else { return false };
+                    let (Some(read), Some(committed)) = (value, &now) else { return false };
+                    if !balance_only_change(read, committed, floor) {
+                        return false;
+                    }
+                    match rebase.iter().find(|(rebased, ..)| rebased == address) {
+                        // Reads of one account at different versions cannot both be rebased.
+                        Some(&(_, balance, _)) if balance != read.balance => return false,
+                        Some(_) => {}
+                        None => rebase.push((*address, read.balance, committed.balance)),
+                    }
                 }
             }
             // A worker reads every slot of an account it read as absent as zero, without asking
@@ -1967,8 +1977,8 @@ impl ReadSet {
                 return false;
             }
         }
-        storage.iter().all(|(address, key, value)| {
-            store.storage(address, key, version).is_ok_and(|now| now == *value)
+        storage.iter().all(|(address, key, value, initial)| {
+            store.storage_from(address, key, version, *initial).is_ok_and(|(now, _)| now == *value)
         })
     }
 
@@ -1981,16 +1991,17 @@ impl ReadSet {
         pending: &PendingState,
         sender: &Address,
     ) -> bool {
-        self.accounts.iter().all(|(address, value)| {
-            store.account(address, version).is_ok_and(|info| {
+        self.accounts.iter().all(|(address, value, initial)| {
+            store.account_unless_initial(address, version, *initial).is_ok_and(|info| {
+                let Some(info) = info else { return true };
                 let info = info.as_ref().map(AccountInfo::clone_no_code);
                 info == *value
                     || matches!((value, &info), (Some(read), Some(now))
                         if delta_floor(pending, sender, address)
                             .is_some_and(|floor| balance_only_change(read, now, floor)))
             })
-        }) && self.storage.iter().all(|(address, key, value)| {
-            store.storage(address, key, version).is_ok_and(|v| v == *value)
+        }) && self.storage.iter().all(|(address, key, value, initial)| {
+            store.storage_from(address, key, version, *initial).is_ok_and(|(v, _)| v == *value)
         })
     }
 }
@@ -2126,15 +2137,54 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
 
     /// Reads an account at `version`.
     fn account(&self, address: &Address, version: u32) -> DbResult<Option<AccountInfo>> {
+        self.account_read(address, version).map(|(info, _)| info)
+    }
+
+    /// Reads an account at `version`, and whether it read the state before the first
+    /// transaction.
+    fn account_read(
+        &self,
+        address: &Address,
+        version: u32,
+    ) -> DbResult<(Option<AccountInfo>, bool)> {
         match self.account_version(address, version) {
-            Some(info) => Ok(info),
-            None => self.account_initial(address),
+            Some(info) => Ok((info, false)),
+            None => self.account_initial(address).map(|info| (info, true)),
+        }
+    }
+
+    /// Reads an account at `version` to validate a read of it, or returns `None` when no
+    /// transaction below `version` wrote it and the read, `initial`, returned the state before
+    /// the first transaction, which no transaction changes.
+    fn account_unless_initial(
+        &self,
+        address: &Address,
+        version: u32,
+        initial: bool,
+    ) -> DbResult<Option<Option<AccountInfo>>> {
+        match self.account_version(address, version) {
+            Some(info) => Ok(Some(info)),
+            None if initial => Ok(None),
+            None => self.account_initial(address).map(Some),
         }
     }
 
     /// Reads a storage slot at `version`: the latest value written below it, or zero after a later
     /// wipe, then the state before the first transaction, plus every delta published above that.
     fn storage(&self, address: &Address, key: &Word, version: u32) -> DbResult<Word> {
+        self.storage_from(address, key, version, None).map(|(value, _)| value)
+    }
+
+    /// Reads a storage slot at `version` as [`Self::storage`] does, taking the slot's value
+    /// before the first transaction from `initial` when given, and returns the value with the one
+    /// before the first transaction, when the read needed it.
+    fn storage_from(
+        &self,
+        address: &Address,
+        key: &Word,
+        version: u32,
+        initial: Option<Word>,
+    ) -> DbResult<(Word, Option<Word>)> {
         let wipe = if self.has_wipes.load(Ordering::Acquire) {
             let wipes = self.wipes.read().expect("lock poisoned");
             wipes.get(address).and_then(|wipes| wipes.range(..version).next_back().copied())
@@ -2161,12 +2211,18 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 }
             }
         }
-        let value = match (value, wipe) {
-            (Some(value), _) => value,
-            (None, Some(_)) => Word::ZERO,
-            (None, None) => self.storage_initial(address, key)?,
+        let (value, initial) = match (value, wipe) {
+            (Some(value), _) => (value, None),
+            (None, Some(_)) => (Word::ZERO, None),
+            (None, None) => {
+                let initial = match initial {
+                    Some(initial) => initial,
+                    None => self.storage_initial(address, key)?,
+                };
+                (initial, Some(initial))
+            }
         };
-        Ok(value.wrapping_add(delta))
+        Ok((value.wrapping_add(delta), initial))
     }
 
     /// Returns a slot before the first transaction.
@@ -2434,7 +2490,7 @@ struct TxView<'m, 's, B: ?Sized> {
 
 impl<B: DynDatabaseRef + Sync + ?Sized> DynDatabase for TxView<'_, '_, B> {
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        let mut info = self.store.account(address, self.version.get())?;
+        let (mut info, initial) = self.store.account_read(address, self.version.get())?;
         // Record the account as the executor's database returns it, which maps a zero code hash
         // to the empty one.
         if let Some(info) = &mut info
@@ -2443,7 +2499,7 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DynDatabase for TxView<'_, '_, B> {
             info.code_hash = KECCAK256_EMPTY;
         }
         let read = info.as_ref().map(AccountInfo::clone_no_code);
-        self.reads.borrow_mut().accounts.push((*address, read));
+        self.reads.borrow_mut().accounts.push((*address, read, initial));
         Ok(info)
     }
 
@@ -2453,8 +2509,8 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DynDatabase for TxView<'_, '_, B> {
     }
 
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        let value = self.store.storage(address, key, self.version.get())?;
-        self.reads.borrow_mut().storage.push((*address, *key, value));
+        let (value, initial) = self.store.storage_from(address, key, self.version.get(), None)?;
+        self.reads.borrow_mut().storage.push((*address, *key, value, initial));
         Ok(value)
     }
 
