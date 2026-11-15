@@ -2044,6 +2044,12 @@ fn within_read_bounds(pending: &PendingState, address: &Address, key: &Word, now
         .deferred()
         .and_then(|deferred| deferred.read_bounds(address, key))
         .is_some_and(|(min, max)| min <= now && now <= max)
+        // A load of the slot, even in a reverted frame that left the add pending again, read it
+        // exactly.
+        && pending
+            .accounts
+            .get(address)
+            .is_none_or(|account| !account.storage.slots.contains_key(key))
 }
 
 /// Returns whether an account read as `read` and now `now` differs at most in a balance that
