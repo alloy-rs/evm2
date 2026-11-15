@@ -124,6 +124,9 @@ const PREVALIDATE_AHEAD: usize = 8;
 /// Times the committer polls for the next result before parking.
 const COMMIT_SPINS: u32 = 1 << 10;
 
+/// How many committed transactions' buffers a batched commit hands back to a worker at once.
+const RECYCLE_BATCH: usize = 16;
+
 /// How far ahead of the committer idle workers run deferred storage operations to warm the slots
 /// they read in batched commits.
 const WARM_AHEAD: usize = 64;
@@ -135,6 +138,10 @@ const MATERIALIZE_THREADS: usize = 8;
 /// Tests stream after every transaction.
 const STREAM_INTERVAL: Duration =
     if cfg!(test) { Duration::ZERO } else { Duration::from_micros(200) };
+
+/// How many transactions a batched commit commits between looks at the clock for
+/// [`STREAM_INTERVAL`]. Tests look after every transaction.
+const STREAM_STRIDE: usize = if cfg!(test) { 1 } else { 8 };
 
 /// The identifier of the next [`MvStore`], which tells [`BASE_MEMO`] whose reads it holds.
 static NEXT_STORE_ID: AtomicUsize = AtomicUsize::new(1);
@@ -824,10 +831,19 @@ where
         // Accounts created or whose storage was wiped, as their transactions committed them.
         let mut lifecycle = AddressMap::<Lifecycle>::default();
         let mut stream = streamer.is_some().then(PrefixStream::default);
+        // Each worker's committed buffers, handed back in batches.
+        let mut spare = results.pools.iter().map(|_| Vec::new()).collect::<Vec<_>>();
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
-            let Speculative { worker, outcome, reward, mut reads, mut writes, prevalidated } =
-                results.take(index).expect("parallel execution workers exited without a result");
+            let Speculative {
+                worker,
+                outcome,
+                reward,
+                mut reads,
+                writes,
+                prevalidated,
+                lifecycle: created_or_wiped,
+            } = results.take(index).expect("parallel execution workers exited without a result");
             let evm_tx = queue.get(index);
             let tx = tx.borrow();
             let version = version(index);
@@ -866,7 +882,10 @@ where
                     }
                     run_deferred_ops(store, version, &mut pending_state, stream.as_mut())?;
                     on_commit(index, &result)?;
-                    record_lifecycle(&mut lifecycle, &pending_state);
+                    // Settling and deferred operations create no account and wipe no storage.
+                    if created_or_wiped {
+                        record_lifecycle(&mut lifecycle, &pending_state);
+                    }
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
                     if let Some(stream) = &mut stream {
                         stream.keys.extend(writes.iter().copied());
@@ -922,14 +941,13 @@ where
                 }
             };
             self.emit_receipt(index, on_receipt);
-            let mut pending = pending;
-            if let Some(parallel) = &mut pending.parallel {
-                parallel.deferred.clear();
+            // The worker empties the buffers when it takes them back.
+            spare[worker].push(Buffers { reads, writes, pending });
+            if spare[worker].len() >= RECYCLE_BATCH {
+                results.recycle_all(worker, &mut spare[worker]);
             }
-            reads.clear();
-            writes.clear();
-            results.recycle(worker, Buffers { reads, writes, pending });
             if let (Some(stream), Some(streamer)) = (&mut stream, streamer)
+                && index % STREAM_STRIDE == 0
                 && stream.last.elapsed() >= STREAM_INTERVAL
                 && !stream.keys.is_empty()
             {
@@ -940,6 +958,9 @@ where
                 // The streamer only stops early on an error, which it reports when joined.
                 let _ = streamer.send(StreamBatch { keys, version: version + 1, running });
             }
+        }
+        for (worker, buffers) in spare.iter_mut().enumerate() {
+            results.recycle_all(worker, buffers);
         }
         if let Some(info) = rewarded.take() {
             store.republish_account(last_version, beneficiary, info.as_ref());
@@ -1005,6 +1026,12 @@ struct Lifecycle {
     wiped: bool,
 }
 
+/// Returns whether a transaction created an account or wiped storage: whether
+/// [`record_lifecycle`] may record any of its accounts.
+fn has_lifecycle(pending: &PendingState) -> bool {
+    pending.accounts.values().any(|account| account.is_created() || account.storage.wiped)
+}
+
 /// Records the accounts a committed transaction created or whose storage it wiped.
 fn record_lifecycle(lifecycle: &mut AddressMap<Lifecycle>, pending: &PendingState) {
     for changes in pending.account_changes() {
@@ -1048,6 +1075,8 @@ fn settle_batched<T: EvmTypes, B: DynDatabaseRef + Sync + ?Sized>(
         return None;
     }
     let current = match rewarded {
+        // Crediting nothing to an account that exists and is not empty leaves it as it is.
+        Some(Some(info)) if reward.is_zero() && !info.is_empty() => return Some(outcome),
         Some(info) => credit_reward(info.as_ref(), reward, eip161)?,
         None => credit_reward(store.account(&beneficiary, version).ok()?.as_ref(), reward, eip161)?,
     };
@@ -1483,8 +1512,12 @@ fn run_worker<T, F, H>(
         }
         scheduler.finish(index);
         let reads = core::mem::take(&mut *reads.borrow_mut());
-        results
-            .put(index, Speculative { worker, outcome, reward, reads, writes, prevalidated: None });
+        let lifecycle =
+            outcome.as_ref().is_some_and(|outcome| has_lifecycle(&outcome.pending_state));
+        results.put(
+            index,
+            Speculative { worker, outcome, reward, reads, writes, prevalidated: None, lifecycle },
+        );
     }
 
     // Every transaction was handed out, and the committer is still behind: execute again, ahead
@@ -1567,9 +1600,19 @@ fn run_worker<T, F, H>(
             );
             store.log_writes(version, writes.iter().chain(&speculative.writes).copied());
             let reads = core::mem::take(&mut *reads.borrow_mut());
+            let lifecycle =
+                outcome.as_ref().is_some_and(|outcome| has_lifecycle(&outcome.pending_state));
             let stale = core::mem::replace(
                 speculative,
-                Speculative { worker, outcome, reward, reads, writes, prevalidated: None },
+                Speculative {
+                    worker,
+                    outcome,
+                    reward,
+                    reads,
+                    writes,
+                    prevalidated: None,
+                    lifecycle,
+                },
             );
             let Speculative { worker: owner, reads: mut old_reads, writes: mut old_writes, .. } =
                 stale;
@@ -1928,6 +1971,8 @@ struct Speculative<T: EvmTypes> {
     /// committed every earlier transaction: the length of the store's write log when it started,
     /// and whether every read held.
     prevalidated: Option<(usize, bool)>,
+    /// Whether the execution created an account or wiped storage, which a batched commit records.
+    lifecycle: bool,
 }
 
 /// The values one speculative execution read.
@@ -1942,9 +1987,33 @@ struct ReadSet {
     /// Accounts whose committed balance differs from the one read, which the execution did not
     /// read exactly: the balance read and the committed one, filled by [`Self::validate`].
     rebase: Vec<(Address, Word, Word)>,
+    /// The [`key_bit`] of every account and slot read, so that most keys it did not read are
+    /// ruled out without searching the reads.
+    filter: u64,
+    /// The [`key_bit`] of the address of every slot read.
+    slot_accounts: u64,
 }
 
 impl ReadSet {
+    /// Records a read of the account at `address`.
+    fn read_account(&mut self, address: Address, value: Option<AccountInfo>, initial: bool) {
+        self.filter |= key_bit(&address, None);
+        self.accounts.push((address, value, initial));
+    }
+
+    /// Records a read of the slot `key` of `address`.
+    fn read_storage(&mut self, address: Address, key: Word, value: Word, initial: Option<Word>) {
+        self.filter |= key_bit(&address, Some(&key));
+        self.slot_accounts |= key_bit(&address, None);
+        self.storage.push((address, key, value, initial));
+    }
+
+    /// Returns whether the execution may have read the value a key with [`WriteKey::bit`] `bit`
+    /// writes: `false` rules it out.
+    const fn may_touch(&self, (bit, wipe): (u64, bool)) -> bool {
+        (if wipe { self.slot_accounts } else { self.filter }) & bit != 0
+    }
+
     /// Returns whether the execution read the value `key` writes.
     fn touches(&self, key: WriteKey) -> bool {
         match key {
@@ -1960,6 +2029,8 @@ impl ReadSet {
         self.accounts.clear();
         self.storage.clear();
         self.rebase.clear();
+        self.filter = 0;
+        self.slot_accounts = 0;
     }
 
     /// Returns whether every read sees the same value in the committed state of `evm`, the
@@ -1971,7 +2042,7 @@ impl ReadSet {
         pending: &PendingState,
         sender: &Address,
     ) -> DbResult<bool> {
-        let Self { accounts, storage, rebase } = self;
+        let Self { accounts, storage, rebase, .. } = self;
         rebase.clear();
         for (address, value, _) in accounts.iter() {
             let now = evm.read_account_info(address)?;
@@ -2022,7 +2093,7 @@ impl ReadSet {
         pending: &PendingState,
         sender: &Address,
     ) -> bool {
-        let Self { accounts, storage, rebase } = self;
+        let Self { accounts, storage, rebase, .. } = self;
         rebase.clear();
         for (address, value, initial) in accounts.iter() {
             // A read of the state before the first transaction still holds while no transaction
@@ -2117,12 +2188,44 @@ fn balance_only_change(read: &AccountInfo, now: &AccountInfo, floor: Word) -> bo
     rebased == *now
 }
 
+/// Returns the bit of a [`ReadSet`] filter that stands for the account at `address`, or for its
+/// slot `key`.
+#[inline]
+fn key_bit(address: &Address, key: Option<&Word>) -> u64 {
+    let mut hash = u64::from_le_bytes(address[12..].try_into().expect("8 bytes"));
+    if let Some(key) = key {
+        hash ^= key.as_limbs()[0].rotate_left(29) ^ key.as_limbs()[3];
+    }
+    1 << (hash.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 58)
+}
+
 /// A key a transaction published to the multi-version store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum WriteKey {
     Account(Address),
     Storage(Address, Word),
     Wipe(Address),
+}
+
+impl WriteKey {
+    /// Returns the [`ReadSet`] filter bit of the values the key writes, and whether it is a wipe,
+    /// which writes every slot of its account.
+    fn bit(self) -> (u64, bool) {
+        match self {
+            Self::Account(address) => (key_bit(&address, None), false),
+            Self::Storage(address, key) => (key_bit(&address, Some(&key)), false),
+            Self::Wipe(address) => (key_bit(&address, None), true),
+        }
+    }
+}
+
+/// The keys written again after their transaction's first execution published, in order.
+#[derive(Debug, Default)]
+struct WriteLog {
+    /// Each key with the version written.
+    keys: Vec<(u32, WriteKey)>,
+    /// Each key's version and [`WriteKey::bit`], to rule most keys out without reading them.
+    bits: Vec<(u32, (u64, bool))>,
 }
 
 /// One lock shard of account versions.
@@ -2182,7 +2285,7 @@ struct MvStore<'s, B: ?Sized> {
     contracts: RwLock<B256Map<Bytecode>>,
     /// Keys written again after their transaction's first execution published, with the version
     /// written: what can change a value a validation read.
-    log: Mutex<Vec<(u32, WriteKey)>>,
+    log: Mutex<WriteLog>,
     log_len: AtomicUsize,
 }
 
@@ -2205,8 +2308,11 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     /// Appends keys written at `version` to the write log, after writing them.
     fn log_writes(&self, version: u32, keys: impl IntoIterator<Item = WriteKey>) {
         let mut log = self.log.lock().expect("lock poisoned");
-        log.extend(keys.into_iter().map(|key| (version, key)));
-        self.log_len.store(log.len(), Ordering::Release);
+        for key in keys {
+            log.keys.push((version, key));
+            log.bits.push((version, key.bit()));
+        }
+        self.log_len.store(log.keys.len(), Ordering::Release);
     }
 
     /// Returns the write log's length, to take before reading values to validate.
@@ -2217,7 +2323,9 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     /// Returns whether a key logged since `mark` below `version` is one `reads` read.
     fn logged_since(&self, mark: usize, version: u32, reads: &ReadSet) -> bool {
         let log = self.log.lock().expect("lock poisoned");
-        log[mark..].iter().any(|&(at, key)| at < version && reads.touches(key))
+        log.bits[mark..].iter().zip(&log.keys[mark..]).any(|(&(at, bit), &(_, key))| {
+            at < version && reads.may_touch(bit) && reads.touches(key)
+        })
     }
 
     #[inline]
@@ -2645,7 +2753,7 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DynDatabase for TxView<'_, '_, B> {
             info.code_hash = KECCAK256_EMPTY;
         }
         let read = info.as_ref().map(AccountInfo::clone_no_code);
-        self.reads.borrow_mut().accounts.push((*address, read, initial));
+        self.reads.borrow_mut().read_account(*address, read, initial);
         Ok(info)
     }
 
@@ -2656,7 +2764,7 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DynDatabase for TxView<'_, '_, B> {
 
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         let (value, initial) = self.store.storage_from(address, key, self.version.get(), None)?;
-        self.reads.borrow_mut().storage.push((*address, *key, value, initial));
+        self.reads.borrow_mut().read_storage(*address, *key, value, initial);
         Ok(value)
     }
 
@@ -2824,7 +2932,13 @@ impl<S> Results<S> {
         if stash.is_empty() {
             core::mem::swap(stash, &mut *self.pools[worker].lock().expect("lock poisoned"));
         }
-        stash.pop().unwrap_or_default()
+        let Some(mut buffers) = stash.pop() else { return Buffers::default() };
+        buffers.reads.clear();
+        buffers.writes.clear();
+        if let Some(parallel) = &mut buffers.pending.parallel {
+            parallel.deferred.clear();
+        }
+        buffers
     }
 
     /// Frees the buffers handed back on a background thread.
@@ -2837,9 +2951,16 @@ impl<S> Results<S> {
         drop_in_background(buffers);
     }
 
-    /// Hands buffers, with emptied reads and writes, back to the `worker` that filled them.
+    /// Hands buffers back to the `worker` that filled them.
     fn recycle(&self, worker: usize, buffers: Buffers) {
         self.pools[worker].lock().expect("lock poisoned").push(buffers);
+    }
+
+    /// Hands every buffer of `buffers` back to the `worker` that filled them, leaving it empty.
+    fn recycle_all(&self, worker: usize, buffers: &mut Vec<Buffers>) {
+        if !buffers.is_empty() {
+            self.pools[worker].lock().expect("lock poisoned").append(buffers);
+        }
     }
 }
 
