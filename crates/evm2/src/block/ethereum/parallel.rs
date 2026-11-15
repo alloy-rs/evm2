@@ -91,7 +91,7 @@ use core::{
     borrow::Borrow,
     cell::{Cell, RefCell},
     cmp::Reverse,
-    hash::Hash,
+    hash::{BuildHasherDefault, Hash, Hasher},
     num::NonZeroUsize,
     ops::Deref,
     ptr,
@@ -1458,7 +1458,7 @@ struct DeferredWarmer {
     /// Index of the next result whose operations to run.
     next: usize,
     /// The slots the operations run so far wrote.
-    slots: HashMap<(Address, Word), Word>,
+    slots: SlotMap<Word>,
 }
 
 /// Runs the deferred storage operations of the next result ahead of the committer against the
@@ -1506,7 +1506,7 @@ fn warm_deferred<T: EvmTypes, Q>(
 struct WarmAccess<'m, 's, B: ?Sized> {
     store: &'m MvStore<'s, B>,
     version: u32,
-    slots: &'m mut HashMap<(Address, Word), Word>,
+    slots: &'m mut SlotMap<Word>,
 }
 
 impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for WarmAccess<'_, '_, B> {
@@ -2335,7 +2335,39 @@ struct WriteLog {
 type AccountShard = RwLock<AddressMap<Versions<Option<AccountInfo>>>>;
 
 /// One lock shard of storage slot versions.
-type StorageShard = RwLock<HashMap<(Address, Word), Versions<SlotWrite>>>;
+type StorageShard = RwLock<SlotMap<Versions<SlotWrite>>>;
+
+/// A map keyed by storage slot, with [`SlotHasher`].
+type SlotMap<V> = HashMap<(Address, Word), V, BuildHasherDefault<SlotHasher>>;
+
+/// Hashes the fixed-size `(Address, Word)` keys of a [`SlotMap`] a word at a time.
+#[derive(Clone, Copy, Debug, Default)]
+struct SlotHasher(u64);
+
+impl Hasher for SlotHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+
+    #[inline]
+    fn write_u64(&mut self, word: u64) {
+        self.0 = (self.0 ^ word).wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(26);
+    }
+
+    /// Keys have a fixed size, so their length prefixes carry nothing.
+    #[inline]
+    fn write_usize(&mut self, _: usize) {}
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0.wrapping_mul(0xbf58_476d_1ce4_e5b9)
+    }
+}
 
 /// A transaction's write to a storage slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2352,7 +2384,7 @@ struct BaseMemo {
     /// The identifier of the store the values belong to.
     store: usize,
     accounts: AddressMap<Option<AccountInfo>>,
-    storage: HashMap<(Address, Word), Word>,
+    storage: SlotMap<Word>,
 }
 
 impl BaseMemo {
@@ -2515,7 +2547,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         &self,
         address: &Address,
         key: &Word,
-    ) -> RwLockWriteGuard<'_, HashMap<(Address, Word), Versions<SlotWrite>>> {
+    ) -> RwLockWriteGuard<'_, SlotMap<Versions<SlotWrite>>> {
         self.written_slots.insert(slot_hash(address, key));
         self.storage_shard(address, key).write().expect("lock poisoned")
     }
