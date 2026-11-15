@@ -338,6 +338,39 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         Ok(warmed)
     }
 
+    /// Adds `delta` to the slot at `key` like [`Self::add`], keeping the add pending, when the slot
+    /// is not loaded, has no pending adds and holds a value in `min..=max`. Returns that value and
+    /// whether the access was cold for EIP-2929 gas accounting, or `None`, changing nothing, when
+    /// it cannot.
+    ///
+    /// The value is read, but the transaction depends only on it lying in `min..=max` (see
+    /// [`State::storage_add_within`](super::State::storage_add_within)).
+    pub fn add_within(
+        self,
+        key: Word,
+        delta: Word,
+        min: Word,
+        max: Word,
+    ) -> DbResult<Option<(Word, bool)>> {
+        if self.storage.slots.contains_key(&key)
+            || self.storage.wiped
+            || self.discards_storage
+            || self.pending_delta(&key).is_some()
+        {
+            return Ok(None);
+        }
+        let address = *self.address;
+        let value = self.inner.read_unloaded_slot(&address, &key, false)?;
+        if value < min || value > max {
+            return Ok(None);
+        }
+        let bounds = self.inner.deferred.bounds.entry(StorageKey::new(address, key));
+        let bounds = bounds.or_insert((min, max));
+        // Every read of the slot sees the same value, so the ranges intersect.
+        *bounds = (bounds.0.max(min), bounds.1.min(max));
+        Ok(Some((value, self.add(key, delta)?)))
+    }
+
     /// Returns the slot's pending blind adds.
     #[inline]
     fn pending_delta(&self, key: &Word) -> Option<StorageDelta> {

@@ -832,6 +832,11 @@ fn streamed_public_mix_benchmark() {
 /// - 4: defers inserting the caller into the ring buffer and marking it seen, clearing the seen
 ///   mark of the entry it evicts.
 /// - 5: reads the ring pointer, which only deferred operations write, into the caller's slot.
+/// - 6: credits the fee to the balance slot through a range-checked blind add, charging gas on
+///   whether the balance was zero, or reads and writes it when the add cannot be blind.
+/// - 7: debits the fee from the balance slot the same way, leaving it unchanged when it holds no
+///   more than the fee.
+/// - 8: reads the balance slot into the caller's slot.
 const LEDGER: Address = Address::repeat_byte(0x1d);
 const RING_CAPACITY: u64 = 4;
 
@@ -844,6 +849,7 @@ fn ledger(
     let caller = address_to_word(&message.caller);
     // Key spaces of the seen marks, the ring pointer and the ring entries, above callers' slots.
     let (seen, pointer_key, ring) = (U256::ONE << 200, U256::ONE << 201, U256::ONE << 202);
+    let balance = LEDGER_BALANCE;
     let fee = U256::from(message.caller[19]) + U256::ONE;
     let read = |evm: &mut Evm<'_, _>| -> PrecompileResult {
         let value = Host::sload(evm, &LEDGER, &U256::ZERO, false)?.value;
@@ -877,13 +883,45 @@ fn ledger(
             let next = (pointer + U256::ONE) % U256::from(RING_CAPACITY);
             storage.sstore(&LEDGER, pointer_key, next)
         })),
-        _ => {
+        5 => {
             let pointer = Host::sload(evm, &LEDGER, &pointer_key, false)?.value;
             Host::sstore(evm, &LEDGER, &caller, &pointer, false)?;
+        }
+        6 => match evm.state_mut().storage_add_within(
+            &LEDGER,
+            balance,
+            fee,
+            U256::ONE,
+            U256::MAX - fee,
+        )? {
+            Some((value, _)) => gas.spend(if value.is_zero() { 20_000 } else { 2_900 })?,
+            None => {
+                let value = Host::sload(evm, &LEDGER, &balance, false)?.value;
+                Host::sstore(evm, &LEDGER, &balance, &(value + fee), false)?;
+            }
+        },
+        7 => {
+            if evm
+                .state_mut()
+                .storage_add_within(&LEDGER, balance, U256::ZERO - fee, fee + U256::ONE, U256::MAX)?
+                .is_none()
+            {
+                let value = Host::sload(evm, &LEDGER, &balance, false)?.value;
+                if value > fee {
+                    Host::sstore(evm, &LEDGER, &balance, &(value - fee), false)?;
+                }
+            }
+        }
+        _ => {
+            let value = Host::sload(evm, &LEDGER, &balance, false)?.value;
+            Host::sstore(evm, &LEDGER, &caller, &value, false)?;
         }
     }
     Ok(PrecompileOutput::new(Bytes::new()))
 }
+
+/// The balance slot of [`ledger`]'s range-checked adds, above callers' slots.
+const LEDGER_BALANCE: U256 = U256::from_limbs([0, 0, 0, 1 << 11]);
 
 fn ledger_database() -> InMemoryDB {
     let mut database = database(None);
@@ -952,6 +990,39 @@ fn blind_adds_mixed_with_reads_match_sequential() {
     }
     // Readers of the accumulator conflict with the adds before them.
     assert!(reexecuted > 0);
+}
+
+#[test]
+fn range_checked_adds_to_one_slot_commit_without_conflicts() {
+    // Every transaction credits or debits the same balance, which stays in range.
+    for ops in [&[6][..], &[7], &[6, 7]] {
+        let txs: Vec<_> = (0..ACCOUNTS)
+            .map(|index| {
+                let op = ops[index as usize % ops.len()];
+                tx(user(index), 0, TxKind::Call(LEDGER), 0, 1, vec![op])
+            })
+            .collect();
+        for threads in [2, 4, 8] {
+            let mut database = ledger_database();
+            database.insert_account_storage(&LEDGER, &LEDGER_BALANCE, &U256::from(1_000_000));
+            let run = assert_matches_sequential_with(database, &txs, threads, None);
+            assert_eq!(run.stats.reexecuted, 0, "ops {ops:?}, {threads} threads");
+        }
+    }
+}
+
+#[test]
+fn range_checked_adds_mixed_with_reads_match_sequential() {
+    // A small balance makes debits fall out of range and back in, and readers conflict with the
+    // adds before them.
+    for seed in 0..30 {
+        let txs = ledger_block(seed, 96, &[6, 6, 7, 7, 7, 8, 0, 1]);
+        for (start, threads) in [(0, 2), (40, 5), (300, 8), (1_000_000, 4)] {
+            let mut database = ledger_database();
+            database.insert_account_storage(&LEDGER, &LEDGER_BALANCE, &U256::from(start));
+            assert_matches_sequential(database, &txs, threads);
+        }
+    }
 }
 
 #[test]

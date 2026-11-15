@@ -7,6 +7,9 @@ use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::Address;
 use core::fmt;
 
+#[cfg(all(feature = "std", feature = "block"))]
+use crate::storage_key::StorageKey;
+
 /// The pending blind adds to one storage slot the transaction has not read. See
 /// [`State::storage_add`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -22,6 +25,9 @@ pub(crate) struct StorageDelta {
 pub(crate) struct DeferredStorage {
     /// Pending blind adds, by slot.
     pub(crate) deltas: StorageKeyMap<StorageDelta>,
+    /// The range each slot added to with [`State::storage_add_within`] was read in: while its add
+    /// is still pending, the transaction depends only on the slot's value lying in it.
+    pub(crate) bounds: StorageKeyMap<(Word, Word)>,
     /// Deferred storage operations, in the order they were deferred.
     pub(crate) ops: Vec<DeferredStorageOp>,
     /// Slots the transaction's end loaded to resolve blind adds or run deferred operations: its
@@ -30,6 +36,21 @@ pub(crate) struct DeferredStorage {
 }
 
 impl DeferredStorage {
+    /// Returns the range the execution needs the value of `address`'s slot `key` in, when its
+    /// only read of the slot was through [`State::storage_add_within`] and its add is still
+    /// pending.
+    #[cfg(all(feature = "std", feature = "block"))]
+    pub(crate) fn read_bounds(&self, address: &Address, key: &Word) -> Option<(Word, Word)> {
+        if self.bounds.is_empty() {
+            return None;
+        }
+        let slot = StorageKey::new(*address, *key);
+        if !self.deltas.contains_key(&slot) {
+            return None;
+        }
+        self.bounds.get(&slot).copied()
+    }
+
     /// Returns whether blind adds or deferred operations are left to resolve.
     #[inline]
     pub(crate) fn is_pending(&self) -> bool {
@@ -42,6 +63,7 @@ impl DeferredStorage {
             return;
         }
         self.deltas.clear();
+        self.bounds.clear();
         self.ops.clear();
         self.resolved.clear();
     }
@@ -49,7 +71,7 @@ impl DeferredStorage {
     /// Returns whether nothing is pending or recorded.
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
-        !self.is_pending() && self.resolved.is_empty()
+        !self.is_pending() && self.resolved.is_empty() && self.bounds.is_empty()
     }
 }
 
