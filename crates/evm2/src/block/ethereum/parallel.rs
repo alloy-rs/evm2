@@ -66,8 +66,8 @@ use crate::{
     },
     bytecode::Bytecode,
     evm::{
-        AccountFlags, AccountInfo, Cache, DbResult, DeferredStorageStore, DynDatabase,
-        DynDatabaseRef, PendingState,
+        AccountFlags, AccountInfo, Cache, DbResult, DeferredStorageOp, DeferredStorageStore,
+        DynDatabase, DynDatabaseRef, PendingState,
     },
     interpreter::{Host, Word},
 };
@@ -127,6 +127,10 @@ const COMMIT_SPINS: u32 = 1 << 10;
 /// How far ahead of the committer idle workers run deferred storage operations to warm the slots
 /// they read in batched commits.
 const WARM_AHEAD: usize = 64;
+
+/// How many results' deferred storage operations an idle worker runs ahead of the committer at
+/// once, so that they keep ahead of it.
+const WARM_BATCH: usize = 16;
 
 /// Most threads that read a batched commit's final state.
 const MATERIALIZE_THREADS: usize = 8;
@@ -813,8 +817,15 @@ where
         let mut stream = streamer.is_some().then(PrefixStream::default);
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
-            let Speculative { worker, outcome, reward, mut reads, mut writes, prevalidated } =
-                results.take(index).expect("parallel execution workers exited without a result");
+            let Speculative {
+                worker,
+                outcome,
+                reward,
+                mut reads,
+                mut writes,
+                prevalidated,
+                warmed,
+            } = results.take(index).expect("parallel execution workers exited without a result");
             let evm_tx = queue.get(index);
             let tx = tx.borrow();
             let version = version(index);
@@ -851,7 +862,16 @@ where
                             store.republish_account(version, *address, account.present.as_ref());
                         }
                     }
-                    run_deferred_ops(store, version, &mut pending_state, stream.as_mut())?;
+                    if !run_deferred_ops(
+                        store,
+                        version,
+                        &mut pending_state,
+                        warmed,
+                        stream.as_mut(),
+                    )? {
+                        results.warm_stale.store(true, Ordering::Release);
+                    }
+                    results.deferred_done.store(index + 1, Ordering::Release);
                     on_commit(index, &result)?;
                     record_lifecycle(&mut lifecycle, &pending_state);
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
@@ -901,7 +921,8 @@ where
                         stream.keys.extend(committed.iter().copied());
                     }
                     store.log_writes(version, committed.into_iter().chain(writes.iter().copied()));
-                    run_deferred_ops(store, version, &mut pending_state, stream.as_mut())?;
+                    run_deferred_ops(store, version, &mut pending_state, None, stream.as_mut())?;
+                    results.deferred_done.store(index + 1, Ordering::Release);
                     on_commit(index, &result)?;
                     record_lifecycle(&mut lifecycle, &pending_state);
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
@@ -1087,22 +1108,50 @@ fn credit_reward(
 
 /// Runs a committed transaction's deferred storage operations against `store`, in order, at the
 /// transaction's `version`.
+///
+/// When an idle worker ran the same operations ahead of the committer, `warmed`, and every slot
+/// they read still holds the value read, the operations would write what they wrote then: the
+/// writes are applied without running the operations again. Returns `false` when `warmed`
+/// read a value that changed since.
 fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
     store: &MvStore<'_, B>,
     version: u32,
     pending: &mut PendingState,
+    warmed: Option<Box<WarmedOps>>,
     stream: Option<&mut PrefixStream>,
-) -> Result<(), BlockExecutionError> {
+) -> Result<bool, BlockExecutionError> {
     let Some(parallel) =
         pending.parallel.as_deref_mut().filter(|parallel| !parallel.deferred.ops.is_empty())
     else {
-        return Ok(());
+        return Ok(true);
     };
-    let mut access = StoreAccess { store, version, stream };
-    for op in core::mem::take(&mut parallel.deferred.ops) {
+    let ops = core::mem::take(&mut parallel.deferred.ops);
+    let had_warmed = warmed.is_some();
+    if let Some(warmed) = warmed
+        && warmed.ops == ops
+        && warmed.reads.iter().all(|(address, key, value, initial)| {
+            store
+                .storage_from(address, key, version + 1, *initial)
+                .is_ok_and(|(now, _)| now == *value)
+        })
+    {
+        store.write_slots(version, &warmed.writes);
+        if let Some(stream) = stream {
+            stream.keys.extend(
+                warmed.writes.iter().map(|&(address, key, _)| WriteKey::Storage(address, key)),
+            );
+        }
+        return Ok(true);
+    }
+    let mut access = StoreAccess { store, version, written: Vec::new() };
+    for op in &ops {
         op.run_on(&mut access).map_err(map_database_error)?;
     }
-    Ok(())
+    store.log_writes(version, access.written.iter().copied());
+    if let Some(stream) = stream {
+        stream.keys.append(&mut access.written);
+    }
+    Ok(!had_warmed)
 }
 
 /// A deferred storage operation's view of the store: the state its transaction leaves, written
@@ -1110,8 +1159,8 @@ fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
 struct StoreAccess<'m, 's, B: ?Sized> {
     store: &'m MvStore<'s, B>,
     version: u32,
-    /// Records the slots written, when the commit streams state.
-    stream: Option<&'m mut PrefixStream>,
+    /// The slots written, which the caller logs once the operations ran.
+    written: Vec<WriteKey>,
 }
 
 impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for StoreAccess<'_, '_, B> {
@@ -1120,10 +1169,8 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for StoreAccess<'_,
     }
 
     fn sstore(&mut self, address: &Address, key: Word, value: Word) -> DbResult<()> {
-        self.store.write_slot(self.version, *address, key, value);
-        if let Some(stream) = &mut self.stream {
-            stream.keys.push(WriteKey::Storage(*address, key));
-        }
+        self.store.store_slot(self.version, *address, key, value);
+        self.written.push(WriteKey::Storage(*address, key));
         Ok(())
     }
 }
@@ -1274,16 +1321,40 @@ struct DeferredWarmer {
 }
 
 /// Runs the deferred storage operations of the next result ahead of the committer against the
-/// store and the writes of the operations run before it, discarding their writes, so the slots
-/// they read are loaded before the committer runs them. Returns whether it ran a result's.
+/// store and the writes of the operations run before it, recording what they read and wrote for
+/// the committer to check and apply instead of running them. Returns whether it ran a result's.
 fn warm_deferred<T: EvmTypes>(
     store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
     results: &Results<Speculative<T>>,
 ) -> bool {
     let Ok(mut warmer) = results.warmer.try_lock() else { return false };
+    let mut ran = false;
+    for _ in 0..WARM_BATCH {
+        if !warm_next(store, results, &mut warmer) {
+            break;
+        }
+        ran = true;
+    }
+    ran
+}
+
+/// Runs the deferred storage operations of the result after the last one `warmer` ran, as
+/// [`warm_deferred`] does. Returns whether it ran a result's.
+fn warm_next<T: EvmTypes>(
+    store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
+    results: &Results<Speculative<T>>,
+    warmer: &mut DeferredWarmer,
+) -> bool {
     let committing = results.committing.load(Ordering::Acquire);
-    if warmer.next <= committing {
-        warmer.next = committing + 1;
+    if warmer.next <= committing || results.warm_stale.swap(false, Ordering::AcqRel) {
+        // Start again after the last transaction whose operations the committer ran, once it ran
+        // those of the transaction it commits: the store then holds every write before.
+        let done = results.deferred_done.load(Ordering::Acquire);
+        if done <= committing {
+            warmer.next = 0;
+            return false;
+        }
+        warmer.next = done;
         warmer.slots.clear();
     }
     let index = warmer.next;
@@ -1301,35 +1372,66 @@ fn warm_deferred<T: EvmTypes>(
         return false;
     }
     warmer.next = index + 1;
-    let Some(ops) = ops else { return true };
-    let warmer = &mut *warmer;
-    let mut access = WarmAccess { store, version: version(index), slots: &mut warmer.slots };
-    for op in &ops {
-        if op.run_on(&mut access).is_err() {
-            break;
-        }
+    let Some(ops) = ops.filter(|ops| !ops.is_empty()) else { return true };
+    let mut access = WarmAccess {
+        store,
+        version: version(index),
+        slots: &mut warmer.slots,
+        reads: Vec::new(),
+        writes: Vec::new(),
+    };
+    if ops.iter().all(|op| op.run_on(&mut access).is_ok()) {
+        let warmed = WarmedOps { ops, reads: access.reads, writes: access.writes };
+        results.update(index, |speculative| speculative.warmed = Some(Box::new(warmed)));
     }
     true
 }
 
+/// What running a result's deferred storage operations ahead of the committer read and wrote.
+#[derive(Debug)]
+struct WarmedOps {
+    /// The operations run.
+    ops: Vec<DeferredStorageOp>,
+    /// Each slot read that the operations had not written, the value read and the slot's value
+    /// before the first transaction, when the read needed it.
+    reads: Vec<(Address, Word, Word, Option<Word>)>,
+    /// Each slot written, once, with the last value written, in the order first written.
+    writes: Vec<(Address, Word, Word)>,
+}
+
 /// A deferred storage operation's view of the store ahead of the committer: the store at its
-/// transaction's version beneath the writes of the operations run before it.
+/// transaction's version beneath the writes of the operations run before it, recording what it
+/// reads and writes.
 struct WarmAccess<'m, 's, B: ?Sized> {
     store: &'m MvStore<'s, B>,
     version: u32,
+    /// The slots the operations of earlier results wrote.
     slots: &'m mut HashMap<(Address, Word), Word>,
+    reads: Vec<(Address, Word, Word, Option<Word>)>,
+    writes: Vec<(Address, Word, Word)>,
 }
 
 impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for WarmAccess<'_, '_, B> {
     fn sload(&mut self, address: &Address, key: Word) -> DbResult<Word> {
-        if let Some(value) = self.slots.get(&(*address, key)) {
-            return Ok(*value);
+        if let Some(&(.., value)) =
+            self.writes.iter().find(|(written, slot, _)| written == address && *slot == key)
+        {
+            return Ok(value);
         }
-        self.store.storage(address, &key, self.version + 1)
+        let (value, initial) = match self.slots.get(&(*address, key)) {
+            Some(value) => (*value, None),
+            None => self.store.storage_from(address, &key, self.version + 1, None)?,
+        };
+        self.reads.push((*address, key, value, initial));
+        Ok(value)
     }
 
     fn sstore(&mut self, address: &Address, key: Word, value: Word) -> DbResult<()> {
         self.slots.insert((*address, key), value);
+        match self.writes.iter_mut().find(|(written, slot, _)| written == address && *slot == key) {
+            Some(write) => write.2 = value,
+            None => self.writes.push((*address, key, value)),
+        }
         Ok(())
     }
 }
@@ -1407,8 +1509,18 @@ fn run_worker<T, F, H>(
         }
         scheduler.finish(index);
         let reads = core::mem::take(&mut *reads.borrow_mut());
-        results
-            .put(index, Speculative { worker, outcome, reward, reads, writes, prevalidated: None });
+        results.put(
+            index,
+            Speculative {
+                worker,
+                outcome,
+                reward,
+                reads,
+                writes,
+                prevalidated: None,
+                warmed: None,
+            },
+        );
     }
 
     // Every transaction was handed out, and the committer is still behind: execute again, ahead
@@ -1493,7 +1605,15 @@ fn run_worker<T, F, H>(
             let reads = core::mem::take(&mut *reads.borrow_mut());
             let stale = core::mem::replace(
                 speculative,
-                Speculative { worker, outcome, reward, reads, writes, prevalidated: None },
+                Speculative {
+                    worker,
+                    outcome,
+                    reward,
+                    reads,
+                    writes,
+                    prevalidated: None,
+                    warmed: None,
+                },
             );
             let Speculative { worker: owner, reads: mut old_reads, writes: mut old_writes, .. } =
                 stale;
@@ -1852,6 +1972,9 @@ struct Speculative<T: EvmTypes> {
     /// committed every earlier transaction: the length of the store's write log when it started,
     /// and whether every read held.
     prevalidated: Option<(usize, bool)>,
+    /// What an idle worker's run of the result's deferred storage operations ahead of a batched
+    /// commit read and wrote, for the committer to check and apply instead of running them.
+    warmed: Option<Box<WarmedOps>>,
 }
 
 /// The values one speculative execution read.
@@ -2412,13 +2535,21 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         self.log_writes(version, [WriteKey::Account(address)]);
     }
 
-    /// Writes a slot's value at `version`.
-    fn write_slot(&self, version: u32, address: Address, key: Word, value: Word) {
-        {
-            let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
-            shard.entry((address, key)).or_default().insert(version, SlotWrite::Value(value));
+    /// Writes a slot's value at `version`, without logging it: the caller logs it after.
+    fn store_slot(&self, version: u32, address: Address, key: Word, value: Word) {
+        let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+        shard.entry((address, key)).or_default().insert(version, SlotWrite::Value(value));
+    }
+
+    /// Writes slots' values at `version` and logs them.
+    fn write_slots(&self, version: u32, writes: &[(Address, Word, Word)]) {
+        for &(address, key, value) in writes {
+            self.store_slot(version, address, key, value);
         }
-        self.log_writes(version, [WriteKey::Storage(address, key)]);
+        self.log_writes(
+            version,
+            writes.iter().map(|&(address, key, _)| WriteKey::Storage(address, key)),
+        );
     }
 
     /// Returns the block's changes once every transaction committed: each account and slot written
@@ -2635,6 +2766,11 @@ struct Results<S> {
     batched: bool,
     /// The deferred storage operations idle workers run ahead of a batched commit.
     warmer: Mutex<DeferredWarmer>,
+    /// Number of leading transactions whose deferred storage operations the committer ran.
+    deferred_done: CachePadded<AtomicUsize>,
+    /// Whether the committer found operations run ahead of it reading stale values, so that the
+    /// warmer starts again from the committed state.
+    warm_stale: AtomicBool,
 }
 
 impl<S> Results<S> {
@@ -2652,6 +2788,8 @@ impl<S> Results<S> {
             ready: CachePadded(AtomicUsize::new(0)),
             batched,
             warmer: Mutex::default(),
+            deferred_done: CachePadded(AtomicUsize::new(0)),
+            warm_stale: AtomicBool::new(false),
         }
     }
 
