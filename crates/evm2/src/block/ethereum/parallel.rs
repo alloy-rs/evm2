@@ -94,7 +94,7 @@ use core::{
     num::NonZeroUsize,
     ops::Deref,
     ptr,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence},
 };
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -156,6 +156,69 @@ pub struct ParallelExecutionStats {
     /// Transactions executed again on the executor because their speculative execution read
     /// stale state, failed, or read the beneficiary.
     pub reexecuted: usize,
+    /// Where the execution's wall and CPU time went, by thread role.
+    pub timings: ParallelTimings,
+}
+
+/// Wall and CPU time of one parallel block execution, by thread role.
+///
+/// Offsets are from the start of the call. CPU and run-queue times come from the kernel's
+/// per-thread scheduler statistics: run-queue time is time a thread was runnable but waited for a
+/// core. They are zero where the statistics are unavailable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParallelTimings {
+    /// Duration of the whole call.
+    pub total: Duration,
+    /// Offset at which the input iterator yielded its first transaction.
+    pub input_first: Duration,
+    /// Offset at which the input iterator ended.
+    pub input_end: Duration,
+    /// Time the input thread waited for the input iterator's next transaction.
+    pub input_wait: Duration,
+    /// CPU time of the input thread.
+    pub input_cpu: Duration,
+    /// Run-queue time of the input thread.
+    pub input_runq: Duration,
+    /// Offset at which the committer committed the last transaction.
+    pub commit_end: Duration,
+    /// Time the committer waited for the next transaction to arrive.
+    pub commit_input_wait: Duration,
+    /// Time the committer waited for a worker's result of an arrived transaction.
+    pub commit_worker_wait: Duration,
+    /// Time the committer spent executing transactions again.
+    pub commit_reexec: Duration,
+    /// CPU time of the committer.
+    pub commit_cpu: Duration,
+    /// Run-queue time of the committer.
+    pub commit_runq: Duration,
+    /// Time the committer spent materializing and committing the final state.
+    pub materialize: Duration,
+    /// Time the committer waited for the state streamer to finish.
+    pub stream_join: Duration,
+    /// Offset at which the last speculative result was stored.
+    pub workers_done: Duration,
+    /// Time workers spent executing, validating and warming before every transaction was handed
+    /// out, summed over workers.
+    pub worker_busy: Duration,
+    /// Time workers spent executing again, validating and warming after every transaction was
+    /// handed out, summed over workers.
+    pub worker_tail_busy: Duration,
+    /// Time workers waited for a transaction to become ready, summed over workers.
+    pub worker_sched_wait: Duration,
+    /// Lifetime of the workers, summed over workers.
+    pub worker_wall: Duration,
+    /// CPU time of the workers, summed over workers.
+    pub worker_cpu: Duration,
+    /// Run-queue time of the workers, summed over workers.
+    pub worker_runq: Duration,
+    /// Time the state streamer spent reading updates and running the state hook.
+    pub stream_busy: Duration,
+    /// CPU time of the state streamer.
+    pub stream_cpu: Duration,
+    /// Run-queue time of the state streamer.
+    pub stream_runq: Duration,
+    /// Offset at which the state streamer finished.
+    pub stream_end: Duration,
 }
 
 /// The result of [`EthBlockExecutor::execute_transactions_parallel`].
@@ -437,6 +500,7 @@ where
             scheduler.abort();
             result
         });
+        stats.timings = results.prof.timings();
         store.drop_in_background();
         results.drop_buffers_in_background();
         if let (Err(_), Some(totals)) = (&output, totals) {
@@ -518,8 +582,19 @@ where
         let transactions = transactions.into_iter();
         let output = std::thread::scope(|scope| {
             let (scheduler, queue) = (&scheduler, &queue);
+            let prof = &results.prof;
             scope.spawn(move || {
-                for StreamedTx { tx, dependencies } in transactions {
+                let sched = SchedMark::new();
+                let mut transactions = transactions;
+                let mut first = true;
+                loop {
+                    let wait = Instant::now();
+                    let Some(StreamedTx { tx, dependencies }) = transactions.next() else { break };
+                    prof.add(&prof.c.input_wait, wait.elapsed());
+                    if first {
+                        first = false;
+                        prof.offset(&prof.c.input_first);
+                    }
                     if scheduler.is_stopped() {
                         break;
                     }
@@ -531,7 +606,9 @@ where
                         break;
                     }
                 }
+                prof.offset(&prof.c.input_end);
                 scheduler.close();
+                sched.finish(&prof.c.input_cpu, &prof.c.input_runq);
             });
             for worker in 0..threads.get() {
                 let (store, results) = (&store, &results);
@@ -566,6 +643,7 @@ where
             scheduler.abort();
             result
         });
+        stats.timings = results.prof.timings();
         store.drop_in_background();
         results.drop_buffers_in_background();
         if let (Err(_), Some(totals)) = (&output, totals) {
@@ -756,7 +834,8 @@ where
         };
         std::thread::scope(|scope| {
             let (sender, batches) = mpsc::channel();
-            let streamer = scope.spawn(move || stream_updates(store, &batches, hook));
+            let prof = &results.prof;
+            let streamer = scope.spawn(move || stream_updates(store, &batches, hook, prof));
             let committed = self.commit_batched_with(
                 store,
                 queue,
@@ -769,10 +848,12 @@ where
                 Some(&sender),
             );
             drop(sender);
+            let join = Instant::now();
             let (hook, streamed) = match streamer.join() {
                 Ok(joined) => joined,
                 Err(panic) => std::panic::resume_unwind(panic),
             };
+            results.prof.add(&results.prof.c.stream_join, join.elapsed());
             self.state_update_hook = Some(hook);
             committed?;
             streamed.map_err(map_database_error)
@@ -811,10 +892,18 @@ where
         // Accounts created or whose storage was wiped, as their transactions committed them.
         let mut lifecycle = AddressMap::<Lifecycle>::default();
         let mut stream = streamer.is_some().then(PrefixStream::default);
-        for (index, tx) in txs.into_iter().enumerate() {
+        let prof = &results.prof;
+        let commit_sched = SchedMark::new();
+        let mut txs = txs.into_iter().enumerate();
+        loop {
+            let wait = Instant::now();
+            let Some((index, tx)) = txs.next() else { break };
+            let arrived = Instant::now();
+            prof.add(&prof.c.commit_input_wait, arrived - wait);
             stats.transactions = index + 1;
             let Speculative { worker, outcome, reward, mut reads, mut writes, prevalidated } =
                 results.take(index).expect("parallel execution workers exited without a result");
+            prof.add(&prof.c.commit_worker_wait, arrived.elapsed());
             let evm_tx = queue.get(index);
             let tx = tx.borrow();
             let version = version(index);
@@ -864,6 +953,7 @@ where
                     pending_state
                 }
                 None => {
+                    let reexec = Instant::now();
                     stats.reexecuted += 1;
                     // It may read the beneficiary: publish the rewards credited since.
                     if let Some(info) = rewarded.take() {
@@ -905,6 +995,7 @@ where
                     on_commit(index, &result)?;
                     record_lifecycle(&mut lifecycle, &pending_state);
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
+                    prof.add(&prof.c.commit_reexec, reexec.elapsed());
                     PendingState::default()
                 }
             };
@@ -935,10 +1026,14 @@ where
             let keys = core::mem::take(&mut stream.keys);
             let _ = streamer.send(StreamBatch { keys, version: last_version + 1, running: None });
         }
+        prof.offset(&prof.c.commit_end);
+        let materialize = Instant::now();
         let state = store.materialize(&lifecycle).map_err(map_database_error)?;
         // The hook, when there is one, receives every change from the streamer.
         self.commit_pending_state(&state);
         drop_in_background(state);
+        prof.add(&prof.c.materialize, materialize.elapsed());
+        commit_sched.finish(&prof.c.commit_cpu, &prof.c.commit_runq);
         Ok(())
     }
 
@@ -1236,7 +1331,9 @@ fn stream_updates<B: DynDatabaseRef + Sync + ?Sized>(
     store: &MvStore<'_, B>,
     batches: &mpsc::Receiver<StreamBatch>,
     mut hook: Box<dyn FnMut(StateUpdate) + Send>,
+    prof: &Prof,
 ) -> (Box<dyn FnMut(StateUpdate) + Send>, DbResult<()>) {
+    let sched = SchedMark::new();
     let mut stream = PrefixStream::default();
     let mut result = Ok(());
     while let Ok(mut batch) = batches.recv() {
@@ -1249,12 +1346,16 @@ fn stream_updates<B: DynDatabaseRef + Sync + ?Sized>(
             batch = next;
         }
         let running = batch.running.as_ref().map(|(address, info)| (*address, info.as_ref()));
+        let busy = Instant::now();
         match stream.take(store, batch.version, running) {
             Ok(update) if !update.is_empty() => hook(update),
             Ok(_) => {}
             Err(error) => result = Err(error),
         }
+        prof.add(&prof.c.stream_busy, busy.elapsed());
     }
+    prof.offset(&prof.c.stream_end);
+    sched.finish(&prof.c.stream_cpu, &prof.c.stream_runq);
     (hook, result)
 }
 
@@ -1349,6 +1450,8 @@ fn run_worker<T, F, H>(
     H: Fn(usize, TxStateChanges<'_>),
 {
     let _exit = WorkerExit(results);
+    let prof = &results.prof;
+    let _prof = WorkerProf { prof, sched: SchedMark::new(), born: Instant::now() };
     // A panic outside the guarded execution, such as in `make_evm` or `on_speculative`, must not
     // leave transactions waiting on one this worker never finishes: stop the block instead.
     let _abort = AbortOnUnwind(scheduler);
@@ -1357,13 +1460,21 @@ fn run_worker<T, F, H>(
     let mut stash = Vec::new();
     let mut evm = None;
     loop {
+        let busy = Instant::now();
         // Validate a result near the committer before executing more: the committer then only
         // checks the writes logged since.
         if results.batched {
             prevalidate_next(store, queue, results);
             warm_deferred(store, results);
         }
-        let Some(index) = scheduler.next() else { break };
+        let wait = Instant::now();
+        prof.add(&prof.c.worker_busy, wait - busy);
+        let Some(index) = scheduler.next() else {
+            prof.add(&prof.c.worker_sched_wait, wait.elapsed());
+            break;
+        };
+        let busy = Instant::now();
+        prof.add(&prof.c.worker_sched_wait, busy - wait);
         let evm_tx = queue.get(index);
         let version = version(index);
         let worker_evm = evm.get_or_insert_with(|| {
@@ -1409,6 +1520,8 @@ fn run_worker<T, F, H>(
         let reads = core::mem::take(&mut *reads.borrow_mut());
         results
             .put(index, Speculative { worker, outcome, reward, reads, writes, prevalidated: None });
+        prof.add(&prof.c.worker_busy, busy.elapsed());
+        prof.offset(&prof.c.workers_done);
     }
 
     // Every transaction was handed out, and the committer is still behind: execute again, ahead
@@ -1417,9 +1530,11 @@ fn run_worker<T, F, H>(
     let Some(evm) = &mut evm else { return };
     let mut idle = 0;
     while !scheduler.is_stopped() {
+        let busy = Instant::now();
         if results.batched
             && (prevalidate_next(store, queue, results) || warm_deferred(store, results))
         {
+            prof.add(&prof.c.worker_tail_busy, busy.elapsed());
             idle = 0;
             continue;
         }
@@ -1447,6 +1562,7 @@ fn run_worker<T, F, H>(
             continue;
         }
         let mut stop = false;
+        let busy = Instant::now();
         results.update(index, |speculative| {
             let version = version(index);
             if let Some(outcome) = &speculative.outcome
@@ -1504,6 +1620,7 @@ fn run_worker<T, F, H>(
                 Buffers { reads: old_reads, writes: old_writes, ..Default::default() },
             );
         });
+        prof.add(&prof.c.worker_tail_busy, busy.elapsed());
         if stop {
             return;
         }
@@ -2635,6 +2752,8 @@ struct Results<S> {
     batched: bool,
     /// The deferred storage operations idle workers run ahead of a batched commit.
     warmer: Mutex<DeferredWarmer>,
+    /// Where the execution's time went.
+    prof: Prof,
 }
 
 impl<S> Results<S> {
@@ -2652,6 +2771,7 @@ impl<S> Results<S> {
             ready: CachePadded(AtomicUsize::new(0)),
             batched,
             warmer: Mutex::default(),
+            prof: Prof { start: Instant::now(), c: ProfCounters::default() },
         }
     }
 
@@ -2892,3 +3012,124 @@ impl<T> Deref for CachePadded<T> {
 
 #[cfg(test)]
 mod tests;
+
+/// Time counters of one parallel block execution, in nanoseconds, shared by its threads.
+#[derive(Debug)]
+struct Prof {
+    start: Instant,
+    c: ProfCounters,
+}
+
+/// The counters of a [`Prof`], one per field of [`ParallelTimings`] but its total.
+#[derive(Debug, Default)]
+struct ProfCounters {
+    input_first: AtomicU64,
+    input_end: AtomicU64,
+    input_wait: AtomicU64,
+    input_cpu: AtomicU64,
+    input_runq: AtomicU64,
+    commit_end: AtomicU64,
+    commit_input_wait: AtomicU64,
+    commit_worker_wait: AtomicU64,
+    commit_reexec: AtomicU64,
+    commit_cpu: AtomicU64,
+    commit_runq: AtomicU64,
+    materialize: AtomicU64,
+    stream_join: AtomicU64,
+    workers_done: AtomicU64,
+    worker_busy: AtomicU64,
+    worker_tail_busy: AtomicU64,
+    worker_sched_wait: AtomicU64,
+    worker_wall: AtomicU64,
+    worker_cpu: AtomicU64,
+    worker_runq: AtomicU64,
+    stream_busy: AtomicU64,
+    stream_cpu: AtomicU64,
+    stream_runq: AtomicU64,
+    stream_end: AtomicU64,
+}
+
+impl Prof {
+    /// Adds `duration` to `counter`.
+    fn add(&self, counter: &AtomicU64, duration: Duration) {
+        counter.fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    /// Raises `counter` to the time elapsed since the start.
+    fn offset(&self, counter: &AtomicU64) {
+        counter.fetch_max(self.start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    /// Returns the timings recorded so far.
+    fn timings(&self) -> ParallelTimings {
+        let c = &self.c;
+        let d = |counter: &AtomicU64| Duration::from_nanos(counter.load(Ordering::Relaxed));
+        ParallelTimings {
+            total: self.start.elapsed(),
+            input_first: d(&c.input_first),
+            input_end: d(&c.input_end),
+            input_wait: d(&c.input_wait),
+            input_cpu: d(&c.input_cpu),
+            input_runq: d(&c.input_runq),
+            commit_end: d(&c.commit_end),
+            commit_input_wait: d(&c.commit_input_wait),
+            commit_worker_wait: d(&c.commit_worker_wait),
+            commit_reexec: d(&c.commit_reexec),
+            commit_cpu: d(&c.commit_cpu),
+            commit_runq: d(&c.commit_runq),
+            materialize: d(&c.materialize),
+            stream_join: d(&c.stream_join),
+            workers_done: d(&c.workers_done),
+            worker_busy: d(&c.worker_busy),
+            worker_tail_busy: d(&c.worker_tail_busy),
+            worker_sched_wait: d(&c.worker_sched_wait),
+            worker_wall: d(&c.worker_wall),
+            worker_cpu: d(&c.worker_cpu),
+            worker_runq: d(&c.worker_runq),
+            stream_busy: d(&c.stream_busy),
+            stream_cpu: d(&c.stream_cpu),
+            stream_runq: d(&c.stream_runq),
+            stream_end: d(&c.stream_end),
+        }
+    }
+}
+
+/// The calling thread's CPU and run-queue time when it was created.
+struct SchedMark((u64, u64));
+
+impl SchedMark {
+    fn new() -> Self {
+        Self(sched_times())
+    }
+
+    /// Adds the calling thread's CPU and run-queue time since the mark to `cpu` and `runq`.
+    fn finish(self, cpu: &AtomicU64, runq: &AtomicU64) {
+        let (on_cpu, queued) = sched_times();
+        cpu.fetch_add(on_cpu.saturating_sub(self.0.0), Ordering::Relaxed);
+        runq.fetch_add(queued.saturating_sub(self.0.1), Ordering::Relaxed);
+    }
+}
+
+/// Returns the calling thread's CPU and run-queue time in nanoseconds, or zeros where the kernel
+/// does not report them.
+fn sched_times() -> (u64, u64) {
+    let Ok(stat) = std::fs::read_to_string("/proc/thread-self/schedstat") else { return (0, 0) };
+    let mut fields = stat.split_whitespace().map(|field| field.parse::<u64>().unwrap_or(0));
+    (fields.next().unwrap_or(0), fields.next().unwrap_or(0))
+}
+
+/// Records a worker's lifetime and CPU time when it exits.
+struct WorkerProf<'p> {
+    prof: &'p Prof,
+    sched: SchedMark,
+    born: Instant,
+}
+
+impl Drop for WorkerProf<'_> {
+    fn drop(&mut self) {
+        let c = &self.prof.c;
+        self.prof.add(&c.worker_wall, self.born.elapsed());
+        let sched = core::mem::replace(&mut self.sched, SchedMark((u64::MAX, u64::MAX)));
+        sched.finish(&c.worker_cpu, &c.worker_runq);
+    }
+}
