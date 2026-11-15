@@ -1141,7 +1141,11 @@ fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
                 &mut batches.last_mut().expect("pushed above").1
             }
         };
-        batched.check(ops).map_err(map_database_error)?;
+        let mut writes = DeferredBatchAccess::default();
+        batched.commit(ops, &mut writes).map_err(map_database_error)?;
+        for (address, key, value) in writes.into_writes() {
+            access.sstore(&address, key, value).map_err(map_database_error)?;
+        }
         ops.push(op);
     }
     Ok(())

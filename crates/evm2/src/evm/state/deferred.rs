@@ -130,35 +130,41 @@ impl DeferredStorageOp {
 /// A deferred storage operation that batched parallel commits run once for the whole block.
 ///
 /// Sequential execution and in-order commits run each transaction's operation with
-/// [`Self::run`], as any [`DeferredStorageOp`]. A batched parallel commit instead checks each
-/// operation with [`Self::check`] as its transaction commits and, once every transaction
-/// committed, hands the operations of each type to [`Self::run_batch`] in block order, which
-/// writes the block's final state. The block's result must be the one running each operation at
-/// its transaction's end gives, which holds when no transaction's outcome depends on the values
-/// the operations write, and the slots they write are written by nothing else in the block.
+/// [`Self::run`], as any [`DeferredStorageOp`]. A batched parallel commit instead commits each
+/// operation with [`Self::commit`] as its transaction commits, without reading storage, and, once
+/// every transaction committed, hands the operations of each type to [`Self::run_batch`] in block
+/// order, which writes the rest of the block's final state. The block's result must be the one
+/// running each operation at its transaction's end gives, which holds when no transaction's outcome
+/// depends on the values the operations write, and the slots they write are written by nothing else
+/// in the block.
 pub trait BatchedStorageOp: Any + Send + Sync {
     /// Runs this operation alone against the state its transaction leaves.
     fn run(&self, access: &mut DeferredStorageAccess<'_, '_>) -> DbResult<()>;
 
     /// Checks, as its transaction commits, that the operation runs after `earlier`, the
     /// operations of this type the block's earlier transactions deferred, in block order, as it
-    /// would at its transaction's end. An error fails the batched commit at this transaction, and
-    /// the block executes again sequentially.
-    fn check(&self, earlier: &[DeferredStorageOp]) -> DbResult<()>;
+    /// would at its transaction's end, and writes the slots it can at its transaction's version.
+    /// An error fails the batched commit at this transaction, and the block executes again
+    /// sequentially.
+    fn commit(
+        &self,
+        earlier: &[DeferredStorageOp],
+        access: &mut DeferredBatchAccess,
+    ) -> DbResult<()>;
 
     /// Writes the effects of `ops`, every operation of this type the block's transactions
     /// deferred, in block order, once every transaction committed. Called on the first of them.
     fn run_batch(&self, ops: &[DeferredStorageOp], access: &mut DeferredBatchAccess);
 }
 
-/// The writes of a running [`BatchedStorageOp::run_batch`] to the block's final state.
+/// The writes of a committing or batched operation (see [`BatchedStorageOp`]).
 #[derive(Debug, Default)]
 pub struct DeferredBatchAccess {
     writes: Vec<(Address, Word, Word)>,
 }
 
 impl DeferredBatchAccess {
-    /// Writes a storage slot of the block's final state.
+    /// Writes a storage slot.
     pub fn sstore(&mut self, address: &Address, key: Word, value: Word) {
         self.writes.push((*address, key, value));
     }

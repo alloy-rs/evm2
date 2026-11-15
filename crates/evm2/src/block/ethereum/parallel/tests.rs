@@ -840,8 +840,8 @@ const RING_CAPACITY: u64 = 4;
 const LOG: U256 = U256::from_limbs([0, 0, 0, 1 << 11]);
 const LOG_LEN: U256 = U256::from_limbs([0, 0, 0, 1 << 12]);
 
-/// Appends a caller to the [`ledger`]'s log, which starts empty: batched commits write every
-/// transaction's entry once the block's transactions committed.
+/// Appends a caller to the [`ledger`]'s log, which starts empty: batched commits write each
+/// transaction's entry as it commits and the log's length once the block's transactions committed.
 struct Append {
     caller: U256,
 }
@@ -853,15 +853,16 @@ impl BatchedStorageOp for Append {
         storage.sstore(&LEDGER, LOG_LEN, len + U256::ONE)
     }
 
-    fn check(&self, _earlier: &[DeferredStorageOp]) -> DbResult<()> {
+    fn commit(
+        &self,
+        earlier: &[DeferredStorageOp],
+        access: &mut DeferredBatchAccess,
+    ) -> DbResult<()> {
+        access.sstore(&LEDGER, LOG + U256::from(earlier.len()), self.caller);
         Ok(())
     }
 
     fn run_batch(&self, ops: &[DeferredStorageOp], access: &mut DeferredBatchAccess) {
-        for (index, op) in ops.iter().enumerate() {
-            let caller = op.downcast_ref::<Self>().expect("batches hold one type").caller;
-            access.sstore(&LEDGER, LOG + U256::from(index), caller);
-        }
         access.sstore(&LEDGER, LOG_LEN, U256::from(ops.len()));
     }
 }
