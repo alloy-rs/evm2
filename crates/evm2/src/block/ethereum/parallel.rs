@@ -1334,6 +1334,22 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for WarmAccess<'_, 
     }
 }
 
+/// A deferred storage operation's prefetch view of the store: the state before the first
+/// transaction, discarding writes.
+struct BaseAccess<'m, 's, B: ?Sized> {
+    store: &'m MvStore<'s, B>,
+}
+
+impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for BaseAccess<'_, '_, B> {
+    fn sload(&mut self, address: &Address, key: Word) -> DbResult<Word> {
+        self.store.storage_initial(address, &key)
+    }
+
+    fn sstore(&mut self, _address: &Address, _key: Word, _value: Word) -> DbResult<()> {
+        Ok(())
+    }
+}
+
 /// Executes transactions speculatively until none are left or the committer stops.
 fn run_worker<T, F, H>(
     store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
@@ -1406,9 +1422,18 @@ fn run_worker<T, F, H>(
             on_speculative(index, outcome.pending_state.changes());
         }
         scheduler.finish(index);
+        let ops = outcome
+            .as_ref()
+            .and_then(|outcome| outcome.pending_state.deferred())
+            .map(|deferred| deferred.ops.clone());
         let reads = core::mem::take(&mut *reads.borrow_mut());
         results
             .put(index, Speculative { worker, outcome, reward, reads, writes, prevalidated: None });
+        // Load what the committer will read to run the deferred operations, after publishing the
+        // result so that the committer does not wait for it.
+        for op in ops.iter().flatten() {
+            op.prefetch_on(&mut BaseAccess { store });
+        }
     }
 
     // Every transaction was handed out, and the committer is still behind: execute again, ahead

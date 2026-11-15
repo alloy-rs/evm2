@@ -62,7 +62,12 @@ impl DeferredStorage {
 /// transaction before it, so transactions that each update one shared slot this way, such as a
 /// ring buffer's write pointer, do not conflict.
 #[derive(Clone)]
-pub struct DeferredStorageOp(Arc<DeferredStorageFn>);
+pub struct DeferredStorageOp {
+    op: Arc<DeferredStorageFn>,
+    /// Reads the slots the operation will read, ahead of it. See [`Self::with_prefetch`].
+    #[cfg_attr(not(all(feature = "std", feature = "block")), allow(dead_code))]
+    prefetch: Option<Arc<DeferredStorageFn>>,
+}
 
 /// The function a [`DeferredStorageOp`] runs.
 type DeferredStorageFn = dyn Fn(&mut DeferredStorageAccess<'_, '_>) -> DbResult<()> + Send + Sync;
@@ -72,18 +77,40 @@ impl DeferredStorageOp {
     pub fn new(
         op: impl Fn(&mut DeferredStorageAccess<'_, '_>) -> DbResult<()> + Send + Sync + 'static,
     ) -> Self {
-        Self(Arc::new(op))
+        Self { op: Arc::new(op), prefetch: None }
+    }
+
+    /// Adds a prefetch that reads, against the state before the block, the slots the operation
+    /// is expected to read, so that they are loaded before it runs.
+    ///
+    /// Parallel block execution may run it on any thread once the transaction executed, any
+    /// number of times or never. Its reads only load caches and its writes are discarded, so it
+    /// never changes a result.
+    pub fn with_prefetch(
+        mut self,
+        prefetch: impl Fn(&mut DeferredStorageAccess<'_, '_>) -> DbResult<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.prefetch = Some(Arc::new(prefetch));
+        self
     }
 
     /// Runs the operation against `state`.
     pub(crate) fn run(&self, state: &mut State<'_>) -> DbResult<()> {
-        (self.0)(&mut DeferredStorageAccess { backend: Backend::State(state) })
+        (self.op)(&mut DeferredStorageAccess { backend: Backend::State(state) })
     }
 
     /// Runs the operation against `store`.
     #[cfg(all(feature = "std", feature = "block"))]
     pub(crate) fn run_on(&self, store: &mut dyn DeferredStorageStore) -> DbResult<()> {
-        (self.0)(&mut DeferredStorageAccess { backend: Backend::Store(store) })
+        (self.op)(&mut DeferredStorageAccess { backend: Backend::Store(store) })
+    }
+
+    /// Runs the operation's prefetch, if any, against `store`, ignoring its errors.
+    #[cfg(all(feature = "std", feature = "block"))]
+    pub(crate) fn prefetch_on(&self, store: &mut dyn DeferredStorageStore) {
+        if let Some(prefetch) = &self.prefetch {
+            let _ = prefetch(&mut DeferredStorageAccess { backend: Backend::Store(store) });
+        }
     }
 }
 
@@ -113,7 +140,7 @@ impl fmt::Debug for DeferredStorageOp {
 /// Operations are equal when they are the same operation.
 impl PartialEq for DeferredStorageOp {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        Arc::ptr_eq(&self.op, &other.op)
     }
 }
 
