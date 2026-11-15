@@ -408,7 +408,16 @@ where
                 let (store, scheduler, queue, results) = (&store, &scheduler, &queue, &results);
                 let (make_evm, on_speculative) = (&make_evm, &on_speculative);
                 scope.spawn(move || {
-                    run_worker(store, scheduler, queue, make_evm, on_speculative, results, worker);
+                    run_worker(
+                        store,
+                        scheduler,
+                        queue,
+                        make_evm,
+                        on_speculative,
+                        &|_: &T::Tx, _: &TxResult<T>| None::<()>,
+                        results,
+                        worker,
+                    );
                 });
             }
             let result = if batched {
@@ -420,7 +429,7 @@ where
                     &mut stats,
                     &make_evm,
                     &mut on_commit,
-                    &mut |_, _| {},
+                    &mut |_, _, _| {},
                 )
             } else {
                 self.commit_in_order(
@@ -431,7 +440,7 @@ where
                     &mut stats,
                     &mut dependencies,
                     &mut on_commit,
-                    &mut |_, _| {},
+                    &mut |_, _, _| {},
                 )
             };
             scheduler.abort();
@@ -466,6 +475,11 @@ where
     /// `on_commit` works as in [`Self::execute_transactions_parallel`], and `on_receipt` sees each
     /// transaction's receipt, by index and in block order, as soon as it is recorded, so a
     /// receipt-root task can hash the block's receipts while later transactions still execute.
+    /// `copy_receipt` runs on a worker after each speculative execution, with its transaction and
+    /// result, and returns a copy of the receipt the result records, if it prepares one:
+    /// `on_receipt` gets the copy prepared from the result it records, and `None` for a result
+    /// without one, such as a transaction the committer executed again. The copy cannot know the
+    /// block's cumulative gas, which `on_receipt` reads from the recorded receipt.
     /// When [`Self::commits_batched`], the commit is batched as in
     /// [`Self::execute_transactions_parallel`], with the same guarantees on failure: the executor
     /// then forgets the receipts `on_receipt` saw, and executing the block again one transaction at
@@ -474,7 +488,7 @@ where
     /// When the block fails to execute, no new transaction starts, but the call returns only once
     /// `transactions` yields its next item or ends.
     #[expect(clippy::too_many_arguments)]
-    pub fn execute_transaction_stream<'s, Tx, I, B, F, H, C, P>(
+    pub fn execute_transaction_stream<'s, Tx, I, B, F, H, C, K, Q, P>(
         &mut self,
         transactions: I,
         base: &'s B,
@@ -482,6 +496,7 @@ where
         threads: NonZeroUsize,
         on_speculative: H,
         mut on_commit: C,
+        copy_receipt: K,
         mut on_receipt: P,
     ) -> Result<ParallelExecutionOutput, BlockExecutionError>
     where
@@ -491,7 +506,9 @@ where
         F: for<'x> Fn(Box<dyn DynDatabase + 'x>) -> Evm<'x, T> + Sync,
         H: Fn(usize, TxStateChanges<'_>) + Sync,
         C: FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
-        P: FnMut(usize, &R::Receipt),
+        K: Fn(&T::Tx, &TxResult<T>) -> Option<Q> + Sync,
+        Q: Send,
+        P: FnMut(usize, &R::Receipt, Option<Q>),
     {
         let mut stats = ParallelExecutionStats::default();
         let mut dependencies = DependencyTracker::new(self.evm.block_env().beneficiary);
@@ -502,7 +519,7 @@ where
                 on_commit(index, &output.result().result)?;
                 dependencies.record(index, &output.result().pending_state);
                 self.commit_transaction(output)?;
-                self.emit_receipt(index, &mut on_receipt);
+                self.emit_receipt(index, &mut on_receipt, None);
                 stats.transactions += 1;
                 stats.reexecuted += 1;
             }
@@ -535,9 +552,19 @@ where
             });
             for worker in 0..threads.get() {
                 let (store, results) = (&store, &results);
-                let (make_evm, on_speculative) = (&make_evm, &on_speculative);
+                let (make_evm, on_speculative, copy_receipt) =
+                    (&make_evm, &on_speculative, &copy_receipt);
                 scope.spawn(move || {
-                    run_worker(store, scheduler, queue, make_evm, on_speculative, results, worker);
+                    run_worker(
+                        store,
+                        scheduler,
+                        queue,
+                        make_evm,
+                        on_speculative,
+                        copy_receipt,
+                        results,
+                        worker,
+                    );
                 });
             }
             let result = if batched {
@@ -577,10 +604,16 @@ where
         Ok(ParallelExecutionOutput { stats, dependencies: dependencies.finish() })
     }
 
-    /// Hands the receipt the transaction at `index` just recorded to `on_receipt`.
-    fn emit_receipt(&self, index: usize, on_receipt: &mut impl FnMut(usize, &R::Receipt)) {
+    /// Hands the receipt the transaction at `index` just recorded to `on_receipt`, with the copy
+    /// of it a worker prepared, if any.
+    fn emit_receipt<Q>(
+        &self,
+        index: usize,
+        on_receipt: &mut impl FnMut(usize, &R::Receipt, Option<Q>),
+        copy: Option<Q>,
+    ) {
         if let Some(receipt) = self.receipts.last() {
-            on_receipt(index, receipt);
+            on_receipt(index, receipt, copy);
         }
     }
 
@@ -589,20 +622,20 @@ where
     /// `txs` yields the consensus transactions in block order; the transaction at an index is in
     /// `queue` before `txs` yields it.
     #[expect(clippy::too_many_arguments)]
-    fn commit_in_order<X: Borrow<R::Transaction>>(
+    fn commit_in_order<X: Borrow<R::Transaction>, Q>(
         &mut self,
         store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
         queue: &TxQueue<T::Tx>,
         txs: impl IntoIterator<Item = X>,
-        results: &Results<Speculative<T>>,
+        results: &Results<Speculative<T, Q>>,
         stats: &mut ParallelExecutionStats,
         dependencies: &mut DependencyTracker,
         on_commit: &mut impl FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
-        on_receipt: &mut impl FnMut(usize, &R::Receipt),
+        on_receipt: &mut impl FnMut(usize, &R::Receipt, Option<Q>),
     ) -> Result<(), BlockExecutionError> {
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
-            let Speculative { worker, outcome, reward, mut reads, mut writes, .. } =
+            let Speculative { worker, outcome, reward, mut reads, mut writes, receipt, .. } =
                 results.take(index).expect("parallel execution workers exited without a result");
             let evm_tx = queue.get(index);
             let tx = tx.borrow();
@@ -613,7 +646,7 @@ where
             let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
             self.validate_transaction_blob_gas(blob_gas_used)?;
 
-            let pending =
+            let (pending, receipt) =
                 match self.accept_speculative(outcome, reward, &mut reads, evm_tx.signer()) {
                     Some(result) => {
                         // The worker published every write but the credited reward, which workers
@@ -645,7 +678,7 @@ where
                         dependencies.record(index, &pending_state);
                         self.commit_pending_state(&pending_state);
                         self.record_receipt(tx.tx_type(), blob_gas_used, result);
-                        pending_state
+                        (pending_state, receipt)
                     }
                     None => {
                         stats.reexecuted += 1;
@@ -670,10 +703,10 @@ where
                             tx.tx_type(),
                             blob_gas_used,
                         ))?;
-                        PendingState::default()
+                        (PendingState::default(), None)
                     }
                 };
-            self.emit_receipt(index, on_receipt);
+            self.emit_receipt(index, on_receipt, receipt);
             reads.clear();
             writes.clear();
             results.recycle(worker, Buffers { reads, writes, pending });
@@ -733,16 +766,16 @@ where
     /// The state hook runs on a streamer thread, which reads the values the committed prefix
     /// wrote from the store, so the committer only hands it the keys.
     #[expect(clippy::too_many_arguments)]
-    fn commit_batched<X, B, F>(
+    fn commit_batched<X, B, F, Q>(
         &mut self,
         store: &MvStore<'_, B>,
         queue: &TxQueue<T::Tx>,
         txs: impl IntoIterator<Item = X>,
-        results: &Results<Speculative<T>>,
+        results: &Results<Speculative<T, Q>>,
         stats: &mut ParallelExecutionStats,
         make_evm: &F,
         on_commit: &mut impl FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
-        on_receipt: &mut impl FnMut(usize, &R::Receipt),
+        on_receipt: &mut impl FnMut(usize, &R::Receipt, Option<Q>),
     ) -> Result<(), BlockExecutionError>
     where
         X: Borrow<R::Transaction>,
@@ -782,16 +815,16 @@ where
     /// Commits as [`Self::commit_batched`], sending the keys each committed prefix wrote to
     /// `streamer` when the commit streams state.
     #[expect(clippy::too_many_arguments)]
-    fn commit_batched_with<X, B, F>(
+    fn commit_batched_with<X, B, F, Q>(
         &mut self,
         store: &MvStore<'_, B>,
         queue: &TxQueue<T::Tx>,
         txs: impl IntoIterator<Item = X>,
-        results: &Results<Speculative<T>>,
+        results: &Results<Speculative<T, Q>>,
         stats: &mut ParallelExecutionStats,
         make_evm: &F,
         on_commit: &mut impl FnMut(usize, &TxResult<T>) -> Result<(), BlockExecutionError>,
-        on_receipt: &mut impl FnMut(usize, &R::Receipt),
+        on_receipt: &mut impl FnMut(usize, &R::Receipt, Option<Q>),
         streamer: Option<&mpsc::Sender<StreamBatch>>,
     ) -> Result<(), BlockExecutionError>
     where
@@ -813,8 +846,15 @@ where
         let mut stream = streamer.is_some().then(PrefixStream::default);
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
-            let Speculative { worker, outcome, reward, mut reads, mut writes, prevalidated } =
-                results.take(index).expect("parallel execution workers exited without a result");
+            let Speculative {
+                worker,
+                outcome,
+                reward,
+                mut reads,
+                mut writes,
+                prevalidated,
+                receipt,
+            } = results.take(index).expect("parallel execution workers exited without a result");
             let evm_tx = queue.get(index);
             let tx = tx.borrow();
             let version = version(index);
@@ -840,7 +880,7 @@ where
                     fee_charge.then_some((beneficiary, reward, eip161, &mut rewarded)),
                 )
             });
-            let pending = match settled {
+            let (pending, receipt) = match settled {
                 Some(result) => {
                     stats.speculative += 1;
                     let TxResultWithState { result, mut pending_state, .. } = result;
@@ -861,7 +901,7 @@ where
                             stream.keys.push(WriteKey::Account(beneficiary));
                         }
                     }
-                    pending_state
+                    (pending_state, receipt)
                 }
                 None => {
                     stats.reexecuted += 1;
@@ -905,10 +945,10 @@ where
                     on_commit(index, &result)?;
                     record_lifecycle(&mut lifecycle, &pending_state);
                     self.record_receipt(tx.tx_type(), blob_gas_used, result);
-                    PendingState::default()
+                    (PendingState::default(), None)
                 }
             };
-            self.emit_receipt(index, on_receipt);
+            self.emit_receipt(index, on_receipt, receipt);
             let mut pending = pending;
             if let Some(parallel) = &mut pending.parallel {
                 parallel.deferred.clear();
@@ -1276,9 +1316,9 @@ struct DeferredWarmer {
 /// Runs the deferred storage operations of the next result ahead of the committer against the
 /// store and the writes of the operations run before it, discarding their writes, so the slots
 /// they read are loaded before the committer runs them. Returns whether it ran a result's.
-fn warm_deferred<T: EvmTypes>(
+fn warm_deferred<T: EvmTypes, Q>(
     store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
-    results: &Results<Speculative<T>>,
+    results: &Results<Speculative<T, Q>>,
 ) -> bool {
     let Ok(mut warmer) = results.warmer.try_lock() else { return false };
     let committing = results.committing.load(Ordering::Acquire);
@@ -1335,18 +1375,21 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for WarmAccess<'_, 
 }
 
 /// Executes transactions speculatively until none are left or the committer stops.
-fn run_worker<T, F, H>(
+#[expect(clippy::too_many_arguments)]
+fn run_worker<T, F, H, K, Q>(
     store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
     scheduler: &Scheduler,
     queue: &TxQueue<T::Tx>,
     make_evm: &F,
     on_speculative: &H,
-    results: &Results<Speculative<T>>,
+    copy_receipt: &K,
+    results: &Results<Speculative<T, Q>>,
     worker: usize,
 ) where
     T: EvmTypes<Tx: Typed2718>,
     F: for<'x> Fn(Box<dyn DynDatabase + 'x>) -> Evm<'x, T>,
     H: Fn(usize, TxStateChanges<'_>),
+    K: Fn(&T::Tx, &TxResult<T>) -> Option<Q>,
 {
     let _exit = WorkerExit(results);
     // A panic outside the guarded execution, such as in `make_evm` or `on_speculative`, must not
@@ -1406,9 +1449,12 @@ fn run_worker<T, F, H>(
             on_speculative(index, outcome.pending_state.changes());
         }
         scheduler.finish(index);
+        let receipt = outcome.as_ref().and_then(|outcome| copy_receipt(evm_tx, &outcome.result));
         let reads = core::mem::take(&mut *reads.borrow_mut());
-        results
-            .put(index, Speculative { worker, outcome, reward, reads, writes, prevalidated: None });
+        results.put(
+            index,
+            Speculative { worker, outcome, reward, reads, writes, prevalidated: None, receipt },
+        );
     }
 
     // Every transaction was handed out, and the committer is still behind: execute again, ahead
@@ -1490,10 +1536,12 @@ fn run_worker<T, F, H>(
                 speculative.writes.iter().filter(|write| !writes.contains(write)),
             );
             store.log_writes(version, writes.iter().chain(&speculative.writes).copied());
+            let receipt =
+                outcome.as_ref().and_then(|outcome| copy_receipt(evm_tx, &outcome.result));
             let reads = core::mem::take(&mut *reads.borrow_mut());
             let stale = core::mem::replace(
                 speculative,
-                Speculative { worker, outcome, reward, reads, writes, prevalidated: None },
+                Speculative { worker, outcome, reward, reads, writes, prevalidated: None, receipt },
             );
             let Speculative { worker: owner, reads: mut old_reads, writes: mut old_writes, .. } =
                 stale;
@@ -1513,10 +1561,10 @@ fn run_worker<T, F, H>(
 /// Validates the next result shortly ahead of the committer against the store, once every result
 /// up to it is in, recording the store's write log length beforehand so the committer can tell
 /// whether a later write could have changed a value read. Returns whether it claimed a result.
-fn prevalidate_next<T: EvmTypes>(
+fn prevalidate_next<T: EvmTypes, Q>(
     store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
     queue: &TxQueue<T::Tx>,
-    results: &Results<Speculative<T>>,
+    results: &Results<Speculative<T, Q>>,
 ) -> bool {
     let len = queue.len.load(Ordering::Acquire);
     let committing = results.committing.load(Ordering::Acquire);
@@ -1836,8 +1884,9 @@ impl DependencyTracker {
     }
 }
 
-/// One speculative execution sent from a worker to the committer.
-struct Speculative<T: EvmTypes> {
+/// One speculative execution sent from a worker to the committer, with the copy of its receipt
+/// the caller prepared, if any.
+struct Speculative<T: EvmTypes, Q = ()> {
     /// Index of the worker that executed it.
     worker: usize,
     /// Detached result, or `None` when execution failed.
@@ -1852,6 +1901,8 @@ struct Speculative<T: EvmTypes> {
     /// committed every earlier transaction: the length of the store's write log when it started,
     /// and whether every read held.
     prevalidated: Option<(usize, bool)>,
+    /// The copy of the receipt the result records, prepared on the worker.
+    receipt: Option<Q>,
 }
 
 /// The values one speculative execution read.
