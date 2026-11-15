@@ -136,6 +136,16 @@ const MATERIALIZE_THREADS: usize = 8;
 const STREAM_INTERVAL: Duration =
     if cfg!(test) { Duration::ZERO } else { Duration::from_micros(200) };
 
+/// The identifier of the next [`MvStore`], which tells [`BASE_MEMO`] whose reads it holds.
+static NEXT_STORE_ID: AtomicUsize = AtomicUsize::new(1);
+
+std::thread_local! {
+    /// The values the calling thread read from one store's base database. No transaction changes
+    /// them, so every thread keeps its own copy instead of reading the base database, whose
+    /// shared cache its other threads contend on, again.
+    static BASE_MEMO: RefCell<BaseMemo> = RefCell::default();
+}
+
 /// Counters of one parallel block execution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ParallelExecutionStats {
@@ -2054,6 +2064,27 @@ enum SlotWrite {
     Delta(Word),
 }
 
+/// The base database values one thread read for one [`MvStore`].
+#[derive(Debug, Default)]
+struct BaseMemo {
+    /// The identifier of the store the values belong to.
+    store: usize,
+    accounts: AddressMap<Option<AccountInfo>>,
+    storage: HashMap<(Address, Word), Word>,
+}
+
+impl BaseMemo {
+    /// Returns the memo of the store with identifier `store`, clearing the values of another.
+    fn of(&mut self, store: usize) -> &mut Self {
+        if self.store != store {
+            self.store = store;
+            self.accounts.clear();
+            self.storage.clear();
+        }
+        self
+    }
+}
+
 /// Multi-version state of a block in execution.
 ///
 /// Transaction `i` publishes its writes at version `i + 1`. Reading at version `v` returns the
@@ -2066,6 +2097,8 @@ struct MvStore<'s, B: ?Sized> {
     initial: Cache,
     /// Backing database beneath the overlay.
     base: &'s B,
+    /// Identifies the store's reads of `base` in [`BASE_MEMO`].
+    id: usize,
     accounts: Box<[CachePadded<AccountShard>]>,
     storage: Box<[CachePadded<StorageShard>]>,
     wipes: RwLock<AddressMap<BTreeSet<u32>>>,
@@ -2082,6 +2115,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         Self {
             initial,
             base,
+            id: NEXT_STORE_ID.fetch_add(1, Ordering::Relaxed),
             accounts: (0..SHARDS).map(|_| CachePadded::default()).collect(),
             storage: (0..SHARDS).map(|_| CachePadded::default()).collect(),
             wipes: RwLock::default(),
@@ -2131,8 +2165,34 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     fn account_initial(&self, address: &Address) -> DbResult<Option<AccountInfo>> {
         match self.initial.accounts.get(address) {
             Some(info) => Ok(info.clone()),
-            None => self.base.get_account(address),
+            None => self.base_account(address),
         }
+    }
+
+    /// Reads an account from the base database, once per thread.
+    fn base_account(&self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        BASE_MEMO.with_borrow_mut(|memo| {
+            let memo = memo.of(self.id);
+            if let Some(info) = memo.accounts.get(address) {
+                return Ok(info.clone());
+            }
+            let info = self.base.get_account(address)?;
+            memo.accounts.insert(*address, info.clone());
+            Ok(info)
+        })
+    }
+
+    /// Reads a storage slot from the base database, once per thread.
+    fn base_storage(&self, address: &Address, key: &Word) -> DbResult<Word> {
+        BASE_MEMO.with_borrow_mut(|memo| {
+            let memo = memo.of(self.id);
+            if let Some(value) = memo.storage.get(&(*address, *key)) {
+                return Ok(*value);
+            }
+            let value = self.base.get_storage(address, key)?;
+            memo.storage.insert((*address, *key), value);
+            Ok(value)
+        })
     }
 
     /// Reads an account at `version`.
@@ -2238,7 +2298,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         if let Some(None) = self.initial.accounts.get(address) {
             return Ok(Word::ZERO);
         }
-        self.base.get_storage(address, key)
+        self.base_storage(address, key)
     }
 
     /// Reads bytecode by hash: deployed in this block, before it, or in the base database.
