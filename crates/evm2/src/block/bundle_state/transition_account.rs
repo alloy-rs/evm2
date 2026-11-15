@@ -1,4 +1,7 @@
-use super::{AccountRevert, AccountStatus, BundleAccount, StorageWithOriginalValues};
+use super::{
+    AccountInfoRevert, AccountRevert, AccountStatus, BundleAccount, RevertToSlot,
+    StorageWithOriginalValues,
+};
 use crate::{bytecode::Bytecode, evm::AccountInfo};
 use alloy_primitives::{B256, U256};
 
@@ -79,6 +82,52 @@ impl TransitionAccount {
             storage: self.storage.clone(),
             status: self.status,
         }
+    }
+
+    /// Returns the present bundle account and the revert of an account the bundle does not hold
+    /// yet, as [`Self::present_bundle_account`] and [`Self::create_revert`] would, without copying the
+    /// storage of a changed account.
+    pub fn into_present_and_revert(self) -> (BundleAccount, Option<AccountRevert>) {
+        let in_memory = match (self.status, self.previous_status) {
+            (
+                AccountStatus::Changed,
+                AccountStatus::Changed | AccountStatus::Loaded | AccountStatus::LoadedEmptyEIP161,
+            ) => false,
+            (
+                AccountStatus::InMemoryChange,
+                AccountStatus::Loaded
+                | AccountStatus::InMemoryChange
+                | AccountStatus::LoadedEmptyEIP161
+                | AccountStatus::LoadedNotExisting,
+            ) => true,
+            _ => return (self.present_bundle_account(), self.create_revert()),
+        };
+        let account = if in_memory && self.previous_status == AccountStatus::LoadedNotExisting {
+            AccountInfoRevert::DeleteIt
+        } else if self.previous_info != self.info {
+            AccountInfoRevert::RevertTo(self.previous_info.clone().unwrap_or_default())
+        } else {
+            AccountInfoRevert::DoNothing
+        };
+        let storage = self
+            .storage
+            .iter()
+            .filter(|(_, slot)| slot.is_changed())
+            .map(|(key, slot)| (*key, RevertToSlot::Some(slot.original_value())))
+            .collect();
+        let revert = AccountRevert {
+            account,
+            storage,
+            previous_status: self.previous_status,
+            wipe_storage: false,
+        };
+        let present = BundleAccount {
+            info: self.info,
+            original_info: self.previous_info,
+            storage: self.storage,
+            status: self.status,
+        };
+        (present, Some(revert))
     }
 
     /// Original bundle account

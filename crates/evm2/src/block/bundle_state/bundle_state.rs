@@ -554,8 +554,7 @@ impl BundleState {
                 }
                 Entry::Vacant(entry) => {
                     // Make revert from transition account
-                    let present_bundle = transition.present_bundle_account();
-                    let revert = transition.create_revert();
+                    let (present_bundle, revert) = transition.into_present_and_revert();
                     if revert.is_some() {
                         self.state_size += present_bundle.size_hint();
                         entry.insert(present_bundle);
