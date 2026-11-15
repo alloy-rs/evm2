@@ -118,6 +118,13 @@ const TAIL_SPINS: u32 = 1 << 8;
 /// How long an idle worker parks between polls for results to execute again.
 const TAIL_PARK: core::time::Duration = core::time::Duration::from_micros(20);
 
+/// Most idle workers that poll for work ahead of the committer: the others sleep until a helper
+/// finds results to execute again, so that they leave their cores to other work, such as proofs.
+const TAIL_HELPERS: usize = 2;
+
+/// Longest an idle worker sleeps before it looks for work again on its own.
+const TAIL_SLEEP: core::time::Duration = core::time::Duration::from_millis(1);
+
 /// How far ahead of the committer idle workers validate results in batched commits.
 const PREVALIDATE_AHEAD: usize = 8;
 
@@ -435,6 +442,7 @@ where
                 )
             };
             scheduler.abort();
+            results.wake_idle();
             result
         });
         store.drop_in_background();
@@ -564,6 +572,7 @@ where
                 )
             };
             scheduler.abort();
+            results.wake_idle();
             result
         });
         store.drop_in_background();
@@ -1415,7 +1424,9 @@ fn run_worker<T, F, H>(
     // of it, the results whose reads earlier executions have since overwritten, so that it can
     // commit them instead of executing them itself.
     let Some(evm) = &mut evm else { return };
+    results.go_idle();
     let mut idle = 0;
+    let mut helper = false;
     while !scheduler.is_stopped() {
         if results.batched
             && (prevalidate_next(store, queue, results) || warm_deferred(store, results))
@@ -1430,10 +1441,17 @@ fn run_worker<T, F, H>(
             idle += 1;
             if idle < TAIL_SPINS {
                 core::hint::spin_loop();
-            } else {
+            } else if helper || results.claim_helper() {
+                helper = true;
                 std::thread::park_timeout(TAIL_PARK);
+            } else {
+                results.sleep(scheduler, queue.len.load(Ordering::Acquire));
             }
             continue;
+        }
+        if helper {
+            // Results need executing again: have the sleeping workers help.
+            results.wake_sleepers();
         }
         if results
             .revalidate
@@ -2635,6 +2653,12 @@ struct Results<S> {
     batched: bool,
     /// The deferred storage operations idle workers run ahead of a batched commit.
     warmer: Mutex<DeferredWarmer>,
+    /// The workers that ran out of transactions to execute, unparked when the block ends.
+    idle: Mutex<Vec<Thread>>,
+    /// Idle workers that may be parked until a helper or the end of the block wakes them.
+    sleeping: AtomicUsize,
+    /// Idle workers polling for work instead of sleeping, at most [`TAIL_HELPERS`].
+    helpers: AtomicUsize,
 }
 
 impl<S> Results<S> {
@@ -2652,6 +2676,52 @@ impl<S> Results<S> {
             ready: CachePadded(AtomicUsize::new(0)),
             batched,
             warmer: Mutex::default(),
+            idle: Mutex::default(),
+            sleeping: AtomicUsize::new(0),
+            helpers: AtomicUsize::new(0),
+        }
+    }
+
+    /// Registers the calling worker as idle: it ran out of transactions to execute.
+    fn go_idle(&self) {
+        self.idle.lock().expect("lock poisoned").push(std::thread::current());
+    }
+
+    /// Makes the calling idle worker a helper, which polls for work, unless there are enough.
+    fn claim_helper(&self) -> bool {
+        self.helpers
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |helpers| {
+                (helpers < TAIL_HELPERS).then_some(helpers + 1)
+            })
+            .is_ok()
+    }
+
+    /// Parks the calling idle worker until a helper finds results to execute again, the block
+    /// ends or [`TAIL_SLEEP`] passes, unless results among the `len` need executing again or the
+    /// scheduler stopped.
+    fn sleep(&self, scheduler: &Scheduler, len: usize) {
+        self.sleeping.fetch_add(1, Ordering::Relaxed);
+        // Pairs with the fence in `wake_sleepers`: either it sees this worker sleeping or this
+        // sees the work it wakes it for.
+        fence(Ordering::SeqCst);
+        if self.revalidate.load(Ordering::Acquire) >= len && !scheduler.is_stopped() {
+            std::thread::park_timeout(TAIL_SLEEP);
+        }
+        self.sleeping.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Unparks the idle workers if any may be sleeping.
+    fn wake_sleepers(&self) {
+        fence(Ordering::SeqCst);
+        if self.sleeping.load(Ordering::Relaxed) > 0 {
+            self.wake_idle();
+        }
+    }
+
+    /// Unparks every idle worker, so that each exits at once when the block ends.
+    fn wake_idle(&self) {
+        for worker in self.idle.lock().expect("lock poisoned").iter() {
+            worker.unpark();
         }
     }
 
