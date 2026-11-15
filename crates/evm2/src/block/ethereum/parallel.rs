@@ -91,13 +91,14 @@ use core::{
     borrow::Borrow,
     cell::{Cell, RefCell},
     cmp::Reverse,
-    hash::{BuildHasherDefault, Hash, Hasher},
+    hash::{BuildHasher, Hash, Hasher},
     num::NonZeroUsize,
     ops::Deref,
     ptr,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence},
 };
 use std::{
+    hash::RandomState,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Condvar, Mutex, OnceLock, RwLock, RwLockWriteGuard, mpsc},
     thread::Thread,
@@ -2338,10 +2339,31 @@ type AccountShard = RwLock<AddressMap<Versions<Option<AccountInfo>>>>;
 type StorageShard = RwLock<SlotMap<Versions<SlotWrite>>>;
 
 /// A map keyed by storage slot, with [`SlotHasher`].
-type SlotMap<V> = HashMap<(Address, Word), V, BuildHasherDefault<SlotHasher>>;
+type SlotMap<V> = HashMap<(Address, Word), V, SlotState>;
+
+/// Builds the [`SlotHasher`]s of a [`SlotMap`] from a random seed drawn once per process, as the
+/// default map hasher is seeded.
+#[derive(Clone, Copy, Debug)]
+struct SlotState(u64);
+
+impl Default for SlotState {
+    fn default() -> Self {
+        static SEED: OnceLock<u64> = OnceLock::new();
+        Self(*SEED.get_or_init(|| RandomState::new().hash_one(0u64)))
+    }
+}
+
+impl BuildHasher for SlotState {
+    type Hasher = SlotHasher;
+
+    #[inline]
+    fn build_hasher(&self) -> SlotHasher {
+        SlotHasher(self.0)
+    }
+}
 
 /// Hashes the fixed-size `(Address, Word)` keys of a [`SlotMap`] a word at a time.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 struct SlotHasher(u64);
 
 impl Hasher for SlotHasher {
