@@ -88,23 +88,26 @@ use alloy_primitives::{
 };
 use core::{
     borrow::Borrow,
-    cell::{Cell, RefCell},
+    cell::{Cell, RefCell, UnsafeCell},
     cmp::Reverse,
     hash::Hash,
     num::NonZeroUsize,
-    ops::Deref,
+    ops::{Deref, DerefMut},
     ptr,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence},
 };
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Condvar, Mutex, OnceLock, RwLock, mpsc},
+    sync::{Condvar, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, mpsc},
     thread::Thread,
     time::{Duration, Instant},
 };
 
 /// Number of lock shards of the multi-version account and storage maps.
 const SHARDS: usize = 64;
+
+/// Number of reader locks of a [`ReadShardedLock`].
+const READER_LOCKS: usize = 8;
 
 /// Number of buckets of a [`Buckets`], each twice the size of the one before.
 const BUCKETS: usize = 32;
@@ -2029,10 +2032,10 @@ enum WriteKey {
 }
 
 /// One lock shard of account versions.
-type AccountShard = RwLock<AddressMap<Versions<Option<AccountInfo>>>>;
+type AccountShard = ReadShardedLock<AddressMap<Versions<Option<AccountInfo>>>>;
 
 /// One lock shard of storage slot versions.
-type StorageShard = RwLock<HashMap<(Address, Word), Versions<SlotWrite>>>;
+type StorageShard = ReadShardedLock<HashMap<(Address, Word), Versions<SlotWrite>>>;
 
 /// A transaction's write to a storage slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2060,6 +2063,7 @@ struct MvStore<'s, B: ?Sized> {
     wipes: RwLock<AddressMap<BTreeSet<u32>>>,
     has_wipes: AtomicBool,
     contracts: RwLock<B256Map<Bytecode>>,
+    has_contracts: AtomicBool,
     /// Keys written again after their transaction's first execution published, with the version
     /// written: what can change a value a validation read.
     log: Mutex<Vec<(u32, WriteKey)>>,
@@ -2076,6 +2080,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             wipes: RwLock::default(),
             has_wipes: AtomicBool::new(false),
             contracts: RwLock::default(),
+            has_contracts: AtomicBool::new(false),
             log: Mutex::default(),
             log_len: AtomicUsize::new(0),
         }
@@ -2111,7 +2116,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
 
     /// Returns the latest account write below `version`.
     fn account_version(&self, address: &Address, version: u32) -> Option<Option<AccountInfo>> {
-        let shard = self.account_shard(address).read().expect("lock poisoned");
+        let shard = self.account_shard(address).read();
         let (_, info) = shard.get(address)?.latest_below(version)?;
         Some(info.clone())
     }
@@ -2143,7 +2148,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         };
         let (mut value, mut delta) = (None, Word::ZERO);
         {
-            let shard = self.storage_shard(address, key).read().expect("lock poisoned");
+            let shard = self.storage_shard(address, key).read();
             if let Some(versions) = shard.get(&(*address, *key)) {
                 for (at, write) in versions.below(version) {
                     // A transaction that wipes and then writes a slot publishes both at its
@@ -2187,10 +2192,13 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
 
     /// Reads bytecode by hash: deployed in this block, before it, or in the base database.
     fn code(&self, code_hash: &B256) -> DbResult<Bytecode> {
-        if let Some(code) = self.contracts.read().expect("lock poisoned").get(code_hash) {
+        // Bytecode is keyed by its hash, so the order of the lookups does not change the result.
+        if let Some(code) = self.initial.contracts.get(code_hash) {
             return Ok(code.clone());
         }
-        if let Some(code) = self.initial.contracts.get(code_hash) {
+        if self.has_contracts.load(Ordering::Acquire)
+            && let Some(code) = self.contracts.read().expect("lock poisoned").get(code_hash)
+        {
             return Ok(code.clone());
         }
         self.base.get_code_by_hash(code_hash)
@@ -2216,7 +2224,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 writes.push(WriteKey::Wipe(address));
             }
             for (&key, slot) in storage.changed_slots() {
-                let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+                let mut shard = self.storage_shard(&address, &key).write();
                 shard
                     .entry((address, key))
                     .or_default()
@@ -2224,6 +2232,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 writes.push(WriteKey::Storage(address, key));
             }
             if let Some((code_hash, code)) = account.changed_code() {
+                self.has_contracts.store(true, Ordering::Release);
                 self.contracts
                     .write()
                     .expect("lock poisoned")
@@ -2232,7 +2241,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             }
             if account.is_changed() {
                 let info = account.present.as_ref().map(AccountInfo::clone_no_code);
-                let mut shard = self.account_shard(&address).write().expect("lock poisoned");
+                let mut shard = self.account_shard(&address).write();
                 shard.entry(address).or_default().insert(version, info);
                 writes.push(WriteKey::Account(address));
             }
@@ -2253,7 +2262,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 }
                 None => SlotWrite::Delta(pending_delta.delta),
             };
-            let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+            let mut shard = self.storage_shard(&address, &key).write();
             shard.entry((address, key)).or_default().insert(version, write);
             writes.push(WriteKey::Storage(address, key));
         }
@@ -2264,14 +2273,13 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         for write in writes {
             match write {
                 WriteKey::Account(address) => {
-                    let mut shard = self.account_shard(address).write().expect("lock poisoned");
+                    let mut shard = self.account_shard(address).write();
                     if let Some(versions) = shard.get_mut(address) {
                         versions.remove(version);
                     }
                 }
                 WriteKey::Storage(address, key) => {
-                    let mut shard =
-                        self.storage_shard(address, key).write().expect("lock poisoned");
+                    let mut shard = self.storage_shard(address, key).write();
                     if let Some(versions) = shard.get_mut(&(*address, *key)) {
                         versions.remove(version);
                     }
@@ -2290,7 +2298,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     /// committed.
     fn republish_account(&self, version: u32, address: Address, info: Option<&AccountInfo>) {
         {
-            let mut shard = self.account_shard(&address).write().expect("lock poisoned");
+            let mut shard = self.account_shard(&address).write();
             shard.entry(address).or_default().insert(version, info.map(AccountInfo::clone_no_code));
         }
         self.log_writes(version, [WriteKey::Account(address)]);
@@ -2299,7 +2307,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     /// Writes a slot's value at `version`.
     fn write_slot(&self, version: u32, address: Address, key: Word, value: Word) {
         {
-            let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+            let mut shard = self.storage_shard(&address, &key).write();
             shard.entry((address, key)).or_default().insert(version, SlotWrite::Value(value));
         }
         self.log_writes(version, [WriteKey::Storage(address, key)]);
@@ -2368,7 +2376,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         let range = start.min(SHARDS)..(start + len).min(SHARDS);
         let mut accounts = Vec::new();
         for shard in &self.accounts[range.clone()] {
-            for (address, versions) in shard.read().expect("lock poisoned").iter() {
+            for (address, versions) in shard.read().iter() {
                 let Some((_, present)) = versions.latest_below(u32::MAX) else { continue };
                 let original = self.account_initial(address)?;
                 let mut present = present.clone();
@@ -2384,7 +2392,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         }
         let mut slots = Vec::new();
         for shard in &self.storage[range] {
-            for ((address, key), versions) in shard.read().expect("lock poisoned").iter() {
+            for ((address, key), versions) in shard.read().iter() {
                 if versions.latest_below(u32::MAX).is_none() {
                     continue;
                 }
@@ -2413,7 +2421,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
                 && let Some(slot) = account.storage.slots.get(&key)
                 && (slot.value.is_changed() || account.storage.wiped)
             {
-                let mut shard = self.storage_shard(&address, &key).write().expect("lock poisoned");
+                let mut shard = self.storage_shard(&address, &key).write();
                 shard
                     .entry((address, key))
                     .or_default()
@@ -2771,6 +2779,82 @@ impl<T> Deref for CachePadded<T> {
 
     fn deref(&self) -> &T {
         &self.0
+    }
+}
+
+/// A reader-writer lock with one lock per group of reader threads, so readers of one hot value do
+/// not contend on a shared lock word: a reader locks its thread's lock, and a writer locks all.
+struct ReadShardedLock<T> {
+    locks: [CachePadded<RwLock<()>>; READER_LOCKS],
+    value: UnsafeCell<T>,
+}
+
+// SAFETY: the value is only reached through the guards, which hold the locks: shared through a
+// reader lock and exclusive through all of them, as with `RwLock`.
+unsafe impl<T: Send + Sync> Sync for ReadShardedLock<T> {}
+
+impl<T: Default> Default for ReadShardedLock<T> {
+    fn default() -> Self {
+        Self { locks: Default::default(), value: UnsafeCell::default() }
+    }
+}
+
+impl<T> ReadShardedLock<T> {
+    /// Locks the value for reading through the calling thread's lock.
+    fn read(&self) -> ReadShardedGuard<'_, T> {
+        let guard = self.locks[reader_lock()].read().expect("lock poisoned");
+        // SAFETY: a reader lock is held, which excludes writers.
+        ReadShardedGuard { _guard: guard, value: unsafe { &*self.value.get() } }
+    }
+
+    /// Locks the value for writing through every lock, in order.
+    fn write(&self) -> ReadShardedWriteGuard<'_, T> {
+        let guards = core::array::from_fn(|i| self.locks[i].write().expect("lock poisoned"));
+        // SAFETY: every lock is held, which excludes readers and other writers.
+        ReadShardedWriteGuard { _guards: guards, value: unsafe { &mut *self.value.get() } }
+    }
+}
+
+/// Returns the reader lock of the calling thread.
+fn reader_lock() -> usize {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    std::thread_local! {
+        static INDEX: usize = NEXT.fetch_add(1, Ordering::Relaxed) % READER_LOCKS;
+    }
+    INDEX.with(|index| *index)
+}
+
+/// Shared access to the value of a [`ReadShardedLock`].
+struct ReadShardedGuard<'a, T> {
+    _guard: RwLockReadGuard<'a, ()>,
+    value: &'a T,
+}
+
+impl<T> Deref for ReadShardedGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.value
+    }
+}
+
+/// Exclusive access to the value of a [`ReadShardedLock`].
+struct ReadShardedWriteGuard<'a, T> {
+    _guards: [RwLockWriteGuard<'a, ()>; READER_LOCKS],
+    value: &'a mut T,
+}
+
+impl<T> Deref for ReadShardedWriteGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.value
+    }
+}
+
+impl<T> DerefMut for ReadShardedWriteGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.value
     }
 }
 
