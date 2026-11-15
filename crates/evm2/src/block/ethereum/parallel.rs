@@ -61,13 +61,14 @@ use super::{
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult, TxResultWithState, TxStateChanges,
     block::{
-        AccountUpdate, BlockExecutionError, BlockExecutor, ExecutableTx, ReceiptBuilder,
-        StateUpdate, bundle_state::StorageSlot, map_database_error,
+        AccountUpdate, BlockExecutionError, BlockExecutor, BlockState, ExecutableTx,
+        ReceiptBuilder, StateUpdate, bundle_state::StorageSlot, map_database_error,
     },
     bytecode::Bytecode,
     evm::{
-        AccountFlags, AccountInfo, Cache, DbResult, DeferredBatchAccess, DeferredStorageOp,
-        DeferredStorageStore, DynDatabase, DynDatabaseRef, PendingState,
+        AccountFlags, AccountInfo, Cache, CacheDB, DbResult, DeferredBatchAccess,
+        DeferredStorageOp, DeferredStorageStore, DynDatabase, DynDatabaseRef, EmptyDB,
+        PendingState,
     },
     interpreter::{Host, Word},
 };
@@ -799,9 +800,21 @@ where
             self.commit_block_changes(state);
             return Ok(());
         };
+        // Without a BAL to build, the streamer also commits each prefix it streams to copies of the
+        // block state and the overlay cache, which replace them once the whole block committed,
+        // so the block's end commits only what the stream could not.
+        let commit = (!self.evm.overlay_db_mut().bal_context.has_builder()).then(|| {
+            let mut overlay = CacheDB::new(EmptyDB::default());
+            overlay.cache = self.evm.overlay_db_mut().cache.clone();
+            PrefixCommit {
+                block_state: self.block_state.clone(),
+                overlay,
+                deleted: HashSet::default(),
+            }
+        });
         std::thread::scope(|scope| {
             let (sender, batches) = mpsc::channel();
-            let streamer = scope.spawn(move || stream_updates(store, &batches, hook));
+            let streamer = scope.spawn(move || stream_updates(store, &batches, hook, commit));
             let committed = self.commit_batched_with(
                 store,
                 queue,
@@ -821,9 +834,12 @@ where
             // The streamer built the block's changes as it streamed them: commit them before the
             // hook is back, which already received every change.
             let committed = committed.and_then(|lifecycle| {
-                let mut state = streamed.map_err(map_database_error)?;
+                let (mut state, commit) = streamed.map_err(map_database_error)?;
                 store.apply_lifecycle(&mut state, &lifecycle).map_err(map_database_error)?;
-                self.commit_block_changes(state);
+                match commit {
+                    Some(commit) => self.commit_block_rest(state, commit, &lifecycle),
+                    None => self.commit_block_changes(state),
+                }
                 Ok(())
             });
             self.state_update_hook = Some(hook);
@@ -1047,6 +1063,33 @@ where
             });
             evm.overlay_db_mut().commit_pending(state);
         });
+        drop_in_background(state);
+    }
+
+    /// Puts in place the copies of the block state and the overlay cache a batched commit's
+    /// streamer committed the block's changes to, once it committed again, from before the block,
+    /// the accounts `lifecycle` created or wiped and those an update deleted: the copies do not
+    /// hold their changes as a whole.
+    fn commit_block_rest(
+        &mut self,
+        mut state: PendingState,
+        commit: PrefixCommit,
+        lifecycle: &AddressMap<Lifecycle>,
+    ) {
+        let PrefixCommit { mut block_state, mut overlay, deleted } = commit;
+        let mut redo = PendingState::default();
+        for address in lifecycle.keys().chain(&deleted) {
+            if let Some(account) = state.accounts.remove(address) {
+                block_state.restore(address, &self.block_state);
+                redo.accounts.insert(*address, account);
+            }
+        }
+        for changes in redo.account_changes() {
+            block_state.commit_account_changes(changes, None);
+        }
+        overlay.commit(&redo.accounts);
+        self.block_state = block_state;
+        self.evm.overlay_db_mut().cache = overlay.cache;
         drop_in_background(state);
     }
 
@@ -1304,6 +1347,7 @@ impl PrefixStream {
         store: &MvStore<'_, B>,
         version: u32,
         running: Option<(Address, Option<&AccountInfo>)>,
+        mut commit: Option<&mut PrefixCommit>,
     ) -> DbResult<StateUpdate> {
         self.last = Instant::now();
         let mut written = AddressMap::<(bool, Vec<Word>)>::default();
@@ -1370,6 +1414,9 @@ impl PrefixStream {
                 };
                 storage.push((key, StorageSlot::new_changed(previous, value)));
             }
+            if let Some(commit) = commit.as_deref_mut() {
+                commit.apply(address, original.as_ref(), current.as_ref(), &storage);
+            }
             update.accounts.push(AccountUpdate {
                 address,
                 original,
@@ -1388,6 +1435,7 @@ impl PrefixStream {
     fn finish<B: DynDatabaseRef + Sync + ?Sized>(
         mut self,
         store: &MvStore<'_, B>,
+        mut commit: Option<&mut PrefixCommit>,
     ) -> DbResult<PendingState> {
         for address in self.code {
             if let Some(account) = self.state.accounts.get_mut(&address)
@@ -1398,10 +1446,67 @@ impl PrefixStream {
                     .as_ref()
                     .is_none_or(|original| original.code_hash != info.code_hash)
             {
-                info.code = Some(store.code(&info.code_hash)?);
+                let code = store.code(&info.code_hash)?;
+                if let Some(commit) = commit.as_deref_mut() {
+                    commit.block_state.insert_contract(info.code_hash, &code);
+                    commit
+                        .overlay
+                        .cache
+                        .contracts
+                        .entry(info.code_hash)
+                        .or_insert_with(|| code.clone());
+                }
+                info.code = Some(code);
             }
         }
         Ok(self.state)
+    }
+}
+
+/// Copies of an executor's block state and overlay cache that a batched commit's streamer commits
+/// each streamed prefix to.
+struct PrefixCommit {
+    block_state: BlockState,
+    overlay: CacheDB<EmptyDB>,
+    /// Accounts an update deleted, whose changes commit again at the block's end.
+    deleted: HashSet<Address>,
+}
+
+impl PrefixCommit {
+    /// Commits a streamed account, from `original` as last streamed to `current`, and its streamed
+    /// slots, from their values as last streamed.
+    fn apply(
+        &mut self,
+        address: Address,
+        original: Option<&AccountInfo>,
+        current: Option<&AccountInfo>,
+        storage: &[(Word, StorageSlot)],
+    ) {
+        let account_changed = original != current;
+        let slots = || storage.iter().filter(|(_, slot)| slot.is_changed());
+        if !account_changed && slots().next().is_none() {
+            return;
+        }
+        for (key, slot) in slots() {
+            self.overlay.insert_account_storage(&address, key, &slot.present_value);
+        }
+        if account_changed {
+            match current {
+                Some(info) => self.overlay.insert_account_info(&address, info.clone_no_code()),
+                None => {
+                    self.overlay.cache.accounts.insert(address, None);
+                    self.deleted.insert(address);
+                }
+            }
+        }
+        self.block_state.commit_account(
+            address,
+            original.map(AccountInfo::clone_no_code),
+            current.map(AccountInfo::clone_no_code),
+            false,
+            false,
+            slots().copied(),
+        );
     }
 }
 
@@ -1421,7 +1526,8 @@ fn stream_updates<B: DynDatabaseRef + Sync + ?Sized>(
     store: &MvStore<'_, B>,
     batches: &mpsc::Receiver<StreamBatch>,
     mut hook: Box<dyn FnMut(StateUpdate) + Send>,
-) -> (Box<dyn FnMut(StateUpdate) + Send>, DbResult<PendingState>) {
+    mut commit: Option<PrefixCommit>,
+) -> (Box<dyn FnMut(StateUpdate) + Send>, DbResult<(PendingState, Option<PrefixCommit>)>) {
     let mut stream = PrefixStream::default();
     let mut result = Ok(());
     while let Ok(mut batch) = batches.recv() {
@@ -1434,13 +1540,14 @@ fn stream_updates<B: DynDatabaseRef + Sync + ?Sized>(
             batch = next;
         }
         let running = batch.running.as_ref().map(|(address, info)| (*address, info.as_ref()));
-        match stream.take(store, batch.version, running) {
+        match stream.take(store, batch.version, running, commit.as_mut()) {
             Ok(update) if !update.is_empty() => hook(update),
             Ok(_) => {}
             Err(error) => result = Err(error),
         }
     }
-    (hook, result.and_then(|()| stream.finish(store)))
+    let finished = result.and_then(|()| stream.finish(store, commit.as_mut()));
+    (hook, finished.map(|state| (state, commit)))
 }
 
 /// Drops `value` on a background thread, off the critical path, or here when no thread spawns.

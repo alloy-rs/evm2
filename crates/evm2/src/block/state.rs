@@ -11,7 +11,7 @@ use alloy_primitives::{
 };
 
 /// One block's account transitions, finalized into a [`BundleState`] with their reverts.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct BlockState {
     transitions: AddressMap<TransitionAccount>,
     contracts: B256Map<Bytecode>,
@@ -83,7 +83,7 @@ impl BlockState {
         update.accounts.push(AccountUpdate { address, original, current, created, wiped, storage });
     }
 
-    fn commit_account(
+    pub(crate) fn commit_account(
         &mut self,
         address: Address,
         original: Option<AccountInfo>,
@@ -159,6 +159,23 @@ impl BlockState {
                 }
             }
         }
+    }
+
+    /// Resets the transition of `address` to the one `from` holds, dropping it when `from` holds none.
+    pub(crate) fn restore(&mut self, address: &Address, from: &Self) {
+        match from.transitions.get(address) {
+            Some(transition) => {
+                self.transitions.insert(*address, transition.clone());
+            }
+            None => {
+                self.transitions.remove(address);
+            }
+        }
+    }
+
+    /// Records the code of a contract the block deployed.
+    pub(crate) fn insert_contract(&mut self, hash: B256, code: &Bytecode) {
+        self.contracts.entry(hash).or_insert_with(|| code.clone());
     }
 
     /// Finalizes one block's transitions and reverts.
