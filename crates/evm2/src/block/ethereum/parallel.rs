@@ -1511,12 +1511,25 @@ fn run_worker<T, F, H>(
             on_speculative(index, outcome.pending_state.changes());
         }
         scheduler.finish(index);
-        let reads = core::mem::take(&mut *reads.borrow_mut());
+        let mut reads = core::mem::take(&mut *reads.borrow_mut());
         let lifecycle =
             outcome.as_ref().is_some_and(|outcome| has_lifecycle(&outcome.pending_state));
+        // A result that completes the stored prefix near a batched committer is validated now,
+        // while its reads are in this worker's cache, rather than by the committer when it arrives.
+        let prevalidated = outcome.as_ref().filter(|_| results.batched).and_then(|outcome| {
+            if index != results.ready_prefix()
+                || index > results.committing.load(Ordering::Acquire) + PREVALIDATE_AHEAD
+            {
+                return None;
+            }
+            let mark = store.log_mark();
+            let valid =
+                reads.validate_store(store, version, &outcome.pending_state, &evm_tx.signer());
+            Some((mark, valid))
+        });
         results.put(
             index,
-            Speculative { worker, outcome, reward, reads, writes, prevalidated: None, lifecycle },
+            Speculative { worker, outcome, reward, reads, writes, prevalidated, lifecycle },
         );
     }
 
