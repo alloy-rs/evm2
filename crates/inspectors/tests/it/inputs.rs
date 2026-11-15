@@ -408,11 +408,11 @@ fn nested_roots_match_revm_inspectors() {
                 assert_eq!(nodes[0].children, [1]);
             }
             assert_eq!(nodes[root].parent, root.checked_sub(1));
-            assert_eq!(nodes[root].trace.depth, usize::from(initial_call_depth));
+            assert_eq!(nodes[root].trace.depth, initial_call_depth);
             assert_eq!(nodes[root].trace.data, data);
             assert_eq!(nodes[root].children, [root + 1]);
             assert_eq!(nodes[root + 1].parent, Some(root));
-            assert_eq!(nodes[root + 1].trace.depth, usize::from(initial_call_depth) + 1);
+            assert_eq!(nodes[root + 1].trace.depth, initial_call_depth + 1);
             // A zero budget records no steps, so the struct logs come from an unlimited run.
             let mut tracer = TracingInspector::new(TracingInspectorConfig::default_geth());
             run(&mut tracer);
