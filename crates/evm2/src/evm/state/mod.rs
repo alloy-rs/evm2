@@ -1154,6 +1154,27 @@ impl<'a> State<'a> {
         self.storage(address)?.add(key, delta)
     }
 
+    /// Like [`Self::storage_add`], for a slot whose value the caller needs only to lie in
+    /// `min..=max`: when the slot is not loaded, has no pending adds and holds such a value, adds
+    /// `delta` and returns the value and whether the access was cold. Otherwise returns `None` and
+    /// changes nothing, and the caller loads the slot itself.
+    ///
+    /// The caller may branch, and charge gas, on the value only through facts that hold for every
+    /// value in the range, such as the slot being nonzero and the sum not overflowing. Parallel
+    /// block execution then accepts the transaction over any committed value in the range while
+    /// the add stays pending, and applies the add to that value, so the result is the same as
+    /// reading the slot exactly.
+    pub fn storage_add_within(
+        &mut self,
+        address: &Address,
+        key: Word,
+        delta: Word,
+        min: Word,
+        max: Word,
+    ) -> DbResult<Option<(Word, bool)>> {
+        self.storage(address)?.add_within(key, delta, min, max)
+    }
+
     /// Defers a storage operation to the end of the current transaction. See
     /// [`DeferredStorageOp`].
     ///

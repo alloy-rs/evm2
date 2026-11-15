@@ -1926,7 +1926,8 @@ impl ReadSet {
             }
         }
         for (address, key, value, _) in storage.iter() {
-            if evm.read_storage(address, key)? != *value {
+            let now = evm.read_storage(address, key)?;
+            if now != *value && !within_read_bounds(pending, address, key, now) {
                 return Ok(false);
             }
         }
@@ -1988,7 +1989,9 @@ impl ReadSet {
             }
         }
         storage.iter().all(|(address, key, value, initial)| {
-            store.storage_from(address, key, version, *initial).is_ok_and(|(now, _)| now == *value)
+            store.storage_from(address, key, version, *initial).is_ok_and(|(now, _)| {
+                now == *value || within_read_bounds(pending, address, key, now)
+            })
         })
     }
 
@@ -2011,7 +2014,9 @@ impl ReadSet {
                             .is_some_and(|floor| balance_only_change(read, now, floor)))
             })
         }) && self.storage.iter().all(|(address, key, value, initial)| {
-            store.storage_from(address, key, version, *initial).is_ok_and(|(v, _)| v == *value)
+            store
+                .storage_from(address, key, version, *initial)
+                .is_ok_and(|(v, _)| v == *value || within_read_bounds(pending, address, key, v))
         })
     }
 }
@@ -2028,6 +2033,17 @@ fn delta_floor(pending: &PendingState, sender: &Address, address: &Address) -> O
         return None;
     }
     Some(reads.floors.get(address).copied().unwrap_or_default())
+}
+
+/// Returns whether the execution of `pending` gives the same result over `now` as over the value
+/// it read of `address`'s slot `key`: it read the slot only to add to it with
+/// [`State::storage_add_within`](crate::evm::State::storage_add_within), whose add is still
+/// pending and resolves against the committed value, and `now` lies in the range it needs.
+fn within_read_bounds(pending: &PendingState, address: &Address, key: &Word, now: Word) -> bool {
+    pending
+        .deferred()
+        .and_then(|deferred| deferred.read_bounds(address, key))
+        .is_some_and(|(min, max)| min <= now && now <= max)
 }
 
 /// Returns whether an account read as `read` and now `now` differs at most in a balance that
