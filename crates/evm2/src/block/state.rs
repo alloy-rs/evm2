@@ -110,12 +110,18 @@ impl BlockState {
         };
         match entry {
             Entry::Vacant(entry) => {
+                // Size the map for every slot the iterator may yield rather than growing it.
+                let mut slots = U256Map::with_capacity_and_hasher(
+                    storage.size_hint().1.unwrap_or_default(),
+                    Default::default(),
+                );
+                slots.extend(storage);
                 entry.insert(TransitionAccount {
                     info: current,
                     status,
                     previous_info: original,
                     previous_status,
-                    storage: storage.collect(),
+                    storage: slots,
                     storage_was_destroyed: wiped,
                 });
             }

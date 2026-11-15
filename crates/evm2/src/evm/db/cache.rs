@@ -171,6 +171,10 @@ impl<ExtDB> CacheDB<ExtDB> {
                 if wiped {
                     storage.wipe();
                 }
+                // Size a new map for every slot loaded at once rather than growing it slot by slot.
+                if storage.slots.is_empty() {
+                    storage.slots.reserve(overlay.slots.len());
+                }
                 storage.slots.extend(changed_slots.map(|(&key, slot)| (key, slot.current)));
             }
 
