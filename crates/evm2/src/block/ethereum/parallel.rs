@@ -28,7 +28,7 @@
 //! the step only checks the keys written since, runs deferred storage operations against the
 //! store and records the receipt. Blind adds stay deltas in the store, transactions that read stale
 //! state execute again over it, and the block's final state reaches the executor once, at the end.
-//! The state hook still streams: whenever [`STREAM_INTERVAL`] passed since its last update, the
+//! The state hook still streams: whenever [`stream_interval`] passed since its last update, the
 //! committer sends it the latest value, read from the store, of every key the transactions
 //! committed since wrote, so a state-root task hashes the block's prefix while the rest executes,
 //! and a key many transactions write, such as a fee balance, is sent once per update rather than
@@ -131,10 +131,14 @@ const WARM_AHEAD: usize = 64;
 /// Most threads that read a batched commit's final state.
 const MATERIALIZE_THREADS: usize = 8;
 
-/// How often a batched commit streams the state its committed prefix changed to the state hook.
+/// How often a batched commit streams the state its committed prefix changed to the state hook,
+/// unless [`set_stream_interval`] or the `EVM2_PARALLEL_STREAM_US` environment variable sets it.
 /// Tests stream after every transaction.
 const STREAM_INTERVAL: Duration =
     if cfg!(test) { Duration::ZERO } else { Duration::from_micros(200) };
+
+/// The stream interval in use, fixed on first use.
+static STREAM_INTERVAL_OVERRIDE: OnceLock<Duration> = OnceLock::new();
 
 /// Counters of one parallel block execution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -907,7 +911,7 @@ where
             writes.clear();
             results.recycle(worker, Buffers { reads, writes, pending });
             if let (Some(stream), Some(streamer)) = (&mut stream, streamer)
-                && stream.last.elapsed() >= STREAM_INTERVAL
+                && stream.last.elapsed() >= stream_interval()
                 && !stream.keys.is_empty()
             {
                 stream.last = Instant::now();
@@ -2776,3 +2780,21 @@ impl<T> Deref for CachePadded<T> {
 
 #[cfg(test)]
 mod tests;
+
+/// Sets how often batched commits stream state to the state hook, in place of the default and
+/// `EVM2_PARALLEL_STREAM_US`. Returns `false` if the interval was already fixed.
+pub fn set_stream_interval(interval: Duration) -> bool {
+    STREAM_INTERVAL_OVERRIDE.set(interval).is_ok()
+}
+
+/// Returns how often batched commits stream state to the state hook: the interval
+/// [`set_stream_interval`] set, else `EVM2_PARALLEL_STREAM_US` microseconds, else
+/// [`STREAM_INTERVAL`]. `0` streams after every transaction.
+fn stream_interval() -> Duration {
+    *STREAM_INTERVAL_OVERRIDE.get_or_init(|| {
+        std::env::var("EVM2_PARALLEL_STREAM_US")
+            .ok()
+            .and_then(|us| us.trim().parse().ok())
+            .map_or(STREAM_INTERVAL, Duration::from_micros)
+    })
+}

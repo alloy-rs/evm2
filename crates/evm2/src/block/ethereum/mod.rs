@@ -37,6 +37,7 @@ pub mod parallel;
 #[cfg(feature = "std")]
 pub use parallel::{
     AccessKey, ParallelExecutionOutput, ParallelExecutionStats, ParallelHints, StreamedTx,
+    set_stream_interval,
 };
 
 #[cfg(test)]
