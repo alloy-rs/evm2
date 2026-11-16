@@ -913,6 +913,20 @@ fn ledger(
             storage.sstore(&LEDGER, pointer_key, next)
         })),
         6 => evm.state_mut().defer_storage_op(DeferredStorageOp::batched(Append { caller })),
+        // Credit or debit a balance the transaction reads only to change it, as token transfers
+        // do. A debit the balance does not cover changes nothing.
+        op @ (7 | 8) => {
+            let first_access = evm.state().is_slot_untouched(&LEDGER, &BALANCE);
+            let balance = Host::sload(evm, &LEDGER, &BALANCE, false)?.value;
+            let sub = op == 8;
+            let next = if sub { balance.checked_sub(fee) } else { balance.checked_add(fee) };
+            if let Some(next) = next {
+                Host::sstore(evm, &LEDGER, &BALANCE, &next, false)?;
+                if first_access {
+                    evm.state_mut().record_slot_add(&LEDGER, BALANCE, fee, sub);
+                }
+            }
+        }
         _ => {
             let pointer = Host::sload(evm, &LEDGER, &pointer_key, false)?.value;
             Host::sstore(evm, &LEDGER, &caller, &pointer, false)?;
@@ -920,6 +934,9 @@ fn ledger(
     }
     Ok(PrecompileOutput::new(Bytes::new()))
 }
+
+/// The ledger's balance slot, which operations 7 and 8 credit and debit.
+const BALANCE: U256 = U256::from_limbs([0, 0, 0, 1 << 11]);
 
 fn ledger_database() -> InMemoryDB {
     let mut database = database(None);
@@ -1007,6 +1024,50 @@ fn reads_of_deferred_op_writes_match_sequential() {
         let sequential = assert_matches_sequential_with(ledger_database(), &txs, 1, None);
         assert_eq!(sequential.dependencies, first.dependencies);
     }
+}
+
+fn ledger_database_with_balance(balance: u64) -> InMemoryDB {
+    let mut database = ledger_database();
+    database.insert_account_storage(&LEDGER, &BALANCE, &U256::from(balance));
+    database
+}
+
+#[test]
+fn balance_credits_and_debits_commit_without_conflicts() {
+    // Every transaction credits or debits one balance that always covers the debits.
+    for ops in [&[7][..], &[8], &[7, 8]] {
+        let txs: Vec<_> = (0..ACCOUNTS)
+            .map(|index| {
+                let op = ops[index as usize % ops.len()];
+                tx(user(index), 0, TxKind::Call(LEDGER), 0, 1, vec![op])
+            })
+            .collect();
+        for threads in [2, 4, 8] {
+            let run = assert_matches_sequential_with(
+                ledger_database_with_balance(1_000),
+                &txs,
+                threads,
+                None,
+            );
+            assert_eq!(run.stats.reexecuted, 0, "ops {ops:?}, {threads} threads");
+        }
+    }
+}
+
+#[test]
+fn balance_debits_below_zero_match_sequential() {
+    // Debits run the balance out, and credits from zero change its zero-ness: transactions whose
+    // change no longer applies over the committed balance execute again.
+    let mut reexecuted = 0;
+    for (seed, balance) in (0..30).zip([0, 1, 40, 200, 1_000].into_iter().cycle()) {
+        let txs = ledger_block(seed, 96, &[7, 8, 8, 8, 1, 0]);
+        for threads in [2, 5, 8] {
+            reexecuted +=
+                assert_matches_sequential(ledger_database_with_balance(balance), &txs, threads)
+                    .reexecuted;
+        }
+    }
+    assert!(reexecuted > 0);
 }
 
 #[test]
