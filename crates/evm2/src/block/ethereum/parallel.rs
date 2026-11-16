@@ -422,7 +422,7 @@ where
         let workers = threads.get().min(txs.len());
         let results = Results::new(workers, batched);
         let totals = batched.then(|| self.totals());
-        let output = std::thread::scope(|scope| {
+        let output = pool::scope(|scope| {
             for worker in 0..workers {
                 let (store, scheduler, queue, results) = (&store, &scheduler, &queue, &results);
                 let (make_evm, on_speculative) = (&make_evm, &on_speculative);
@@ -553,7 +553,7 @@ where
         let totals = batched.then(|| self.totals());
         let (tx_sender, tx_receiver) = mpsc::channel();
         let transactions = transactions.into_iter();
-        let output = std::thread::scope(|scope| {
+        let output = pool::scope(|scope| {
             let (scheduler, queue) = (&scheduler, &queue);
             scope.spawn(move || {
                 for StreamedTx { tx, dependencies } in transactions {
@@ -813,7 +813,7 @@ where
             self.commit_block_changes(state);
             return Ok(());
         };
-        std::thread::scope(|scope| {
+        pool::scope(|scope| {
             let (sender, batches) = mpsc::channel();
             let streamer = scope.spawn(move || stream_updates(store, &batches, hook));
             let committed = self.commit_batched_with(
@@ -1054,7 +1054,7 @@ where
     /// helper thread, without streaming them.
     fn commit_block_changes(&mut self, state: PendingState) {
         let (evm, block_state) = (&mut self.evm, &mut self.block_state);
-        std::thread::scope(|scope| {
+        pool::scope(|scope| {
             let state = &state;
             scope.spawn(move || {
                 for changes in state.account_changes() {
@@ -1469,9 +1469,9 @@ fn stream_updates<B: DynDatabaseRef + Sync + ?Sized>(
     (hook, result.and_then(|()| stream.finish(store)))
 }
 
-/// Drops `value` on a background thread, off the critical path, or here when no thread spawns.
+/// Drops `value` on a pool thread, off the critical path, or here when no thread spawns.
 fn drop_in_background<V: Send + 'static>(value: V) {
-    let _ = std::thread::Builder::new().name("evm2-drop".into()).spawn(move || drop(value));
+    pool::spawn_detached(move || drop(value));
 }
 
 /// The deferred storage operations an idle worker last ran ahead of the committer, to read the
@@ -2920,7 +2920,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             .map_or(1, NonZeroUsize::get)
             .clamp(1, MATERIALIZE_THREADS);
         let chunk = SHARDS.div_ceil(threads);
-        let parts = std::thread::scope(|scope| {
+        let parts = pool::scope(|scope| {
             let spawned = (1..threads)
                 .map(|part| scope.spawn(move || self.materialize_shards(part * chunk, chunk)))
                 .collect::<Vec<_>>();
@@ -3473,6 +3473,8 @@ impl<T> Deref for CachePadded<T> {
         &self.0
     }
 }
+
+mod pool;
 
 #[cfg(test)]
 mod tests;
