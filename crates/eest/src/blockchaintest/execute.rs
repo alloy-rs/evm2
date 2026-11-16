@@ -318,6 +318,9 @@ fn execute_case(
     let captured = is_captured(test_case);
     let compare_state_root = config.compare_state_root && !captured;
 
+    #[cfg(feature = "sx")]
+    crate::sx::prewarm_from_env(database, spec);
+
     hook.case_started(CaseStarted { name, total_blocks, network: test_case.network });
 
     for (block_index, block) in test_case.blocks.iter().enumerate() {
@@ -536,6 +539,8 @@ fn execute_block<'a>(
     if trace {
         evm.set_inspector(Eip3155Tracer::to_stdout());
     }
+    #[cfg(feature = "sx")]
+    evm.set_superinstructions(crate::sx::enabled());
 
     let ctx = EthBlockExecutionCtx {
         tx_count_hint: Some(block_transactions(block).len()),

@@ -105,7 +105,9 @@ extern_table! {
             }
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
-        super::inc_pc(&mut pc, OP);
+        if !instruction.flags.contains(InstructionFlags::SETS_PC) {
+            super::inc_pc(&mut pc, OP);
+        }
         if hooked {
             state.note_inspector_config_change();
             if !M::INSPECT && state.reload_requested() {

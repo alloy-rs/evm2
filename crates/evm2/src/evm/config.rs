@@ -1,5 +1,7 @@
 //! EVM configuration.
 
+#[cfg(feature = "sx")]
+use crate::interpreter::dispatch::SxTable;
 use crate::{
     Evm, OpcodeConfig, OpcodeView, SpecId,
     ethereum::TxEnvelope,
@@ -137,6 +139,11 @@ pub struct ExecutionConfig<T: EvmTypesHost> {
     pub(crate) instructions: &'static InstrTable<T>,
     #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
+    #[cfg(feature = "sx")]
+    #[derive_where(skip)]
+    sx: Option<&'static SxTable<T>>,
+    #[cfg(feature = "sx")]
+    pub(crate) superinstructions: bool,
 }
 
 impl<T: EvmTypesHost> ExecutionConfig<T> {
@@ -162,6 +169,10 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
             inspect_instructions:
                 &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
+            #[cfg(feature = "sx")]
+            sx: SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::SX[i],
+            #[cfg(feature = "sx")]
+            superinstructions: false,
         }
     }
 
@@ -175,6 +186,10 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             opcode_config: C::OPCODE_CONFIG,
             instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
             inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
+            #[cfg(feature = "sx")]
+            sx: ConfigInstrTables::<T, C>::SX,
+            #[cfg(feature = "sx")]
+            superinstructions: false,
         }
     }
 
@@ -201,6 +216,40 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
         }
         self.version = version;
         self
+    }
+
+    /// Enables or disables stack superinstructions (see `evm2_sx`) for code that runs without an
+    /// inspector. Configs no superinstruction applies to run as before.
+    #[cfg(feature = "sx")]
+    #[inline]
+    pub const fn set_superinstructions(&mut self, enabled: bool) {
+        self.superinstructions = enabled;
+    }
+
+    /// Runs the analysis that executing `bytecode` with this config runs on its first use:
+    /// translation to superinstructions when they are on, else jump destination analysis.
+    /// Execution reuses the result, so a code cache can analyze ahead of time.
+    #[cfg(feature = "sx")]
+    pub fn analyze(&self, bytecode: &crate::bytecode::Bytecode) {
+        if let Some(table) = self.sx_table()
+            && bytecode.sx_code(&table.matcher, true).is_some()
+        {
+            return;
+        }
+        let _ = bytecode.jump_table();
+    }
+
+    /// Returns whether code without an inspector runs with superinstructions.
+    #[cfg(feature = "sx")]
+    #[inline]
+    pub const fn superinstructions(&self) -> bool {
+        self.sx_table().is_some()
+    }
+
+    #[cfg(feature = "sx")]
+    #[inline]
+    pub(crate) const fn sx_table(&self) -> Option<&'static SxTable<T>> {
+        if self.superinstructions { self.sx } else { None }
     }
 
     /// Returns the active base specification ID.

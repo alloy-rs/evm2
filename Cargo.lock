@@ -2599,6 +2599,7 @@ dependencies = [
  "corosensei",
  "derive-where",
  "evm2-macros",
+ "evm2-sx",
  "gmp-mpfr-sys",
  "k256 0.14.0",
  "mcl_rust",
@@ -2836,6 +2837,10 @@ dependencies = [
  "quote",
  "syn 3.0.9",
 ]
+
+[[package]]
+name = "evm2-sx"
+version = "0.1.0"
 
 [[package]]
 name = "eyre"

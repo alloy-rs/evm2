@@ -15,6 +15,9 @@ pub use instructions::i256;
 
 pub(crate) mod dispatch;
 
+#[cfg(feature = "sx")]
+pub(crate) mod sx;
+
 #[doc(hidden)] // For macro only. Not public API.
 pub mod private;
 

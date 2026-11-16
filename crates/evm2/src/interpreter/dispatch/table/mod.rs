@@ -119,7 +119,9 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
             }
             r = instr(&mut pc, stack.reborrow(), state);
             if r.is_ok() {
-                inc_pc(&mut pc, op);
+                if !instruction.flags.contains(InstructionFlags::SETS_PC) {
+                    inc_pc(&mut pc, op);
+                }
                 if hooked {
                     state.note_inspector_config_change();
                 }

@@ -125,6 +125,21 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         }
     }
 
+    /// Returns a copy of this config, for configs derived from it at compile time.
+    #[cfg(feature = "sx")]
+    pub(crate) const fn copied(&self) -> Self {
+        Self {
+            static_gas_table: StaticGasTable { table: self.static_gas_table.table, _align: [] },
+            instruction_impls: InstructionImplTable {
+                instrs: self.instruction_impls.instrs,
+                flags: self.instruction_impls.flags,
+            },
+            revisions: self.revisions,
+            instruction_sets: self.instruction_sets,
+            origin: self.origin,
+        }
+    }
+
     /// Returns the dispatch-table revision for `opcode`.
     #[inline(always)]
     pub(crate) const fn revision(&self, opcode: u8) -> u8 {

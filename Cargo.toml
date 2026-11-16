@@ -3,6 +3,7 @@ members = [
     "crates/cli",
     "crates/evm2",
     "crates/macros",
+    "crates/sx",
     "crates/eest",
     "crates/inspectors",
     "crates/jit",
@@ -51,6 +52,7 @@ all = "warn"
 [workspace.dependencies]
 evm2 = { path = "crates/evm2", version = "0.1.0", default-features = false }
 evm2-macros = { path = "crates/macros", version = "0.1.0" }
+evm2-sx = { path = "crates/sx", version = "0.1.0" }
 evm2-inspectors = { path = "crates/inspectors", version = "0.1.0" }
 evm2-jit = { path = "crates/jit", version = "0.1.0", default-features = false }
 evm2-jit-backend = { path = "crates/jit/backend", version = "0.1.0", default-features = false }

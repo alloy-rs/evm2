@@ -1,0 +1,13 @@
+[package]
+name = "evm2-sx"
+description = "Stack superinstructions for evm2: the fused opcode sequences and the analysis pass that marks them."
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

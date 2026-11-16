@@ -364,6 +364,8 @@ fn execute_spec(
     dump_state: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<SpecOutcome, Box<SpecFailure>> {
+    #[cfg(feature = "sx")]
+    crate::sx::prewarm_from_env(&database, spec);
     let db_stats = db_stats_counts.is_some();
     let mut evm = if db_stats {
         Evm::<BaseEvmTypes>::new(
@@ -383,6 +385,8 @@ fn execute_spec(
         )
     };
     resources.configure_evm(&mut evm);
+    #[cfg(feature = "sx")]
+    evm.set_superinstructions(crate::sx::enabled());
     if trace {
         evm.set_inspector(Eip3155Tracer::to_stdout());
     }

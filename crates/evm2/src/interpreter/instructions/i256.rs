@@ -11,7 +11,7 @@ pub fn i256_cmp(first: &Word, second: &Word) -> Ordering {
 
 /// Returns whether `first < second` as signed 256-bit integers.
 #[inline]
-pub(super) fn i256_lt(first: &Word, second: &Word) -> bool {
+pub(crate) fn i256_lt(first: &Word, second: &Word) -> bool {
     flip_sign(first) < flip_sign(second)
 }
 

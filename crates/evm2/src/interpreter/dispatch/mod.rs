@@ -1,5 +1,7 @@
 //! Instruction dispatch tables.
 
+#[cfg(feature = "sx")]
+use crate::interpreter::sx::{self, SxConfig};
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypesHost, OpcodeConfig,
     evm::config::SelectorOpcodeConfig,
@@ -190,6 +192,84 @@ where
     );
 }
 
+/// Dispatch table with superinstructions, and the matcher that translates code for it.
+#[cfg(feature = "sx")]
+pub(crate) struct SxTable<T: EvmTypesHost> {
+    pub(crate) instructions: InstrTable<T>,
+    pub(crate) matcher: evm2_sx::Matcher,
+}
+
+#[cfg(feature = "sx")]
+impl<T, C> ConfigInstrTables<T, C>
+where
+    T: EvmTypesHost,
+    C: EvmConfig<T>,
+{
+    // Inherits every entry of `C`'s table and adds the superinstruction slots.
+    const SX_TABLE: &'static SxTable<T> = &SxTable {
+        instructions: make_table::<T, SxConfig<C>, NoInspector>(
+            Some(Self::INSTRUCTIONS),
+            Some(C::OPCODE_CONFIG),
+        ),
+        matcher: evm2_sx::Matcher::new(sx::ops::<T, C>()),
+    };
+
+    /// The superinstruction table of `C`, if any superinstruction applies to it.
+    pub(crate) const SX: Option<&'static SxTable<T>> =
+        if Self::SX_TABLE.matcher.is_active() { Some(Self::SX_TABLE) } else { None };
+}
+
+#[cfg(feature = "sx")]
+struct SelectorSxTable<T, F, const CUSTOM_SPEC_ID: u32, const SPEC_ID: u32>(
+    core::marker::PhantomData<fn() -> (T, F)>,
+);
+
+#[cfg(feature = "sx")]
+impl<T, F, const CUSTOM_SPEC_ID: u32, const SPEC_ID: u32>
+    SelectorSxTable<T, F, CUSTOM_SPEC_ID, SPEC_ID>
+where
+    T: EvmTypesHost,
+    F: EvmConfigSelector<T>,
+{
+    const TABLE: &'static SxTable<T> = &SxTable {
+        instructions:
+            make_table::<
+                T,
+                SxConfig<<F as EvmConfigSelector<T>>::Config<SPEC_ID, CUSTOM_SPEC_ID>>,
+                NoInspector,
+            >(
+                Some(&SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[SPEC_ID as usize]),
+                Some(
+                    <<F as EvmConfigSelector<T>>::Config<SPEC_ID, CUSTOM_SPEC_ID> as EvmConfig<
+                        T,
+                    >>::OPCODE_CONFIG,
+                ),
+            ),
+        matcher: evm2_sx::Matcher::new(sx::ops::<
+            T,
+            <F as EvmConfigSelector<T>>::Config<SPEC_ID, CUSTOM_SPEC_ID>,
+        >()),
+    };
+
+    const SX: Option<&'static SxTable<T>> =
+        if Self::TABLE.matcher.is_active() { Some(Self::TABLE) } else { None };
+}
+
+#[cfg(feature = "sx")]
+const fn selector_sx_tables<T, F, const CUSTOM_SPEC_ID: u32>()
+-> [Option<&'static SxTable<T>>; crate::SpecId::COUNT]
+where
+    T: EvmTypesHost,
+    F: EvmConfigSelector<T>,
+{
+    macro_rules! tables {
+        ([$t:ty, $f:ty] $($spec:ident $name:ident,)*) => {
+            [$(SelectorSxTable::<$t, $f, CUSTOM_SPEC_ID, { crate::SpecId::$spec as u32 }>::SX,)*]
+        };
+    }
+    crate::for_each_spec!([T, F] tables)
+}
+
 pub(crate) struct SelectorInstrTables<T, F, const CUSTOM_SPEC_ID: u32>(
     core::marker::PhantomData<fn() -> (T, F)>,
 );
@@ -203,6 +283,9 @@ where
         &make_selector_tables::<T, F, NoInspector, CUSTOM_SPEC_ID>();
     pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
         &make_selector_tables::<T, F, DynInspector, CUSTOM_SPEC_ID>();
+    #[cfg(feature = "sx")]
+    pub(crate) const SX: &'static [Option<&'static SxTable<T>>; crate::SpecId::COUNT] =
+        &selector_sx_tables::<T, F, CUSTOM_SPEC_ID>();
 }
 
 const fn instruction_changed<T: EvmTypesHost>(

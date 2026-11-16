@@ -15,6 +15,7 @@ keywords.workspace = true
 workspace = true
 
 [dependencies]
+evm2-sx = { workspace = true, optional = true }
 evm2-macros.workspace = true
 
 alloy-consensus.workspace = true
@@ -110,6 +111,8 @@ path = "examples/custom_evm/main.rs"
 doc-scrape-examples = true
 
 [features]
+# Stack superinstructions (see `evm2-sx`), off until `ExecutionConfig::set_superinstructions`.
+sx = ["dep:evm2-sx"]
 default = [
     "std",
     "map-foldhash",

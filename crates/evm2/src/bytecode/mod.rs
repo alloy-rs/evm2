@@ -66,6 +66,29 @@ struct BytecodeInner {
     jump_table: OnceLock<JumpTable>,
     /// Cached hash of the original bytecode.
     hash: OnceLock<B256>,
+    /// Lazily translated superinstruction code for legacy bytecode.
+    #[cfg(feature = "sx")]
+    sx: OnceLock<SxCode>,
+    /// Frames that ran the code before it was translated; see [`SX_TRANSLATE_AFTER`].
+    #[cfg(feature = "sx")]
+    sx_entries: core::sync::atomic::AtomicU32,
+}
+
+/// Frame entries after which legacy code is translated to superinstructions.
+///
+/// Translation costs about 2 ns per byte of code and saves about a third of a nanosecond per
+/// instruction executed. Most code a block loads runs a few thousand instructions or fewer, so
+/// translating it on first use costs more than it saves; code that is entered this often is
+/// what most instructions run in.
+#[cfg(feature = "sx")]
+pub(crate) const SX_TRANSLATE_AFTER: u32 = 32;
+
+/// Legacy bytecode translated to superinstructions, and the opcodes it was translated for.
+#[cfg(feature = "sx")]
+#[derive(Debug)]
+struct SxCode {
+    ops: evm2_sx::Ops,
+    code: alloc::boxed::Box<[u8]>,
 }
 
 /// The kind of bytecode.
@@ -150,6 +173,10 @@ impl Bytecode {
                 let _ = hash.set(KECCAK256_EMPTY);
                 hash
             },
+            #[cfg(feature = "sx")]
+            sx: OnceLock::new(),
+            #[cfg(feature = "sx")]
+            sx_entries: core::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -179,6 +206,10 @@ impl Bytecode {
             bytecode,
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
+            #[cfg(feature = "sx")]
+            sx: OnceLock::new(),
+            #[cfg(feature = "sx")]
+            sx_entries: core::sync::atomic::AtomicU32::new(0),
         })))
     }
 
@@ -257,6 +288,10 @@ impl Bytecode {
             bytecode: bytes,
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
+            #[cfg(feature = "sx")]
+            sx: OnceLock::new(),
+            #[cfg(feature = "sx")]
+            sx_entries: core::sync::atomic::AtomicU32::new(0),
         })))
     }
 
@@ -301,6 +336,10 @@ impl Bytecode {
                 cached
             },
             hash: OnceLock::new(),
+            #[cfg(feature = "sx")]
+            sx: OnceLock::new(),
+            #[cfg(feature = "sx")]
+            sx_entries: core::sync::atomic::AtomicU32::new(0),
         })))
     }
 
@@ -347,6 +386,45 @@ impl Bytecode {
                 JumpTable::default()
             }
         })
+    }
+
+    /// Returns the code translated by `matcher`: now with `now`, or else once this is asked for
+    /// the [`SX_TRANSLATE_AFTER`]th time. Translation marks the jump destinations in the same
+    /// pass, so it is the jump analysis when it runs first.
+    ///
+    /// Returns `None` for bytecode other than legacy, before translation, and when the code was
+    /// translated for other opcodes.
+    #[cfg(feature = "sx")]
+    #[inline]
+    pub(crate) fn sx_code(&self, matcher: &evm2_sx::Matcher, now: bool) -> Option<&[u8]> {
+        use core::sync::atomic::Ordering::Relaxed;
+        if !self.is_legacy() {
+            return None;
+        }
+        let inner = self.inner();
+        if !now && inner.sx.get().is_none() {
+            // Racing increments may lose counts, which only delays translation.
+            let entries = inner.sx_entries.load(Relaxed) + 1;
+            inner.sx_entries.store(entries, Relaxed);
+            if entries < SX_TRANSLATE_AFTER {
+                return None;
+            }
+        }
+        let sx = inner.sx.get_or_init(|| {
+            let mut jumps =
+                inner.jump_table.get().is_none().then(|| JumpTable::new(inner.original_len));
+            let code = evm2_sx::translate(
+                &inner.bytecode,
+                inner.original_len,
+                matcher,
+                jumps.as_mut().map(JumpTable::as_mut_slice),
+            );
+            if let Some(jumps) = jumps {
+                let _ = inner.jump_table.set(jumps);
+            }
+            SxCode { ops: *matcher.ops(), code }
+        });
+        (sx.ops == *matcher.ops()).then_some(&sx.code)
     }
 
     /// Calculates or returns cached hash of the bytecode.
