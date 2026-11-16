@@ -1035,7 +1035,8 @@ where
                 .as_batched()
                 .expect("batches hold batched operations")
                 .run_batch(ops, &mut access);
-            let mut writes = access.into_writes();
+            let (mut writes, mut unread) = access.into_writes();
+            writes.append(&mut unread);
             if let Some(stream) = &mut stream {
                 stream.keys.extend(
                     writes.iter().map(|&(address, key, _)| WriteKey::Storage(address, key)),
@@ -1247,13 +1248,18 @@ fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
         };
         let mut writes = DeferredBatchAccess::default();
         batched.commit(ops, &mut writes).map_err(map_database_error)?;
-        let mut writes = writes.into_writes();
+        let (mut writes, mut unread) = writes.into_writes();
         if let Some(stream) = &mut access.stream {
-            stream
-                .keys
-                .extend(writes.iter().map(|&(address, key, _)| WriteKey::Storage(address, key)));
+            stream.keys.extend(
+                writes
+                    .iter()
+                    .chain(&unread)
+                    .map(|&(address, key, _)| WriteKey::Storage(address, key)),
+            );
         }
         access.store.write_slots(version, &mut writes);
+        // No later transaction read these: no worker's validation can depend on them.
+        access.store.put_slots(version, &mut unread);
         ops.push(op);
     }
     Ok(())
@@ -2573,6 +2579,10 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
 
     /// Returns whether a key logged since `mark` below `version` is one `reads` read.
     fn logged_since(&self, mark: usize, version: u32, reads: &ReadSet) -> bool {
+        // Nothing logged since: skip the lock.
+        if self.log_mark() == mark {
+            return false;
+        }
         let log = self.log.lock().expect("lock poisoned");
         log.bits[mark..].iter().zip(&log.keys[mark..]).any(|(&(at, bit), &(_, key))| {
             at < version && reads.may_touch(bit) && reads.touches(key)

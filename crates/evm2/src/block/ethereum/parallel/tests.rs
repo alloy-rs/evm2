@@ -837,14 +837,18 @@ fn streamed_public_mix_benchmark() {
 ///   mark of the entry it evicts.
 /// - 5: reads the ring pointer, which only deferred operations write, into the caller's slot.
 /// - 6: defers appending the caller to a log, as a batched operation (see [`Append`]).
+/// - 7: reads the log's first entry into the caller's slot.
 const LEDGER: Address = Address::repeat_byte(0x1d);
 const RING_CAPACITY: u64 = 4;
 /// Key spaces of [`Append`]'s log entries and its length.
 const LOG: U256 = U256::from_limbs([0, 0, 0, 1 << 11]);
 const LOG_LEN: U256 = U256::from_limbs([0, 0, 0, 1 << 12]);
+/// Key space of [`Append`]'s marks of the callers it appended, which no transaction reads.
+const APPENDED: U256 = U256::from_limbs([0, 0, 0, 1 << 13]);
 
 /// Appends a caller to the [`ledger`]'s log, which starts empty: batched commits write each
-/// transaction's entry as it commits and the log's length once the block's transactions committed.
+/// transaction's entry and the caller's mark as it commits and the log's length once the block's
+/// transactions committed.
 struct Append {
     caller: U256,
 }
@@ -853,6 +857,7 @@ impl BatchedStorageOp for Append {
     fn run(&self, storage: &mut DeferredStorageAccess<'_, '_>) -> DbResult<()> {
         let len = storage.sload(&LEDGER, LOG_LEN)?;
         storage.sstore(&LEDGER, LOG + len, self.caller)?;
+        storage.sstore(&LEDGER, APPENDED + self.caller, U256::ONE)?;
         storage.sstore(&LEDGER, LOG_LEN, len + U256::ONE)
     }
 
@@ -862,6 +867,7 @@ impl BatchedStorageOp for Append {
         access: &mut DeferredBatchAccess,
     ) -> DbResult<()> {
         access.sstore(&LEDGER, LOG + U256::from(earlier.len()), self.caller);
+        access.sstore_unread(&LEDGER, APPENDED + self.caller, U256::ONE);
         Ok(())
     }
 
@@ -913,6 +919,10 @@ fn ledger(
             storage.sstore(&LEDGER, pointer_key, next)
         })),
         6 => evm.state_mut().defer_storage_op(DeferredStorageOp::batched(Append { caller })),
+        7 => {
+            let entry = Host::sload(evm, &LEDGER, &LOG, false)?.value;
+            Host::sstore(evm, &LEDGER, &caller, &entry, false)?;
+        }
         _ => {
             let pointer = Host::sload(evm, &LEDGER, &pointer_key, false)?.value;
             Host::sstore(evm, &LEDGER, &caller, &pointer, false)?;
@@ -1007,6 +1017,21 @@ fn reads_of_deferred_op_writes_match_sequential() {
         let sequential = assert_matches_sequential_with(ledger_database(), &txs, 1, None);
         assert_eq!(sequential.dependencies, first.dependencies);
     }
+}
+
+#[test]
+fn reads_of_batched_op_writes_match_sequential() {
+    // Readers of the log's first entry, which a batched commit writes as its transaction commits,
+    // are caught validating against it, even when a worker validated them before the write, and
+    // execute again.
+    let mut reexecuted = 0;
+    for seed in 0..30 {
+        let txs = ledger_block(seed, 96, &[6, 6, 7]);
+        for threads in [2, 5, 8] {
+            reexecuted += assert_matches_sequential(ledger_database(), &txs, threads).reexecuted;
+        }
+    }
+    assert!(reexecuted > 0);
 }
 
 #[test]

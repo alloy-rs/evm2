@@ -157,10 +157,15 @@ pub trait BatchedStorageOp: Any + Send + Sync {
     fn run_batch(&self, ops: &[DeferredStorageOp], access: &mut DeferredBatchAccess);
 }
 
+/// A storage slot write: the account, the slot and the value.
+type SlotWrite = (Address, Word, Word);
+
 /// The writes of a committing or batched operation (see [`BatchedStorageOp`]).
 #[derive(Debug, Default)]
 pub struct DeferredBatchAccess {
-    writes: Vec<(Address, Word, Word)>,
+    writes: Vec<SlotWrite>,
+    /// Slots written with [`Self::sstore_unread`].
+    unread: Vec<SlotWrite>,
 }
 
 impl DeferredBatchAccess {
@@ -169,10 +174,18 @@ impl DeferredBatchAccess {
         self.writes.push((*address, key, value));
     }
 
-    /// Returns the slots written, in order.
+    /// Writes a storage slot no transaction of the block reads after an earlier transaction's
+    /// operation writes it, so a batched commit need not check the readers of later transactions
+    /// against it. A slot is written with either this or [`Self::sstore`], not both.
+    pub fn sstore_unread(&mut self, address: &Address, key: Word, value: Word) {
+        self.unread.push((*address, key, value));
+    }
+
+    /// Returns the slots written with [`Self::sstore`] and those written with
+    /// [`Self::sstore_unread`], each in order.
     #[cfg(all(feature = "std", feature = "block"))]
-    pub(crate) fn into_writes(self) -> Vec<(Address, Word, Word)> {
-        self.writes
+    pub(crate) fn into_writes(self) -> (Vec<SlotWrite>, Vec<SlotWrite>) {
+        (self.writes, self.unread)
     }
 }
 
