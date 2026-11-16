@@ -3685,7 +3685,7 @@ mod tests {
             version: &crate::Version,
             tx: &TxEnvelope,
         ) -> Option<crate::Version> {
-            (tx.gas_limit() == 7).then(|| {
+            (alloy_consensus::Transaction::nonce(tx) == 7).then(|| {
                 let mut version = *version;
                 version.tx_gas_limit_cap = 7;
                 version
