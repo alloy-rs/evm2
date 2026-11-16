@@ -200,7 +200,7 @@ impl ParityTraceBuilder {
         let mut trace_res = self.into_trace_results(result, trace_types);
 
         // check the state diff case
-        if let Some(ref mut state_diff) = trace_res.state_diff {
+        if let Some(state_diff) = &mut trace_res.state_diff {
             populate_state_diff(state_diff, db, state)?;
         }
 
@@ -306,19 +306,29 @@ impl ParityTraceBuilder {
     ///
     /// Bytecode is included if it was recorded by the inspector.
     pub fn vm_trace(&self) -> VmTrace {
-        self.nodes.first().map(|node| self.make_vm_trace(node)).unwrap_or_default()
+        self.nodes
+            .first()
+            .map(|node| {
+                if node.trace.frame_transaction_root {
+                    self.make_frame_transaction_vm_trace(node)
+                } else {
+                    self.make_vm_trace(&self.nodes)
+                }
+            })
+            .unwrap_or_default()
     }
 
     /// Returns a VM trace with the recorded bytecode.
     ///
     /// Iteratively creates a VM trace by traversing the recorded nodes in the arena
-    fn make_vm_trace(&self, start: &CallTraceNode) -> VmTrace {
-        let mut child_idx_stack = Vec::with_capacity(self.nodes.len());
-        let mut sub_stack = Vec::with_capacity(self.nodes.len());
+    fn make_vm_trace(&self, nodes: &[CallTraceNode]) -> VmTrace {
+        let start = &nodes[0];
+        let mut child_idx_stack = Vec::with_capacity(nodes.len());
+        let mut sub_stack = Vec::with_capacity(nodes.len());
 
         // Excluded precompile calls are not attached to their parent; collect them in call order.
         let mut precompiles = HashMap::<usize, Vec<&CallTraceNode>>::default();
-        for (node, _) in self.nodes.iter().zip(&self.excluded).filter(|(_, excluded)| **excluded) {
+        for node in nodes.iter().filter(|node| self.excluded[node.idx]) {
             if let Some(parent) = node.parent
                 && !self.excluded[parent]
             {
@@ -377,6 +387,9 @@ impl ParityTraceBuilder {
                         instructions.push(self.make_instruction(step, delta, maybe_sub_call));
                     }
 
+                    if current.idx == start.idx {
+                        break instructions;
+                    }
                     match current.parent {
                         Some(parent) => {
                             // A call or creation that failed its precheck entered no frame.
@@ -396,6 +409,37 @@ impl ParityTraceBuilder {
         };
 
         VmTrace { code: start.trace.bytecode.clone().unwrap_or_default(), ops: instructions }
+    }
+
+    /// Represents each interpreted top-level frame as a synthetic operation containing its VM
+    /// trace.
+    fn make_frame_transaction_vm_trace(&self, root: &CallTraceNode) -> VmTrace {
+        let ops = root
+            .children
+            .iter()
+            .enumerate()
+            .filter_map(|(index, child)| {
+                let node = &self.nodes[*child];
+                let trace = &node.trace;
+                // Calls are recorded depth first. Include excluded precompiles between roots,
+                // while bounding scratch allocation and indexing to this frame's subtree.
+                let end = root.children.get(index + 1).copied().unwrap_or(self.nodes.len());
+                trace.entered_evm.then(|| VmInstruction {
+                    pc: trace.frame_index.expect("top-level frame index"),
+                    cost: trace.gas_limit,
+                    ex: Some(VmExecutedOperation {
+                        used: trace.gas_limit.saturating_sub(trace.gas_used),
+                        push: Default::default(),
+                        mem: None,
+                        store: None,
+                    }),
+                    sub: Some(self.make_vm_trace(&self.nodes[*child..end])),
+                    op: None,
+                    idx: None,
+                })
+            })
+            .collect();
+        VmTrace { code: Default::default(), ops }
     }
 
     /// Creates a VM instruction from a [CallTraceStep] and a [VmTrace] for the subcall if there is
@@ -431,7 +475,8 @@ impl ParityTraceBuilder {
 /// Which calls to precompiles a [`ParityTraceBuilder`] leaves out of its traces.
 ///
 /// A call is only left out if the inspector recorded it as a call to a precompile, see
-/// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls), and it is not the root call.
+/// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls),
+/// and it is neither the root call nor a top-level transaction frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrecompileExclusion {
     /// Keeps every call to a precompile.
@@ -446,6 +491,7 @@ pub enum PrecompileExclusion {
 impl PrecompileExclusion {
     fn excludes(self, node: &CallTraceNode) -> bool {
         node.parent.is_some()
+            && node.trace.frame_index.is_none()
             && node.is_precompile()
             && match self {
                 Self::None => false,
@@ -774,5 +820,48 @@ mod tests {
         let addresses: Vec<_> = traces.iter().map(|trace| trace.trace_address.clone()).collect();
         assert_eq!(addresses, [vec![], vec![0]]);
         assert_eq!(traces[0].subtraces, 1);
+    }
+
+    #[test]
+    fn precompile_exclusion_preserves_top_level_transaction_frames() {
+        for exclusion in [PrecompileExclusion::ZeroValue, PrecompileExclusion::CallAndStaticCall] {
+            let nodes = vec![
+                CallTraceNode {
+                    idx: 0,
+                    children: vec![1],
+                    ordering: vec![TraceMemberOrder::Call(0)],
+                    trace: CallTrace { frame_transaction_root: true, ..Default::default() },
+                    ..Default::default()
+                },
+                CallTraceNode {
+                    idx: 1,
+                    parent: Some(0),
+                    children: vec![2],
+                    ordering: vec![TraceMemberOrder::Call(0)],
+                    trace: CallTrace {
+                        depth: 1,
+                        frame_index: Some(0),
+                        maybe_precompile: Some(true),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                CallTraceNode {
+                    idx: 2,
+                    parent: Some(1),
+                    trace: CallTrace {
+                        depth: 2,
+                        maybe_precompile: Some(true),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ];
+            let traces = ParityTraceBuilder::new(nodes, exclusion).into_transaction_traces();
+            assert_eq!(traces.len(), 2);
+            assert_eq!(traces[0].subtraces, 1);
+            assert_eq!(traces[1].trace_address, [0]);
+            assert_eq!(traces[1].subtraces, 0);
+        }
     }
 }

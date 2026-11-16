@@ -1504,3 +1504,48 @@ mod oog_cost;
 
 #[path = "parity/state_gas_cost.rs"]
 mod state_gas_cost;
+
+mod frames {
+    use super::*;
+    use crate::utils::frames::*;
+    use alloy_eips::eip8141::FrameMode;
+
+    #[test]
+    fn many_frame_vm_traces_keep_nested_calls_and_excluded_precompiles_in_each_subtree() {
+        let sender = Address::with_last_byte(0xa0);
+        let body = Address::with_last_byte(0xb0);
+        let child = Address::with_last_byte(0xd0);
+        let mut code = Vec::new();
+        for target in [child, Address::with_last_byte(4), child] {
+            code.extend_from_slice(&[0x5f, 0x5f, 0x5f, 0x5f, 0x5f, 0x73]);
+            code.extend_from_slice(target.as_slice());
+            code.extend_from_slice(&[0x5a, 0xf1, 0x50]);
+        }
+        code.push(0x00);
+        let mut evm =
+            evm(&[(sender, APPROVE_BOTH), (body, &code), (child, &[0x60, 42, 0x50, 0x00])]);
+        evm.set_inspector(TracingInspector::new(TracingInspectorConfig::parity_vm_trace()));
+        let frames = core::iter::once(frame(FrameMode::Verify, sender, 3))
+            .chain(core::iter::repeat_n(frame(FrameMode::Sender, body, 0), 63))
+            .collect();
+        assert!(evm.call_tx(&transaction(frames)).unwrap().status);
+        let inspector = evm.clear_inspector_as::<TracingInspector>().unwrap();
+        let vm = inspector.into_parity_builder().vm_trace();
+        assert_eq!(vm.ops.len(), 64);
+        for (index, operation) in vm.ops.iter().enumerate() {
+            assert_eq!(operation.pc, index);
+            let trace = operation.sub.as_ref().unwrap();
+            if index == 0 {
+                continue;
+            }
+            assert_eq!(trace.code.as_ref(), code.as_slice());
+            let children =
+                trace.ops.iter().filter_map(|operation| operation.sub.as_ref()).collect::<Vec<_>>();
+            assert_eq!(children.len(), 3, "frame {index}");
+            assert_eq!(children[0].ops.len(), 3, "first child in frame {index}");
+            assert!(children[1].code.is_empty());
+            assert!(children[1].ops.is_empty(), "excluded precompile in frame {index}");
+            assert_eq!(children[2].ops.len(), 3, "last child in frame {index}");
+        }
+    }
+}

@@ -1,25 +1,29 @@
 use super::*;
 use crate::{
-    BaseEvmTypes, Precompiles, SpecId,
+    BaseEvmTypes, ExecutionConfig, Precompiles, SpecId, Version,
     block::BlockExecutionError,
     bytecode::Bytecode,
     env::BlockEnvExt,
     ethereum::ethereum_tx_registry,
     evm::{
-        AccountInfo, BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
+        AccountInfo, BEACON_ROOTS_ADDRESS, BUILDER_DEPOSIT_REQUEST_ADDRESS,
+        BUILDER_EXIT_REQUEST_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
         InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
     },
     utils::b256_to_word,
 };
 use alloc::vec;
 use alloy_consensus::{
-    SignableTransaction, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered,
+    SignableTransaction, TxEip8141, TxLegacy, constants::ETH_TO_WEI, transaction::Recovered,
 };
 use alloy_eips::{
-    eip2935::HISTORY_STORAGE_CODE, eip4788::BEACON_ROOTS_CODE,
-    eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_CODE, eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_CODE,
+    eip2935::HISTORY_STORAGE_CODE,
+    eip4788::BEACON_ROOTS_CODE,
+    eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_CODE,
+    eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_CODE,
+    eip8141::{Frame, FrameLimits, FrameMode, FrameStatus, TransactionFees},
 };
-use alloy_primitives::{Signature, TxKind, U256};
+use alloy_primitives::{Bytes, Sealable, Signature, TxKind, U256};
 
 const SENDER: Address = Address::repeat_byte(0x01);
 const RECIPIENT: Address = Address::repeat_byte(0x02);
@@ -278,4 +282,86 @@ fn zero_reward_removes_empty_account_from_spurious_dragon() {
     };
     assert!(run(SpecId::SPURIOUS_DRAGON).account(&BENEFICIARY).unwrap().info.is_none());
     assert!(run(SpecId::TANGERINE).account(&BENEFICIARY).is_none());
+}
+
+#[test]
+fn block_execution_preserves_frame_receipt_payload() {
+    let mut db = database();
+    for address in [BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS] {
+        db.insert_account_info(
+            &address,
+            AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from_static(&[0]))),
+        );
+    }
+    db.insert_account_info(
+        &SENDER,
+        AccountInfo::default().with_balance(U256::from(ETH_TO_WEI)).with_code(
+            Bytecode::new_legacy(Bytes::from_static(&[0x60, 3, 0x5f, 0x5f, 0xaa, 0x00])),
+        ),
+    );
+    let tx = TxEip8141 {
+        chain_id: 1,
+        sender: SENDER,
+        nonce_keys: Some(vec![]),
+        frames: vec![Frame {
+            mode: FrameMode::Verify,
+            flags: 3,
+            limits: FrameLimits { execution: 20_000, state: 200_000 },
+            ..Default::default()
+        }],
+        fees: TransactionFees { max_fee: U256::from(1_000_000), ..Default::default() },
+        ..Default::default()
+    };
+    let tx = Recovered::new_unchecked(EthereumTxEnvelope::Eip8141(tx.seal_slow()), SENDER);
+    let mut combined_evm = evm_with(SpecId::BOGOTA, 300_000, db.clone());
+    let mut version = Version::new(SpecId::BOGOTA);
+    version.features.remove(EvmFeatures::EIP8037);
+    combined_evm.set_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::BOGOTA, version),
+        SpecId::BOGOTA,
+        ethereum_tx_registry(SpecId::BOGOTA),
+        Precompiles::base(SpecId::BOGOTA),
+    );
+    let mut combined =
+        EthBlockExecutor::new(combined_evm, ctx(), EthBlockRules::default(), EthReceiptBuilder);
+    combined.cumulative_gas_used = 240_000;
+    assert!(matches!(
+        combined.execute_transaction_without_commit(&tx),
+        Err(BlockExecutionError::Validation(
+            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                block_available_gas: 60_000,
+                ..
+            }
+        ))
+    ));
+    let mut executor = EthBlockExecutor::new(
+        evm_with(SpecId::BOGOTA, 300_000, db),
+        ctx(),
+        EthBlockRules::default(),
+        EthReceiptBuilder,
+    );
+    executor.apply_pre_execution_changes().unwrap();
+    executor.block_regular_gas_used = 240_000;
+    executor.block_state_gas_used = 100_001;
+    assert!(matches!(
+        executor.execute_transaction_without_commit(&tx),
+        Err(BlockExecutionError::Validation(
+            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                transaction_gas_limit: 200_000,
+                block_available_gas: 199_999,
+            }
+        ))
+    ));
+    executor.block_state_gas_used = 50_000;
+    assert!(executor.execute_transaction_without_commit(&tx).is_ok());
+    let gas = executor.execute_transaction(&tx).unwrap();
+    let output = executor.finish().unwrap();
+    let [ReceiptEnvelope::Eip8141(receipt)] = output.result.receipts.as_slice() else {
+        panic!("expected a frame receipt")
+    };
+    let receipt = receipt.payload();
+    assert_eq!(receipt.payer, SENDER);
+    assert_eq!(receipt.cumulative_gas_used, gas.tx_gas_used());
+    assert_eq!(receipt.frame_receipts.len(), 1);
+    assert_eq!(receipt.frame_receipts[0].status, FrameStatus::Success);
 }

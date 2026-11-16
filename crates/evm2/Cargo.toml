@@ -103,6 +103,7 @@ postcard = { workspace = true, features = ["alloc"] }
 rand = { workspace = true, features = ["std"] }
 ark-std = { workspace = true }
 rstest.workspace = true
+revm.workspace = true
 
 [[example]]
 name = "custom_evm"

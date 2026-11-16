@@ -43,11 +43,17 @@ wait-timeout.workspace = true
 wincode = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
 evm2-macros.workspace = true
 paste.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
+[build-dependencies]
+# llvm
+evm2-jit-build = { workspace = true, optional = true }
+
 [features]
 default = ["llvm"]
-llvm = ["evm2-jit-codegen/llvm", "dep:evm2-jit-llvm"]
+llvm = ["evm2-jit-codegen/llvm", "dep:evm2-jit-llvm", "dep:evm2-jit-build"]
 asm-keccak = ["evm2-jit-codegen/asm-keccak", "alloy-primitives/asm-keccak"]

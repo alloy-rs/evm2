@@ -185,6 +185,8 @@ impl From<HandlerError> for FuzzError {
             | HandlerError::Fatal(_)
             | HandlerError::External(_)
             | HandlerError::WrongTransactionType { .. }
+            | HandlerError::FrameFeeBudgetTooLow { .. }
+            | HandlerError::InvalidFrameTransaction(_)
             | HandlerError::InvalidChainId { .. }
             | HandlerError::GasLimitMoreThanBlock { .. }
             | HandlerError::CreateInitCodeSizeLimit { .. }

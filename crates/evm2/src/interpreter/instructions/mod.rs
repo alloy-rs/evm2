@@ -21,6 +21,9 @@ pub use crypto::*;
 mod env;
 pub use env::*;
 
+mod frame;
+pub use frame::*;
+
 mod host;
 pub use host::*;
 

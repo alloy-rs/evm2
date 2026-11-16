@@ -410,6 +410,20 @@ mod tests {
     }
 
     #[test]
+    fn bogota_activates_frame_and_code_adoption_opcodes() {
+        let amsterdam = Version::base(SpecId::AMSTERDAM);
+        let bogota = Version::base(SpecId::BOGOTA);
+        for opcode in [op::APPROVE, op::TXTRACE, op::EVENTDATACOPY, op::SETCODEFROM] {
+            assert!(opcode_config(SpecId::AMSTERDAM).is_unknown_opcode(opcode));
+            assert!(!opcode_config(SpecId::BOGOTA).is_unknown_opcode(opcode));
+        }
+        assert_eq!(op::SETCODEFROM, 0xa7);
+        assert_eq!(opcode_config(SpecId::BOGOTA).static_gas(op::SETCODEFROM), 0);
+        assert_eq!(bogota.gas_params.get(GasId::SetCodeFromWrite), 9_000);
+        assert_eq!(amsterdam.gas_params.get(GasId::SetCodeFromWrite), 0);
+    }
+
+    #[test]
     fn tx_total_gas_cap_is_configurable() {
         // Without EIP-8037 the total cap is unused, so a disabled value changes nothing.
         let mut osaka = Version::new(SpecId::OSAKA);
@@ -944,6 +958,31 @@ evm_versions! {
         ],
     }
 
+    BOGOTA {
+        features: [
+            EIP8141,
+            EIP8250,
+            EIP7906,
+            EIP8298,
+            EIP4758,
+            EIP8151,
+        ],
+        ops: [
+            APPROVE: ZERO,
+            TXPARAM: BASE,
+            FRAMEDATALOAD: VERYLOW,
+            FRAMEDATACOPY: VERYLOW,
+            FRAMEPARAM: BASE,
+            SIGPARAM: BASE,
+            SIGDATACOPY: VERYLOW,
+            TXTRACE: WARM_STORAGE_READ_COST,
+            EVENTDATACOPY: VERYLOW,
+            SETCODEFROM: ZERO,
+        ],
+        dynamic_gas: [
+            SetCodeFromWrite: 9000,
+        ],
+    }
 }
 
 macro_rules! op_instr {
@@ -1105,5 +1144,15 @@ macro_rules! op_instr {
     (@path $ty:ident, REVERT) => { instr::revert<$ty> };
     (@path $ty:ident, INVALID) => { instr::invalid<$ty> };
     (@path $ty:ident, SELFDESTRUCT) => { instr::selfdestruct<$ty> };
+    (@path $ty:ident, SETCODEFROM) => { instr::setcodefrom<$ty> };
+    (@path $ty:ident, APPROVE) => { instr::approve<$ty> };
+    (@path $ty:ident, TXPARAM) => { instr::txparam<$ty> };
+    (@path $ty:ident, FRAMEDATALOAD) => { instr::framedataload<$ty> };
+    (@path $ty:ident, FRAMEDATACOPY) => { instr::framedatacopy<$ty> };
+    (@path $ty:ident, FRAMEPARAM) => { instr::frameparam<$ty> };
+    (@path $ty:ident, SIGPARAM) => { instr::sigparam<$ty> };
+    (@path $ty:ident, SIGDATACOPY) => { instr::sigdatacopy<$ty> };
+    (@path $ty:ident, TXTRACE) => { instr::txtrace<$ty> };
+    (@path $ty:ident, EVENTDATACOPY) => { instr::eventdatacopy<$ty> };
 }
 use op_instr;

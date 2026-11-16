@@ -89,12 +89,14 @@ pub fn sstore_with<T: EvmTypesHost>(
     // new != 0) also consumes state gas from the reservoir before spilling into
     // execution gas.
     if state.feature(EvmFeatures::EIP8037) {
-        gas.spend_state(state.gas_params().sstore_state_gas(&state_load))?;
+        let charged = state.gas_params().sstore_state_gas(&state_load);
+        gas.spend_state(charged)?;
 
         // EIP-8037: a 0→x→0 storage restoration returns the state gas charged for
         // the initial 0→x transition directly to the reservoir, rather than
         // routing it through the capped refund counter below.
         let refill = state.gas_params().sstore_state_gas_refill(&state_load);
+        let refill = state.host().frame_sstore_gas(*destination, *key, charged, refill);
         gas.refill_reservoir(refill);
     }
 
@@ -158,14 +160,15 @@ fn log_common<T: EvmTypesHost>(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
         SpecId,
-        interpreter::{InstrStop, MessageExt, MessageKind, Word, op},
+        interpreter::{MessageExt, MessageKind, Word, op},
         storage_key::StorageKey,
         test_utils::{RunConfig, TestHost, push, run},
     };
     use alloc::vec::Vec;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes};
     use core::assert_matches;
 
     #[test]

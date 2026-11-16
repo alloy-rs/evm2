@@ -7,6 +7,7 @@ use crate::{
         BlockTransactionResult, BlockValidationError, BundleState, CommitChanges, ExecutableTx,
         GasOutput, ReceiptBuilder, ReceiptBuilderCtx, StateUpdate,
     },
+    ethereum::eip8141::{FrameGas, FrameGasReservation},
     evm::{Bal, PendingState},
     interpreter::Host,
 };
@@ -17,7 +18,9 @@ use alloy_consensus::{
     transaction::{TransactionEnvelope, TxHashRef},
 };
 use alloy_eip7928::BlockAccessIndex;
-use alloy_eips::{eip2718::Typed2718, eip4895::Withdrawal, eip7685::Requests};
+use alloy_eips::{
+    eip2718::Typed2718, eip4895::Withdrawal, eip7685::Requests, eip8141::FrameReceiptPayload,
+};
 use alloy_hardforks::{EthereumHardfork, EthereumHardforks};
 use alloy_primitives::{Address, B256};
 use core::borrow::Borrow;
@@ -28,7 +31,7 @@ pub mod execution;
 use execution::{
     BlockExecutionContext, BlockSystemCalls, block_requests_from_receipts,
     commit_detached_transaction, commit_pending_state, dao_fork_state_changes,
-    execute_transaction_without_commit, map_transaction_error, post_block_balance_state_changes,
+    map_transaction_error, post_block_balance_state_changes,
     post_execution_system_call_state_changes, pre_execution_system_call_state_changes,
 };
 
@@ -99,12 +102,23 @@ impl ReceiptBuilder for EthReceiptBuilder {
         ctx: ReceiptBuilderCtx<TxType, TxResult<T>>,
     ) -> ReceiptEnvelope {
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
+        if let Some(frame) = result.frame {
+            return ReceiptEnvelope::Eip8141(
+                FrameReceiptPayload {
+                    cumulative_gas_used,
+                    payer: frame.payer,
+                    frame_receipts: frame.receipts,
+                }
+                .into(),
+            );
+        }
         let receipt = Receipt {
             status: Eip658Value::Eip658(result.is_success()),
             cumulative_gas_used,
             logs: result.logs,
         };
         ReceiptEnvelope::from_typed(tx_type, receipt.with_bloom())
+            .expect("non-frame transaction results produce ordinary receipts")
     }
 }
 
@@ -414,6 +428,35 @@ where
         }));
         GasOutput::new_with_regular(tx_gas_used, regular_gas_used, state_gas_used)
     }
+
+    fn validate_transaction_gas<'tx>(
+        &mut self,
+        tx: &'tx R::Transaction,
+    ) -> Result<Option<FrameGasReservation<'tx>>, BlockExecutionError> {
+        let Some(frame) = tx
+            .frame_transaction()
+            .filter(|_| self.separate_block_gas && self.evm.feature(EvmFeatures::EIP8141))
+        else {
+            self.validate_transaction_gas_limit(tx.gas_limit())?;
+            return Ok(None);
+        };
+        let gas = FrameGas::calculate(frame, self.evm.version())
+            .map_err(|error| map_transaction_error(error, *tx.tx_hash()))?;
+        let block_gas_limit = self.evm.block_env().gas_limit.to::<u64>();
+        for (reservation, used) in
+            [(gas.execution, self.block_regular_gas_used), (gas.state, self.block_state_gas_used)]
+        {
+            let available = block_gas_limit.saturating_sub(used);
+            if reservation > available {
+                return Err(BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                    transaction_gas_limit: reservation,
+                    block_available_gas: available,
+                }
+                .into());
+            }
+        }
+        Ok(Some(FrameGasReservation { tx: frame, gas }))
+    }
 }
 
 impl<'a, T, R> BlockExecutor for EthBlockExecutor<'a, T, R>
@@ -530,16 +573,17 @@ where
         let (transaction, tx) = tx.into_parts();
         let tx = tx.borrow();
         self.set_transaction_block_access_index();
-        self.validate_transaction_gas_limit(tx.gas_limit())?;
+        let frame_gas = self.validate_transaction_gas(tx)?;
         let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
         self.validate_transaction_blob_gas(blob_gas_used)?;
         let tx_type = tx.tx_type();
-        let Some(outcome) = execution::execute_transaction_with_condition(
+        let Some(outcome) = execution::execute_transaction_with_frame_gas(
             &mut self.evm,
             &mut self.block_state,
             self.state_update_hook.is_some(),
             &mut |state| emit_state(&mut self.state_update_hook, state),
             &transaction,
+            frame_gas,
             commit,
         )
         .map_err(|error| map_transaction_error(error, *tx.tx_hash()))?
@@ -556,11 +600,14 @@ where
         let (transaction, tx) = tx.into_parts();
         let tx = tx.borrow();
         self.set_transaction_block_access_index();
-        self.validate_transaction_gas_limit(tx.gas_limit())?;
+        let frame_gas = self.validate_transaction_gas(tx)?;
         let blob_gas_used = tx.blob_gas_used().unwrap_or_default();
         self.validate_transaction_blob_gas(blob_gas_used)?;
         let tx_type = tx.tx_type();
-        let result = execute_transaction_without_commit(&mut self.evm, &transaction)
+        let result = self
+            .evm
+            .transact_with_frame_gas(&transaction, frame_gas)
+            .map(|executed| executed.detach())
             .map_err(|err| map_transaction_error(err, *tx.tx_hash()))?;
         Ok(EthTransactionResultWithState::new(result, tx_type, blob_gas_used))
     }

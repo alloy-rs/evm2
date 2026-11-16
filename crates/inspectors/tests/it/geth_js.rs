@@ -627,3 +627,224 @@ fn mux_interrupts_its_js_tracers() {
     interrupt.interrupt();
     assert!(inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).is_err());
 }
+
+mod frames {
+    use super::*;
+    use crate::utils::frames::*;
+    use alloy_consensus::transaction::Recovered;
+    use alloy_eips::eip8141::{ENTRY_POINT, FrameMode};
+    use alloy_primitives::Bytes;
+    use evm2::{
+        env::BlockEnvExt,
+        ethereum::{TxEnvelope, eip8141::FrameGas},
+        interpreter::Host,
+    };
+    use evm2_inspectors::tracing::js::JsInspector;
+    use serde_json::json;
+
+    const TRACER: &str = r#"{
+        events: [],
+        enter: function(frame) { this.events.push(['enter', frame.getFrameIndex(), frame.getType()]); },
+        exit: function(frame) { this.events.push(['exit', frame.getFrameIndex(), frame.getGasUsed(), toHex(frame.getOutput()), frame.getError() || null]); },
+        fault: function() {},
+        result: function(ctx) {
+            return {
+                type: ctx.type, from: toHex(ctx.from), to: toHex(ctx.to),
+                gas: ctx.gas, intrinsic: ctx.intrinsicGas, events: this.events,
+                frames: ctx.frames.map(function(frame) {
+                    return [frame.index, frame.status, frame.gasUsed, frame.stateGasUsed,
+                            toHex(frame.output), frame.rolledBack, frame.skipped, frame.logs.length];
+                })
+            };
+        }
+    }"#;
+
+    const STORE_LOG_RETURN: &[u8] =
+        &[0x60, 1, 0x5f, 0x55, 0x5f, 0x5f, 0xa0, 0x60, 42, 0x5f, 0x53, 0x60, 1, 0x5f, 0xf3];
+
+    #[test]
+    fn javascript_gas_price_reports_the_transaction_lower_bound() {
+        let sender = Address::with_last_byte(0xa0);
+        let body = Address::with_last_byte(0xb0);
+        let mut evm =
+            evm(&[(sender, APPROVE_BOTH), (body, &[0x3a, 0x5f, 0x52, 0x60, 32, 0x5f, 0xf3])]);
+        evm.set_block(BlockEnvExt { basefee: U256::from(3), ..Default::default() });
+        let mut payload = payload(
+            sender,
+            vec![frame(FrameMode::Verify, sender, 3), frame(FrameMode::Sender, body, 0)],
+        );
+        let maximum = U256::from(FrameGas::calculate(&payload, evm.version()).unwrap().maximum);
+        payload.fees.max_priority_fee_per_gas = U256::from(11);
+        payload.fees.max_fee = maximum * U256::from(3) + maximum / U256::from(2);
+        let tx = Recovered::new_unchecked(TxEnvelope::Eip8141(payload), Address::ZERO);
+        evm.set_inspector(
+            JsInspector::new(
+                r#"{ fault: function() {}, result: function(ctx) { return ctx.gasPrice; } }"#
+                    .into(),
+                json!(null),
+            )
+            .unwrap(),
+        );
+        let result = evm.transact(&tx).unwrap().detach();
+        let outcome = result.result.frame.as_ref().unwrap();
+        assert!(result.result.status);
+        assert_eq!(outcome.gas_price, U256::from(3));
+        assert_eq!(U256::from_be_slice(&outcome.outputs[1]), U256::from(3));
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        let block = *evm.block_env();
+        let actual = inspector.json_result(&result, &tx, &block, evm.database_mut()).unwrap();
+        assert_eq!(actual, json!("3"));
+    }
+
+    #[test]
+    fn javascript_default_verification_without_interpreter_emits_one_enter_and_exit() {
+        let (sender, tx) = default_verification_transaction(Bytes::new());
+        let mut evm = evm(&[(sender, &[])]);
+        evm.set_inspector(JsInspector::new(TRACER.into(), json!(null)).unwrap());
+        let result = evm.transact(&tx).unwrap().detach();
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        let block = *evm.block_env();
+        let actual = inspector.json_result(&result, &tx, &block, evm.database_mut()).unwrap();
+        assert_eq!(actual["events"].as_array().unwrap().len(), 2);
+        assert_eq!(actual["events"][0], json!(["enter", 0, "STATICCALL"]));
+        assert_eq!(
+            actual["events"][1][2],
+            result.result.frame.as_ref().unwrap().receipts[0].gas_used.execution
+        );
+        assert_eq!(actual["frames"][0][1], 1);
+    }
+
+    #[test]
+    fn javascript_debug_lifecycle_and_result_reconcile_assertion_rollback() {
+        let sender = Address::with_last_byte(0xa0);
+        let body = Address::with_last_byte(0xb0);
+        let assertion = Address::with_last_byte(0xc0);
+        let mut evm = evm(&[(sender, APPROVE_BOTH), (body, STORE_LOG_RETURN), (assertion, REVERT)]);
+        let tx = transaction(vec![
+            frame(FrameMode::Verify, sender, 3),
+            frame(FrameMode::Sender, body, 0),
+            frame(FrameMode::Assert, assertion, 0),
+            frame(FrameMode::Assert, assertion, 0),
+        ]);
+        evm.set_inspector(DebugInspector::Js(Box::new(
+            JsInspector::new(TRACER.into(), json!(null)).unwrap(),
+        )));
+        let result = evm.transact(&tx).unwrap().detach();
+        let outcome = result.result.frame.as_ref().unwrap();
+        let mut inspector = evm.clear_inspector_as::<DebugInspector>().unwrap();
+        let block = *evm.block_env();
+        let GethTrace::JS(actual) =
+            inspector.get_result(None, &tx, &block, &result, evm.database_mut()).unwrap()
+        else {
+            panic!("JS result")
+        };
+        assert_eq!(actual["type"], "FRAME");
+        assert_eq!(actual["from"], sender.to_string().to_lowercase());
+        assert_eq!(actual["to"], ENTRY_POINT.to_string().to_lowercase());
+        assert!(actual["gas"].as_u64().unwrap() > 1_200_000);
+        assert!(actual["intrinsic"].as_u64().unwrap() > 0);
+        let events = actual["events"].as_array().unwrap();
+        assert_eq!(events.len(), 8);
+        for index in 0..4 {
+            assert_eq!(events[index * 2][0], "enter");
+            assert_eq!(events[index * 2][1], index);
+            assert_eq!(events[index * 2 + 1][0], "exit");
+            assert_eq!(events[index * 2 + 1][1], index);
+            assert_eq!(events[index * 2 + 1][2], outcome.receipts[index].gas_used.execution);
+        }
+        // Notifications describe the live frame; ctx.frames is the final canonical result.
+        assert_eq!(events[3][3], "0x2a");
+        assert_eq!(actual["frames"][1][4], "0x");
+        assert_eq!(actual["frames"][1][3], 0);
+        assert_eq!(actual["frames"][1][5], true);
+        assert_eq!(actual["frames"][1][7], 0);
+        assert_eq!(actual["frames"][3], json!([3, 2, 0, 0, "0x", false, true, 0]));
+        assert_eq!(events[7][4], "frame skipped");
+    }
+
+    #[test]
+    fn javascript_prefix_reset_and_precompile_and_entry_failure_have_balanced_hooks() {
+        let sender = Address::with_last_byte(0xa0);
+        let mut evm = evm(&[(sender, APPROVE_BOTH)]);
+        let mut identity = frame(FrameMode::Sender, Address::with_last_byte(4), 0);
+        identity.data = Bytes::from_static(&[42]);
+        let mut unaffordable = frame(FrameMode::Sender, Address::with_last_byte(0xb0), 0);
+        unaffordable.value = U256::from(2_000_000_000u64);
+        let tx = transaction(vec![frame(FrameMode::Verify, sender, 3), identity, unaffordable]);
+        evm.set_inspector(JsInspector::new(TRACER.into(), json!(null)).unwrap());
+        evm.validate_frame_prefix(&tx, 1).unwrap();
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        inspector.fuse().unwrap();
+        evm.set_inspector(*inspector);
+        let result = evm.transact(&tx).unwrap().detach();
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        let block = *evm.block_env();
+        let actual = inspector.json_result(&result, &tx, &block, evm.database_mut()).unwrap();
+        assert_eq!(actual["events"].as_array().unwrap().len(), 6);
+        assert_eq!(actual["frames"][1][4], "0x2a");
+        assert_eq!(actual["frames"][2][1], 0);
+        assert!(actual["frames"][2][2].as_u64().unwrap() < 100_000);
+        assert_eq!(actual["events"][5][1], 2);
+        assert_eq!(actual["events"][5][2], actual["frames"][2][2]);
+        assert_eq!(actual["events"][5][4], "insufficient balance for transfer");
+    }
+
+    #[test]
+    fn javascript_frame_notification_errors_surface_when_collecting_results() {
+        let sender = Address::with_last_byte(0xa0);
+        let mut evm = evm(&[(sender, APPROVE_BOTH)]);
+        let tx = transaction(vec![frame(FrameMode::Verify, sender, 3)]);
+        evm.set_inspector(
+            JsInspector::new(
+                r#"{ enter: function() {},
+            fault: function() {}, exit: function() { throw new Error('frame notification'); },
+            result: function() { return 'unreachable'; }
+        }"#
+                .into(),
+                json!(null),
+            )
+            .unwrap(),
+        );
+        let result = evm.transact(&tx).unwrap().detach();
+        assert!(result.result.status);
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        let block = *evm.block_env();
+        assert_eq!(
+            inspector
+                .json_result(&result, &tx, &block, evm.database_mut())
+                .unwrap_err()
+                .to_string(),
+            "Error: frame notification    in server-side tracer function 'exit' (unknown at :2:60)"
+        );
+    }
+
+    #[test]
+    fn javascript_atomic_rollback_preserves_output_and_reconciles_state_and_logs() {
+        let sender = Address::with_last_byte(0xa0);
+        let body = Address::with_last_byte(0xb0);
+        let failure = Address::with_last_byte(0xc0);
+        let mut evm = evm(&[(sender, APPROVE_BOTH), (body, STORE_LOG_RETURN), (failure, REVERT)]);
+        let tx = transaction(vec![
+            frame(FrameMode::Verify, sender, 3),
+            frame(FrameMode::Sender, body, 4),
+            frame(FrameMode::Sender, failure, 4),
+            frame(FrameMode::Sender, body, 0),
+            frame(FrameMode::Sender, body, 0),
+        ]);
+        evm.set_inspector(JsInspector::new(TRACER.into(), json!(null)).unwrap());
+        let result = evm.transact(&tx).unwrap().detach();
+        assert!(result.result.status);
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        let block = *evm.block_env();
+        let actual = inspector.json_result(&result, &tx, &block, evm.database_mut()).unwrap();
+        assert_eq!(actual["events"].as_array().unwrap().len(), 10);
+        assert_eq!(actual["frames"][1][4], "0x2a");
+        assert_eq!(actual["frames"][1][3], 0);
+        assert_eq!(actual["frames"][1][5], true);
+        assert_eq!(actual["frames"][1][7], 0);
+        assert_eq!(actual["frames"][3][6], true);
+        assert_eq!(actual["frames"][4][4], "0x2a");
+        assert!(actual["frames"][4][3].as_u64().unwrap() > 0);
+        assert_eq!(actual["frames"][4][7], 1);
+    }
+}

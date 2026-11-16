@@ -10,7 +10,7 @@ use crate::{
 };
 use alloc::sync::Arc;
 use alloy_eip7928::{BalAccountInfo, BlockAccessList};
-use alloy_primitives::Address;
+use alloy_primitives::{Address, KECCAK256_EMPTY};
 use core::convert::Infallible;
 
 /// Result of an EIP-7928 BAL lookup during a read.
@@ -252,9 +252,10 @@ impl BalContext {
             code_hash: code.map(|(hash, _)| *hash),
         };
         match (info.balance, info.nonce, code) {
-            (Some(balance), Some(nonce), Some((hash, code))) => Ok(BalAccountLookup::Complete(
-                AccountInfo::new(balance, nonce, *hash, Some(code.clone())),
-            )),
+            (Some(balance), Some(nonce), Some((hash, code))) => {
+                let code = (!code.is_empty() || *hash == KECCAK256_EMPTY).then(|| code.clone());
+                Ok(BalAccountLookup::Complete(AccountInfo::new(balance, nonce, *hash, code)))
+            }
             _ => Ok(BalAccountLookup::Partial(info)),
         }
     }
@@ -311,7 +312,7 @@ impl BalContext {
 /// Returned by [`BalContext::get_bal_account_info`] without consulting the backing database.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BalAccountLookup {
-    /// Every account field is known, including decoded bytecode.
+    /// Every persisted account field is known. Adopted bytecode may still need a database read.
     ///
     /// This describes field completeness, not account existence. An empty account is returned as
     /// an [`AccountInfo`]; the caller decides whether state-clearing rules make it absent.
@@ -329,6 +330,14 @@ pub enum BalAccountLookup {
 /// [`Bal::commit`] does. Every callback is a no-op when BAL construction is disabled.
 impl StateChangeSink for BalContext {
     type Error = Infallible;
+
+    #[inline]
+    fn code_adopted(&mut self, address: Address) -> Result<(), Self::Error> {
+        if let Some(bal) = self.bal_builder.as_mut() {
+            bal.accounts.entry(address).or_default().account_info.mark_code_adopted(self.bal_index);
+        }
+        Ok(())
+    }
 
     #[inline]
     fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
@@ -363,12 +372,51 @@ impl StateChangeSink for BalContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{bytecode::Bytecode, evm::bal::BalCodeChange};
+    use crate::{
+        bytecode::Bytecode,
+        evm::{InMemoryDB, bal::BalCodeChange, state::State},
+    };
     use alloc::vec;
-    use alloy_eip7928::{BalanceChange, NonceChange};
+    use alloy_eip7928::{AccountChanges, BalanceChange, CodeChange, NonceChange};
     use alloy_primitives::{Address, U256, bytes};
 
     const ADDRESS: Address = Address::repeat_byte(0xab);
+
+    #[test]
+    fn adopted_preblock_code_loads_without_caching_an_empty_placeholder() {
+        let code = Bytecode::new_raw(bytes!("6000"));
+        for complete in [false, true] {
+            let mut database = InMemoryDB::default();
+            database.insert_account_info(
+                &Address::repeat_byte(0xcd),
+                AccountInfo::default().with_code(code.clone()),
+            );
+            database.insert_account_info(&ADDRESS, AccountInfo::default());
+            let index = BlockAccessIndex::new(1);
+            let changes = AccountChanges {
+                address: ADDRESS,
+                balance_changes: complete
+                    .then(|| BalanceChange::new(index, U256::from(9)))
+                    .into_iter()
+                    .collect(),
+                nonce_changes: complete.then(|| NonceChange::new(index, 1)).into_iter().collect(),
+                code_changes: vec![CodeChange::new_hash(index, code.hash_slow())],
+                ..Default::default()
+            };
+            let bal = Bal::try_from(vec![changes]).unwrap();
+            let mut state = State::new(database);
+            state.set_bal(Arc::new(bal));
+            state.set_bal_index(BlockAccessIndex::new(2));
+            let mut account = state.account(&ADDRESS).unwrap();
+            assert_eq!(account.code_hash(), code.hash_slow());
+            assert!(account.get().unwrap().code.is_none());
+            assert_eq!(account.load_code().unwrap(), code);
+            account.set_balance(U256::from(10));
+            drop(account);
+            state.commit_transaction();
+            assert_eq!(state.account(&ADDRESS).unwrap().load_code().unwrap(), code);
+        }
+    }
 
     #[test]
     fn account_info_lookup_obeys_coverage_and_fallback() {

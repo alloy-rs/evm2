@@ -1,13 +1,13 @@
 use crate::{
     EvmTypesHost,
     interpreter::{
-        InstrStop, Result, Word, op,
+        Gas, InstrStop, InterpreterState, Result, Word, op,
         opcode::OpCode,
         private::{GasInstructionCx, InstructionCx},
     },
     utils::WordExt,
 };
-use core::hint::cold_path;
+use core::{hint::cold_path, ops::Range};
 use evm2_macros::instruction;
 
 #[instruction]
@@ -71,19 +71,34 @@ fn return_inner<T: EvmTypesHost>(
     len: &Word,
     result: InstrStop,
 ) -> Result {
+    let output = output_memory_range(cx.gas, cx.state, offset, len)?;
+    cx.state.set_output(output);
+    Err(result)
+}
+
+/// Expands and checks the output slice shared by RETURN, REVERT, and APPROVE.
+#[inline]
+pub(super) fn output_memory_range<T: EvmTypesHost>(
+    tracker: &mut Gas,
+    state: &mut InterpreterState<'_, '_, T>,
+    offset: &Word,
+    len: &Word,
+) -> Result<Range<u32>> {
     let len = len.to_usize()?;
     let output = if len != 0 {
         let offset = offset.to_usize()?;
         let Some(end) = offset.checked_add(len) else {
             return Err(InstrStop::MemoryOOG);
         };
-        cx.state.resize_memory(cx.gas, offset, len)?;
+        if end > u32::MAX as usize {
+            return Err(InstrStop::MemoryLimitOOG);
+        }
+        state.resize_memory(tracker, offset, len)?;
         offset as u32..end as u32
     } else {
         0..0
     };
-    cx.state.set_output(output);
-    Err(result)
+    Ok(output)
 }
 
 #[instruction]

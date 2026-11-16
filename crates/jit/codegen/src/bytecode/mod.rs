@@ -785,7 +785,7 @@ impl<'a> Bytecode<'a> {
         let operand =
             |depth| self.const_operand(inst, depth).and_then(|value| u64::try_from(value).ok());
         match data.opcode {
-            op::KECCAK256 | op::RETURN | op::REVERT | op::LOG0..=op::LOG4 => {
+            op::KECCAK256 | op::RETURN | op::REVERT | op::APPROVE | op::LOG0..=op::LOG4 => {
                 [Some((operand(0), operand(1))), None]
             }
             op::MLOAD | op::MSTORE => [Some((operand(0), Some(32))), None],
@@ -1261,7 +1261,7 @@ impl InstData {
             || self.flags.contains(InstFlags::INVALID_IMMEDIATE)
             || matches!(
                 self.opcode,
-                op::STOP | op::RETURN | op::REVERT | op::INVALID | op::SELFDESTRUCT
+                op::STOP | op::RETURN | op::REVERT | op::INVALID | op::SELFDESTRUCT | op::APPROVE
             )
     }
 }
