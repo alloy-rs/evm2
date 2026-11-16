@@ -6,13 +6,14 @@ use evm2::{EvmTypes, ExecutionError, interpreter::Interpreter};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TraceLimitBehavior {
-    /// Continue execution but omit byte buffers that would exceed the limit.
-    /// The resulting trace can contain empty fields. Check
+    /// Continue execution but omit the steps and byte buffers that would exceed the limit, and
+    /// every step after them. The resulting trace can miss steps and contain empty fields. Check
     /// [`TracingInspector::limit_exceeded`](super::TracingInspector::limit_exceeded)
     /// to detect this.
     #[default]
     Skip,
-    /// Abort execution with a fatal evm2 error when a byte buffer would exceed the limit.
+    /// Abort execution with a fatal evm2 error when a step or a byte buffer would exceed the
+    /// limit.
     Halt,
 }
 
@@ -20,11 +21,13 @@ pub enum TraceLimitBehavior {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TraceLimits {
-    /// Maximum cumulative byte-buffer lengths between resets. `None` means unlimited.
+    /// Maximum cumulative recorded bytes between resets. `None` means unlimited.
     ///
-    /// Counts retained child call inputs, copied memory snapshots, immediate bytes, and memory
-    /// deltas. Shared buffer clones other than child inputs, stack/trace vector elements, and
-    /// allocator overhead are not counted. Checked before retaining or copying each buffer.
+    /// Counts retained child call inputs, copied memory snapshots, immediate bytes, memory
+    /// deltas, and for each recorded opcode step its record and stack snapshots, so the limit
+    /// also bounds step-only traces such as parity `vmTrace`. Shared buffer clones other than
+    /// child inputs, call trace records, and allocator overhead are not counted. Checked before
+    /// recording each step and before retaining or copying each buffer.
     pub max_recorded_bytes: Option<usize>,
     /// What to do when a recording would exceed `max_recorded_bytes`.
     pub behavior: TraceLimitBehavior,

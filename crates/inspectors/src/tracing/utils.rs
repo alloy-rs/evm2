@@ -12,7 +12,7 @@ use evm2::{
     AccountInfo, EvmTypesHost,
     env::BlockEnv,
     evm::{DbResult, DynDatabase},
-    interpreter::InstrStop,
+    interpreter::{InstrStop, Result},
 };
 
 /// Converts a non successful [`InstrStop`] to an error message.
@@ -184,6 +184,19 @@ pub(crate) fn transaction_info<T: EvmTypesHost>(
         block_number: Some(block_env.number.saturating_to()),
         base_fee: Some(block_env.basefee.saturating_to()),
         ..Default::default()
+    }
+}
+
+/// Returns the gas cost of a step that stopped with `result`.
+///
+/// A step that ran out of gas costs the whole `gas_remaining` it started with, except the
+/// reentrancy sentry, which rejects SSTORE before charging any gas and costs 0. Any other step
+/// costs what it `charged`.
+pub(crate) const fn step_cost(result: Result, gas_remaining: u64, charged: u64) -> u64 {
+    match result {
+        Err(InstrStop::ReentrancySentryOOG) => 0,
+        Err(stop) if stop.is_out_of_gas() => gas_remaining,
+        _ => charged,
     }
 }
 

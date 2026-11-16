@@ -476,6 +476,7 @@ mod memory {
     #[derive(Clone, Copy)]
     enum PanicHook {
         FrameStart,
+        InitializeInterp,
         Step,
     }
 
@@ -485,6 +486,13 @@ mod memory {
         fn frame_start(&mut self, index: usize, _frame: &Frame, _host: &mut Evm<'_, BaseEvmTypes>) {
             if matches!(self.0, PanicHook::FrameStart) && index == 1 {
                 panic!("frame entry interrupted");
+            }
+        }
+
+        fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            if matches!(self.0, PanicHook::InitializeInterp) && interp.message().destination == BODY
+            {
+                panic!("frame initialization interrupted");
             }
         }
 
@@ -501,7 +509,11 @@ mod memory {
         for iteration in 0..32 {
             let (data, weak) = tracked_data();
             let tx = transaction(data, true);
-            let hook = if iteration % 2 == 0 { PanicHook::FrameStart } else { PanicHook::Step };
+            let hook = match iteration % 3 {
+                0 => PanicHook::FrameStart,
+                1 => PanicHook::InitializeInterp,
+                _ => PanicHook::Step,
+            };
             evm.set_inspector(PanicInBody(hook));
             assert!(
                 catch_unwind(AssertUnwindSafe(|| {

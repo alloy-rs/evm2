@@ -814,7 +814,7 @@ fn execute_frame<T: EvmTypes>(
             destination: target,
             call_target: target,
             caller: if frame.mode == FrameMode::Sender { tx.sender } else { ENTRY_POINT },
-            depth: host.version().initial_call_depth,
+            depth: host.initial_call_depth(),
             code,
             code_address,
             input: frame.data.clone().into(),

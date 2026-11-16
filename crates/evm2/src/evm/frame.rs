@@ -470,7 +470,7 @@ impl<T: EvmTypes> Evm<'_, T> {
         let Some(rt) = &self.frame_tx else {
             return Ok(None);
         };
-        if message.depth != self.version().initial_call_depth
+        if message.depth != self.initial_call_depth()
             || rt.payload.frames[rt.current_frame_index].mode != FrameMode::Verify
             || self.precompiles().contains(&message.call_target)
             || self.state.account(&message.destination)?.code_hash() != KECCAK256_EMPTY

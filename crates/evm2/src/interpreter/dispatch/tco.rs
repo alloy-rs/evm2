@@ -41,6 +41,9 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
 }
 
 extern_table! {
+    // Without alignment, each handler's offset inside its 64-byte line depends on unrelated code
+    // size. Aligned handlers run faster and vary less across layouts.
+    #[cfg_attr(target_arch = "x86_64", rustc_align(64))]
     pub(super) fn dispatch<
         T: EvmTypesHost,
         C: EvmConfig<T>,

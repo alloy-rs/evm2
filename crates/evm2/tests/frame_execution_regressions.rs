@@ -1225,7 +1225,7 @@ mod extensions {
                     evm.state_mut().storage(&CUSTOM)?.into_slot(U256::ZERO)?.set(U256::from(99));
                     evm.log(Log::new_unchecked(CUSTOM, vec![], Bytes::from_static(b"custom")));
                 }
-                match message.input.first().copied().unwrap_or_default() {
+                match evm.message_input(message).first().copied().unwrap_or_default() {
                     0 => Ok(PrecompileOutput::new(Bytes::from_static(b"ok"))),
                     1 => Err(PrecompileError::Revert(Bytes::from_static(b"reverted"))),
                     2 => Err(PrecompileHalt::Other(Cow::Borrowed("test halt")).into()),

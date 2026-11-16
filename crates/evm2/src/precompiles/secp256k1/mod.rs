@@ -41,7 +41,7 @@ pub fn run<T: EvmTypesHost>(
 
     gas.spend(ECRECOVER_BASE)?;
 
-    let input = right_pad::<128>(message.input.as_ref());
+    let input = right_pad::<128>(evm.message_input(message));
 
     // `v` must be a 32-byte big-endian integer equal to 27 or 28.
     if !(input[32..63].iter().all(|&b| b == 0) && matches!(input[63], 27 | 28)) {
