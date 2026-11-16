@@ -100,7 +100,7 @@ use core::{
 use std::{
     hash::RandomState,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Condvar, Mutex, OnceLock, RwLock, RwLockWriteGuard, mpsc},
+    sync::{Condvar, Mutex, OnceLock, RwLock, RwLockWriteGuard, TryLockError, mpsc},
     thread::Thread,
     time::{Duration, Instant},
 };
@@ -873,6 +873,8 @@ where
         let mut spare = results.pools.iter().map(|_| Vec::new()).collect::<Vec<_>>();
         // Batched deferred storage operations of the committed transactions, by type.
         let mut batches = Vec::<(TypeId, Vec<DeferredStorageOp>)>::new();
+        // The stored prefix of results last seen, which the committer takes without waiting.
+        let mut ready = 0;
         for (index, tx) in txs.into_iter().enumerate() {
             stats.transactions = index + 1;
             let Speculative {
@@ -884,7 +886,9 @@ where
                 prevalidated,
                 lifecycle: created_or_wiped,
                 receipt,
-            } = results.take(index).expect("parallel execution workers exited without a result");
+            } = results
+                .take_next(index, &mut ready)
+                .expect("parallel execution workers exited without a result");
             let evm_tx = queue.get(index);
             let tx = tx.borrow();
             let version = version(index);
@@ -3185,7 +3189,27 @@ impl<S> Results<S> {
             std::thread::park();
         }
         self.waiting.store(usize::MAX, Ordering::Relaxed);
-        slot.value.lock().expect("lock poisoned").take()
+        slot.take()
+    }
+
+    /// Takes the result of the transaction at `index` as [`Self::take`] does, where `ready` is
+    /// the stored prefix the caller last saw. A result in that prefix is taken without waiting
+    /// and without telling the workers that the committer waits, and the next result in it is
+    /// fetched into the cache while the caller commits this one. Raises `ready` as it reloads
+    /// the prefix.
+    fn take_next(&self, index: usize, ready: &mut usize) -> Option<S> {
+        if index >= *ready {
+            *ready = self.ready_prefix();
+            if index >= *ready {
+                return self.take(index);
+            }
+        }
+        self.committing.store(index, Ordering::Relaxed);
+        let result = self.slots.get(index).take();
+        if index + 1 < *ready {
+            prefetch(self.slots.get(index + 1));
+        }
+        result
     }
 
     /// Returns the number of leading results stored.
@@ -3264,6 +3288,21 @@ struct ResultSlot<S> {
     value: Mutex<Option<S>>,
 }
 
+impl<S> ResultSlot<S> {
+    /// Takes the value, polling while a worker validates it ahead of the committer, which takes
+    /// far less time than parking and waking the committing thread, before blocking on the lock.
+    fn take(&self) -> Option<S> {
+        for _ in 0..COMMIT_SPINS {
+            match self.value.try_lock() {
+                Ok(mut value) => return value.take(),
+                Err(TryLockError::WouldBlock) => core::hint::spin_loop(),
+                Err(TryLockError::Poisoned(_)) => panic!("lock poisoned"),
+            }
+        }
+        self.value.lock().expect("lock poisoned").take()
+    }
+}
+
 impl<S> Default for ResultSlot<S> {
     fn default() -> Self {
         Self { ready: AtomicBool::new(false), value: Mutex::new(None) }
@@ -3289,6 +3328,27 @@ impl<S> Drop for WorkerExit<'_, S> {
         self.0.workers.fetch_sub(1, Ordering::AcqRel);
         self.0.committer.unpark();
     }
+}
+
+/// Fetches the cache lines of `value` into the cache ahead of its use, where the target supports
+/// it.
+#[inline]
+fn prefetch<T>(value: &T) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let start = (value as *const T).cast::<i8>();
+        for offset in (0..size_of::<T>()).step_by(64) {
+            // SAFETY: prefetching only hints the cache and reads nothing, and every address
+            // prefetched lies within `value`.
+            unsafe {
+                core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(
+                    start.add(offset),
+                );
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = value;
 }
 
 /// Versions of one key: the value each writing transaction left, by ascending version. Most keys
