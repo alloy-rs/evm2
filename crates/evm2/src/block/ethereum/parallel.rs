@@ -1625,9 +1625,19 @@ fn run_worker<T, F, H, K, Q>(
         }
         scheduler.finish(index);
         let receipt = outcome.as_ref().and_then(|outcome| copy_receipt(evm_tx, &outcome.result));
-        let reads = core::mem::take(&mut *reads.borrow_mut());
+        let mut reads = core::mem::take(&mut *reads.borrow_mut());
         let lifecycle =
             outcome.as_ref().is_some_and(|outcome| has_lifecycle(&outcome.pending_state));
+        let prevalidated = outcome.as_ref().and_then(|outcome| {
+            prevalidate_own(
+                store,
+                results,
+                index,
+                &mut reads,
+                &outcome.pending_state,
+                &evm_tx.signer(),
+            )
+        });
         results.put(
             index,
             Speculative {
@@ -1636,7 +1646,7 @@ fn run_worker<T, F, H, K, Q>(
                 reward,
                 reads,
                 writes,
-                prevalidated: None,
+                prevalidated,
                 lifecycle,
                 receipt,
             },
@@ -1802,6 +1812,24 @@ fn prevalidate_next<T: EvmTypes, Q>(
         speculative.prevalidated = Some((mark, valid));
     });
     true
+}
+
+/// Validates a worker's own execution of the transaction at `index` before storing it, once
+/// every result before it is in, as [`prevalidate_next`] would: the committer then only checks
+/// the writes logged since, instead of reading every value again.
+fn prevalidate_own<S>(
+    store: &MvStore<'_, impl DynDatabaseRef + Sync + ?Sized>,
+    results: &Results<S>,
+    index: usize,
+    reads: &mut ReadSet,
+    pending_state: &PendingState,
+    sender: &Address,
+) -> Option<(usize, bool)> {
+    if !results.batched || results.ready_prefix() < index {
+        return None;
+    }
+    let mark = store.log_mark();
+    Some((mark, reads.validate_store(store, version(index), pending_state, sender)))
 }
 
 /// A transaction for [`EthBlockExecutor::execute_transaction_stream`], with its dependencies on
