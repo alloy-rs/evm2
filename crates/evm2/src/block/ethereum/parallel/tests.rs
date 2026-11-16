@@ -1292,3 +1292,43 @@ fn rejected_streamed_batched_commit_leaves_the_executor_unchanged() {
         }
     }
 }
+
+#[test]
+fn reads_below_every_write_skip_versions() {
+    let filter = WriteFilter::new();
+    let hash = account_hash(&user(1));
+    assert!(!filter.contains_below(hash, u32::MAX));
+    filter.insert(hash, 5);
+    assert!(!filter.contains_below(hash, 5));
+    assert!(filter.contains_below(hash, 6));
+    filter.insert(hash, 7);
+    assert!(!filter.contains_below(hash, 5));
+    filter.insert(hash, 2);
+    assert!(!filter.contains_below(hash, 2));
+    assert!(filter.contains_below(hash, 3));
+
+    let snapshot = Snapshot(database(None).cache);
+    let store = MvStore::new(Cache::default(), &snapshot);
+    let address = user(1);
+    let initial = store.account(&address, 1).unwrap();
+    let written = AccountInfo { balance: U256::from(7), ..AccountInfo::empty() };
+    store
+        .write_account_shard(&address, 5)
+        .entry(address)
+        .or_default()
+        .insert(5, Some(written.clone()));
+    // Only a later transaction wrote the account: the read of the initial state still holds.
+    assert_eq!(store.account_unless_initial(&address, 5, true).unwrap(), None);
+    assert_eq!(store.account(&address, 5).unwrap(), initial);
+    assert_eq!(
+        store.account_unless_initial(&address, 6, true).unwrap(),
+        Some(Some(written.clone()))
+    );
+    assert_eq!(store.account(&address, 6).unwrap(), Some(written));
+
+    let key = Word::from(1);
+    let before = store.storage(&address, &key, 5).unwrap();
+    store.put_slot(5, address, key, Word::from(9));
+    assert_eq!(store.storage(&address, &key, 5).unwrap(), before);
+    assert_eq!(store.storage(&address, &key, 6).unwrap(), Word::from(9));
+}
