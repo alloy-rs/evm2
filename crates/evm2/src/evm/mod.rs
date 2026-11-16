@@ -1933,6 +1933,34 @@ impl<T: EvmTypesHost> Evm<'_, T> {
         }
     }
 
+    /// Runs `f` with the EVM and the bytes of `message`'s input, without copying an input that is
+    /// a range of the caller's memory.
+    ///
+    /// While `f` runs, the caller frame is not the running frame: the hooks of messages that `f`
+    /// sends get a frame of their own instead of the caller, so they cannot change the input, and
+    /// [`Self::message_input`] cannot resolve a range of the caller's memory.
+    ///
+    /// # Panics
+    ///
+    /// Panics as [`Self::message_input`] does.
+    pub fn with_message_input<R>(
+        &mut self,
+        message: &Message<T>,
+        f: impl FnOnce(&mut Self, &[u8]) -> R,
+    ) -> R {
+        let Some((range, frame)) = message.input.borrowed_range() else {
+            return f(self, message.input.as_owned().map_or(&[][..], |input| &input[..]));
+        };
+        let input = &self.caller_memory(frame).as_slice()[range.clone()];
+        // SAFETY: The input is in the memory of the caller frame, which is suspended until `f`
+        // returns, and which nothing reaches through `self` while it is not the running frame.
+        let input = unsafe { trustme::decouple_lt(input) };
+        let caller = self.current_frame.take();
+        let result = f(self, input);
+        self.current_frame = caller;
+        result
+    }
+
     /// Returns the memory of the running frame, which must be the frame with the entry number
     /// `frame`.
     #[inline]
@@ -5384,6 +5412,58 @@ mod tests {
             precompiles,
         );
         evm.set_inspector(OverwriteCallerMemory);
+        let code = memory_input_call_code(TEST_PRECOMPILE, op::CALL);
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
+
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
+
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(result.output[..], [0xaa; 32]);
+    }
+
+    #[test]
+    fn hook_cannot_change_input_lent_by_with_message_input() {
+        // Grows and overwrites the memory of the frame its hook gets, while a precompile holds its
+        // input from `with_message_input`.
+        struct OverwriteFrameMemory;
+
+        impl Inspector<BaseEvmTypes> for OverwriteFrameMemory {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.destination == INNER_TEST_PRECOMPILE {
+                    let memory = interp.memory_mut();
+                    memory.resize(0, 1 << 20).unwrap();
+                    memory.set(0, &[0xbb; 32]);
+                }
+                None
+            }
+        }
+
+        let precompiles = precompiles_with([
+            test_precompile(TEST_PRECOMPILE, |evm, message, _| {
+                evm.with_message_input(message, |evm, input| {
+                    let mut child = precompile_message(INNER_TEST_PRECOMPILE);
+                    child.depth = message.depth + 1;
+                    Host::execute_message(evm, &mut child)?;
+                    Ok(PrecompileOutput::new(Bytes::copy_from_slice(input)))
+                })
+            }),
+            test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
+                Ok(PrecompileOutput::new(Bytes::new()))
+            }),
+        ]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        evm.set_inspector(OverwriteFrameMemory);
         let code = memory_input_call_code(TEST_PRECOMPILE, op::CALL);
         let mut message =
             MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
