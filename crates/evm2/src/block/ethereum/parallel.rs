@@ -89,18 +89,19 @@ use alloy_primitives::{
 use core::{
     any::{Any, TypeId},
     borrow::Borrow,
-    cell::{Cell, RefCell},
+    cell::{Cell, RefCell, UnsafeCell},
     cmp::Reverse,
     hash::{BuildHasher, Hash, Hasher},
     num::NonZeroUsize,
     ops::Deref,
     ptr,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence},
 };
+use shard_lock::{Readers, ShardLock, WriteGuard};
 use std::{
     hash::RandomState,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Condvar, Mutex, OnceLock, RwLock, RwLockWriteGuard, mpsc},
+    sync::{Condvar, Mutex, OnceLock, RwLock, mpsc},
     thread::Thread,
     time::{Duration, Instant},
 };
@@ -418,8 +419,10 @@ where
             }
             Scheduler::in_order(txs.len())
         };
-        let store = MvStore::new(self.evm.overlay_db().cache.clone(), base);
         let workers = threads.get().min(txs.len());
+        let store = MvStore::new(self.evm.overlay_db().cache.clone(), base, workers);
+        // This thread commits.
+        store.register_reader(workers);
         let results = Results::new(workers, batched);
         let totals = batched.then(|| self.totals());
         let output = std::thread::scope(|scope| {
@@ -548,7 +551,9 @@ where
 
         let scheduler = Scheduler::default();
         let queue = TxQueue::default();
-        let store = MvStore::new(self.evm.overlay_db().cache.clone(), base);
+        let store = MvStore::new(self.evm.overlay_db().cache.clone(), base, threads.get());
+        // This thread commits.
+        store.register_reader(threads.get());
         let results = Results::new(threads.get(), batched);
         let totals = batched.then(|| self.totals());
         let (tx_sender, tx_receiver) = mpsc::channel();
@@ -1231,10 +1236,25 @@ fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
     else {
         return Ok(());
     };
-    let mut access = StoreAccess { store, version, stream };
-    for op in core::mem::take(&mut parallel.deferred.ops) {
+    let mut access = StoreAccess { store, version, stream, written: Vec::new() };
+    let ran = run_ops_on(&mut access, &mut parallel.deferred.ops, batches);
+    // Only the committer checks the log, after this returns: one append covers every slot written
+    // above.
+    if !access.written.is_empty() {
+        store.log_writes(version, access.written);
+    }
+    ran
+}
+
+/// Runs `ops` through `access` as [`run_deferred_ops`] does, without logging the slots written.
+fn run_ops_on<B: DynDatabaseRef + Sync + ?Sized>(
+    access: &mut StoreAccess<'_, '_, B>,
+    ops: &mut Vec<DeferredStorageOp>,
+    batches: &mut Vec<(TypeId, Vec<DeferredStorageOp>)>,
+) -> Result<(), BlockExecutionError> {
+    for op in core::mem::take(ops) {
         let Some(batched) = op.as_batched() else {
-            op.run_on(&mut access).map_err(map_database_error)?;
+            op.run_on(access).map_err(map_database_error)?;
             continue;
         };
         let type_id = (batched as &dyn Any).type_id();
@@ -1253,7 +1273,10 @@ fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
                 .keys
                 .extend(writes.iter().map(|&(address, key, _)| WriteKey::Storage(address, key)));
         }
-        access.store.write_slots(version, &mut writes);
+        access.store.put_slots(access.version, &mut writes);
+        access
+            .written
+            .extend(writes.iter().map(|&(address, key, _)| WriteKey::Storage(address, key)));
         ops.push(op);
     }
     Ok(())
@@ -1266,6 +1289,8 @@ struct StoreAccess<'m, 's, B: ?Sized> {
     version: u32,
     /// Records the slots written, when the commit streams state.
     stream: Option<&'m mut PrefixStream>,
+    /// The slots written, to log once the operations ran.
+    written: Vec<WriteKey>,
 }
 
 impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for StoreAccess<'_, '_, B> {
@@ -1274,7 +1299,8 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for StoreAccess<'_,
     }
 
     fn sstore(&mut self, address: &Address, key: Word, value: Word) -> DbResult<()> {
-        self.store.write_slot(self.version, *address, key, value);
+        self.store.put_slot(self.version, *address, key, value);
+        self.written.push(WriteKey::Storage(*address, key));
         if let Some(stream) = &mut self.stream {
             stream.keys.push(WriteKey::Storage(*address, key));
         }
@@ -1567,6 +1593,7 @@ fn run_worker<T, F, H, K, Q>(
     // A panic outside the guarded execution, such as in `make_evm` or `on_speculative`, must not
     // leave transactions waiting on one this worker never finishes: stop the block instead.
     let _abort = AbortOnUnwind(scheduler);
+    store.register_reader(worker);
     let view_version = Cell::new(0);
     let reads = RefCell::new(ReadSet::default());
     let mut stash = Vec::new();
@@ -2368,10 +2395,10 @@ struct WriteLog {
 }
 
 /// One lock shard of account versions.
-type AccountShard = RwLock<AddressMap<Versions<Option<AccountInfo>>>>;
+type AccountShard = ShardLock<AddressMap<Versions<Option<AccountInfo>>>>;
 
 /// One lock shard of storage slot versions.
-type StorageShard = RwLock<SlotMap<Versions<SlotWrite>>>;
+type StorageShard = ShardLock<SlotMap<Versions<SlotWrite>>>;
 
 /// A map keyed by storage slot, with [`SlotHasher`].
 type SlotMap<V> = HashMap<(Address, Word), V, SlotState>;
@@ -2525,6 +2552,8 @@ struct MvStore<'s, B: ?Sized> {
     id: usize,
     accounts: Box<[CachePadded<AccountShard>]>,
     storage: Box<[CachePadded<StorageShard>]>,
+    /// The reader slots of the account and storage shards: one per worker, then the committer's.
+    readers: Readers,
     /// The accounts that may have a version in `accounts`.
     written_accounts: WriteFilter,
     /// The slots that may have a version in `storage`.
@@ -2539,13 +2568,20 @@ struct MvStore<'s, B: ?Sized> {
 }
 
 impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
-    fn new(initial: Cache, base: &'s B) -> Self {
+    /// Returns a store with reader slots for `workers` workers and the committer.
+    fn new(initial: Cache, base: &'s B, workers: usize) -> Self {
+        let id = NEXT_STORE_ID.fetch_add(1, Ordering::Relaxed);
         Self {
             initial,
             base,
-            id: NEXT_STORE_ID.fetch_add(1, Ordering::Relaxed),
-            accounts: (0..SHARDS).map(|_| CachePadded::default()).collect(),
-            storage: (0..SHARDS).map(|_| CachePadded::default()).collect(),
+            id,
+            accounts: (0..SHARDS)
+                .map(|shard| CachePadded(ShardLock::new(1 + shard, Default::default())))
+                .collect(),
+            storage: (0..SHARDS)
+                .map(|shard| CachePadded(ShardLock::new(1 + SHARDS + shard, Default::default())))
+                .collect(),
+            readers: Readers::new(id, workers + 1),
             written_accounts: WriteFilter::new(),
             written_slots: WriteFilter::new(),
             wipes: RwLock::default(),
@@ -2554,6 +2590,12 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             log: Mutex::default(),
             log_len: AtomicUsize::new(0),
         }
+    }
+
+    /// Registers the calling thread as the reader in `slot`: a worker's index, or the number of
+    /// workers for the committer.
+    fn register_reader(&self, slot: usize) {
+        self.readers.register(slot);
     }
 
     /// Appends keys written at `version` to the write log, after writing them.
@@ -2573,6 +2615,10 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
 
     /// Returns whether a key logged since `mark` below `version` is one `reads` read.
     fn logged_since(&self, mark: usize, version: u32, reads: &ReadSet) -> bool {
+        // An append still in flight orders after this check, as if it took the lock later.
+        if self.log_mark() == mark {
+            return false;
+        }
         let log = self.log.lock().expect("lock poisoned");
         log.bits[mark..].iter().zip(&log.keys[mark..]).any(|(&(at, bit), &(_, key))| {
             at < version && reads.may_touch(bit) && reads.touches(key)
@@ -2593,9 +2639,9 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     fn write_account_shard(
         &self,
         address: &Address,
-    ) -> RwLockWriteGuard<'_, AddressMap<Versions<Option<AccountInfo>>>> {
+    ) -> WriteGuard<'_, AddressMap<Versions<Option<AccountInfo>>>> {
         self.written_accounts.insert(account_hash(address));
-        self.account_shard(address).write().expect("lock poisoned")
+        self.account_shard(address).write(&self.readers)
     }
 
     /// Locks the shard of the slot `key` of `address` to write a version of it, marking it
@@ -2604,9 +2650,9 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         &self,
         address: &Address,
         key: &Word,
-    ) -> RwLockWriteGuard<'_, SlotMap<Versions<SlotWrite>>> {
+    ) -> WriteGuard<'_, SlotMap<Versions<SlotWrite>>> {
         self.written_slots.insert(slot_hash(address, key));
-        self.storage_shard(address, key).write().expect("lock poisoned")
+        self.storage_shard(address, key).write(&self.readers)
     }
 
     /// Returns the latest account write below `version`.
@@ -2614,7 +2660,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         if !self.written_accounts.contains(account_hash(address)) {
             return None;
         }
-        let shard = self.account_shard(address).read().expect("lock poisoned");
+        let shard = self.account_shard(address).read(&self.readers);
         let (_, info) = shard.get(address)?.latest_below(version)?;
         Some(info.clone())
     }
@@ -2711,7 +2757,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         };
         let (mut value, mut delta) = (None, Word::ZERO);
         if self.written_slots.contains(slot_hash(address, key)) {
-            let shard = self.storage_shard(address, key).read().expect("lock poisoned");
+            let shard = self.storage_shard(address, key).read(&self.readers);
             if let Some(versions) = shard.get(&(*address, *key)) {
                 for (at, write) in versions.below(version) {
                     // A transaction that wipes and then writes a slot publishes both at its
@@ -2838,14 +2884,13 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         for write in writes {
             match write {
                 WriteKey::Account(address) => {
-                    let mut shard = self.account_shard(address).write().expect("lock poisoned");
+                    let mut shard = self.account_shard(address).write(&self.readers);
                     if let Some(versions) = shard.get_mut(address) {
                         versions.remove(version);
                     }
                 }
                 WriteKey::Storage(address, key) => {
-                    let mut shard =
-                        self.storage_shard(address, key).write().expect("lock poisoned");
+                    let mut shard = self.storage_shard(address, key).write(&self.readers);
                     if let Some(versions) = shard.get_mut(&(*address, *key)) {
                         versions.remove(version);
                     }
@@ -2870,29 +2915,10 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         self.log_writes(version, [WriteKey::Account(address)]);
     }
 
-    /// Writes a slot's value at `version`.
-    fn write_slot(&self, version: u32, address: Address, key: Word, value: Word) {
-        self.put_slot(version, address, key, value);
-        self.log_writes(version, [WriteKey::Storage(address, key)]);
-    }
-
-    /// Writes a slot's value at `version` without logging it, once nothing validates against it.
+    /// Writes a slot's value at `version` without logging it.
     fn put_slot(&self, version: u32, address: Address, key: Word, value: Word) {
         let mut shard = self.write_storage_shard(&address, &key);
         shard.entry((address, key)).or_default().insert(version, SlotWrite::Value(value));
-    }
-
-    /// Writes slots' values at `version` as [`Self::write_slot`] does, locking each shard and the
-    /// write log once.
-    fn write_slots(&self, version: u32, writes: &mut [(Address, Word, Word)]) {
-        if writes.is_empty() {
-            return;
-        }
-        self.put_slots(version, writes);
-        self.log_writes(
-            version,
-            writes.iter().map(|&(address, key, _)| WriteKey::Storage(address, key)),
-        );
     }
 
     /// Writes slots' values at `version` as [`Self::put_slot`] does, locking each shard once.
@@ -2903,7 +2929,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             .chunk_by(|(a, x, _), (b, y, _)| storage_shard_index(a, x) == storage_shard_index(b, y))
         {
             let (address, key, _) = &shard_writes[0];
-            let mut shard = self.storage_shard(address, key).write().expect("lock poisoned");
+            let mut shard = self.storage_shard(address, key).write(&self.readers);
             shard.reserve(shard_writes.len());
             for &(address, key, value) in shard_writes {
                 self.written_slots.insert(slot_hash(&address, &key));
@@ -2985,7 +3011,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         let range = start.min(SHARDS)..(start + len).min(SHARDS);
         let mut accounts = Vec::new();
         for shard in &self.accounts[range.clone()] {
-            for (address, versions) in shard.read().expect("lock poisoned").iter() {
+            for (address, versions) in shard.read(&self.readers).iter() {
                 let Some((_, present)) = versions.latest_below(u32::MAX) else { continue };
                 let original = self.account_initial(address)?;
                 let mut present = present.clone();
@@ -3001,7 +3027,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         }
         let mut slots = Vec::new();
         for shard in &self.storage[range] {
-            for ((address, key), versions) in shard.read().expect("lock poisoned").iter() {
+            for ((address, key), versions) in shard.read(&self.readers).iter() {
                 if versions.latest_below(u32::MAX).is_none() {
                     continue;
                 }
@@ -3168,11 +3194,12 @@ impl<S> Results<S> {
     /// Stores the result of the transaction at `index`, waking the committer if it waits for it.
     fn put(&self, index: usize, result: S) {
         let slot = self.slots.get(index);
-        *slot.value.lock().expect("lock poisoned") = Some(result);
-        slot.ready.store(true, Ordering::Release);
+        // SAFETY: the slot is empty, so no other thread accesses its value until it is ready.
+        unsafe { *slot.value.get() = Some(result) };
+        slot.state.store(READY, Ordering::Release);
         // Advance the stored prefix past every leading result now in.
         let mut ready = self.ready.load(Ordering::Acquire);
-        while self.slots.get(ready).ready.load(Ordering::Acquire) {
+        while self.slots.get(ready).is_ready() {
             match self.ready.compare_exchange_weak(
                 ready,
                 ready + 1,
@@ -3203,7 +3230,7 @@ impl<S> Results<S> {
         }
         let slot = self.slots.get(index);
         let mut spins = 0;
-        while !slot.ready.load(Ordering::Acquire) {
+        while !slot.is_ready() {
             if spins < COMMIT_SPINS {
                 spins += 1;
                 core::hint::spin_loop();
@@ -3211,12 +3238,12 @@ impl<S> Results<S> {
             }
             self.waiting.store(index, Ordering::Relaxed);
             fence(Ordering::SeqCst);
-            if slot.ready.load(Ordering::Acquire) {
+            if slot.is_ready() {
                 break;
             }
             if self.workers.load(Ordering::Acquire) == 0 {
                 // A worker stores its last result before it exits.
-                if !slot.ready.load(Ordering::Acquire) {
+                if !slot.is_ready() {
                     self.waiting.store(usize::MAX, Ordering::Relaxed);
                     return None;
                 }
@@ -3225,7 +3252,24 @@ impl<S> Results<S> {
             std::thread::park();
         }
         self.waiting.store(usize::MAX, Ordering::Relaxed);
-        slot.value.lock().expect("lock poisoned").take()
+        let mut spins = 0;
+        while slot
+            .state
+            .compare_exchange_weak(READY, HELD, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            // A worker validates or executes the result again.
+            if spins < COMMIT_SPINS {
+                spins += 1;
+                core::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
+        }
+        // SAFETY: holding the slot excludes every other access to its value.
+        let result = unsafe { (*slot.value.get()).take() };
+        slot.state.store(READY, Ordering::Release);
+        result
     }
 
     /// Returns the idle epoch, which [`Self::park_idle`] waits to change.
@@ -3293,11 +3337,13 @@ impl<S> Results<S> {
     /// stored yet or another thread holds it.
     fn update(&self, index: usize, f: impl FnOnce(&mut S)) -> bool {
         let slot = self.slots.get(index);
-        if !slot.ready.load(Ordering::Acquire) {
+        if slot.state.compare_exchange(READY, HELD, Ordering::Acquire, Ordering::Relaxed).is_err() {
             return false;
         }
-        let Ok(mut value) = slot.value.try_lock() else { return false };
-        if let Some(result) = value.as_mut() {
+        // Releases the slot even when `f` unwinds.
+        let _release = SlotRelease(&slot.state);
+        // SAFETY: holding the slot excludes every other access to its value.
+        if let Some(result) = unsafe { (*slot.value.get()).as_mut() } {
             f(result);
         }
         true
@@ -3353,16 +3399,46 @@ struct Buffers {
 
 /// One transaction's result in [`Results`].
 struct ResultSlot<S> {
-    /// Whether `value` was stored.
-    ready: AtomicBool,
-    value: Mutex<Option<S>>,
+    /// [`EMPTY`] until `value` is stored, then [`READY`], or [`HELD`] while one thread
+    /// accesses `value`.
+    state: AtomicU8,
+    value: UnsafeCell<Option<S>>,
+}
+
+impl<S> ResultSlot<S> {
+    /// Returns whether the result was stored.
+    #[inline]
+    fn is_ready(&self) -> bool {
+        self.state.load(Ordering::Acquire) != EMPTY
+    }
 }
 
 impl<S> Default for ResultSlot<S> {
     fn default() -> Self {
-        Self { ready: AtomicBool::new(false), value: Mutex::new(None) }
+        Self { state: AtomicU8::new(EMPTY), value: UnsafeCell::new(None) }
     }
 }
+
+// SAFETY: `state` hands `value` to one thread at a time.
+unsafe impl<S: Send> Sync for ResultSlot<S> {}
+
+/// Releases a held [`ResultSlot`] when dropped.
+struct SlotRelease<'s>(&'s AtomicU8);
+
+impl Drop for SlotRelease<'_> {
+    fn drop(&mut self) {
+        self.0.store(READY, Ordering::Release);
+    }
+}
+
+/// A [`ResultSlot`] with no result stored yet.
+const EMPTY: u8 = 0;
+
+/// A [`ResultSlot`] whose result is stored and free to access.
+const READY: u8 = 1;
+
+/// A [`ResultSlot`] whose result one thread accesses.
+const HELD: u8 = 2;
 
 /// Stops the scheduler when a worker unwinds.
 struct AbortOnUnwind<'s>(&'s Scheduler);
@@ -3473,6 +3549,8 @@ impl<T> Deref for CachePadded<T> {
         &self.0
     }
 }
+
+mod shard_lock;
 
 #[cfg(test)]
 mod tests;
