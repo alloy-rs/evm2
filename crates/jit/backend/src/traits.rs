@@ -521,6 +521,7 @@ pub trait Builder: BackendTypes + TypeMethods {
 mod tests {
     use super::{BackendConfig, OptimizationLevel};
     use std::{path::PathBuf, str::FromStr};
+    use test_case::test_case;
 
     #[test]
     fn backend_config_defaults_match_runtime_settings() {
@@ -550,20 +551,19 @@ mod tests {
         assert_eq!(config.clone(), config);
     }
 
-    #[test]
-    fn optimization_level_parses_numeric_and_named_values() {
-        for (input, expected) in [
-            ("0", OptimizationLevel::None),
-            ("none", OptimizationLevel::None),
-            ("1", OptimizationLevel::Less),
-            ("less", OptimizationLevel::Less),
-            ("2", OptimizationLevel::Default),
-            ("default", OptimizationLevel::Default),
-            ("3", OptimizationLevel::Aggressive),
-            ("aggressive", OptimizationLevel::Aggressive),
-        ] {
-            assert_eq!(OptimizationLevel::from_str(input), Ok(expected));
-        }
+    #[test_case("0", OptimizationLevel::None)]
+    #[test_case("none", OptimizationLevel::None)]
+    #[test_case("1", OptimizationLevel::Less)]
+    #[test_case("less", OptimizationLevel::Less)]
+    #[test_case("2", OptimizationLevel::Default)]
+    #[test_case("default", OptimizationLevel::Default)]
+    #[test_case("3", OptimizationLevel::Aggressive)]
+    #[test_case("aggressive", OptimizationLevel::Aggressive)]
+    fn optimization_level_parses_numeric_and_named_values(
+        input: &str,
+        expected: OptimizationLevel,
+    ) {
+        assert_eq!(OptimizationLevel::from_str(input), Ok(expected));
     }
 
     #[test]

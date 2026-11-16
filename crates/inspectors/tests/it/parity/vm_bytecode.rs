@@ -9,6 +9,7 @@ use evm2::{
     evm::InMemoryDB,
 };
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
+use test_case::test_case;
 
 fn trace(db: InMemoryDB, tx: TxEnv) -> TraceResults {
     trace_envelope(db, tx.envelope())
@@ -163,17 +164,18 @@ fn callcode_and_delegatecall_bytecode() {
     }
 }
 
-#[test]
-fn bytecode_recording_is_opt_in() {
+#[test_case(TracingInspectorConfig::default_geth(); "geth")]
+#[test_case(TracingInspectorConfig::default_parity(); "parity")]
+#[test_case(TracingInspectorConfig::parity_statediff(); "parity_statediff")]
+fn bytecode_recording_is_opt_in(config: TracingInspectorConfig) {
     let code = hex!("60015000");
-    for config in [
-        TracingInspectorConfig::default_geth(),
-        TracingInspectorConfig::default_parity(),
-        TracingInspectorConfig::parity_statediff(),
-    ] {
-        let inspector = inspect_code(&code, config);
-        assert!(inspector.traces().nodes().iter().all(|node| node.trace.bytecode.is_none()));
-    }
+    let inspector = inspect_code(&code, config);
+    assert!(inspector.traces().nodes().iter().all(|node| node.trace.bytecode.is_none()));
+}
+
+#[test]
+fn bytecode_recording_is_on_for_vm_traces() {
+    let code = hex!("60015000");
     let mut config = TracingInspectorConfig::default_geth();
     config.merge(TracingInspectorConfig::parity_vm_trace());
     let inspector = inspect_code(&code, config);

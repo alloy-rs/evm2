@@ -2618,6 +2618,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "substrate-bn",
+ "test-case",
  "thiserror 2.0.21",
  "triomphe",
  "typeid",
@@ -2656,6 +2657,7 @@ dependencies = [
  "secp256k1 0.33.1",
  "serde",
  "serde_json",
+ "test-case",
  "thiserror 2.0.21",
  "tikv-jemallocator",
  "tokio",
@@ -2683,6 +2685,7 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
+ "test-case",
  "thiserror 2.0.21",
  "walkdir",
  "zstd",
@@ -2709,6 +2712,7 @@ dependencies = [
  "serde",
  "serde_json",
  "snapbox",
+ "test-case",
  "thiserror 2.0.21",
 ]
 
@@ -2732,6 +2736,7 @@ version = "0.1.0"
 dependencies = [
  "eyre",
  "ruint",
+ "test-case",
 ]
 
 [[package]]
@@ -2747,6 +2752,7 @@ dependencies = [
  "evm2-jit-backend",
  "evm2-jit-context",
  "paste",
+ "test-case",
  "tracing",
 ]
 
@@ -2773,6 +2779,7 @@ dependencies = [
  "smallvec",
  "snapbox",
  "tempfile",
+ "test-case",
  "tester",
  "tracing",
  "tracing-subscriber",
@@ -2822,6 +2829,7 @@ dependencies = [
  "quanta",
  "rayon",
  "tempfile",
+ "test-case",
  "tracing",
  "tracing-subscriber",
  "wait-timeout",
@@ -6233,6 +6241,39 @@ dependencies = [
  "dirs-next",
  "rustversion",
  "winapi",
+]
+
+[[package]]
+name = "test-case"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "124953e7f67cb0b2fcfb87e899e4ae5a64fb68e2e160767933cc67b646fb0042"
+dependencies = [
+ "test-case-macros",
+]
+
+[[package]]
+name = "test-case-core"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd097615b407247e102046ba34426bb594923ab3554cf0f3cdfed050f1a5a3e8"
+dependencies = [
+ "cfg-if",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "test-case-macros"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4ce35ece947bccac166e1ded639133827a953f69a48ba134d17f91108333082"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+ "test-case-core",
 ]
 
 [[package]]

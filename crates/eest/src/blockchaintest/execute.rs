@@ -1612,6 +1612,7 @@ mod tests {
     };
     use alloy_eips::eip7840::BLOB_BASE_COST;
     use std::collections::BTreeMap;
+    use test_case::test_case;
 
     #[cfg(feature = "jit")]
     use crate::tx::recover_address;
@@ -1729,21 +1730,17 @@ mod tests {
         assert!(matches!(err.kind, TestErrorKind::UnsupportedFork(ForkSpec::HomesteadToDaoAt5)));
     }
 
-    #[test]
-    fn post_state_rejects_omitted_live_accounts() {
+    #[test_case(Account { balance: U256::ONE, ..Default::default() }; "balance")]
+    #[test_case(Account { nonce: U256::ONE, ..Default::default() }; "nonce")]
+    #[test_case(Account { code: Bytes::from_static(&[0x00]), ..Default::default() }; "code")]
+    // Empty but live accounts also contribute to the state trie.
+    #[test_case(Account::default(); "empty")]
+    fn post_state_rejects_omitted_live_accounts(account: Account) {
         let address = Address::with_last_byte(1);
-        for account in [
-            Account { balance: U256::ONE, ..Default::default() },
-            Account { nonce: U256::ONE, ..Default::default() },
-            Account { code: Bytes::from_static(&[0x00]), ..Default::default() },
-            // Empty but live accounts also contribute to the state trie.
-            Account::default(),
-        ] {
-            let database = parse_state(&BTreeMap::from([(address, account)])).unwrap();
-            let err = validate_post_state(&database, &BTreeMap::new()).unwrap_err();
-            assert!(matches!(err, TestErrorKind::UnexpectedFailure(message)
-                if message == format!("unexpected account in post-state: {address}")));
-        }
+        let database = parse_state(&BTreeMap::from([(address, account)])).unwrap();
+        let err = validate_post_state(&database, &BTreeMap::new()).unwrap_err();
+        assert!(matches!(err, TestErrorKind::UnexpectedFailure(message)
+            if message == format!("unexpected account in post-state: {address}")));
     }
 
     #[test]
@@ -1783,30 +1780,23 @@ mod tests {
         validate_post_state(&database, &expected).unwrap();
     }
 
-    #[test]
-    fn post_state_checks_all_expected_account_fields() {
+    #[test_case(Account { balance: U256::ONE, ..Default::default() }, "balance mismatch")]
+    #[test_case(Account { nonce: U256::ONE, ..Default::default() }, "nonce mismatch")]
+    #[test_case(
+        Account { code: Bytes::from_static(&[0x00]), ..Default::default() },
+        "code mismatch"
+    )]
+    #[test_case(
+        Account { storage: BTreeMap::from([(U256::ZERO, U256::ONE)]), ..Default::default() },
+        "unexpected storage"
+    )]
+    fn post_state_checks_all_expected_account_fields(account: Account, mismatch: &str) {
         let address = Address::with_last_byte(1);
         let expected = BTreeMap::from([(address, Account::default())]);
-        for (account, mismatch) in [
-            (Account { balance: U256::ONE, ..Default::default() }, "balance mismatch"),
-            (Account { nonce: U256::ONE, ..Default::default() }, "nonce mismatch"),
-            (Account { code: Bytes::from_static(&[0x00]), ..Default::default() }, "code mismatch"),
-            (
-                Account {
-                    storage: BTreeMap::from([(U256::ZERO, U256::ONE)]),
-                    ..Default::default()
-                },
-                "unexpected storage",
-            ),
-        ] {
-            let database = parse_state(&BTreeMap::from([(address, account)])).unwrap();
-            let err = validate_post_state(&database, &expected).unwrap_err();
-            assert!(
-                matches!(err, TestErrorKind::UnexpectedFailure(message)
-                if message.starts_with(mismatch)),
-                "expected {mismatch}"
-            );
-        }
+        let database = parse_state(&BTreeMap::from([(address, account)])).unwrap();
+        let err = validate_post_state(&database, &expected).unwrap_err();
+        assert!(matches!(err, TestErrorKind::UnexpectedFailure(message)
+            if message.starts_with(mismatch)));
     }
 
     #[test]
@@ -1851,92 +1841,88 @@ mod tests {
         assert_eq!(run(&suite, ExecuteConfig::default()).unwrap().executed, 1);
     }
 
-    #[test]
-    fn blockchain_tests_apply_ommer_rewards_before_merge() {
+    #[test_case(ForkSpec::Homestead, 5 * ONE_ETHER)]
+    #[test_case(ForkSpec::Byzantium, 3 * ONE_ETHER)]
+    #[test_case(ForkSpec::ConstantinopleFix, 2 * ONE_ETHER)]
+    #[test_case(ForkSpec::Paris, 0)]
+    fn blockchain_tests_apply_ommer_rewards_before_merge(fork: ForkSpec, base_reward: u128) {
         let miner = Address::with_last_byte(1);
         let ommer_miner = Address::with_last_byte(2);
         let genesis_hash = B256::with_last_byte(1);
         let block_hash = B256::with_last_byte(2);
 
-        for (fork, base_reward) in [
-            (ForkSpec::Homestead, 5 * ONE_ETHER),
-            (ForkSpec::Byzantium, 3 * ONE_ETHER),
-            (ForkSpec::ConstantinopleFix, 2 * ONE_ETHER),
-            (ForkSpec::Paris, 0),
-        ] {
-            let mut post_state = BTreeMap::new();
-            if base_reward != 0 {
-                post_state.insert(
-                    miner,
-                    Account {
-                        balance: U256::from(base_reward + base_reward / 32),
-                        ..Default::default()
-                    },
-                );
-                post_state.insert(
-                    ommer_miner,
-                    Account { balance: U256::from(base_reward * 7 / 8), ..Default::default() },
-                );
-            }
-
-            let block_header = BlockHeader {
-                parent_hash: genesis_hash,
-                hash: block_hash,
-                coinbase: miner,
-                number: U256::ONE,
-                gas_limit: U256::from(30_000_000),
-                timestamp: U256::ONE,
-                ..Default::default()
-            };
-            let ommer_header =
-                BlockHeader { coinbase: ommer_miner, number: U256::ZERO, ..Default::default() };
-            let block = if fork == ForkSpec::Byzantium {
-                Block {
-                    rlp_decoded: Some(DecodedBlock {
-                        block_header: Some(block_header),
-                        uncle_headers: vec![ommer_header],
-                        ..Default::default()
-                    }),
+        let mut post_state = BTreeMap::new();
+        if base_reward != 0 {
+            post_state.insert(
+                miner,
+                Account {
+                    balance: U256::from(base_reward + base_reward / 32),
                     ..Default::default()
-                }
-            } else {
-                Block {
-                    block_header: Some(block_header),
-                    uncle_headers: Some(vec![ommer_header]),
-                    ..Default::default()
-                }
-            };
-
-            let suite = BlockchainTest(BTreeMap::from([(
-                "ommer-rewards".to_string(),
-                BlockchainTestCase {
-                    genesis_block_header: BlockHeader {
-                        hash: genesis_hash,
-                        gas_limit: U256::from(30_000_000),
-                        ..Default::default()
-                    },
-                    blocks: vec![block],
-                    post_state: Some(post_state),
-                    pre: State(BTreeMap::new()),
-                    block_hashes: Vec::new(),
-                    lastblockhash: block_hash,
-                    network: fork,
-                    seal_engine: SealEngine::NoProof,
-                    config: None,
-                    genesis_rlp: None,
                 },
-            )]));
-
-            let summary = execute_suite(
-                Path::new("ommer-rewards.json"),
-                &suite,
-                ExecuteConfig::default(),
-                &NameFilter::default(),
-                &mut NoopHook,
-            )
-            .unwrap();
-            assert_eq!(summary.executed, 1, "fork {fork:?}");
+            );
+            post_state.insert(
+                ommer_miner,
+                Account { balance: U256::from(base_reward * 7 / 8), ..Default::default() },
+            );
         }
+
+        let block_header = BlockHeader {
+            parent_hash: genesis_hash,
+            hash: block_hash,
+            coinbase: miner,
+            number: U256::ONE,
+            gas_limit: U256::from(30_000_000),
+            timestamp: U256::ONE,
+            ..Default::default()
+        };
+        let ommer_header =
+            BlockHeader { coinbase: ommer_miner, number: U256::ZERO, ..Default::default() };
+        let block = if fork == ForkSpec::Byzantium {
+            Block {
+                rlp_decoded: Some(DecodedBlock {
+                    block_header: Some(block_header),
+                    uncle_headers: vec![ommer_header],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        } else {
+            Block {
+                block_header: Some(block_header),
+                uncle_headers: Some(vec![ommer_header]),
+                ..Default::default()
+            }
+        };
+
+        let suite = BlockchainTest(BTreeMap::from([(
+            "ommer-rewards".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader {
+                    hash: genesis_hash,
+                    gas_limit: U256::from(30_000_000),
+                    ..Default::default()
+                },
+                blocks: vec![block],
+                post_state: Some(post_state),
+                pre: State(BTreeMap::new()),
+                block_hashes: Vec::new(),
+                lastblockhash: block_hash,
+                network: fork,
+                seal_engine: SealEngine::NoProof,
+                config: None,
+                genesis_rlp: None,
+            },
+        )]));
+
+        let summary = execute_suite(
+            Path::new("ommer-rewards.json"),
+            &suite,
+            ExecuteConfig::default(),
+            &NameFilter::default(),
+            &mut NoopHook,
+        )
+        .unwrap();
+        assert_eq!(summary.executed, 1);
     }
 
     #[test]

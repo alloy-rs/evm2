@@ -2876,31 +2876,28 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod tests_edge_cases {
     use super::{tests::*, *};
+    use crate::tests::DEF_SPEC;
     use evm2::{BaseEvmTypes, OpcodeConfig};
+    use test_case::{test_case, test_matrix};
 
     /// Opcodes the host overrides have no stack inputs in analysis: `analyze` must reject them
     /// rather than read their operands.
-    #[test]
-    fn unsupported_host_opcodes_are_rejected() {
-        let view = OpcodeConfig::<BaseEvmTypes>::base_for_spec(crate::tests::DEF_SPEC).view(None);
-        for opcode in [
-            op::MLOAD,
-            op::MSTORE,
-            op::MSTORE8,
-            op::CODECOPY,
-            op::CALLDATACOPY,
-            op::RETURNDATACOPY,
-            op::MCOPY,
-            op::EXTCODECOPY,
-            op::CALL,
-            op::CALLCODE,
-            op::DELEGATECALL,
-            op::STATICCALL,
-        ] {
-            let mut bytecode =
-                Bytecode::new(vec![opcode, op::STOP], crate::tests::DEF_SPEC, None, Some(&view));
-            assert!(bytecode.analyze().is_err(), "{opcode:#04x}");
-        }
+    #[test_case(op::MLOAD)]
+    #[test_case(op::MSTORE)]
+    #[test_case(op::MSTORE8)]
+    #[test_case(op::CODECOPY)]
+    #[test_case(op::CALLDATACOPY)]
+    #[test_case(op::RETURNDATACOPY)]
+    #[test_case(op::MCOPY)]
+    #[test_case(op::EXTCODECOPY)]
+    #[test_case(op::CALL)]
+    #[test_case(op::CALLCODE)]
+    #[test_case(op::DELEGATECALL)]
+    #[test_case(op::STATICCALL)]
+    fn unsupported_host_opcodes_are_rejected(opcode: u8) {
+        let view = OpcodeConfig::<BaseEvmTypes>::base_for_spec(DEF_SPEC).view(None);
+        let mut bytecode = Bytecode::new(vec![opcode, op::STOP], DEF_SPEC, None, Some(&view));
+        assert!(bytecode.analyze().is_err());
     }
 
     /// Three callers to the same internal function. The return JUMP should
@@ -4501,30 +4498,28 @@ mod tests_edge_cases {
         }
     }
 
-    #[test]
-    fn mload_known_word_after_call() {
-        let known = Some(U256::from(0x80));
-        // Operands: return length and offset, then arguments that cover the word, which calls
-        // only read.
-        let cases = [
-            ("PUSH 1 PUSH 0x5f", None),
-            ("PUSH 1 PUSH0 CALLDATALOAD", None),
-            ("PUSH0 CALLDATALOAD PUSH 0x20", None),
-            ("PUSH 0x20 PUSH 0x60", known),
-            ("PUSH0 CALLDATALOAD PUSH 0x60", known),
-            ("PUSH0 PUSH0 CALLDATALOAD", known),
-        ];
-        for op in [
+    // Operands: return length and offset, then arguments that cover the word, which calls only
+    // read.
+    #[test_matrix(
+        [
             "PUSH0 PUSH 4 GAS CALL",
             "PUSH0 PUSH 4 GAS CALLCODE",
             "PUSH 4 GAS STATICCALL",
-            "PUSH 4 GAS DELEGATECALL",
-        ] {
-            for (ret, expected) in cases {
-                let src = format!("{ret} PUSH 0x40 PUSH0 {op} POP");
-                assert_eq!(mload_0x40_after(&src), expected, "{src}");
-            }
-        }
+            "PUSH 4 GAS DELEGATECALL"
+        ],
+        [
+            ("PUSH 1 PUSH 0x5f", None),
+            ("PUSH 1 PUSH0 CALLDATALOAD", None),
+            ("PUSH0 CALLDATALOAD PUSH 0x20", None),
+            ("PUSH 0x20 PUSH 0x60", Some(U256::from(0x80))),
+            ("PUSH0 CALLDATALOAD PUSH 0x60", Some(U256::from(0x80))),
+            ("PUSH0 PUSH0 CALLDATALOAD", Some(U256::from(0x80)))
+        ]
+    )]
+    fn mload_known_word_after_call(op: &str, case: (&str, Option<U256>)) {
+        let (ret, expected) = case;
+        let src = format!("{ret} PUSH 0x40 PUSH0 {op} POP");
+        assert_eq!(mload_0x40_after(&src), expected, "{src}");
     }
 
     #[test]
@@ -4588,76 +4583,78 @@ mod tests_edge_cases {
         assert!(insts.filter(|(_, d)| d.opcode == op::CALLDATASIZE).all(|(_, d)| d.is_dead_code()));
     }
 
+    /// An old Vyper private function that saves its return address at 0x140 in memory and loops
+    /// over a 3-word array at `array` with `check` as the bounds check.
+    fn bounded_store_src(array: u32, check: &str) -> String {
+        format!(
+            "
+            PUSH %ret
+            PUSH2 0x0140
+            MSTORE              ; return address
+            PUSH0
+            PUSH2 0x0200
+            MSTORE              ; i = 0
+        loop:
+            JUMPDEST
+            CALLDATASIZE
+            PUSH2 {array:#x}
+            PUSH2 0x0200
+            MLOAD               ; [value, array, i]
+            {check}
+        body:
+            JUMPDEST
+            PUSH1 0x20
+            MUL
+            ADD
+            MSTORE              ; array[i] = value
+            PUSH2 0x0200
+            MLOAD
+            PUSH1 0x01
+            ADD
+            DUP1
+            PUSH2 0x0200
+            MSTORE
+            PUSH1 0x03
+            EQ
+            ISZERO
+            PUSH %loop
+            JUMPI
+            PUSH2 0x0140
+            MLOAD
+            JUMP                ; return
+        ret:
+            JUMPDEST
+            STOP
+        oob:
+            JUMPDEST
+            PUSH0
+            DUP1
+            REVERT
+            "
+        )
+    }
+
     /// Old Vyper saves the return address of a private function in memory, and a loop with a
     /// bounds check stores to an array next to it at an unknown index.
+    // `i < 3`, as each form of the bounds check shows on the edge to `body`.
+    #[test_case("PUSH1 0x03 DUP2 LT PUSH %body JUMPI PUSH %oob JUMP")]
+    #[test_case("DUP1 PUSH1 0x03 GT PUSH %body JUMPI PUSH %oob JUMP")]
+    #[test_case("PUSH1 0x02 DUP2 GT ISZERO PUSH %body JUMPI PUSH %oob JUMP")]
+    #[test_case("DUP1 PUSH1 0x02 LT ISZERO PUSH %body JUMPI PUSH %oob JUMP")]
+    #[test_case("PUSH1 0x03 DUP2 LT ISZERO PUSH %oob JUMPI")]
+    fn bounded_store_keeps_memory_return_address(check: &str) {
+        // The array ends where the return address starts.
+        let bytecode = analyze_asm(&bounded_store_src(0xe0, check));
+        assert!(!bytecode.has_dynamic_jumps);
+        let bytecode = analyze_asm(&bounded_store_src(0x160, check));
+        assert!(!bytecode.has_dynamic_jumps);
+    }
+
+    /// With `i < 4`, `array[3]` overwrites the return address.
     #[test]
-    fn bounded_store_keeps_memory_return_address() {
-        let src = |array: u32, check: &str| {
-            format!(
-                "
-                PUSH %ret
-                PUSH2 0x0140
-                MSTORE              ; return address
-                PUSH0
-                PUSH2 0x0200
-                MSTORE              ; i = 0
-            loop:
-                JUMPDEST
-                CALLDATASIZE
-                PUSH2 {array:#x}
-                PUSH2 0x0200
-                MLOAD               ; [value, array, i]
-                {check}
-            body:
-                JUMPDEST
-                PUSH1 0x20
-                MUL
-                ADD
-                MSTORE              ; array[i] = value
-                PUSH2 0x0200
-                MLOAD
-                PUSH1 0x01
-                ADD
-                DUP1
-                PUSH2 0x0200
-                MSTORE
-                PUSH1 0x03
-                EQ
-                ISZERO
-                PUSH %loop
-                JUMPI
-                PUSH2 0x0140
-                MLOAD
-                JUMP                ; return
-            ret:
-                JUMPDEST
-                STOP
-            oob:
-                JUMPDEST
-                PUSH0
-                DUP1
-                REVERT
-                "
-            )
-        };
-        // `i < 3`, as each form of the bounds check shows on the edge to `body`.
-        let checks = [
-            "PUSH1 0x03 DUP2 LT PUSH %body JUMPI PUSH %oob JUMP",
-            "DUP1 PUSH1 0x03 GT PUSH %body JUMPI PUSH %oob JUMP",
-            "PUSH1 0x02 DUP2 GT ISZERO PUSH %body JUMPI PUSH %oob JUMP",
-            "DUP1 PUSH1 0x02 LT ISZERO PUSH %body JUMPI PUSH %oob JUMP",
-            "PUSH1 0x03 DUP2 LT ISZERO PUSH %oob JUMPI",
-        ];
-        for check in checks {
-            // The array ends where the return address starts.
-            let bytecode = analyze_asm(&src(0xe0, check));
-            assert!(!bytecode.has_dynamic_jumps, "{check}");
-            let bytecode = analyze_asm(&src(0x160, check));
-            assert!(!bytecode.has_dynamic_jumps, "{check}");
-        }
-        // With `i < 4`, `array[3]` overwrites the return address.
-        let bytecode =
-            analyze_asm(&src(0xe0, "PUSH1 0x04 DUP2 LT PUSH %body JUMPI PUSH %oob JUMP"));
+    fn bounded_store_past_bound_clobbers_memory_return_address() {
+        let check = "PUSH1 0x04 DUP2 LT PUSH %body JUMPI PUSH %oob JUMP";
+        let bytecode = analyze_asm(&bounded_store_src(0xe0, check));
         assert!(bytecode.has_dynamic_jumps);
     }
 

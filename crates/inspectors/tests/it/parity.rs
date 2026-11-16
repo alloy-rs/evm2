@@ -17,17 +17,10 @@ use evm2::{evm::InMemoryDB, utils::address_to_word};
 use evm2_inspectors::tracing::{
     TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
 };
+use test_case::test_case;
 
-#[test]
-fn test_parity_selfdestruct_london() {
-    test_parity_selfdestruct(SpecId::LONDON);
-}
-
-#[test]
-fn test_parity_selfdestruct_cancun() {
-    test_parity_selfdestruct(SpecId::CANCUN);
-}
-
+#[test_case(SpecId::LONDON; "test_parity_selfdestruct_london")]
+#[test_case(SpecId::CANCUN; "test_parity_selfdestruct_cancun")]
 fn test_parity_selfdestruct(spec_id: SpecId) {
     /*
     contract DummySelfDestruct {
@@ -545,31 +538,25 @@ fn vmtrace_reports_remaining_gas_after_storage_credit() {
     }
 }
 
-#[test]
-fn non_vm_traces_only_record_gas_deltas() {
+#[test_case(TracingInspectorConfig::default_geth(); "geth")]
+#[test_case(TracingInspectorConfig::default_parity(); "parity")]
+#[test_case(TracingInspectorConfig::from_geth_call_config(&Default::default()); "geth_call")]
+fn non_vm_traces_only_record_gas_deltas(config: TracingInspectorConfig) {
     // Exercise a memory write, a call, a storage write that draws state gas from the remaining
     // gas and a storage gas credit.
     let code = hex!("602a5f525f5f5f5f5f604361fffff15060015f555f5f5500");
-    for config in [
-        TracingInspectorConfig::default_geth(),
-        TracingInspectorConfig::default_parity(),
-        TracingInspectorConfig::from_geth_call_config(&Default::default()),
-    ] {
-        let inspector = inspect_code(&code, &hex!("00"), SpecId::AMSTERDAM, config);
-        for node in inspector.traces().nodes() {
-            for delta in &node.trace.step_deltas {
-                assert!(delta.gas_remaining_after.is_some());
-                assert!(delta.memory.is_none());
-                assert!(delta.store.is_none());
-            }
+    let inspector = inspect_code(&code, &hex!("00"), SpecId::AMSTERDAM, config);
+    for node in inspector.traces().nodes() {
+        for delta in &node.trace.step_deltas {
+            assert!(delta.gas_remaining_after.is_some());
+            assert!(delta.memory.is_none());
+            assert!(delta.store.is_none());
         }
-        if config.record_steps {
-            assert_eq!(inspector.traces().nodes()[0].trace.step_deltas.len(), 3);
-        } else {
-            assert!(
-                inspector.traces().nodes().iter().all(|node| node.trace.step_deltas.is_empty())
-            );
-        }
+    }
+    if config.record_steps {
+        assert_eq!(inspector.traces().nodes()[0].trace.step_deltas.len(), 3);
+    } else {
+        assert!(inspector.traces().nodes().iter().all(|node| node.trace.step_deltas.is_empty()));
     }
 }
 
@@ -610,34 +597,36 @@ fn vmtrace_storage_writes_include_unchanged_values() {
     }
 }
 
-#[test]
-fn vmtrace_failed_storage_writes_have_no_execution_delta() {
-    for (code, executed) in [(&hex!("55")[..], 0), (&hex!("5f55")[..], 1)] {
-        let trace = trace_vm_code(code, &[]);
-        assert_eq!(trace.ops.len(), executed);
-        assert!(trace.ops.iter().all(|op| op.op.as_deref() != Some("SSTORE")));
-    }
+#[test_case(&hex!("55")[..], 0; "empty_stack")]
+#[test_case(&hex!("5f55")[..], 1; "one_stack_item")]
+fn vmtrace_failed_storage_writes_have_no_execution_delta(code: &[u8], executed: usize) {
+    let trace = trace_vm_code(code, &[]);
+    assert_eq!(trace.ops.len(), executed);
+    assert!(trace.ops.iter().all(|op| op.op.as_deref() != Some("SSTORE")));
+}
 
-    for (code, child, node_idx) in [
-        // SSTORE in a static child
-        (&hex!("5f5f5f5f604361fffffa00")[..], &hex!("602a60075500")[..], 1),
-        // SSTORE in a child with insufficient gas
-        (&hex!("5f5f5f5f5f60436064f100")[..], &hex!("602a60075500")[..], 1),
-    ] {
-        let inspector =
-            inspect_code(code, child, SpecId::OSAKA, TracingInspectorConfig::parity_vm_trace());
-        let frame = &inspector.traces().nodes()[node_idx].trace;
-        assert!(frame.steps.last().unwrap().status.unwrap().is_halt());
-        let trace = inspector.into_parity_builder().vm_trace();
-        let frame = if node_idx == 0 {
-            &trace
-        } else {
-            trace.ops.iter().find_map(|step| step.sub.as_ref()).unwrap()
-        };
-        let failed = frame.ops.last().unwrap();
-        assert_eq!(failed.op.as_deref(), Some("SSTORE"));
-        assert!(failed.ex.is_none());
-    }
+// SSTORE in a static child
+#[test_case(&hex!("5f5f5f5f604361fffffa00")[..], &hex!("602a60075500")[..], 1; "static_child")]
+// SSTORE in a child with insufficient gas
+#[test_case(&hex!("5f5f5f5f5f60436064f100")[..], &hex!("602a60075500")[..], 1; "short_gas_child")]
+fn vmtrace_failed_child_storage_writes_have_no_execution_delta(
+    code: &[u8],
+    child: &[u8],
+    node_idx: usize,
+) {
+    let inspector =
+        inspect_code(code, child, SpecId::OSAKA, TracingInspectorConfig::parity_vm_trace());
+    let frame = &inspector.traces().nodes()[node_idx].trace;
+    assert!(frame.steps.last().unwrap().status.unwrap().is_halt());
+    let trace = inspector.into_parity_builder().vm_trace();
+    let frame = if node_idx == 0 {
+        &trace
+    } else {
+        trace.ops.iter().find_map(|step| step.sub.as_ref()).unwrap()
+    };
+    let failed = frame.ops.last().unwrap();
+    assert_eq!(failed.op.as_deref(), Some("SSTORE"));
+    assert!(failed.ex.is_none());
 }
 
 #[test]
@@ -670,40 +659,40 @@ fn vmtrace_faults_have_no_execution_delta() {
     }
 }
 
-#[test]
-fn vmtrace_omits_operations_rejected_before_execution() {
-    let overflow = [0x5f; 1025];
-    for (code, executed) in [
-        (&hex!("600101")[..], 1),
-        (&hex!("5ffe")[..], 1),
-        (&hex!("5f0c")[..], 1),
-        (&hex!("5ff1")[..], 1),
-        (&overflow[..], 1024),
-    ] {
-        let trace = trace_vm_code(code, &[]);
-        assert_eq!(trace.ops.len(), executed, "{code:x?}");
-        assert!(trace.ops.iter().all(|op| op.ex.is_some()), "{trace:?}");
-    }
+#[test_case(&hex!("600101")[..], 1)]
+#[test_case(&hex!("5ffe")[..], 1)]
+#[test_case(&hex!("5f0c")[..], 1)]
+#[test_case(&hex!("5ff1")[..], 1)]
+#[test_case(&[0x5f; 1025][..], 1024; "stack_overflow")]
+fn vmtrace_omits_operations_rejected_before_execution(code: &[u8], executed: usize) {
+    let trace = trace_vm_code(code, &[]);
+    assert_eq!(trace.ops.len(), executed);
+    assert!(trace.ops.iter().all(|op| op.ex.is_some()), "{trace:?}");
+}
 
+#[test_case(&hex!("5f5f5f5e")[..], SpecId::SHANGHAI, 3)]
+#[test_case(&hex!("5fe65b")[..], SpecId::AMSTERDAM, 1)]
+#[test_case(&hex!("5f5fe75b")[..], SpecId::AMSTERDAM, 2)]
+#[test_case(&hex!("5f5fe85b")[..], SpecId::AMSTERDAM, 2)]
+fn vmtrace_omits_operations_rejected_before_execution_by_spec(
+    code: &[u8],
+    spec: SpecId,
+    executed: usize,
+) {
     let config = TracingInspectorConfig::parity_vm_trace();
-    for (code, spec, executed) in [
-        (&hex!("5f5f5f5e")[..], SpecId::SHANGHAI, 3),
-        (&hex!("5fe65b")[..], SpecId::AMSTERDAM, 1),
-        (&hex!("5f5fe75b")[..], SpecId::AMSTERDAM, 2),
-        (&hex!("5f5fe85b")[..], SpecId::AMSTERDAM, 2),
-    ] {
-        let trace = inspect_code(code, &[], spec, config).into_parity_builder().vm_trace();
-        assert_eq!(trace.ops.len(), executed, "{trace:?}");
-    }
+    let trace = inspect_code(code, &[], spec, config).into_parity_builder().vm_trace();
+    assert_eq!(trace.ops.len(), executed, "{trace:?}");
+}
+
+#[test_case(&hex!("6001600201")[..], &[0, 2, 4][..])]
+#[test_case(&hex!("60")[..], &[0][..])]
+fn vmtrace_has_no_implicit_stop(code: &[u8], pcs: &[usize]) {
+    let trace = trace_vm_code(code, &[]);
+    assert_eq!(trace.ops.iter().map(|op| op.pc).collect::<Vec<_>>(), pcs);
 }
 
 #[test]
-fn vmtrace_has_no_implicit_stop() {
-    for (code, pcs) in [(&hex!("6001600201")[..], &[0, 2, 4][..]), (&hex!("60")[..], &[0][..])] {
-        let trace = trace_vm_code(code, &[]);
-        assert_eq!(trace.ops.iter().map(|op| op.pc).collect::<Vec<_>>(), pcs);
-    }
-
+fn vmtrace_child_has_no_implicit_stop() {
     let trace = trace_vm_code(&hex!("5f5f5f5f5f604361fffff100"), &hex!("600150"));
     let sub = trace.ops[7].sub.as_ref().unwrap();
     assert_eq!(sub.ops.iter().map(|op| op.pc).collect::<Vec<_>>(), [0, 2]);
@@ -726,35 +715,33 @@ fn vmtrace_precompile_and_empty_code_calls_have_empty_subtraces() {
     for call in [&trace.ops[7], &trace.ops[16]] {
         assert_eq!(call.sub, Some(VmTrace::default()), "{trace:?}");
     }
+}
 
-    for (code, op) in [
-        (&hex!("60015f5260016020525f5f60405f5f600661fffff100")[..], "CALL"),
-        (&hex!("5f5f5f5ff5505f5f5f5ff500")[..], "CREATE2"),
-    ] {
-        let trace = trace_vm_code(code, &[]);
-        let call = trace.ops.iter().rev().find(|call| call.op.as_deref() == Some(op)).unwrap();
-        assert_eq!(call.ex.as_ref().unwrap().push, vec![U256::ZERO]);
-        assert_eq!(call.sub, Some(VmTrace::default()), "{trace:?}");
-    }
+#[test_case(&hex!("60015f5260016020525f5f60405f5f600661fffff100")[..], "CALL"; "precompile")]
+#[test_case(&hex!("5f5f5f5ff5505f5f5f5ff500")[..], "CREATE2"; "create2_collision")]
+fn vmtrace_failed_precompile_and_create_calls_have_empty_subtraces(code: &[u8], op: &str) {
+    let trace = trace_vm_code(code, &[]);
+    let call = trace.ops.iter().rev().find(|call| call.op.as_deref() == Some(op)).unwrap();
+    assert_eq!(call.ex.as_ref().unwrap().push, vec![U256::ZERO]);
+    assert_eq!(call.sub, Some(VmTrace::default()), "{trace:?}");
+}
+
+#[test_case(&hex!("5f5f5f5f6001604361fffff1505f5f5f5f5f604361fffff100")[..]; "unfunded_call")]
+#[test_case(&hex!("5f5f6001f0505f5f5f5f5f604361fffff100")[..]; "unfunded_create")]
+fn vmtrace_failed_precheck_has_no_subtrace(code: &[u8]) {
+    let trace = trace_vm_code(code, &hex!("00"));
+    let calls = trace
+        .ops
+        .iter()
+        .filter(|op| matches!(op.op.as_deref(), Some("CALL" | "CREATE")))
+        .collect::<Vec<_>>();
+    assert_eq!(calls[0].ex.as_ref().unwrap().push, vec![U256::ZERO]);
+    assert!(calls[0].sub.is_none(), "{trace:?}");
+    assert_eq!(calls[1].sub.as_ref().unwrap().ops.len(), 1);
 }
 
 #[test]
-fn vmtrace_failed_precheck_has_no_subtrace() {
-    for code in [
-        &hex!("5f5f5f5f6001604361fffff1505f5f5f5f5f604361fffff100")[..],
-        &hex!("5f5f6001f0505f5f5f5f5f604361fffff100")[..],
-    ] {
-        let trace = trace_vm_code(code, &hex!("00"));
-        let calls = trace
-            .ops
-            .iter()
-            .filter(|op| matches!(op.op.as_deref(), Some("CALL" | "CREATE")))
-            .collect::<Vec<_>>();
-        assert_eq!(calls[0].ex.as_ref().unwrap().push, vec![U256::ZERO]);
-        assert!(calls[0].sub.is_none(), "{trace:?}");
-        assert_eq!(calls[1].sub.as_ref().unwrap().ops.len(), 1);
-    }
-
+fn vmtrace_call_depth_limit_has_no_subtrace() {
     let code = hex!("600060006000600060003060645a03f100");
     let trace =
         inspect_code(&code, &[], SpecId::HOMESTEAD, TracingInspectorConfig::parity_vm_trace())
@@ -789,60 +776,55 @@ fn vmtrace_call_pushes_result_and_copies_return_memory() {
     assert_eq!(mem.data.as_ref(), B256::with_last_byte(42).0);
 }
 
-#[test]
-fn vmtrace_terminal_call_finalizes_delta_at_capture_limit() {
-    // No following opcode is needed to finalize the call, even if its child is not recorded.
-    for config in [
-        TracingInspectorConfig::parity_vm_trace(),
-        TracingInspectorConfig {
-            step_limit: core::num::NonZeroU64::new(8),
-            ..TracingInspectorConfig::parity_vm_trace()
-        },
-    ] {
-        let trace = inspect_code(
-            &hex!("602060205f5f5f604361fffff1"),
-            &hex!("602a5f5360015ff3"),
-            SpecId::OSAKA,
-            config,
-        )
-        .into_parity_builder()
-        .vm_trace();
-        let call = trace.ops.last().unwrap();
-        assert_eq!(call.op.as_deref(), Some("CALL"));
-        let ex = call.ex.as_ref().unwrap();
-        assert_eq!(ex.push, vec![U256::ONE]);
-        let mem = ex.mem.as_ref().unwrap();
-        assert_eq!(mem.off, 32);
-        assert_eq!(mem.data.as_ref(), &[42]);
-        // The cost includes the forwarded gas. The child spends 16 gas and returns the rest.
-        assert_eq!(call.cost, 2_600 + 6 + 65_535);
-        assert_eq!(ex.used, trace.ops[6].ex.as_ref().unwrap().used - call.cost + 65_535 - 16);
-    }
+// No following opcode is needed to finalize the call, even if its child is not recorded.
+#[test_case(TracingInspectorConfig::parity_vm_trace(); "unlimited")]
+#[test_case(
+    TracingInspectorConfig {
+        step_limit: core::num::NonZeroU64::new(8),
+        ..TracingInspectorConfig::parity_vm_trace()
+    };
+    "step_limit"
+)]
+fn vmtrace_terminal_call_finalizes_delta_at_capture_limit(config: TracingInspectorConfig) {
+    let trace = inspect_code(
+        &hex!("602060205f5f5f604361fffff1"),
+        &hex!("602a5f5360015ff3"),
+        SpecId::OSAKA,
+        config,
+    )
+    .into_parity_builder()
+    .vm_trace();
+    let call = trace.ops.last().unwrap();
+    assert_eq!(call.op.as_deref(), Some("CALL"));
+    let ex = call.ex.as_ref().unwrap();
+    assert_eq!(ex.push, vec![U256::ONE]);
+    let mem = ex.mem.as_ref().unwrap();
+    assert_eq!(mem.off, 32);
+    assert_eq!(mem.data.as_ref(), &[42]);
+    // The cost includes the forwarded gas. The child spends 16 gas and returns the rest.
+    assert_eq!(call.cost, 2_600 + 6 + 65_535);
+    assert_eq!(ex.used, trace.ops[6].ex.as_ref().unwrap().used - call.cost + 65_535 - 16);
 }
 
-#[test]
-fn vmtrace_calls_only_record_returned_memory() {
-    for code in [
-        &hex!("602060205f5f5f604361fffff100")[..], // CALL
-        &hex!("602060205f5f5f604361fffff200")[..], // CALLCODE
-        &hex!("602060205f5f604361fffff400")[..],   // DELEGATECALL
-        &hex!("602060205f5f604361fffffa00")[..],   // STATICCALL
-        &hex!("600160205f5f5f604361fffff100")[..], // Output buffer shorter than returndata
+#[test_case(&hex!("602060205f5f5f604361fffff100")[..]; "call")]
+#[test_case(&hex!("602060205f5f5f604361fffff200")[..]; "callcode")]
+#[test_case(&hex!("602060205f5f604361fffff400")[..]; "delegatecall")]
+#[test_case(&hex!("602060205f5f604361fffffa00")[..]; "staticcall")]
+#[test_case(&hex!("600160205f5f5f604361fffff100")[..]; "output buffer shorter than returndata")]
+fn vmtrace_calls_only_record_returned_memory(code: &[u8]) {
+    for child in [
+        &hex!("602a5f5360015ff3")[..], // Return one byte
+        &hex!("602a5f5360015ffd")[..], // Revert with one byte
+        &hex!("602a5f5360205ff3")[..], // Return a full word
     ] {
-        for child in [
-            &hex!("602a5f5360015ff3")[..], // Return one byte
-            &hex!("602a5f5360015ffd")[..], // Revert with one byte
-            &hex!("602a5f5360205ff3")[..], // Return a full word
-        ] {
-            let trace = trace_vm_code(code, child);
-            let call = &trace.ops[trace.ops.len() - 2];
-            let mem = call.ex.as_ref().unwrap().mem.as_ref().unwrap();
-            let expected_len = if code[1] == 1 || child[5] == 1 { 1 } else { 32 };
-            assert_eq!(mem.off, 32);
-            assert_eq!(mem.data.len(), expected_len);
-            assert_eq!(mem.data[0], 42);
-            assert!(mem.data[1..].iter().all(|byte| *byte == 0));
-        }
+        let trace = trace_vm_code(code, child);
+        let call = &trace.ops[trace.ops.len() - 2];
+        let mem = call.ex.as_ref().unwrap().mem.as_ref().unwrap();
+        let expected_len = if code[1] == 1 || child[5] == 1 { 1 } else { 32 };
+        assert_eq!(mem.off, 32);
+        assert_eq!(mem.data.len(), expected_len);
+        assert_eq!(mem.data[0], 42);
+        assert!(mem.data[1..].iter().all(|byte| *byte == 0));
     }
 }
 
@@ -911,22 +893,18 @@ fn vmtrace_precompile_does_not_steal_the_next_calls_subtrace() {
     assert_eq!(trace.ops[7].ex.as_ref().unwrap().push, vec![U256::ONE]);
 }
 
-#[test]
-fn vmtrace_memory_copy_and_terminal_writes() {
-    for (code, offset, expected) in [
-        (&hex!("63aabbccdd5f526004601c601d5e00")[..], 29, hex!("aabbccdd").to_vec()),
-        (&hex!("60aa600153")[..], 1, vec![0xaa]),
-    ] {
-        let trace = trace_vm_code(code, &[]);
-        let mem = trace
-            .ops
-            .iter()
-            .rev()
-            .find_map(|op| op.ex.as_ref().and_then(|ex| ex.mem.as_ref()))
-            .unwrap();
-        assert_eq!(mem.off, offset);
-        assert_eq!(mem.data, expected);
-    }
+#[test_case(&hex!("63aabbccdd5f526004601c601d5e00")[..], 29, hex!("aabbccdd").to_vec(); "mcopy")]
+#[test_case(&hex!("60aa600153")[..], 1, vec![0xaa]; "terminal_mstore8")]
+fn vmtrace_memory_copy_and_terminal_writes(code: &[u8], offset: usize, expected: Vec<u8>) {
+    let trace = trace_vm_code(code, &[]);
+    let mem = trace
+        .ops
+        .iter()
+        .rev()
+        .find_map(|op| op.ex.as_ref().and_then(|ex| ex.mem.as_ref()))
+        .unwrap();
+    assert_eq!(mem.off, offset);
+    assert_eq!(mem.data, expected);
 }
 
 #[test]
@@ -1016,65 +994,81 @@ fn reverted_create_reports_gas_and_revert_data() {
     }
 }
 
-#[test]
-fn failed_frames_use_parity_labels() {
-    for (code, child, spec, labels) in [
-        (
-            &hex!("5f5f5f5ff5505f5f5f5ff500")[..],
-            &[][..],
-            SpecId::PRAGUE,
-            ["Contract address collision", "contract address collision"],
-        ),
-        (
-            &hex!("5f5f5f5f604361fffffa00")[..],
-            &hex!("602a5f5500")[..],
-            SpecId::PRAGUE,
-            ["Mutable Call In Static Context", "write protection"],
-        ),
-        (
-            &hex!("5f5f5f5f604361fffffa00")[..],
-            &hex!("5f5f5f5f6001604461fffff1")[..],
-            SpecId::PRAGUE,
-            ["Mutable Call In Static Context", "write protection"],
-        ),
-        (
-            &hex!("60015f5f3e00")[..],
-            &[][..],
-            SpecId::PRAGUE,
-            ["Out of bounds", "return data out of bounds"],
-        ),
-        (&hex!("01")[..], &[][..], SpecId::PRAGUE, ["Stack underflow", "stack underflow"]),
-        (&hex!("5f5f5f5e")[..], &[][..], SpecId::SHANGHAI, ["Bad instruction", "invalid opcode"]),
-        (
-            &hex!("646160015ff35f526005601b5ff000")[..],
-            &[][..],
-            SpecId::PRAGUE,
-            ["Out of gas", "max code size exceeded"],
-        ),
-        (
-            &hex!("6760ef5f5360015ff35f52600860185ff000")[..],
-            &[][..],
-            SpecId::PRAGUE,
-            ["Invalid code", "invalid code: must not begin with 0xef"],
-        ),
-        (
-            &hex!("61c0015f5ff000")[..],
-            &[][..],
-            SpecId::PRAGUE,
-            ["Out of gas", "max initcode size exceeded"],
-        ),
-        (
-            &hex!("600060006000600060003060645a03f100")[..],
-            &[][..],
-            SpecId::HOMESTEAD,
-            ["Max call depth exceeded", "max call depth exceeded"],
-        ),
-    ] {
-        let inspector = inspect_code(code, child, spec, TracingInspectorConfig::default_parity());
-        let (parity, geth) = frame_errors(&inspector);
-        assert_eq!(parity, [labels[0]], "{code:x?}");
-        assert_eq!(geth, [labels[1]], "{code:x?}");
-    }
+#[test_case(
+    &hex!("5f5f5f5ff5505f5f5f5ff500")[..],
+    &[][..],
+    SpecId::PRAGUE,
+    ["Contract address collision", "contract address collision"];
+    "address_collision"
+)]
+#[test_case(
+    &hex!("5f5f5f5f604361fffffa00")[..],
+    &hex!("602a5f5500")[..],
+    SpecId::PRAGUE,
+    ["Mutable Call In Static Context", "write protection"];
+    "static_sstore"
+)]
+#[test_case(
+    &hex!("5f5f5f5f604361fffffa00")[..],
+    &hex!("5f5f5f5f6001604461fffff1")[..],
+    SpecId::PRAGUE,
+    ["Mutable Call In Static Context", "write protection"];
+    "static_value_call"
+)]
+#[test_case(
+    &hex!("60015f5f3e00")[..],
+    &[][..],
+    SpecId::PRAGUE,
+    ["Out of bounds", "return data out of bounds"];
+    "returndata_out_of_bounds"
+)]
+#[test_case(
+    &hex!("01")[..],
+    &[][..],
+    SpecId::PRAGUE,
+    ["Stack underflow", "stack underflow"];
+    "stack_underflow"
+)]
+#[test_case(
+    &hex!("5f5f5f5e")[..],
+    &[][..],
+    SpecId::SHANGHAI,
+    ["Bad instruction", "invalid opcode"];
+    "invalid_opcode"
+)]
+#[test_case(
+    &hex!("646160015ff35f526005601b5ff000")[..],
+    &[][..],
+    SpecId::PRAGUE,
+    ["Out of gas", "max code size exceeded"];
+    "max_code_size"
+)]
+#[test_case(
+    &hex!("6760ef5f5360015ff35f52600860185ff000")[..],
+    &[][..],
+    SpecId::PRAGUE,
+    ["Invalid code", "invalid code: must not begin with 0xef"];
+    "ef_prefix"
+)]
+#[test_case(
+    &hex!("61c0015f5ff000")[..],
+    &[][..],
+    SpecId::PRAGUE,
+    ["Out of gas", "max initcode size exceeded"];
+    "max_initcode_size"
+)]
+#[test_case(
+    &hex!("600060006000600060003060645a03f100")[..],
+    &[][..],
+    SpecId::HOMESTEAD,
+    ["Max call depth exceeded", "max call depth exceeded"];
+    "max_call_depth"
+)]
+fn failed_frames_use_parity_labels(code: &[u8], child: &[u8], spec: SpecId, labels: [&str; 2]) {
+    let inspector = inspect_code(code, child, spec, TracingInspectorConfig::default_parity());
+    let (parity, geth) = frame_errors(&inspector);
+    assert_eq!(parity, [labels[0]]);
+    assert_eq!(geth, [labels[1]]);
 }
 
 #[test]
@@ -1141,26 +1135,25 @@ fn create_nonce_overflow_runs_no_frame_since_amsterdam() {
     assert_eq!(traces.len(), 1);
 }
 
-#[test]
-fn create_with_empty_initcode_runs_no_steps() {
+#[test_case(TransactTo::Create, 1; "create_tx")]
+#[test_case(TransactTo::Call(Address::with_last_byte(0x42)), 2; "create_opcode")]
+fn create_with_empty_initcode_runs_no_steps(kind: TransactTo, depth_nodes: usize) {
     let factory = Address::with_last_byte(0x42);
-    for (kind, depth_nodes) in [(TransactTo::Create, 1), (TransactTo::Call(factory), 2)] {
-        let mut db = InMemoryDB::default();
-        db.insert_account_info(
-            &factory,
-            AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f5ff000"))),
-        );
-        let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
-            TracingInspector::new(TracingInspectorConfig::default_parity()),
-        );
-        evm.inspect_tx(TxEnv { gas_limit: 1_000_000, kind, ..Default::default() }).unwrap();
-        let nodes = evm.inspector.traces().nodes();
-        assert_eq!(nodes.len(), depth_nodes);
-        let create = nodes.last().unwrap();
-        assert!(create.kind().is_any_create());
-        assert!(create.trace.success && create.trace.steps.is_empty());
-        assert_eq!(create.trace.gas_used, 0);
-    }
+    let mut db = InMemoryDB::default();
+    db.insert_account_info(
+        &factory,
+        AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f5ff000"))),
+    );
+    let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
+        TracingInspector::new(TracingInspectorConfig::default_parity()),
+    );
+    evm.inspect_tx(TxEnv { gas_limit: 1_000_000, kind, ..Default::default() }).unwrap();
+    let nodes = evm.inspector.traces().nodes();
+    assert_eq!(nodes.len(), depth_nodes);
+    let create = nodes.last().unwrap();
+    assert!(create.kind().is_any_create());
+    assert!(create.trace.success && create.trace.steps.is_empty());
+    assert_eq!(create.trace.gas_used, 0);
 }
 
 #[test]
@@ -1267,34 +1260,32 @@ fn call_step_funded(
     CallStep { gas_remaining: step.0, child_gas_limit: step.1, cost, used }
 }
 
-#[test]
-fn call_cost_includes_forwarded_gas() {
-    for (spec, cold) in [(SpecId::PRAGUE, 2_600), (SpecId::AMSTERDAM, 3_000)] {
-        for (prefix, opcode) in
-            [("5f5f5f5f5f", "f1"), ("5f5f5f5f5f", "f2"), ("5f5f5f5f", "f4"), ("5f5f5f5f", "fa")]
-        {
-            for (child, spent) in [(&hex!("00")[..], 0), (&hex!("5f5ffd")[..], 4), (&[][..], 0)] {
-                let code = hex::decode(format!("{prefix}604361ffff{opcode}00")).unwrap();
-                let step = call_step(&code, child, spec);
-                assert_eq!(step.cost, cold + 65_535);
-                assert_eq!(step.used, step.gas_remaining - step.cost + 65_535 - spent);
-            }
+#[test_case(SpecId::PRAGUE, 2_600; "prague")]
+#[test_case(SpecId::AMSTERDAM, 3_000; "amsterdam")]
+fn call_cost_includes_forwarded_gas(spec: SpecId, cold: u64) {
+    for (prefix, opcode) in
+        [("5f5f5f5f5f", "f1"), ("5f5f5f5f5f", "f2"), ("5f5f5f5f", "f4"), ("5f5f5f5f", "fa")]
+    {
+        for (child, spent) in [(&hex!("00")[..], 0), (&hex!("5f5ffd")[..], 4), (&[][..], 0)] {
+            let code = hex::decode(format!("{prefix}604361ffff{opcode}00")).unwrap();
+            let step = call_step(&code, child, spec);
+            assert_eq!(step.cost, cold + 65_535);
+            assert_eq!(step.used, step.gas_remaining - step.cost + 65_535 - spent);
         }
     }
 }
 
-#[test]
-fn call_cost_excludes_stipend() {
-    // A cold call forwarding 1024 gas.
-    for (spec, cost) in [(SpecId::PRAGUE, 3_624), (SpecId::AMSTERDAM, 4_024)] {
-        for (prefix, opcode) in
-            [("5f5f5f5f5f", "f1"), ("5f5f5f5f5f", "f2"), ("5f5f5f5f", "f4"), ("5f5f5f5f", "fa")]
-        {
-            let code = hex::decode(format!("{prefix}6043610400{opcode}00")).unwrap();
-            let step = call_step(&code, &hex!("00"), spec);
-            assert_eq!(step.cost, cost);
-            assert_eq!(step.used, step.gas_remaining - step.cost + 1_024);
-        }
+// A cold call forwarding 1024 gas.
+#[test_case(SpecId::PRAGUE, 3_624; "prague")]
+#[test_case(SpecId::AMSTERDAM, 4_024; "amsterdam")]
+fn call_cost_excludes_stipend(spec: SpecId, cost: u64) {
+    for (prefix, opcode) in
+        [("5f5f5f5f5f", "f1"), ("5f5f5f5f5f", "f2"), ("5f5f5f5f", "f4"), ("5f5f5f5f", "fa")]
+    {
+        let code = hex::decode(format!("{prefix}6043610400{opcode}00")).unwrap();
+        let step = call_step(&code, &hex!("00"), spec);
+        assert_eq!(step.cost, cost);
+        assert_eq!(step.used, step.gas_remaining - step.cost + 1_024);
     }
 }
 
@@ -1307,82 +1298,70 @@ fn precompile_call_cost_includes_forwarded_gas() {
     }
 }
 
-#[test]
-fn unfunded_call_cost_includes_forwarded_gas() {
-    // The child fails with out of funds and returns its gas, including the stipend. The cost
-    // has the base, cold, value and, before Amsterdam, new account charges plus the forwarded
-    // 1000 gas, without the stipend. Amsterdam charges the new account as state gas, which the
-    // failed call gives back.
-    for (spec, child, cost) in [
-        (SpecId::PRAGUE, &hex!("00")[..], 2_600 + 9_000 + 1_000),
-        (SpecId::PRAGUE, &[][..], 37_600),
-        (SpecId::AMSTERDAM, &hex!("00")[..], 3_000 + 11_300 + 1_000),
-        (SpecId::AMSTERDAM, &[][..], 3_000 + 11_300 + 1_000),
-    ] {
-        let step = call_step(&hex!("5f5f5f5f600160436103e8f100"), child, spec);
-        assert_eq!(step.child_gas_limit, Some(1_000 + 2_300));
+// The child fails with out of funds and returns its gas, including the stipend. The cost has the
+// base, cold, value and, before Amsterdam, new account charges plus the forwarded 1000 gas,
+// without the stipend. Amsterdam charges the new account as state gas, which the failed call
+// gives back.
+#[test_case(SpecId::PRAGUE, &hex!("00")[..], 2_600 + 9_000 + 1_000; "prague_existing_child")]
+#[test_case(SpecId::PRAGUE, &[][..], 37_600; "prague_empty_child")]
+#[test_case(SpecId::AMSTERDAM, &hex!("00")[..], 3_000 + 11_300 + 1_000; "amsterdam_existing_child")]
+#[test_case(SpecId::AMSTERDAM, &[][..], 3_000 + 11_300 + 1_000; "amsterdam_empty_child")]
+fn unfunded_call_cost_includes_forwarded_gas(spec: SpecId, child: &[u8], cost: u64) {
+    let step = call_step(&hex!("5f5f5f5f600160436103e8f100"), child, spec);
+    assert_eq!(step.child_gas_limit, Some(1_000 + 2_300));
+    assert_eq!(step.cost, cost);
+    assert_eq!(step.used, step.gas_remaining - cost + 3_300);
+}
+
+#[test_case(SpecId::PRAGUE, 32_000, 0; "prague")]
+#[test_case(SpecId::AMSTERDAM, 12_000, NEW_ACCOUNT_STATE_GAS; "amsterdam")]
+fn create_cost_excludes_forwarded_gas(spec: SpecId, cost: u64, state_gas: u64) {
+    for code in [&hex!("5f5f5ff000")[..], &hex!("5f5f5f5ff500")[..]] {
+        let step = call_step(code, &[], spec);
+        let available = step.gas_remaining - cost - state_gas;
         assert_eq!(step.cost, cost);
-        assert_eq!(step.used, step.gas_remaining - cost + 3_300);
+        assert_eq!(step.child_gas_limit, Some(available - available / 64));
+        assert_eq!(step.used, available);
     }
 }
 
-#[test]
-fn create_cost_excludes_forwarded_gas() {
-    for (spec, cost, state_gas) in
-        [(SpecId::PRAGUE, 32_000, 0), (SpecId::AMSTERDAM, 12_000, NEW_ACCOUNT_STATE_GAS)]
-    {
-        for code in [&hex!("5f5f5ff000")[..], &hex!("5f5f5f5ff500")[..]] {
-            let step = call_step(code, &[], spec);
-            let available = step.gas_remaining - cost - state_gas;
-            assert_eq!(step.cost, cost);
-            assert_eq!(step.child_gas_limit, Some(available - available / 64));
-            assert_eq!(step.used, available);
-        }
+// Amsterdam charges the account creation state gas, which spills into regular gas when the
+// reservoir is empty. It is not part of the cost but the child gets 63/64 of what is left after
+// it.
+#[test_case(SpecId::PRAGUE, 0; "prague")]
+#[test_case(SpecId::AMSTERDAM, NEW_ACCOUNT_STATE_GAS; "amsterdam")]
+fn create_cost_counts_all_gas_charged_before_the_child_split(spec: SpecId, state_gas: u64) {
+    for code in [&hex!("5f5f5ff000")[..], &hex!("5f5f5f5ff500")[..]] {
+        let step = call_step(code, &[], spec);
+        let remaining = step.gas_remaining - step.cost - state_gas;
+        assert_eq!(step.child_gas_limit, Some(remaining - remaining / 64));
     }
 }
 
-#[test]
-fn create_cost_counts_all_gas_charged_before_the_child_split() {
-    // Amsterdam charges the account creation state gas, which spills into regular gas when the
-    // reservoir is empty. It is not part of the cost but the child gets 63/64 of what is left
-    // after it.
-    for (spec, state_gas) in [(SpecId::PRAGUE, 0), (SpecId::AMSTERDAM, NEW_ACCOUNT_STATE_GAS)] {
-        for code in [&hex!("5f5f5ff000")[..], &hex!("5f5f5f5ff500")[..]] {
-            let step = call_step(code, &[], spec);
-            let remaining = step.gas_remaining - step.cost - state_gas;
-            assert_eq!(step.child_gas_limit, Some(remaining - remaining / 64));
-        }
-    }
-}
-
-#[test]
-fn create_cost_counts_initcode_memory_and_hash_words() {
+#[test_case(SpecId::PRAGUE, 32_000, 0; "prague")]
+#[test_case(SpecId::AMSTERDAM, 12_000, NEW_ACCOUNT_STATE_GAS; "amsterdam")]
+fn create_cost_counts_initcode_memory_and_hash_words(spec: SpecId, base: u64, state_gas: u64) {
     // The initcode `5f5f5f5f00` spends 8 gas.
-    for (spec, base, state_gas) in
-        [(SpecId::PRAGUE, 32_000, 0), (SpecId::AMSTERDAM, 12_000, NEW_ACCOUNT_STATE_GAS)]
-    {
-        for (code, cost) in [
-            (&hex!("645f5f5f5f005f526005601b5ff000")[..], base + 2),
-            (&hex!("645f5f5f5f005f526005601b5f5ff500")[..], base + 8),
-            (&hex!("6001600052600160ff5ff000")[..], base + 23),
-        ] {
-            let step = call_step(code, &[], spec);
-            assert_eq!(step.cost, cost);
-        }
-        let step = call_step(&hex!("645f5f5f5f005f526005601b5ff000"), &[], spec);
-        assert_eq!(step.used, step.gas_remaining - step.cost - state_gas - 8);
+    for (code, cost) in [
+        (&hex!("645f5f5f5f005f526005601b5ff000")[..], base + 2),
+        (&hex!("645f5f5f5f005f526005601b5f5ff500")[..], base + 8),
+        (&hex!("6001600052600160ff5ff000")[..], base + 23),
+    ] {
+        let step = call_step(code, &[], spec);
+        assert_eq!(step.cost, cost);
     }
+    let step = call_step(&hex!("645f5f5f5f005f526005601b5ff000"), &[], spec);
+    assert_eq!(step.used, step.gas_remaining - step.cost - state_gas - 8);
 }
 
-#[test]
-fn unfunded_create_cost_excludes_forwarded_gas() {
+#[test_case(SpecId::PRAGUE, 32_000; "prague")]
+#[test_case(SpecId::AMSTERDAM, 12_000; "amsterdam")]
+fn unfunded_create_cost_excludes_forwarded_gas(spec: SpecId, cost: u64) {
     let code = hex!("5f5f6001f000");
     assert!(trace_vm_code(&code, &[]).ops[3].sub.is_none());
-    for (spec, cost) in [(SpecId::PRAGUE, 32_000), (SpecId::AMSTERDAM, 12_000)] {
-        let step = call_step(&code, &[], spec);
-        assert_eq!(step.cost, cost);
-        assert_eq!(step.used, step.gas_remaining - cost);
-    }
+    let step = call_step(&code, &[], spec);
+    assert_eq!(step.cost, cost);
+    assert_eq!(step.used, step.gas_remaining - cost);
 }
 
 #[test]
@@ -1411,25 +1390,23 @@ fn call_like_step_used_gas_is_the_gas_after_the_child_returns() {
     }
 }
 
-#[test]
-fn nested_call_step_used_gas_is_the_gas_after_the_child_returns() {
+#[test_case(TracingInspectorConfig::default_geth(); "geth")]
+#[test_case(
+    TracingInspectorConfig::parity_vm_trace().set_step_deltas(false);
+    "parity_without_deltas"
+)]
+fn nested_call_step_used_gas_is_the_gas_after_the_child_returns(config: TracingInspectorConfig) {
     let code = hex!("5f5f5f5f5f604361fffff100");
     let child = hex!("5f5f5f5f5f600461fffff100");
-    for config in [
-        TracingInspectorConfig::default_geth(),
-        TracingInspectorConfig::parity_vm_trace().set_step_deltas(false),
-    ] {
-        let inspector = inspect_code(&code, &child, SpecId::AMSTERDAM, config);
-        let nodes = inspector.traces().nodes();
-        let after =
-            [&nodes[0], &nodes[1]].map(|node| node.trace.steps.last().unwrap().gas_remaining);
-        let trace = inspector.into_parity_builder().vm_trace();
-        let outer = &trace.ops[trace.ops.len() - 2];
-        let inner = &outer.sub.as_ref().unwrap().ops;
-        let inner = &inner[inner.len() - 2];
-        assert_eq!(outer.ex.as_ref().unwrap().used, after[0]);
-        assert_eq!(inner.ex.as_ref().unwrap().used, after[1]);
-    }
+    let inspector = inspect_code(&code, &child, SpecId::AMSTERDAM, config);
+    let nodes = inspector.traces().nodes();
+    let after = [&nodes[0], &nodes[1]].map(|node| node.trace.steps.last().unwrap().gas_remaining);
+    let trace = inspector.into_parity_builder().vm_trace();
+    let outer = &trace.ops[trace.ops.len() - 2];
+    let inner = &outer.sub.as_ref().unwrap().ops;
+    let inner = &inner[inner.len() - 2];
+    assert_eq!(outer.ex.as_ref().unwrap().used, after[0]);
+    assert_eq!(inner.ex.as_ref().unwrap().used, after[1]);
 }
 
 #[test]

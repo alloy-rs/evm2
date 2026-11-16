@@ -1148,11 +1148,13 @@ mod tests {
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId, Version,
         bytecode::Bytecode,
+        env::BlockEnvExt,
         ethereum::{TxEnvelope, ethereum_tx_registry, intrinsic_and_floor_gas},
         evm::{AccountInfo, InMemoryDB},
         interpreter::{Host, op},
     };
     use serde_json::json;
+    use test_case::test_case;
 
     #[test]
     fn test_loop_iteration_limit() {
@@ -1213,60 +1215,59 @@ mod tests {
         JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
     }
 
-    #[test]
-    fn test_ctx_matches_geth() {
+    // The tip is min(max_priority_fee, max_fee - base_fee).
+    #[test_case(10_000_000_000, "1000000000"; "priority_fee")]
+    #[test_case(5_500_000_000, "500000000"; "max_fee_minus_base_fee")]
+    fn test_ctx_matches_geth(max_fee: u128, expected: &str) {
         let code = r#"{
             fault: function() {},
             result: function(ctx) {
                 return [ctx.gasPrice.toString(), ctx.intrinsicGas, ctx.time];
             }
         }"#;
-        // The tip is min(max_priority_fee, max_fee - base_fee).
-        for (max_fee, expected) in
-            [(10_000_000_000u128, "1000000000"), (5_500_000_000, "500000000")]
-        {
-            let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
-            let tx = TxEnvelope::Eip1559(TxEip1559 {
-                chain_id: 1,
-                gas_limit: 1_000_000,
-                max_fee_per_gas: max_fee,
-                max_priority_fee_per_gas: 1_000_000_000,
-                to: TxKind::Call(Address::repeat_byte(0x01)),
-                ..Default::default()
-            });
-            let res = try_run_tx(insp, None, true, U256::from(5_000_000_000u64), tx).unwrap();
-            assert_eq!(res, json!([expected, null, null]));
-        }
+        let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+        let tx = TxEnvelope::Eip1559(TxEip1559 {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            max_fee_per_gas: max_fee,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: TxKind::Call(Address::repeat_byte(0x01)),
+            ..Default::default()
+        });
+        let res = try_run_tx(insp, None, true, U256::from(5_000_000_000u64), tx).unwrap();
+        assert_eq!(res, json!([expected, null, null]));
     }
 
-    #[test]
-    fn test_ctx_transaction_fields_need_non_zero_hashes() {
+    /// A non-zero block or transaction hash.
+    const HASH: Option<B256> = Some(B256::repeat_byte(1));
+    /// A zero block or transaction hash.
+    const ZERO_HASH: Option<B256> = Some(B256::ZERO);
+
+    #[test_case(None, None, None => json!([false, null, false]); "no_context")]
+    #[test_case(HASH, None, Some(3) => json!([true, null, false]); "no_tx_hash")]
+    #[test_case(ZERO_HASH, HASH, Some(3) => json!([false, null, false]); "zero_block_hash")]
+    #[test_case(HASH, ZERO_HASH, Some(3) => json!([true, null, false]); "zero_tx_hash")]
+    #[test_case(HASH, HASH, Some(3) => json!([true, 3, true]); "all_fields")]
+    #[test_case(HASH, HASH, None => json!([true, 0, true]); "no_tx_index")]
+    fn test_ctx_transaction_fields_need_non_zero_hashes(
+        block_hash: Option<B256>,
+        tx_hash: Option<B256>,
+        tx_index: Option<usize>,
+    ) -> serde_json::Value {
         let code = r#"{
             fault: function() {},
             result: function(ctx) {
                 return [ctx.blockHash !== undefined, ctx.txIndex, ctx.txHash !== undefined];
             }
         }"#;
-        let hash = Some(B256::repeat_byte(1));
-        let zero = Some(B256::ZERO);
-        for (block_hash, tx_hash, tx_index, expected) in [
-            (None, None, None, json!([false, null, false])),
-            (hash, None, Some(3), json!([true, null, false])),
-            (zero, hash, Some(3), json!([false, null, false])),
-            (hash, zero, Some(3), json!([true, null, false])),
-            (hash, hash, Some(3), json!([true, 3, true])),
-            (hash, hash, None, json!([true, 0, true])),
-        ] {
-            let tx_context = TransactionContext { block_hash, tx_index, tx_hash };
-            let insp = JsInspector::with_transaction_context(
-                code.to_string(),
-                serde_json::Value::Null,
-                tx_context,
-            )
-            .unwrap();
-            let res = try_run_tx(insp, None, true, U256::ZERO, legacy_tx(1024)).unwrap();
-            assert_eq!(res, expected);
-        }
+        let tx_context = TransactionContext { block_hash, tx_index, tx_hash };
+        let insp = JsInspector::with_transaction_context(
+            code.to_string(),
+            serde_json::Value::Null,
+            tx_context,
+        )
+        .unwrap();
+        try_run_tx(insp, None, true, U256::ZERO, legacy_tx(1024)).unwrap()
     }
 
     #[test]
@@ -1436,50 +1437,66 @@ mod tests {
         assert_eq!(res, json!(["bigint", "42", "42", "42"]));
     }
 
-    #[test]
-    fn test_memory_and_stack_errors_match_geth() {
+    #[test_case(
+        "log.memory.slice(5, 2)",
+        "tracer accessed out of bound memory: offset 5, end 2";
+        "memory_slice_end_before_offset"
+    )]
+    #[test_case(
+        "log.memory.slice(-1, 4)",
+        "tracer accessed out of bound memory: offset -1, end 4";
+        "memory_slice_negative_offset"
+    )]
+    #[test_case(
+        "log.memory.slice(0, 1e30)",
+        "tracer accessed out of bound memory: offset 0, end -9223372036854775808";
+        "memory_slice_huge_end"
+    )]
+    #[test_case(
+        "log.memory.slice(0, 1048577 + 32)",
+        "reached limit for padding memory slice: 1048577";
+        "memory_slice_padding_limit"
+    )]
+    #[test_case(
+        "log.memory.getUint(1)",
+        "tracer accessed out of bound memory: available 32, offset 1, size 32";
+        "memory_get_uint_past_end"
+    )]
+    #[test_case(
+        "log.memory.getUint(-1)",
+        "tracer accessed out of bound memory: available 32, offset -1, size 32";
+        "memory_get_uint_negative_offset"
+    )]
+    #[test_case(
+        "log.stack.peek(2)",
+        "tracer accessed out of bound stack: size 2, index 2";
+        "stack_peek_past_end"
+    )]
+    #[test_case(
+        "log.stack.peek(-1)",
+        "tracer accessed out of bound stack: size 2, index -1";
+        "stack_peek_negative_index"
+    )]
+    #[test_case(
+        "log.stack.peek(9223372036854775807n)",
+        "tracer accessed out of bound stack: size 2, index -9223372036854775808";
+        "stack_peek_huge_bigint_index"
+    )]
+    fn test_memory_and_stack_errors_match_geth(expression: &str, expected: &str) {
         // PUSH1 42, PUSH1 0, MSTORE, PUSH1 1, PUSH1 2, STOP
         let contract = Some(bytes!("0x602a600052600160020000"));
-        for (expression, expected) in [
-            ("log.memory.slice(5, 2)", "tracer accessed out of bound memory: offset 5, end 2"),
-            ("log.memory.slice(-1, 4)", "tracer accessed out of bound memory: offset -1, end 4"),
-            (
-                "log.memory.slice(0, 1e30)",
-                "tracer accessed out of bound memory: offset 0, end -9223372036854775808",
-            ),
-            (
-                "log.memory.slice(0, 1048577 + 32)",
-                "reached limit for padding memory slice: 1048577",
-            ),
-            (
-                "log.memory.getUint(1)",
-                "tracer accessed out of bound memory: available 32, offset 1, size 32",
-            ),
-            (
-                "log.memory.getUint(-1)",
-                "tracer accessed out of bound memory: available 32, offset -1, size 32",
-            ),
-            ("log.stack.peek(2)", "tracer accessed out of bound stack: size 2, index 2"),
-            ("log.stack.peek(-1)", "tracer accessed out of bound stack: size 2, index -1"),
-            (
-                "log.stack.peek(9223372036854775807n)",
-                "tracer accessed out of bound stack: size 2, index -9223372036854775808",
-            ),
-        ] {
-            let code = format!(
-                "{{step: function(log) {{ if (log.op.toString() === 'STOP') {expression}; }}, fault: function() {{}}, result: function() {{}}}}"
-            );
-            let JsInspectorError::JsError(error) =
-                try_run_trace(&code, contract.clone(), true).unwrap_err()
-            else {
-                panic!("{expression}: unexpected error");
-            };
-            assert_eq!(
-                error.as_native().unwrap().message(),
-                format!("{expected}    in server-side tracer function 'step'"),
-                "{expression}"
-            );
-        }
+        let code = format!(
+            "{{step: function(log) {{ if (log.op.toString() === 'STOP') {expression}; }}, fault: function() {{}}, result: function() {{}}}}"
+        );
+        let JsInspectorError::JsError(error) = try_run_trace(&code, contract, true).unwrap_err()
+        else {
+            panic!("unexpected error");
+        };
+        let message = error.as_native().unwrap().message().to_string();
+        assert_eq!(
+            message.strip_suffix("    in server-side tracer function 'step'"),
+            Some(expected)
+        );
     }
 
     #[test]
@@ -1983,93 +2000,97 @@ mod tests {
         assert_eq!(inspector.ctx.runtime_limits().loop_iteration_limit(), LOOP_ITERATION_LIMIT);
     }
 
-    #[test]
-    fn test_accessor_recursion_limit() {
+    #[test_case("const obj = {get x() {return this.x;}}; obj.x;"; "getter")]
+    #[test_case("const obj = {set x(value) {this.x = value;}}; obj.x = 1;"; "setter")]
+    #[test_case(
+        "async function* f() {} f().return({get then() {this.then;}});";
+        "async_generator_then"
+    )]
+    fn test_accessor_recursion_limit(setup: &'static str) {
         std::thread::Builder::new()
             .stack_size(2 * 1024 * 1024)
-            .spawn(|| {
-                for setup in [
-                    "const obj = {get x() {return this.x;}}; obj.x;",
-                    "const obj = {set x(value) {this.x = value;}}; obj.x = 1;",
-                    "async function* f() {} f().return({get then() {this.then;}});",
-                ] {
-                    let code = format!(
-                        "{{setup: function() {{{setup}}}, fault: function() {{}}, result: function() {{}}}}"
-                    );
-                    let error = JsInspector::new(code, serde_json::Value::Null).unwrap_err();
-                    let JsInspectorError::SetupCallFailed(error) = error else {
-                        panic!("unexpected error: {error}");
-                    };
-                    assert!(matches!(
-                        error.as_engine(),
-                        Some(EngineError::RuntimeLimit(RuntimeLimitError::Recursion))
-                    ));
-                }
+            .spawn(move || {
+                let code = format!(
+                    "{{setup: function() {{{setup}}}, fault: function() {{}}, result: function() {{}}}}"
+                );
+                let error = JsInspector::new(code, serde_json::Value::Null).unwrap_err();
+                let JsInspectorError::SetupCallFailed(error) = error else {
+                    panic!("unexpected error: {error}");
+                };
+                assert!(matches!(
+                    error.as_engine(),
+                    Some(EngineError::RuntimeLimit(RuntimeLimitError::Recursion))
+                ));
             })
             .unwrap()
             .join()
             .unwrap();
     }
 
-    #[test]
-    fn test_create_context_to_on_success_revert_halt_and_runtime_oog() {
-        for (spec, initcode, runtime_oog) in [
-            (SpecId::PRAGUE, Bytes::from_static(&[op::STOP]), false),
-            (SpecId::PRAGUE, Bytes::from_static(&[op::PUSH0, op::PUSH0, op::REVERT]), false),
-            (SpecId::PRAGUE, Bytes::from_static(&[op::INVALID]), false),
-            (SpecId::AMSTERDAM, Bytes::from_static(&[op::STOP]), true),
-        ] {
-            let caller = Address::repeat_byte(0xaa);
-            let nonce = 7;
-            let mut db = InMemoryDB::default();
-            db.insert_account_info(&caller, AccountInfo { nonce, ..AccountInfo::default() });
-            let script = r#"{
-                fault: function() {},
-                result: function(ctx) { return toHex(ctx.to); }
-            }"#;
-            let inspector = JsInspector::new(script.to_string(), serde_json::Value::Null).unwrap();
-            let mut evm = Evm::<BaseEvmTypes>::new(
-                spec,
-                evm2::env::BlockEnvExt::default(),
-                ethereum_tx_registry(spec),
-                db,
-                Precompiles::base(spec),
-            );
-            evm.set_inspector(inspector);
-            let gas_limit = if runtime_oog {
-                let version = Version::base(spec);
-                let (intrinsic, floor) = intrinsic_and_floor_gas(
-                    version,
-                    caller,
-                    TxKind::Create,
-                    &initcode,
-                    0,
-                    0,
-                    U256::ZERO,
-                );
-                intrinsic.max(floor)
-            } else {
-                100_000
-            };
-            let tx = Recovered::new_unchecked(
-                TxEnvelope::Legacy(TxLegacy {
-                    nonce,
-                    gas_limit,
-                    to: TxKind::Create,
-                    input: initcode,
-                    ..TxLegacy::default()
-                }),
+    #[test_case(SpecId::PRAGUE, Bytes::from_static(&[op::STOP]), false; "success")]
+    #[test_case(
+        SpecId::PRAGUE,
+        Bytes::from_static(&[op::PUSH0, op::PUSH0, op::REVERT]),
+        false;
+        "revert"
+    )]
+    #[test_case(SpecId::PRAGUE, Bytes::from_static(&[op::INVALID]), false; "halt")]
+    #[test_case(SpecId::AMSTERDAM, Bytes::from_static(&[op::STOP]), true; "runtime_oog")]
+    fn test_create_context_to_on_success_revert_halt_and_runtime_oog(
+        spec: SpecId,
+        initcode: Bytes,
+        runtime_oog: bool,
+    ) {
+        let caller = Address::repeat_byte(0xaa);
+        let nonce = 7;
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&caller, AccountInfo { nonce, ..AccountInfo::default() });
+        let script = r#"{
+            fault: function() {},
+            result: function(ctx) { return toHex(ctx.to); }
+        }"#;
+        let inspector = JsInspector::new(script.to_string(), serde_json::Value::Null).unwrap();
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            spec,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(spec),
+            db,
+            Precompiles::base(spec),
+        );
+        evm.set_inspector(inspector);
+        let gas_limit = if runtime_oog {
+            let version = Version::base(spec);
+            let (intrinsic, floor) = intrinsic_and_floor_gas(
+                version,
                 caller,
+                TxKind::Create,
+                &initcode,
+                0,
+                0,
+                U256::ZERO,
             );
-            let result = evm.transact(&tx).unwrap().detach();
-            if runtime_oog {
-                assert_eq!(result.result.stop, InstrStop::OutOfGas);
-            }
-            let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
-            let block = *evm.block_env();
-            let traced = inspector.json_result(&result, &tx, &block, evm.database_mut()).unwrap();
-            assert_eq!(traced, json!(format!("{:#x}", caller.create(nonce))));
+            intrinsic.max(floor)
+        } else {
+            100_000
+        };
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                nonce,
+                gas_limit,
+                to: TxKind::Create,
+                input: initcode,
+                ..TxLegacy::default()
+            }),
+            caller,
+        );
+        let result = evm.transact(&tx).unwrap().detach();
+        if runtime_oog {
+            assert_eq!(result.result.stop, InstrStop::OutOfGas);
         }
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        let block = *evm.block_env();
+        let traced = inspector.json_result(&result, &tx, &block, evm.database_mut()).unwrap();
+        assert_eq!(traced, json!(format!("{:#x}", caller.create(nonce))));
     }
 
     #[test]
@@ -2085,39 +2106,44 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hook_error_normalization_avoids_user_code() {
-        for (script, expected) in [
-            (
-                "const e = new AggregateError([], 'boom'); for (const p of ['cause','errors','constructor']) Object.defineProperty(e,p,{get(){reads++;throw 0}}); throw e;",
-                "AggregateError: boom suffix",
-            ),
-            (
-                "const e = new Error(); Object.defineProperty(e,'message',{get(){reads++;throw 0}}); throw e;",
-                "Error:  suffix",
-            ),
-            ("throw new Proxy({}, {get(){reads++;throw 0}})", "Error: [object Object] suffix"),
-            (
-                "const e = new Error(); e.message = {toString(){reads++;throw 0}}; throw e;",
-                "Error:  suffix",
-            ),
-            (
-                "class E extends TypeError {}; E.prototype.message = 'inherited'; throw new E();",
-                "TypeError: inherited suffix",
-            ),
-            (
-                "const e = new Error(); let p = {message:'hidden'}; for (let i=0;i<1024;i++) p=Object.create(p); Object.setPrototypeOf(e,p); throw e;",
-                "Error:  suffix",
-            ),
-        ] {
-            let mut ctx = Context::default();
-            let script = format!("globalThis.reads = 0; {script}");
-            let err = ctx.eval(Source::from_bytes(&script)).unwrap_err();
-            let error = with_message_suffix(err, " suffix", &mut ctx);
-            assert_eq!(ctx.eval(Source::from_bytes("reads")).unwrap(), JsValue::from(0));
-            let native = error.as_native().unwrap();
-            assert_eq!(format!("{}: {}", native.kind(), native.message()), expected);
-        }
+    #[test_case(
+        "const e = new AggregateError([], 'boom'); for (const p of ['cause','errors','constructor']) Object.defineProperty(e,p,{get(){reads++;throw 0}}); throw e;",
+        "AggregateError: boom suffix";
+        "aggregate_error_getters"
+    )]
+    #[test_case(
+        "const e = new Error(); Object.defineProperty(e,'message',{get(){reads++;throw 0}}); throw e;",
+        "Error:  suffix";
+        "message_getter"
+    )]
+    #[test_case(
+        "throw new Proxy({}, {get(){reads++;throw 0}})",
+        "Error: [object Object] suffix";
+        "proxy"
+    )]
+    #[test_case(
+        "const e = new Error(); e.message = {toString(){reads++;throw 0}}; throw e;",
+        "Error:  suffix";
+        "message_to_string"
+    )]
+    #[test_case(
+        "class E extends TypeError {}; E.prototype.message = 'inherited'; throw new E();",
+        "TypeError: inherited suffix";
+        "inherited_message"
+    )]
+    #[test_case(
+        "const e = new Error(); let p = {message:'hidden'}; for (let i=0;i<1024;i++) p=Object.create(p); Object.setPrototypeOf(e,p); throw e;",
+        "Error:  suffix";
+        "deep_prototype_chain"
+    )]
+    fn hook_error_normalization_avoids_user_code(script: &str, expected: &str) {
+        let mut ctx = Context::default();
+        let script = format!("globalThis.reads = 0; {script}");
+        let err = ctx.eval(Source::from_bytes(&script)).unwrap_err();
+        let error = with_message_suffix(err, " suffix", &mut ctx);
+        assert_eq!(ctx.eval(Source::from_bytes("reads")).unwrap(), JsValue::from(0));
+        let native = error.as_native().unwrap();
+        assert_eq!(format!("{}: {}", native.kind(), native.message()), expected);
     }
 
     #[test]

@@ -822,27 +822,23 @@ fn emit_inst_no_labels(inst: &Inst<'_>, code: &mut Vec<u8>) -> Result<()> {
 mod tests {
     use super::*;
     use evm2::interpreter::op;
+    use test_case::test_case;
 
-    #[test]
-    fn basic_opcodes() {
-        let cases: &[(&str, Vec<u8>)] = &[
-            ("ADD ; ADD\n ADD", vec![op::ADD, op::ADD]),
-            ("PUSH1 0", vec![op::PUSH1, 0]),
-            ("PUSH3 0x000069", vec![op::PUSH3, 0, 0, 0x69]),
-            ("PUSH3 0x69 ; padded", vec![op::PUSH3, 0, 0, 0x69]),
-            ("PUSH 0", vec![op::PUSH0]),
-            ("PUSH 1", vec![op::PUSH1, 1]),
-            ("PUSH 2", vec![op::PUSH1, 2]),
-            ("PUSH 69", vec![op::PUSH1, 69]),
-            ("PUSH 0x2222", vec![op::PUSH2, 0x22, 0x22]),
-        ];
-        for (s, expected) in cases.iter() {
-            let code = match parse_asm(s) {
-                Ok(code) => code,
-                Err(e) => panic!("code: {s:?}\n\n err: {e}"),
-            };
-            assert_eq!(code, *expected, "{s:?}");
-        }
+    #[test_case("ADD ; ADD\n ADD", vec![op::ADD, op::ADD])]
+    #[test_case("PUSH1 0", vec![op::PUSH1, 0])]
+    #[test_case("PUSH3 0x000069", vec![op::PUSH3, 0, 0, 0x69])]
+    #[test_case("PUSH3 0x69 ; padded", vec![op::PUSH3, 0, 0, 0x69])]
+    #[test_case("PUSH 0", vec![op::PUSH0])]
+    #[test_case("PUSH 1", vec![op::PUSH1, 1])]
+    #[test_case("PUSH 2", vec![op::PUSH1, 2])]
+    #[test_case("PUSH 69", vec![op::PUSH1, 69])]
+    #[test_case("PUSH 0x2222", vec![op::PUSH2, 0x22, 0x22])]
+    fn basic_opcodes(s: &str, expected: Vec<u8>) {
+        let code = match parse_asm(s) {
+            Ok(code) => code,
+            Err(e) => panic!("code: {s:?}\n\n err: {e}"),
+        };
+        assert_eq!(code, expected);
     }
 
     #[test]

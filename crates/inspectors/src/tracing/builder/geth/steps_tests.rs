@@ -4,6 +4,7 @@ use crate::tracing::types::{
 };
 use alloc::string::String;
 use evm2::interpreter::{InstrStop, op, opcode::OpCode};
+use test_case::test_case;
 
 fn test_step(pc: usize, op: u8) -> CallTraceStep {
     CallTraceStep {
@@ -33,24 +34,20 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
     }
 }
 
-#[test]
-fn struct_log_errors_exclude_reverts() {
-    for (status, has_error) in [
-        (None, false),
-        (Some(InstrStop::Stop), false),
-        (Some(InstrStop::Return), false),
-        (Some(InstrStop::Revert), false),
-        (Some(InstrStop::OutOfFunds), false),
-        (Some(InstrStop::CallTooDeep), false),
-        (Some(InstrStop::OutOfGas), true),
-        (Some(InstrStop::StackUnderflow), true),
-        (Some(InstrStop::OpcodeNotFound), true),
-    ] {
-        let mut step = test_step(0, op::REVERT);
-        step.status = status;
-        let log = step.convert_to_geth_struct_log(&Default::default(), 1, None);
-        assert_eq!(log.error.is_some(), has_error, "{status:?}");
-    }
+#[test_case(None, false)]
+#[test_case(Some(InstrStop::Stop), false)]
+#[test_case(Some(InstrStop::Return), false)]
+#[test_case(Some(InstrStop::Revert), false)]
+#[test_case(Some(InstrStop::OutOfFunds), false)]
+#[test_case(Some(InstrStop::CallTooDeep), false)]
+#[test_case(Some(InstrStop::OutOfGas), true)]
+#[test_case(Some(InstrStop::StackUnderflow), true)]
+#[test_case(Some(InstrStop::OpcodeNotFound), true)]
+fn struct_log_errors_exclude_reverts(status: Option<InstrStop>, has_error: bool) {
+    let mut step = test_step(0, op::REVERT);
+    step.status = status;
+    let log = step.convert_to_geth_struct_log(&Default::default(), 1, None);
+    assert_eq!(log.error.is_some(), has_error);
 }
 
 #[test]
@@ -285,24 +282,20 @@ fn storage_snapshots_accumulate_and_skip_failed_steps() {
 }
 
 /// The entries are what go-ethereum master's struct logger writes (`debug_traceCall`).
-#[test]
-fn struct_log_json_len_matches_geth() {
-    for json in [
-        r#"{"pc":0,"op":"ADD","gas":979000,"gasCost":3,"depth":1,"error":"stack underflow (0 \u003c=\u003e 2)","stack":[]}"#,
-        r#"{"pc":4,"op":"SSTORE","gas":978994,"gasCost":12100,"depth":1,"stack":["0x1","0x0"],"storage":{"0x0000000000000000000000000000000000000000000000000000000000000000":"0x0000000000000000000000000000000000000000000000000000000000000001"}}"#,
-        r#"{"pc":7,"op":"SLOAD","gas":868971,"gasCost":100,"depth":1,"stack":["0x0"],"storage":{"0x0000000000000000000000000000000000000000000000000000000000000000":"0x0000000000000000000000000000000000000000000000000000000000000001"}}"#,
-        r#"{"pc":11,"op":"PUSH1","gas":868862,"gasCost":3,"depth":1,"stack":[],"memory":["0x0000000000000000000000000000000000000000000000000000000000000001"]}"#,
-        r#"{"pc":13,"op":"MLOAD","gas":868859,"gasCost":3,"depth":1,"stack":["0x0"],"memory":["0x0000000000000000000000000000000000000000000000000000000000000001"]}"#,
-        r#"{"pc":14,"op":"PUSH1","gas":868856,"gasCost":3,"depth":1,"stack":["0x1"],"memory":["0x0000000000000000000000000000000000000000000000000000000000000001"]}"#,
-        r#"{"pc":0,"op":"PUSH1","gas":979000,"gasCost":3,"depth":1,"stack":[]}"#,
-        r#"{"pc":4,"op":"SSTORE","gas":978994,"gasCost":12100,"depth":1,"stack":["0x0","0x5"],"storage":{"0x0000000000000000000000000000000000000000000000000000000000000005":"0x0000000000000000000000000000000000000000000000000000000000000000"},"refund":11616}"#,
-        r#"{"pc":33,"op":"STOP","gas":978997,"gasCost":0,"depth":1,"stack":["0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff60"]}"#,
-        r#"{"pc":1,"op":"STOP","gas":5,"gasCost":0,"depth":1,"returnData":"0xdeadbeef","refund":4800}"#,
-        r#"{"pc":20,"op":"opcode 0xc not defined","gas":5,"gasCost":0,"depth":12,"error":"gas uint64 overflow \u0026 more"}"#,
-    ] {
-        let log: StructLog = serde_json::from_str(json).unwrap();
-        assert_eq!(struct_log_json_len(&log), json.len(), "{json}");
-    }
+#[test_case(r#"{"pc":0,"op":"ADD","gas":979000,"gasCost":3,"depth":1,"error":"stack underflow (0 \u003c=\u003e 2)","stack":[]}"#; "add_stack_underflow")]
+#[test_case(r#"{"pc":4,"op":"SSTORE","gas":978994,"gasCost":12100,"depth":1,"stack":["0x1","0x0"],"storage":{"0x0000000000000000000000000000000000000000000000000000000000000000":"0x0000000000000000000000000000000000000000000000000000000000000001"}}"#; "sstore_storage")]
+#[test_case(r#"{"pc":7,"op":"SLOAD","gas":868971,"gasCost":100,"depth":1,"stack":["0x0"],"storage":{"0x0000000000000000000000000000000000000000000000000000000000000000":"0x0000000000000000000000000000000000000000000000000000000000000001"}}"#; "sload_storage")]
+#[test_case(r#"{"pc":11,"op":"PUSH1","gas":868862,"gasCost":3,"depth":1,"stack":[],"memory":["0x0000000000000000000000000000000000000000000000000000000000000001"]}"#; "push1_memory")]
+#[test_case(r#"{"pc":13,"op":"MLOAD","gas":868859,"gasCost":3,"depth":1,"stack":["0x0"],"memory":["0x0000000000000000000000000000000000000000000000000000000000000001"]}"#; "mload_memory")]
+#[test_case(r#"{"pc":14,"op":"PUSH1","gas":868856,"gasCost":3,"depth":1,"stack":["0x1"],"memory":["0x0000000000000000000000000000000000000000000000000000000000000001"]}"#; "push1_memory_stack")]
+#[test_case(r#"{"pc":0,"op":"PUSH1","gas":979000,"gasCost":3,"depth":1,"stack":[]}"#; "push1_empty_stack")]
+#[test_case(r#"{"pc":4,"op":"SSTORE","gas":978994,"gasCost":12100,"depth":1,"stack":["0x0","0x5"],"storage":{"0x0000000000000000000000000000000000000000000000000000000000000005":"0x0000000000000000000000000000000000000000000000000000000000000000"},"refund":11616}"#; "sstore_refund")]
+#[test_case(r#"{"pc":33,"op":"STOP","gas":978997,"gasCost":0,"depth":1,"stack":["0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff60"]}"#; "stop_big_stack_word")]
+#[test_case(r#"{"pc":1,"op":"STOP","gas":5,"gasCost":0,"depth":1,"returnData":"0xdeadbeef","refund":4800}"#; "stop_return_data_refund")]
+#[test_case(r#"{"pc":20,"op":"opcode 0xc not defined","gas":5,"gasCost":0,"depth":12,"error":"gas uint64 overflow \u0026 more"}"#; "undefined_opcode_escaped_error")]
+fn struct_log_json_len_matches_geth(json: &str) {
+    let log: StructLog = serde_json::from_str(json).unwrap();
+    assert_eq!(struct_log_json_len(&log), json.len());
 }
 
 #[test]
@@ -323,23 +316,19 @@ fn struct_log_json_len_skips_the_fields_geth_omits() {
     assert_eq!(struct_log_json_len(&log), json.len());
 }
 
-#[test]
-fn struct_log_json_len_counts_the_state_gas_fields() {
-    for (cost, reservoir) in [(None, None), (Some(0), Some(0)), (Some(-1234), Some(99_999))] {
-        let log = StructLog {
-            op: "SSTORE".into(),
-            gas: 100,
-            depth: 2,
-            state_gas_cost: cost,
-            state_gas_reservoir: reservoir,
-            ..Default::default()
-        };
-        assert_eq!(
-            struct_log_json_len(&log),
-            serde_json::to_string(&log).unwrap().len(),
-            "{cost:?} {reservoir:?}"
-        );
-    }
+#[test_case(None, None; "absent")]
+#[test_case(Some(0), Some(0); "zero")]
+#[test_case(Some(-1234), Some(99_999); "negative_cost")]
+fn struct_log_json_len_counts_the_state_gas_fields(cost: Option<i64>, reservoir: Option<u64>) {
+    let log = StructLog {
+        op: "SSTORE".into(),
+        gas: 100,
+        depth: 2,
+        state_gas_cost: cost,
+        state_gas_reservoir: reservoir,
+        ..Default::default()
+    };
+    assert_eq!(struct_log_json_len(&log), serde_json::to_string(&log).unwrap().len());
 }
 
 #[test]

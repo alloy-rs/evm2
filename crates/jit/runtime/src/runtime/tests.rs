@@ -8,6 +8,7 @@ use evm2::SpecId;
 use std::sync::Arc;
 #[cfg(feature = "llvm")]
 use std::sync::Mutex;
+use test_case::test_case;
 
 // ---------------------------------------------------------------------------
 // Test bytecodes.
@@ -746,27 +747,23 @@ fn clear_commands_never_block_without_backend_thread() {
     assert_eq!(cleared.load(std::sync::atomic::Ordering::Relaxed), 32);
 }
 
-#[test]
-fn clear_commands_are_queued_after_startup_takes_config() {
-    for (clear, command) in [
-        (JitBackend::clear_resident as fn(&JitBackend), Command::ClearResident),
-        (JitBackend::clear_persisted, Command::ClearPersisted),
-        (JitBackend::clear_all, Command::ClearAll),
-    ] {
-        let tb = TestBackend::disabled_with_tuning(RuntimeTuning {
-            channel_capacity: 1,
-            ..Default::default()
-        });
-        let mut guard = tb.inner.lazy_spawn.lock().unwrap();
-        let lazy = guard.take().unwrap();
-        let backend = tb.backend.clone();
-        let worker = std::thread::spawn(move || clear(&backend));
-        drop(guard);
+#[test_case(JitBackend::clear_resident, Command::ClearResident)]
+#[test_case(JitBackend::clear_persisted, Command::ClearPersisted)]
+#[test_case(JitBackend::clear_all, Command::ClearAll)]
+fn clear_commands_are_queued_after_startup_takes_config(clear: fn(&JitBackend), command: Command) {
+    let tb = TestBackend::disabled_with_tuning(RuntimeTuning {
+        channel_capacity: 1,
+        ..Default::default()
+    });
+    let mut guard = tb.inner.lazy_spawn.lock().unwrap();
+    let lazy = guard.take().unwrap();
+    let backend = tb.backend.clone();
+    let worker = std::thread::spawn(move || clear(&backend));
+    drop(guard);
 
-        let queued = lazy.rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert_eq!(std::mem::discriminant(&queued), std::mem::discriminant(&command));
-        worker.join().unwrap();
-    }
+    let queued = lazy.rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(std::mem::discriminant(&queued), std::mem::discriminant(&command));
+    worker.join().unwrap();
 }
 
 #[test]
@@ -1532,71 +1529,65 @@ fn prepare_aot_persist_and_load() {
     assert_eq!(store.len(), 1);
 }
 
-#[test]
 #[cfg(feature = "llvm")]
-fn failed_aot_persist_is_not_retried_until_cleared() {
-    let mut dispatches = Vec::new();
-    for failure in [
-        AotFailure::Persist,
-        AotFailure::ReloadMissing,
-        AotFailure::ReloadError,
-        AotFailure::Link,
-        AotFailure::NoStore,
-    ] {
-        let store = (!matches!(failure, AotFailure::NoStore)).then(|| {
-            Arc::new(AotFailureStore { inner: RuntimeArtifactStore::new().unwrap(), failure })
-                as Arc<dyn ArtifactStore>
-        });
-        let tb = TestBackend::new(RuntimeConfig {
-            enabled: true,
-            aot: store.is_some(),
-            store,
-            tuning: RuntimeTuning {
-                jit_worker_count: 1,
-                jit_hot_threshold: 1,
-                idle_evict_duration: None,
-                ..Default::default()
-            },
+#[test_case(AotFailure::Persist)]
+#[test_case(AotFailure::ReloadMissing)]
+#[test_case(AotFailure::ReloadError)]
+#[test_case(AotFailure::Link)]
+#[test_case(AotFailure::NoStore)]
+fn failed_aot_persist_is_not_retried_until_cleared(failure: AotFailure) {
+    let store = (!matches!(failure, AotFailure::NoStore)).then(|| {
+        Arc::new(AotFailureStore { inner: RuntimeArtifactStore::new().unwrap(), failure })
+            as Arc<dyn ArtifactStore>
+    });
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        aot: store.is_some(),
+        store,
+        tuning: RuntimeTuning {
+            jit_worker_count: 1,
+            jit_hot_threshold: 1,
+            idle_evict_duration: None,
             ..Default::default()
-        });
-        let req = || AotRequest {
-            code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
-            code: Bytes::copy_from_slice(BYTECODE_RET42),
-            spec_id: SpecId::CANCUN,
-        };
+        },
+        ..Default::default()
+    });
+    let req = || AotRequest {
+        code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
+        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        spec_id: SpecId::CANCUN,
+    };
 
-        // Duplicate requests must all be notified even when persistence/linking fails.
-        tb.prepare_aot_batch_sync(vec![req(), req(), req()]).unwrap();
-        assert_eq!(tb.stats().compilations_failed, 1, "failure case {failure:?}");
-        for _ in 0..10 {
-            if !matches!(failure, AotFailure::NoStore) {
-                let misses = tb.stats().lookup_misses;
-                let _ = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
-                tb.wait_stats(|s| s.lookup_misses > misses);
-            }
-            // Also acts as a completion barrier and checks suppressed requests notify callers.
-            tb.prepare_aot_sync(req()).unwrap();
+    // Duplicate requests must all be notified even when persistence/linking fails.
+    tb.prepare_aot_batch_sync(vec![req(), req(), req()]).unwrap();
+    assert_eq!(tb.stats().compilations_failed, 1);
+    for _ in 0..10 {
+        if !matches!(failure, AotFailure::NoStore) {
+            let misses = tb.stats().lookup_misses;
+            let _ = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+            tb.wait_stats(|s| s.lookup_misses > misses);
         }
-        let attempts = tb.stats().compilations_dispatched;
-        eprintln!("{failure:?}: dispatched {attempts} AOT attempts before clear");
-        dispatches.push(attempts);
-
-        tb.clear_resident();
+        // Also acts as a completion barrier and checks suppressed requests notify callers.
         tb.prepare_aot_sync(req()).unwrap();
-        assert_eq!(tb.stats().compilations_dispatched, attempts + 1);
-        assert_eq!(tb.stats().compilations_failed, attempts + 1);
-
-        // In JIT mode an explicit AOT failure must not suppress the other compilation kind.
-        // In AOT mode even compile_jit_sync deliberately requests AOT output.
-        if matches!(failure, AotFailure::NoStore) {
-            tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
-            let program = tb.get_compiled(req().code_hash, SpecId::CANCUN).unwrap();
-            assert_eq!(program.kind, ProgramKind::Jit);
-            assert_eq!(tb.stats().compilations_succeeded, 1);
-        }
-        assert_eq!(tb.stats().pending_jobs, 0);
     }
-    assert_eq!(dispatches, vec![1; 5]);
+    let attempts = tb.stats().compilations_dispatched;
+    eprintln!("{failure:?}: dispatched {attempts} AOT attempts before clear");
+
+    tb.clear_resident();
+    tb.prepare_aot_sync(req()).unwrap();
+    assert_eq!(tb.stats().compilations_dispatched, attempts + 1);
+    assert_eq!(tb.stats().compilations_failed, attempts + 1);
+
+    // In JIT mode an explicit AOT failure must not suppress the other compilation kind.
+    // In AOT mode even compile_jit_sync deliberately requests AOT output.
+    if matches!(failure, AotFailure::NoStore) {
+        tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+        let program = tb.get_compiled(req().code_hash, SpecId::CANCUN).unwrap();
+        assert_eq!(program.kind, ProgramKind::Jit);
+        assert_eq!(tb.stats().compilations_succeeded, 1);
+    }
+    assert_eq!(tb.stats().pending_jobs, 0);
+    assert_eq!(attempts, 1, "dispatched AOT attempts before clear");
 }
 
 #[test]

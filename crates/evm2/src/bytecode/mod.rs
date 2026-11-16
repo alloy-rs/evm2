@@ -417,7 +417,9 @@ mod tests {
     use crate::interpreter::op;
     use alloc::format;
     use alloy_primitives::{Address, Bytes};
+    use core::ptr;
     use std::hash::{BuildHasher, RandomState};
+    use test_case::test_case;
 
     #[test]
     fn test_new_empty() {
@@ -573,34 +575,31 @@ mod tests {
         bytecode.seed_hash(B256::repeat_byte(0x5f));
     }
 
-    #[test]
-    fn analysis_is_lazy_and_shared() {
+    #[test_case(Bytecode::new_legacy; "legacy")]
+    #[test_case(Bytecode::new_raw; "raw")]
+    #[test_case(|raw| Bytecode::new_raw_checked(raw).unwrap(); "raw_checked")]
+    fn analysis_is_lazy_and_shared(new: fn(Bytes) -> Bytecode) {
         let raw = Bytes::from_static(&[op::JUMPDEST, op::PUSH1, op::JUMPDEST, op::PUSH32]);
-        for bytecode in [
-            Bytecode::new_legacy(raw.clone()),
-            Bytecode::new_raw(raw.clone()),
-            Bytecode::new_raw_checked(raw.clone()).unwrap(),
-        ] {
-            let cloned = bytecode.clone();
-            assert_eq!(bytecode.original_byte_slice(), raw.as_ref());
-            assert_eq!(bytecode.original_bytes().as_ptr(), bytecode.bytes().as_ptr());
-            assert_eq!(bytecode.len(), raw.len());
-            assert!(!bytecode.is_empty());
-            assert_eq!(bytecode, cloned);
-            assert_eq!(bytecode.cmp(&cloned), Ordering::Equal);
-            assert_eq!(bytecode.hash_slow(), keccak256(&raw));
-            assert_eq!(bytecode.bytes_slice().len(), raw.len() + 33);
-            assert_eq!(&bytecode.bytes_slice()[raw.len()..], &[0; 33]);
-            assert!(bytecode.inner().jump_table.get().is_none());
+        let bytecode = new(raw.clone());
+        let cloned = bytecode.clone();
+        assert_eq!(bytecode.original_byte_slice(), raw.as_ref());
+        assert_eq!(bytecode.original_bytes().as_ptr(), bytecode.bytes().as_ptr());
+        assert_eq!(bytecode.len(), raw.len());
+        assert!(!bytecode.is_empty());
+        assert_eq!(bytecode, cloned);
+        assert_eq!(bytecode.cmp(&cloned), Ordering::Equal);
+        assert_eq!(bytecode.hash_slow(), keccak256(&raw));
+        assert_eq!(bytecode.bytes_slice().len(), raw.len() + 33);
+        assert_eq!(&bytecode.bytes_slice()[raw.len()..], &[0; 33]);
+        assert!(bytecode.inner().jump_table.get().is_none());
 
-            let table = bytecode.legacy_jump_table().unwrap();
-            assert_eq!(table.len(), raw.len());
-            assert!(table.is_valid(0));
-            assert!(!table.is_valid(2)); // JUMPDEST in PUSH data.
-            assert!(!table.is_valid(raw.len())); // Padding is not original code.
-            assert!(core::ptr::eq(table, cloned.legacy_jump_table().unwrap()));
-            assert!(core::ptr::eq(table, bytecode.jump_table()));
-        }
+        let table = bytecode.legacy_jump_table().unwrap();
+        assert_eq!(table.len(), raw.len());
+        assert!(table.is_valid(0));
+        assert!(!table.is_valid(2)); // JUMPDEST in PUSH data.
+        assert!(!table.is_valid(raw.len())); // Padding is not original code.
+        assert!(ptr::eq(table, cloned.legacy_jump_table().unwrap()));
+        assert!(ptr::eq(table, bytecode.jump_table()));
     }
 
     #[test]

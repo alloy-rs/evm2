@@ -498,6 +498,7 @@ unsafe impl Trace for PrecompileList {
 mod tests {
     use super::*;
     use alloy_primitives::uint;
+    use test_case::test_case;
 
     #[test]
     fn test_install_bigint() {
@@ -515,44 +516,53 @@ mod tests {
         assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), "100");
     }
 
+    // Test various U256 values through to_bigint
+    #[test_case(U256::ZERO, "0"; "zero")]
+    #[test_case(U256::ONE, "1"; "one")]
+    #[test_case(U256::from(42u64), "42"; "small")]
+    #[test_case(U256::from(u64::MAX), "18446744073709551615"; "u64_max")]
+    #[test_case(
+        uint!(123456789012345678901234567890_U256),
+        "123456789012345678901234567890";
+        "above_u64"
+    )]
+    fn test_to_bigint_values(value: U256, expected: &str) {
+        let mut ctx = Context::default();
+        register_builtins(&mut ctx).unwrap();
+
+        let result = to_bigint(value);
+        assert!(result.is_bigint(), "Result should be a bigint");
+        let result_str = result.to_string(&mut ctx).unwrap().to_std_string().unwrap();
+        assert_eq!(result_str, expected, "BigInt conversion failed");
+    }
+
+    // Values above 64 and 128 bits take different construction paths
+    #[test_case(U256::from(u64::MAX) + U256::ONE; "u64_max_plus_one")]
+    #[test_case(U256::from(u128::MAX); "u128_max")]
+    #[test_case(U256::from(u128::MAX) + U256::ONE; "u128_max_plus_one")]
+    #[test_case(
+        U256::from_limbs([
+            0x0123456789abcdef,
+            0xfedcba9876543210,
+            0x13579bdf2468ace0,
+            0xabcdef0123456789,
+        ]);
+        "four_limbs"
+    )]
+    #[test_case(U256::MAX; "u256_max")]
+    fn test_to_bigint_wide_values(value: U256) {
+        let mut ctx = Context::default();
+        register_builtins(&mut ctx).unwrap();
+
+        let result = to_bigint(value);
+        let result_str = result.to_string(&mut ctx).unwrap().to_std_string().unwrap();
+        assert_eq!(result_str, value.to_string(), "BigInt conversion failed");
+    }
+
     #[test]
     fn test_to_bigint_function() {
         let mut ctx = Context::default();
         register_builtins(&mut ctx).unwrap();
-
-        // Test various U256 values through to_bigint
-        let test_cases = vec![
-            (U256::ZERO, "0"),
-            (U256::ONE, "1"),
-            (U256::from(42u64), "42"),
-            (U256::from(u64::MAX), "18446744073709551615"),
-            (uint!(123456789012345678901234567890_U256), "123456789012345678901234567890"),
-        ];
-
-        for (value, expected) in test_cases {
-            let result = to_bigint(value);
-            assert!(result.is_bigint(), "Result should be a bigint for value {value}");
-            let result_str = result.to_string(&mut ctx).unwrap().to_std_string().unwrap();
-            assert_eq!(result_str, expected, "BigInt conversion failed for {value}");
-        }
-
-        // Values above 64 and 128 bits take different construction paths
-        for value in [
-            U256::from(u64::MAX) + U256::ONE,
-            U256::from(u128::MAX),
-            U256::from(u128::MAX) + U256::ONE,
-            U256::from_limbs([
-                0x0123456789abcdef,
-                0xfedcba9876543210,
-                0x13579bdf2468ace0,
-                0xabcdef0123456789,
-            ]),
-            U256::MAX,
-        ] {
-            let result = to_bigint(value);
-            let result_str = result.to_string(&mut ctx).unwrap().to_std_string().unwrap();
-            assert_eq!(result_str, value.to_string(), "BigInt conversion failed for {value}");
-        }
 
         // Test that the result can be used in JavaScript operations
         let big_value = U256::from(999u64);

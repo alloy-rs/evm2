@@ -3,6 +3,7 @@
 use super::*;
 use evm2_inspectors::tracing::js::JsInspectorError;
 use serde_json::Value;
+use test_case::test_case;
 
 const TARGET: Address = Address::repeat_byte(0xaa);
 const CHILD: Address = Address::repeat_byte(0xbb);
@@ -67,33 +68,44 @@ fn error_events_tracer(has_step: bool) -> String {
     )
 }
 
-#[test]
-fn faults_follow_steps_and_preserve_instruction_metadata() {
+#[test_case(
+    &hex!("60ff56"),
+    1_000_000,
+    json!([
+        [
+            ["step", 0, "PUSH1", null],
+            ["step", 2, "JUMP", null],
+            ["fault", 2, "JUMP", "invalid jump destination"]
+        ],
+        "invalid jump destination"
+    ]);
+    "invalid_jump"
+)]
+#[test_case(
+    &hex!("01"),
+    1_000_000,
+    json!([[["step", 0, "ADD", "stack underflow"]], "stack underflow"]);
+    "stack_underflow"
+)]
+#[test_case(
+    &hex!("6001"),
+    21_002,
+    json!([[["step", 0, "PUSH1", "out of gas"]], "out of gas"]);
+    "out_of_gas"
+)]
+fn faults_follow_steps_and_preserve_instruction_metadata(
+    code: &[u8],
+    gas_limit: u64,
+    expected: Value,
+) {
     let script = "{e:[],step:function(l){this.e.push(['step',l.getPC(),l.op.toString(),l.getError()||null])},fault:function(l){this.e.push(['fault',l.getPC(),l.op.toString(),l.getError()])},result:function(c){return [this.e,c.error||null]}}";
-    for (code, gas_limit, expected) in [
-        (
-            &hex!("60ff56")[..],
-            1_000_000,
-            json!([
-                [
-                    ["step", 0, "PUSH1", null],
-                    ["step", 2, "JUMP", null],
-                    ["fault", 2, "JUMP", "invalid jump destination"]
-                ],
-                "invalid jump destination"
-            ]),
-        ),
-        (
-            &hex!("01")[..],
-            1_000_000,
-            json!([[["step", 0, "ADD", "stack underflow"]], "stack underflow"]),
-        ),
-        (&hex!("6001")[..], 21_002, json!([[["step", 0, "PUSH1", "out of gas"]], "out of gas"])),
-    ] {
-        let (actual, result) = execute(script, code, gas_limit);
-        assert!(!result.result.is_success());
-        assert_eq!(actual.unwrap(), expected);
-    }
+    let (actual, result) = execute(script, code, gas_limit);
+    assert!(!result.result.is_success());
+    assert_eq!(actual.unwrap(), expected);
+}
+
+#[test]
+fn faults_without_a_step_hook_see_an_empty_log() {
     // Geth fills the log in its step hook, so a tracer without `step` sees an empty one.
     let fault_only = "{e:[],fault:function(l){this.e.push([l.getPC(),l.op.toString(),l.getCost(),l.getDepth(),l.stack.length(),l.memory.length(),l.getError()])},result:function(){return this.e}}";
     assert_eq!(
@@ -102,57 +114,54 @@ fn faults_follow_steps_and_preserve_instruction_metadata() {
     );
 }
 
-#[test]
-fn oversized_initcode_is_reported_by_step() {
-    for (code, opcode) in
-        [(&hex!("61c00160006000f0")[..], "CREATE"), (&hex!("600061c00160006000f5")[..], "CREATE2")]
-    {
-        for has_step in [true, false] {
-            let script = error_events_tracer(has_step);
-            let (output, result) = execute(&script, code, 1_000_000);
-            assert!(!result.result.is_success());
-            assert_eq!(
-                output.unwrap(),
-                if has_step {
-                    json!([["step", opcode, "max initcode size exceeded"]])
-                } else {
-                    json!([])
-                },
-            );
-        }
+#[test_case(&hex!("61c00160006000f0"), "CREATE"; "create")]
+#[test_case(&hex!("600061c00160006000f5"), "CREATE2"; "create2")]
+fn oversized_initcode_is_reported_by_step(code: &[u8], opcode: &str) {
+    for has_step in [true, false] {
+        let script = error_events_tracer(has_step);
+        let (output, result) = execute(&script, code, 1_000_000);
+        assert!(!result.result.is_success());
+        assert_eq!(
+            output.unwrap(),
+            if has_step {
+                json!([["step", opcode, "max initcode size exceeded"]])
+            } else {
+                json!([])
+            },
+        );
     }
 }
 
-#[test]
-fn static_write_errors_follow_the_opcode_validation_stage() {
+#[test_case(&hex!("6000600055"), "SSTORE", "step"; "sstore")]
+#[test_case(&hex!("600060006000f0"), "CREATE", "step"; "create")]
+#[test_case(&hex!("6000600060006000f5"), "CREATE2", "step"; "create2")]
+#[test_case(&hex!("6000ff"), "SELFDESTRUCT", "step"; "selfdestruct")]
+#[test_case(&hex!("60006000600060006001600061fffff1"), "CALL", "step"; "call")]
+#[test_case(&hex!("600060005d"), "TSTORE", "fault"; "tstore")]
+#[test_case(&hex!("60006000a0"), "LOG0", "fault"; "log0")]
+fn static_write_errors_follow_the_opcode_validation_stage(
+    child: &[u8],
+    opcode: &str,
+    callback: &str,
+) {
     let parent =
         [&hex!("600060006000600073")[..], CHILD.as_slice(), &hex!("61fffffa00")[..]].concat();
-    for (child, opcode, callback) in [
-        (&hex!("6000600055")[..], "SSTORE", "step"),
-        (&hex!("600060006000f0")[..], "CREATE", "step"),
-        (&hex!("6000600060006000f5")[..], "CREATE2", "step"),
-        (&hex!("6000ff")[..], "SELFDESTRUCT", "step"),
-        (&hex!("60006000600060006001600061fffff1")[..], "CALL", "step"),
-        (&hex!("600060005d")[..], "TSTORE", "fault"),
-        (&hex!("60006000a0")[..], "LOG0", "fault"),
-    ] {
-        for has_step in [true, false] {
-            let script = error_events_tracer(has_step);
-            let (output, result) = execute_with_child(&script, &parent, child, 1_000_000);
-            assert!(result.result.is_success());
-            assert_eq!(
-                output.unwrap(),
-                if has_step {
-                    json!([[callback, opcode, "write protection"]])
-                } else if callback == "fault" {
-                    // A tracer without `step` sees geth's empty log.
-                    json!([[callback, "STOP", "write protection"]])
-                } else {
-                    json!([])
-                },
-                "{opcode}, step callback: {has_step}",
-            );
-        }
+    for has_step in [true, false] {
+        let script = error_events_tracer(has_step);
+        let (output, result) = execute_with_child(&script, &parent, child, 1_000_000);
+        assert!(result.result.is_success());
+        assert_eq!(
+            output.unwrap(),
+            if has_step {
+                json!([[callback, opcode, "write protection"]])
+            } else if callback == "fault" {
+                // A tracer without `step` sees geth's empty log.
+                json!([[callback, "STOP", "write protection"]])
+            } else {
+                json!([])
+            },
+            "{opcode}, step callback: {has_step}",
+        );
     }
 }
 

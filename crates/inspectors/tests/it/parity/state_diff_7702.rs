@@ -9,88 +9,92 @@ use evm2::{
     evm::{AccountInfo, InMemoryDB},
 };
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
+use test_case::test_case;
 
-#[test]
-fn authorization_code_changes() {
-    let old_delegate = Address::with_last_byte(0x41);
-    let new_delegate = Address::with_last_byte(0x42);
-    for (before, delegate) in [
-        (Bytecode::default(), new_delegate),
-        (Bytecode::new_eip7702(old_delegate), new_delegate),
-        (Bytecode::new_eip7702(old_delegate), Address::ZERO),
-        (Bytecode::new_eip7702(new_delegate), new_delegate),
-    ] {
-        // Authorization changes persist even when transaction execution reverts.
-        for revert in [false, true] {
-            let authority = Address::with_last_byte(0x43);
-            let target = Address::with_last_byte(0x44);
-            let mut db = InMemoryDB::default();
-            db.insert_account_info(
-                &authority,
-                AccountInfo { nonce: 1, ..Default::default() }.with_code(before.clone()),
-            );
-            db.insert_account_info(
-                &target,
-                AccountInfo::default().with_code(Bytecode::new_raw(
-                    if revert { hex!("5f5ffd").to_vec() } else { vec![0x00] }.into(),
-                )),
-            );
-            let mut inspector = TracingInspector::new(TracingInspectorConfig::default_parity());
-            let mut evm = Evm::<BaseEvmTypes>::new(
-                SpecId::PRAGUE,
-                Default::default(),
-                ethereum_tx_registry(SpecId::PRAGUE),
-                db.clone(),
-                Precompiles::base(SpecId::PRAGUE),
-            );
-            evm.set_inspector(&mut inspector);
-            let tx = Recovered::new_unchecked(
-                TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
-                    TxEip7702 {
-                        chain_id: 1,
-                        to: target,
-                        gas_limit: 100_000,
-                        authorization_list: vec![SignedAuthorization::new_unchecked(
-                            Authorization { chain_id: U256::ONE, address: delegate, nonce: 1 },
-                            0,
-                            U256::ZERO,
-                            U256::ZERO,
-                        )],
-                        ..Default::default()
-                    },
-                    vec![Some(authority)],
-                )),
-                Address::ZERO,
-            );
-            let result = evm.transact(&tx).unwrap().detach();
-            drop(evm);
-            assert_eq!(result.result.is_success(), !revert);
-            let after = if delegate.is_zero() {
-                Bytecode::default()
-            } else {
-                Bytecode::new_eip7702(delegate)
-            };
-            assert_eq!(
-                result.pending_state.account_info(&authority).unwrap().code_hash,
-                after.hash_slow()
-            );
-            let traces = inspector
-                .into_parity_builder()
-                .into_trace_results_with_state(
-                    &result,
-                    &HashSet::from_iter([TraceType::StateDiff]),
-                    &mut db,
-                )
-                .unwrap();
-            let diff = &traces.state_diff.unwrap()[&authority];
-            let expected = if before == after {
-                Delta::Unchanged
-            } else {
-                Delta::changed(before.original_bytes(), after.original_bytes())
-            };
-            assert_eq!(diff.code, expected, "delegate={delegate}, revert={revert}");
-            assert_eq!(diff.nonce, Delta::changed(U64::from(1), U64::from(2)));
-            assert_eq!(diff.balance, Delta::Unchanged);
-        }
+#[test_case(Bytecode::default(), Address::with_last_byte(0x42); "set_delegation")]
+#[test_case(
+    Bytecode::new_eip7702(Address::with_last_byte(0x41)),
+    Address::with_last_byte(0x42);
+    "change_delegation"
+)]
+#[test_case(
+    Bytecode::new_eip7702(Address::with_last_byte(0x41)),
+    Address::ZERO;
+    "clear_delegation"
+)]
+#[test_case(
+    Bytecode::new_eip7702(Address::with_last_byte(0x42)),
+    Address::with_last_byte(0x42);
+    "same_delegation"
+)]
+fn authorization_code_changes(before: Bytecode, delegate: Address) {
+    // Authorization changes persist even when transaction execution reverts.
+    for revert in [false, true] {
+        let authority = Address::with_last_byte(0x43);
+        let target = Address::with_last_byte(0x44);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &authority,
+            AccountInfo { nonce: 1, ..Default::default() }.with_code(before.clone()),
+        );
+        db.insert_account_info(
+            &target,
+            AccountInfo::default().with_code(Bytecode::new_raw(
+                if revert { hex!("5f5ffd").to_vec() } else { vec![0x00] }.into(),
+            )),
+        );
+        let mut inspector = TracingInspector::new(TracingInspectorConfig::default_parity());
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            Default::default(),
+            ethereum_tx_registry(SpecId::PRAGUE),
+            db.clone(),
+            Precompiles::base(SpecId::PRAGUE),
+        );
+        evm.set_inspector(&mut inspector);
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
+                TxEip7702 {
+                    chain_id: 1,
+                    to: target,
+                    gas_limit: 100_000,
+                    authorization_list: vec![SignedAuthorization::new_unchecked(
+                        Authorization { chain_id: U256::ONE, address: delegate, nonce: 1 },
+                        0,
+                        U256::ZERO,
+                        U256::ZERO,
+                    )],
+                    ..Default::default()
+                },
+                vec![Some(authority)],
+            )),
+            Address::ZERO,
+        );
+        let result = evm.transact(&tx).unwrap().detach();
+        drop(evm);
+        assert_eq!(result.result.is_success(), !revert);
+        let after =
+            if delegate.is_zero() { Bytecode::default() } else { Bytecode::new_eip7702(delegate) };
+        assert_eq!(
+            result.pending_state.account_info(&authority).unwrap().code_hash,
+            after.hash_slow()
+        );
+        let traces = inspector
+            .into_parity_builder()
+            .into_trace_results_with_state(
+                &result,
+                &HashSet::from_iter([TraceType::StateDiff]),
+                &mut db,
+            )
+            .unwrap();
+        let diff = &traces.state_diff.unwrap()[&authority];
+        let expected = if before == after {
+            Delta::Unchanged
+        } else {
+            Delta::changed(before.original_bytes(), after.original_bytes())
+        };
+        assert_eq!(diff.code, expected, "delegate={delegate}, revert={revert}");
+        assert_eq!(diff.nonce, Delta::changed(U64::from(1), U64::from(2)));
+        assert_eq!(diff.balance, Delta::Unchanged);
     }
 }

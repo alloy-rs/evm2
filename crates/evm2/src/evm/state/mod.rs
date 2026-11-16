@@ -1052,6 +1052,7 @@ impl<'a> State<'a> {
 mod tests {
     use super::*;
     use alloc::vec;
+    use test_case::test_case;
 
     #[test]
     fn committed_copy_matches_committed_clone() {
@@ -1601,45 +1602,46 @@ mod tests {
         assert!(!state.storage_slot(&prewarmed, key).unwrap().warm());
     }
 
-    #[test]
-    fn rollback_after_snapshot_restore() {
+    #[test_case(0, 0, 7, 1)]
+    #[test_case(1, 2, 10, 2)]
+    #[test_case(2, 1, 11, 2)]
+    #[test_case(3, 0, 11, 1)]
+    fn rollback_after_snapshot_restore(
+        writes: u64,
+        new_logs: u64,
+        expected: u64,
+        expected_logs: usize,
+    ) {
         // Restoring a snapshot does not rebase active checkpoints. Only entries beyond each saved
         // cursor are reverted, even after the journal and logs regrow.
-        for (writes, new_logs, expected, expected_logs) in
-            [(0, 0, 7, 1), (1, 2, 10, 2), (2, 1, 11, 2), (3, 0, 11, 1)]
-        {
-            let mut state = State::new(EmptyDB::default());
-            let parent = state.checkpoint();
-            state.tstore(&Address::ZERO, &Word::ZERO, &Word::from(7));
-            let kept_log: Log = Log { address: Address::with_last_byte(1), ..Default::default() };
-            state.log(kept_log.clone());
-            let snapshot = state.snapshot();
-            for slot in 1..=2 {
-                state.tstore(&Address::ZERO, &Word::from(slot), &Word::from(8));
-            }
-            state.log(Log::default());
-            let child = state.checkpoint();
-            state = snapshot.into_state(EmptyDB::default());
-            for n in 0..writes {
-                state.tstore(&Address::ZERO, &Word::ZERO, &Word::from(10 + n));
-            }
-            for n in 0..new_logs {
-                state.log(Log {
-                    address: Address::with_last_byte(10 + n as u8),
-                    ..Default::default()
-                });
-            }
-            state.rollback(child, EvmFeatures::empty());
-            assert_eq!(state.tload(&Address::ZERO, &Word::ZERO), Word::from(expected));
-            assert_eq!(state.logs().len(), expected_logs);
-            assert_eq!(state.logs()[0], kept_log);
-            if expected_logs == 2 {
-                assert_eq!(state.logs()[1].address, Address::with_last_byte(10));
-            }
-            state.rollback(parent, EvmFeatures::empty());
-            assert_eq!(state.tload(&Address::ZERO, &Word::ZERO), Word::ZERO);
-            assert!(state.logs().is_empty());
+        let mut state = State::new(EmptyDB::default());
+        let parent = state.checkpoint();
+        state.tstore(&Address::ZERO, &Word::ZERO, &Word::from(7));
+        let kept_log: Log = Log { address: Address::with_last_byte(1), ..Default::default() };
+        state.log(kept_log.clone());
+        let snapshot = state.snapshot();
+        for slot in 1..=2 {
+            state.tstore(&Address::ZERO, &Word::from(slot), &Word::from(8));
         }
+        state.log(Log::default());
+        let child = state.checkpoint();
+        state = snapshot.into_state(EmptyDB::default());
+        for n in 0..writes {
+            state.tstore(&Address::ZERO, &Word::ZERO, &Word::from(10 + n));
+        }
+        for n in 0..new_logs {
+            state.log(Log { address: Address::with_last_byte(10 + n as u8), ..Default::default() });
+        }
+        state.rollback(child, EvmFeatures::empty());
+        assert_eq!(state.tload(&Address::ZERO, &Word::ZERO), Word::from(expected));
+        assert_eq!(state.logs().len(), expected_logs);
+        assert_eq!(state.logs()[0], kept_log);
+        if expected_logs == 2 {
+            assert_eq!(state.logs()[1].address, Address::with_last_byte(10));
+        }
+        state.rollback(parent, EvmFeatures::empty());
+        assert_eq!(state.tload(&Address::ZERO, &Word::ZERO), Word::ZERO);
+        assert!(state.logs().is_empty());
     }
 
     #[test]

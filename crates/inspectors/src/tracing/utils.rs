@@ -205,18 +205,15 @@ mod tests {
     use super::*;
     use alloc::vec;
     use alloy_sol_types::{GenericContractError, SolInterface};
+    use test_case::test_case;
 
-    #[test]
-    fn invalid_instruction_errors() {
-        for (stop, geth, parity) in [
-            (InstrStop::InvalidFEOpcode, "invalid opcode: INVALID", "Bad instruction"),
-            (InstrStop::OpcodeNotFound, "invalid opcode", "Bad instruction"),
-            (InstrStop::NotActivated, "invalid opcode", "Bad instruction"),
-            (InstrStop::InvalidImmediateEncoding, "invalid opcode", "Bad instruction"),
-        ] {
-            assert_eq!(fmt_error_msg(stop, TraceStyle::Geth).as_deref(), Some(geth));
-            assert_eq!(fmt_error_msg(stop, TraceStyle::Parity).as_deref(), Some(parity));
-        }
+    #[test_case(InstrStop::InvalidFEOpcode, "invalid opcode: INVALID", "Bad instruction")]
+    #[test_case(InstrStop::OpcodeNotFound, "invalid opcode", "Bad instruction")]
+    #[test_case(InstrStop::NotActivated, "invalid opcode", "Bad instruction")]
+    #[test_case(InstrStop::InvalidImmediateEncoding, "invalid opcode", "Bad instruction")]
+    fn invalid_instruction_errors(stop: InstrStop, geth: &str, parity: &str) {
+        assert_eq!(fmt_error_msg(stop, TraceStyle::Geth).as_deref(), Some(geth));
+        assert_eq!(fmt_error_msg(stop, TraceStyle::Parity).as_deref(), Some(parity));
     }
 
     #[test]

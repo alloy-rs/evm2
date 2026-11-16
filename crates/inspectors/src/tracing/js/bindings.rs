@@ -1134,6 +1134,7 @@ mod tests {
     use core::convert::Infallible;
     use evm2::evm::{Database, Db, InMemoryDB};
     use std::panic::{AssertUnwindSafe, catch_unwind};
+    use test_case::test_case;
 
     /// Records and enters a step with the given pre- and post-execution stack.
     fn with_step<'a, R>(
@@ -1598,29 +1599,34 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_stack_view_reconstructs_pre_execution_stack() {
-        // SWAP1 touches the top two items, DUP1 one item, ADD two items
-        let pre = [U256::ONE, U256::from(2), U256::from(3)];
-        for (op, post) in [
-            (opcode::SWAP1, vec![U256::ONE, U256::from(3), U256::from(2)]),
-            (opcode::DUP1, vec![U256::ONE, U256::from(2), U256::from(3), U256::from(3)]),
-            (opcode::ADD, vec![U256::ONE, U256::from(5)]),
-            (opcode::POP, vec![U256::ONE, U256::from(2)]),
-            // halted before pushing, e.g. out of gas after popping the inputs
-            (opcode::MSTORE, vec![U256::ONE]),
-            (opcode::STOP, pre.to_vec()),
-        ] {
-            let mut view = StackView::default();
-            view.record(op, 0, &pre);
-            let post: &'static [U256] = post.leak();
-            view.post = Some(post);
-            assert_eq!(view.len(), 3);
-            for (idx, expected) in pre.iter().rev().enumerate() {
-                assert_eq!(view.peek(idx as i64).unwrap(), *expected, "op {op:#x} idx {idx}");
-            }
-            assert!(view.peek(3).is_err());
+    /// The stack the stack view cases record before each op.
+    fn pre_stack() -> [U256; 3] {
+        [U256::ONE, U256::from(2), U256::from(3)]
+    }
+
+    // SWAP1 touches the top two items, DUP1 one item, ADD two items
+    #[test_case(opcode::SWAP1, vec![U256::ONE, U256::from(3), U256::from(2)]; "swap1")]
+    #[test_case(
+        opcode::DUP1,
+        vec![U256::ONE, U256::from(2), U256::from(3), U256::from(3)];
+        "dup1"
+    )]
+    #[test_case(opcode::ADD, vec![U256::ONE, U256::from(5)]; "add")]
+    #[test_case(opcode::POP, vec![U256::ONE, U256::from(2)]; "pop")]
+    // halted before pushing, e.g. out of gas after popping the inputs
+    #[test_case(opcode::MSTORE, vec![U256::ONE]; "mstore")]
+    #[test_case(opcode::STOP, pre_stack().to_vec(); "stop")]
+    fn test_stack_view_reconstructs_pre_execution_stack(op: u8, post: Vec<U256>) {
+        let pre = pre_stack();
+        let mut view = StackView::default();
+        view.record(op, 0, &pre);
+        let post: &'static [U256] = post.leak();
+        view.post = Some(post);
+        assert_eq!(view.len(), 3);
+        for (idx, expected) in pre.iter().rev().enumerate() {
+            assert_eq!(view.peek(idx as i64).unwrap(), *expected, "op {op:#x} idx {idx}");
         }
+        assert!(view.peek(3).is_err());
     }
 
     #[test]

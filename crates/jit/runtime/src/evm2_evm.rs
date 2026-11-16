@@ -750,35 +750,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "llvm")]
-    fn compiled_difficulty_uses_active_features() {
-        let block = BlockEnvExt {
-            difficulty: Word::from(2),
-            prevrandao: Word::from(7),
-            ..BlockEnvExt::default()
-        };
-        for (spec, enabled, expected) in [(SpecId::CANCUN, false, 2), (SpecId::LONDON, true, 7)] {
-            let mut version = Version::new(spec);
-            if enabled {
-                version.features.insert(EvmFeatures::EIP4399);
-            } else {
-                version.features.remove(EvmFeatures::EIP4399);
-            }
-            // PUSH0 is not active before Shanghai.
-            let zero: &[u8] =
-                if spec.enables(SpecId::SHANGHAI) { &[op::PUSH0] } else { &[op::PUSH1, 0] };
-            let code =
-                [&[op::DIFFICULTY][..], zero, &[op::MSTORE, op::PUSH1, 0x20], zero, &[op::RETURN]]
-                    .concat();
-            let run = |with_jit| run_with_version(spec, version, block, &code, 100_000, with_jit);
-            let interpreted = run(false);
-            assert_eq!(interpreted.0, InstrStop::Return);
-            assert_eq!(Word::from_be_slice(&interpreted.1), Word::from(expected));
-            assert_eq!(run(true), interpreted);
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "llvm")]
     fn section_gas_too_large_to_compile_falls_back_to_interpreter() {
         let spec = SpecId::CANCUN;
         let mut version = Version::new(spec);
@@ -946,6 +917,39 @@ mod tests {
             }
         }
     }
+
+    #[cfg(feature = "llvm")]
+    mod difficulty {
+        use super::*;
+        use test_case::test_case;
+
+        #[test_case(SpecId::CANCUN, false, 2)]
+        #[test_case(SpecId::LONDON, true, 7)]
+        fn compiled_difficulty_uses_active_features(spec: SpecId, enabled: bool, expected: u64) {
+            let block = BlockEnvExt {
+                difficulty: Word::from(2),
+                prevrandao: Word::from(7),
+                ..BlockEnvExt::default()
+            };
+            let mut version = Version::new(spec);
+            if enabled {
+                version.features.insert(EvmFeatures::EIP4399);
+            } else {
+                version.features.remove(EvmFeatures::EIP4399);
+            }
+            // PUSH0 is not active before Shanghai.
+            let zero: &[u8] =
+                if spec.enables(SpecId::SHANGHAI) { &[op::PUSH0] } else { &[op::PUSH1, 0] };
+            let code =
+                [&[op::DIFFICULTY][..], zero, &[op::MSTORE, op::PUSH1, 0x20], zero, &[op::RETURN]]
+                    .concat();
+            let run = |with_jit| run_with_version(spec, version, block, &code, 100_000, with_jit);
+            let interpreted = run(false);
+            assert_eq!(interpreted.0, InstrStop::Return);
+            assert_eq!(Word::from_be_slice(&interpreted.1), Word::from(expected));
+            assert_eq!(run(true), interpreted);
+        }
+    }
 }
 
 #[cfg(all(test, feature = "llvm"))]
@@ -964,6 +968,7 @@ mod custom_host_tests {
         registry::TxRegistry,
     };
     use evm2_macros::instruction;
+    use test_case::test_case;
 
     #[derive(Debug)]
     struct CustomTypes;
@@ -1254,134 +1259,139 @@ mod custom_host_tests {
         HostConfig::for_config::<TableTypes>(&config)
     }
 
-    #[test]
-    fn host_table_gas_and_overridden_sstore_match_interpreter() {
-        for code in [
-            &[op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP][..],
-            &[op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP][..],
-        ] {
-            let (compiled_stop, compiled, stop, interpreted) = run_both(table_host(), code);
-            assert_eq!(compiled_stop, Some(stop));
-            assert_eq!(compiled.gas().spent(), interpreted.gas().spent());
-        }
-        let (_, _, _, sstore) =
-            run_both(table_host(), &[op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP]);
-        assert!(sstore.gas().spent() >= SSTORE_SURCHARGE);
+    #[test_case(&[op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP], 0; "add")]
+    #[test_case(&[op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP], SSTORE_SURCHARGE; "sstore")]
+    fn host_table_gas_and_overridden_sstore_match_interpreter(code: &'static [u8], min_gas: u64) {
+        let (compiled_stop, compiled, stop, interpreted) = run_both(table_host(), code);
+        assert_eq!(compiled_stop, Some(stop));
+        assert_eq!(compiled.gas().spent(), interpreted.gas().spent());
+        assert!(interpreted.gas().spent() >= min_gas);
     }
 
-    #[test]
-    fn host_table_overridden_sload_and_invalid_match_interpreter() {
-        // Both a constant and a dynamic key reach the host's `SLOAD`.
-        for code in [
-            &[op::PUSH1, 0, op::SLOAD, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]
-                [..],
-            &[
-                op::PUSH0,
-                op::CALLDATASIZE,
-                op::ADD,
-                op::SLOAD,
-                op::PUSH0,
-                op::MSTORE,
-                op::PUSH1,
-                32,
-                op::PUSH0,
-                op::RETURN,
-            ][..],
-            &[
-                op::PUSH1,
-                1,
-                op::PUSH0,
-                op::MSTORE,
-                op::PUSH0,
-                op::SLOAD,
-                op::POP,
-                op::PUSH0,
-                op::MLOAD,
-                op::PUSH0,
-                op::MSTORE,
-                op::PUSH1,
-                32,
-                op::PUSH0,
-                op::RETURN,
-            ][..],
-            // The override reads the `CALLER` word below its operand, which the program
-            // otherwise discards.
-            &[
-                op::CALLER,
-                op::PUSH0,
-                op::BALANCE,
-                op::PUSH0,
-                op::MSTORE,
-                op::POP,
-                op::PUSH1,
-                32,
-                op::PUSH0,
-                op::RETURN,
-            ][..],
-            // Two identical blocks at different offsets must report their own positions.
-            &[
-                op::CALLDATASIZE,
-                op::PUSH1,
-                7,
-                op::JUMPI,
-                op::PUSH1,
-                16,
-                op::JUMP,
-                op::JUMPDEST,
-                op::PUSH0,
-                op::EXTCODESIZE,
-                op::PUSH0,
-                op::MSTORE,
-                op::PUSH1,
-                32,
-                op::PUSH0,
-                op::RETURN,
-                op::JUMPDEST,
-                op::PUSH0,
-                op::EXTCODESIZE,
-                op::PUSH0,
-                op::MSTORE,
-                op::PUSH1,
-                32,
-                op::PUSH0,
-                op::RETURN,
-            ][..],
-            &[op::INVALID][..],
-        ] {
-            let (compiled_stop, compiled, stop, interpreted) = run_both(table_host(), code);
-            assert_eq!(compiled_stop, Some(stop));
-            assert_eq!(compiled.gas().spent(), interpreted.gas().spent());
-            assert_eq!(compiled.output(), interpreted.output());
-        }
+    // Both a constant and a dynamic key reach the host's `SLOAD`.
+    #[test_case(
+        &[op::PUSH1, 0, op::SLOAD, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN];
+        "constant_sload_key"
+    )]
+    #[test_case(
+        &[
+            op::PUSH0,
+            op::CALLDATASIZE,
+            op::ADD,
+            op::SLOAD,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH1,
+            32,
+            op::PUSH0,
+            op::RETURN,
+        ];
+        "dynamic_sload_key"
+    )]
+    #[test_case(
+        &[
+            op::PUSH1,
+            1,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH0,
+            op::SLOAD,
+            op::POP,
+            op::PUSH0,
+            op::MLOAD,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH1,
+            32,
+            op::PUSH0,
+            op::RETURN,
+        ];
+        "sload_after_mstore"
+    )]
+    // The override reads the `CALLER` word below its operand, which the program otherwise
+    // discards.
+    #[test_case(
+        &[
+            op::CALLER,
+            op::PUSH0,
+            op::BALANCE,
+            op::PUSH0,
+            op::MSTORE,
+            op::POP,
+            op::PUSH1,
+            32,
+            op::PUSH0,
+            op::RETURN,
+        ];
+        "balance_reads_caller_below_operand"
+    )]
+    // Two identical blocks at different offsets must report their own positions.
+    #[test_case(
+        &[
+            op::CALLDATASIZE,
+            op::PUSH1,
+            7,
+            op::JUMPI,
+            op::PUSH1,
+            16,
+            op::JUMP,
+            op::JUMPDEST,
+            op::PUSH0,
+            op::EXTCODESIZE,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH1,
+            32,
+            op::PUSH0,
+            op::RETURN,
+            op::JUMPDEST,
+            op::PUSH0,
+            op::EXTCODESIZE,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH1,
+            32,
+            op::PUSH0,
+            op::RETURN,
+        ];
+        "identical_blocks_at_different_offsets"
+    )]
+    #[test_case(&[op::INVALID]; "invalid")]
+    fn host_table_overridden_sload_and_invalid_match_interpreter(code: &'static [u8]) {
+        let (compiled_stop, compiled, stop, interpreted) = run_both(table_host(), code);
+        assert_eq!(compiled_stop, Some(stop));
+        assert_eq!(compiled.gas().spent(), interpreted.gas().spent());
+        assert_eq!(compiled.output(), interpreted.output());
     }
 
-    #[test]
-    fn host_instruction_that_breaks_compiled_code_assumptions_fails() {
-        for (code, error) in [
-            (
-                // The interpreter skips the `POP` after the override, which compiled code cannot
-                // do.
-                &[op::PUSH0, op::TLOAD, op::POP, op::STOP][..],
-                "host instruction TLOAD (0x5c) at pc 1 moved the program counter, which compiled \
-                 code cannot follow",
-            ),
-            (
-                &[op::PUSH0, op::BLOCKHASH, op::STOP][..],
-                "host instruction BLOCKHASH (0x40) at pc 1 left 2 stack items, but compiled code \
-                 expects 1 from the opcode's fixed inputs and outputs",
-            ),
-            (
-                &[op::PUSH0, op::PUSH0, op::MSTORE, op::SELFBALANCE, op::STOP][..],
-                "host instruction SELFBALANCE (0x47) at pc 3 shrank memory from 32 to 0 bytes, \
-                 but compiled code expects memory never to shrink",
-            ),
-        ] {
-            let result = run_compiled_message(table_host(), code);
-            let Err(ExecutionError::Fatal(fatal)) = result else {
-                panic!("expected a fatal error, got {:?} for {code:?}", result.map(|r| r.stop));
-            };
-            assert_eq!(fatal.to_string(), error);
-        }
+    // The interpreter skips the `POP` after the override, which compiled code cannot do.
+    #[test_case(
+        &[op::PUSH0, op::TLOAD, op::POP, op::STOP],
+        "host instruction TLOAD (0x5c) at pc 1 moved the program counter, which compiled \
+         code cannot follow";
+        "tload_moves_pc"
+    )]
+    #[test_case(
+        &[op::PUSH0, op::BLOCKHASH, op::STOP],
+        "host instruction BLOCKHASH (0x40) at pc 1 left 2 stack items, but compiled code \
+         expects 1 from the opcode's fixed inputs and outputs";
+        "blockhash_leaves_extra_stack_item"
+    )]
+    #[test_case(
+        &[op::PUSH0, op::PUSH0, op::MSTORE, op::SELFBALANCE, op::STOP],
+        "host instruction SELFBALANCE (0x47) at pc 3 shrank memory from 32 to 0 bytes, \
+         but compiled code expects memory never to shrink";
+        "selfbalance_shrinks_memory"
+    )]
+    fn host_instruction_that_breaks_compiled_code_assumptions_fails(
+        code: &'static [u8],
+        error: &str,
+    ) {
+        let result = run_compiled_message(table_host(), code);
+        let Err(ExecutionError::Fatal(fatal)) = result else {
+            panic!("expected a fatal error, got {:?} for {code:?}", result.map(|r| r.stop));
+        };
+        assert_eq!(fatal.to_string(), error);
     }
 
     #[test]

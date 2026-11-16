@@ -1135,6 +1135,7 @@ mod tests {
         interpreter::{GasTracker, Message, MessageResult, MessageResultExt, op},
     };
     use evm2_jit_context::EvmStack;
+    use test_case::test_case;
 
     #[derive(Debug)]
     struct MessageInspector {
@@ -1489,64 +1490,64 @@ mod tests {
         assert_eq!(inspector.creates[0].salt, B256::from(salt.to_be_bytes()));
     }
 
-    #[test]
-    fn create_builtin_preaccess_failure_skips_child_message() {
+    #[test_case(CreateKind::Create, Word::ZERO, 0, Word::ONE, 0)]
+    #[test_case(CreateKind::Create, Word::MAX, u64::MAX, Word::ZERO, 0)]
+    #[test_case(CreateKind::Create, Word::MAX, 0, Word::ZERO, CALL_DEPTH_LIMIT)]
+    #[test_case(CreateKind::Create2, Word::ZERO, 0, Word::ONE, 0)]
+    #[test_case(CreateKind::Create2, Word::MAX, u64::MAX, Word::ZERO, 0)]
+    #[test_case(CreateKind::Create2, Word::MAX, 0, Word::ZERO, CALL_DEPTH_LIMIT)]
+    fn create_builtin_preaccess_failure_skips_child_message(
+        create_kind: CreateKind,
+        balance: Word,
+        nonce: u64,
+        value: Word,
+        depth: u16,
+    ) {
         let contract = Address::repeat_byte(0x11);
-        for create_kind in [CreateKind::Create, CreateKind::Create2] {
-            for (balance, nonce, value, depth) in [
-                (Word::ZERO, 0, Word::ONE, 0),
-                (Word::MAX, u64::MAX, Word::ZERO, 0),
-                (Word::MAX, 0, Word::ZERO, CALL_DEPTH_LIMIT),
-            ] {
-                let mut db = InMemoryDB::default();
-                db.insert_account_info(
-                    &contract,
-                    AccountInfo { balance, nonce, ..Default::default() },
-                );
-                let mut host = Evm::<BaseEvmTypes>::new(
-                    SpecId::AMSTERDAM,
-                    BlockEnvExt::default(),
-                    ethereum_tx_registry(SpecId::AMSTERDAM),
-                    db,
-                    Precompiles::base(SpecId::AMSTERDAM),
-                );
-                host.set_inspector(MessageInspector::default());
-                let message = MessageExt {
-                    depth,
-                    gas_limit: 100_000,
-                    destination: contract,
-                    code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
-                    ..MessageExt::default()
-                };
-                let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&message);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&contract, AccountInfo { balance, nonce, ..Default::default() });
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            db,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        host.set_inspector(MessageInspector::default());
+        let message = MessageExt {
+            depth,
+            gas_limit: 100_000,
+            destination: contract,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..MessageExt::default()
+        };
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&message);
 
-                {
-                    let mut frame = prepare_frame(&mut interpreter, &mut host);
-                    frame.ecx.set_return_data(Bytes::from_static(b"stale"));
-                    match create_kind {
-                        CreateKind::Create => {
-                            frame.stack.set(0, EvmWord::ZERO);
-                            frame.stack.set(1, EvmWord::ZERO);
-                            frame.stack.set(2, EvmWord::from(value));
-                        }
-                        CreateKind::Create2 => {
-                            frame.stack.set(0, EvmWord::ZERO);
-                            frame.stack.set(1, EvmWord::ZERO);
-                            frame.stack.set(2, EvmWord::ZERO);
-                            frame.stack.set(3, EvmWord::from(value));
-                        }
-                    }
-
-                    let sp = frame.stack.as_mut_ptr();
-                    unsafe { abi::__revmc_builtin_create(&mut frame.ecx, sp, create_kind) };
-
-                    assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &EvmWord::ZERO);
-                    assert!(frame.ecx.return_data().is_empty());
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            frame.ecx.set_return_data(Bytes::from_static(b"stale"));
+            match create_kind {
+                CreateKind::Create => {
+                    frame.stack.set(0, EvmWord::ZERO);
+                    frame.stack.set(1, EvmWord::ZERO);
+                    frame.stack.set(2, EvmWord::from(value));
                 }
-
-                let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
-                assert!(inspector.creates.is_empty());
+                CreateKind::Create2 => {
+                    frame.stack.set(0, EvmWord::ZERO);
+                    frame.stack.set(1, EvmWord::ZERO);
+                    frame.stack.set(2, EvmWord::ZERO);
+                    frame.stack.set(3, EvmWord::from(value));
+                }
             }
+
+            let sp = frame.stack.as_mut_ptr();
+            unsafe { abi::__revmc_builtin_create(&mut frame.ecx, sp, create_kind) };
+
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &EvmWord::ZERO);
+            assert!(frame.ecx.return_data().is_empty());
         }
+
+        let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
+        assert!(inspector.creates.is_empty());
     }
 }

@@ -470,6 +470,7 @@ mod tests {
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
     use core::assert_matches;
     use evm2_macros::instruction;
+    use test_case::test_case;
 
     #[derive(Default)]
     struct SelfdestructInspector {
@@ -1221,14 +1222,21 @@ mod tests {
         (result, *evm.clear_inspector_as::<ConfigInspector>().unwrap())
     }
 
+    type RunCustomCall =
+        fn(ConfigInspector, u8, &[u8]) -> (MessageResult<BaseEvmTypes>, ConfigInspector);
+
     /// Asserts that the frame steps the set that the child message of [`CUSTOM_CALL`] switches to,
     /// from the opcode after it.
-    fn assert_custom_call_rereads_the_steps<C: EvmConfig<BaseEvmTypes>>() {
-        let (expected, full) =
-            run_custom_call::<C>(ConfigInspector::new(OpcodeSet::ALL), CUSTOM_CALL, &[]);
+    #[test_case(run_custom_call::<CustomCallConfig>; "custom_call_opcode_rereads_the_steps")]
+    #[test_case(
+        run_custom_call::<HostCallConfig>;
+        "hooked_opcode_that_runs_a_message_through_the_host_rereads_the_steps"
+    )]
+    fn custom_call_rereads_the_steps(run: RunCustomCall) {
+        let (expected, full) = run(ConfigInspector::new(OpcodeSet::ALL), CUSTOM_CALL, &[]);
 
         // The child message of the custom opcode switches the steps to `GAS`, and no steps before.
-        let (result, inspector) = run_custom_call::<C>(
+        let (result, inspector) = run(
             ConfigInspector::new(OpcodeSet::EMPTY).switching_to(opcode_set([op::GAS])),
             CUSTOM_CALL,
             &[],
@@ -1236,16 +1244,6 @@ mod tests {
         assert_eq!(result, expected);
         let gas = full.steps.iter().position(|record| record.0 == op::GAS).unwrap();
         assert_eq!(inspector.steps, [full.steps[gas].clone()]);
-    }
-
-    #[test]
-    fn custom_call_opcode_rereads_the_steps() {
-        assert_custom_call_rereads_the_steps::<CustomCallConfig>();
-    }
-
-    #[test]
-    fn hooked_opcode_that_runs_a_message_through_the_host_rereads_the_steps() {
-        assert_custom_call_rereads_the_steps::<HostCallConfig>();
     }
 
     #[test]
@@ -1432,8 +1430,9 @@ mod tests {
         assert_eq!((inspector.steps, inspector.ends), (6, 6));
     }
 
-    #[test]
-    fn inspector_message_hooks_preserve_parent_gas_edits() {
+    #[test_case(call_code(Address::repeat_byte(0x66)), op::CALL; "call")]
+    #[test_case(create_code(), op::CREATE; "create")]
+    fn inspector_message_hooks_preserve_parent_gas_edits(mut code: Vec<u8>, opcode: u8) {
         #[derive(Default)]
         struct GasInspector {
             opcode: u8,
@@ -1511,24 +1510,18 @@ mod tests {
             }
         }
 
-        for (mut code, opcode) in
-            [(call_code(Address::repeat_byte(0x66)), op::CALL), (create_code(), op::CREATE)]
-        {
-            code.extend([opcode, op::GAS, op::STOP]);
-            let (result, inspector, _) = run_evm_with_inspector(
-                code,
-                &MessageExt::default(),
-                100_000,
-                GasInspector::default(),
-            );
-            assert_eq!(result.stop, InstrStop::Stop);
-            assert_eq!(result.gas.remaining(), 4098);
-            assert_eq!((inspector.calls, inspector.ends), (1, 1));
-        }
+        code.extend([opcode, op::GAS, op::STOP]);
+        let (result, inspector, _) =
+            run_evm_with_inspector(code, &MessageExt::default(), 100_000, GasInspector::default());
+        assert_eq!(result.stop, InstrStop::Stop);
+        assert_eq!(result.gas.remaining(), 4098);
+        assert_eq!((inspector.calls, inspector.ends), (1, 1));
     }
 
-    #[test]
-    fn inspector_gas_is_valid_after_out_of_gas() {
+    #[test_case(vec![op::PUSH0], 1, InstrStop::OutOfGas; "push0_out_of_gas")]
+    #[test_case(vec![op::PUSH0, op::PUSH0, op::MSTORE], 9, InstrStop::MemoryOOG; "memory_oog")]
+    #[test_case(vec![op::PUSH0, op::SLOAD], 2, InstrStop::OutOfGas; "sload_out_of_gas")]
+    fn inspector_gas_is_valid_after_out_of_gas(code: Vec<u8>, gas_limit: u64, stop: InstrStop) {
         struct GasInspector {
             recover: bool,
             failures: usize,
@@ -1547,22 +1540,16 @@ mod tests {
             }
         }
 
-        for (code, gas_limit, stop) in [
-            (vec![op::PUSH0], 1, InstrStop::OutOfGas),
-            (vec![op::PUSH0, op::PUSH0, op::MSTORE], 9, InstrStop::MemoryOOG),
-            (vec![op::PUSH0, op::SLOAD], 2, InstrStop::OutOfGas),
-        ] {
-            for recover in [false, true] {
-                let (result, inspector, _) = run_evm_with_inspector(
-                    code.clone(),
-                    &MessageExt::default(),
-                    gas_limit,
-                    GasInspector { recover, failures: 0 },
-                );
-                assert_eq!(inspector.failures, 1, "code={code:?}, result={result:?}");
-                assert_eq!(result.stop, if recover { InstrStop::Stop } else { stop });
-                assert_eq!(result.gas.remaining(), if recover { 17 } else { 0 });
-            }
+        for recover in [false, true] {
+            let (result, inspector, _) = run_evm_with_inspector(
+                code.clone(),
+                &MessageExt::default(),
+                gas_limit,
+                GasInspector { recover, failures: 0 },
+            );
+            assert_eq!(inspector.failures, 1, "code={code:?}, result={result:?}");
+            assert_eq!(result.stop, if recover { InstrStop::Stop } else { stop });
+            assert_eq!(result.gas.remaining(), if recover { 17 } else { 0 });
         }
     }
 
@@ -2115,43 +2102,41 @@ mod tests {
         assert_eq!(inspector.create_destinations, [expected]);
     }
 
-    #[test]
-    fn amsterdam_create_preaccess_failure_does_not_fire_create_hook() {
+    #[test_case(Word::ONE, 0, Word::from(2), 0; "insufficient_balance")]
+    #[test_case(Word::MAX, u64::MAX, Word::ZERO, 0; "nonce_overflow")]
+    #[test_case(Word::MAX, 0, Word::ZERO, CALL_DEPTH_LIMIT; "call_depth_limit")]
+    fn amsterdam_create_preaccess_failure_does_not_fire_create_hook(
+        balance: Word,
+        nonce: u64,
+        value: Word,
+        depth: u16,
+    ) {
         let contract = Address::repeat_byte(0x11);
         for is_create2 in [false, true] {
-            for (balance, nonce, value, depth) in [
-                (Word::ONE, 0, Word::from(2), 0),
-                (Word::MAX, u64::MAX, Word::ZERO, 0),
-                (Word::MAX, 0, Word::ZERO, CALL_DEPTH_LIMIT),
-            ] {
-                let mut code = Vec::new();
-                if is_create2 {
-                    push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO, value]);
-                } else {
-                    push_all(&mut code, [Word::ZERO, Word::ZERO, value]);
-                }
-                code.push(if is_create2 { op::CREATE2 } else { op::CREATE });
-                return_top_word(&mut code);
-
-                let mut db = InMemoryDB::default();
-                db.insert_account_info(
-                    &contract,
-                    AccountInfo { balance, nonce, ..Default::default() },
-                );
-                let (result, inspector, _) = run_evm_with_inspector_db_spec(
-                    SpecId::AMSTERDAM,
-                    db,
-                    code,
-                    &MessageExt { destination: contract, depth, ..Default::default() },
-                    100_000,
-                    HookInspector::default(),
-                );
-
-                assert_matches!(result.stop, InstrStop::Return);
-                assert_eq!(Word::from_be_slice(&result.output), Word::ZERO);
-                assert!(inspector.create_depths.is_empty());
-                assert!(inspector.create_end_stops.is_empty());
+            let mut code = Vec::new();
+            if is_create2 {
+                push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO, value]);
+            } else {
+                push_all(&mut code, [Word::ZERO, Word::ZERO, value]);
             }
+            code.push(if is_create2 { op::CREATE2 } else { op::CREATE });
+            return_top_word(&mut code);
+
+            let mut db = InMemoryDB::default();
+            db.insert_account_info(&contract, AccountInfo { balance, nonce, ..Default::default() });
+            let (result, inspector, _) = run_evm_with_inspector_db_spec(
+                SpecId::AMSTERDAM,
+                db,
+                code,
+                &MessageExt { destination: contract, depth, ..Default::default() },
+                100_000,
+                HookInspector::default(),
+            );
+
+            assert_matches!(result.stop, InstrStop::Return);
+            assert_eq!(Word::from_be_slice(&result.output), Word::ZERO);
+            assert!(inspector.create_depths.is_empty());
+            assert!(inspector.create_end_stops.is_empty());
         }
     }
 
@@ -2979,8 +2964,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn inspector_gas_changes_survive_dispatch_errors() {
+    #[test_case(Vec::from([op::PUSH1, 0]), 2, InstrStop::OutOfGas; "out_of_gas")]
+    #[test_case(Vec::from([op::INVALID]), 10_000, InstrStop::InvalidFEOpcode; "invalid_fe_opcode")]
+    fn inspector_gas_changes_survive_dispatch_errors(
+        code: Vec<u8>,
+        gas_limit: u64,
+        expected: InstrStop,
+    ) {
         struct GasEdit;
         impl Inspector<TestTypes> for GasEdit {
             fn step_end(&mut self, interp: &mut Interpreter<'_, '_, TestTypes>) {
@@ -2988,21 +2978,13 @@ mod tests {
             }
         }
 
-        for (code, gas_limit, expected) in [
-            (Vec::from([op::PUSH1, 0]), 2, InstrStop::OutOfGas),
-            (Vec::from([op::INVALID]), 10_000, InstrStop::InvalidFEOpcode),
-        ] {
-            let message = Message::<TestTypes> {
-                gas_limit,
-                code: legacy_bytecode(code),
-                ..Default::default()
-            };
-            let mut interp = Interpreter::<TestTypes>::new(&message);
-            let stop = interp.run_inspect(&mut TestHost::default(), &mut GasEdit);
+        let message =
+            Message::<TestTypes> { gas_limit, code: legacy_bytecode(code), ..Default::default() };
+        let mut interp = Interpreter::<TestTypes>::new(&message);
+        let stop = interp.run_inspect(&mut TestHost::default(), &mut GasEdit);
 
-            assert_eq!(stop, Ok(expected));
-            assert_eq!(interp.gas().remaining(), 1000);
-        }
+        assert_eq!(stop, Ok(expected));
+        assert_eq!(interp.gas().remaining(), 1000);
     }
 
     #[test]

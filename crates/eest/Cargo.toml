@@ -36,6 +36,7 @@ zstd.workspace = true
 
 [dev-dependencies]
 evm2 = { workspace = true, default-features = true }
+test-case.workspace = true
 
 [build-dependencies]
 evm2-jit-build = { workspace = true, optional = true }

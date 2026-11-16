@@ -11,6 +11,7 @@ use evm2::{
     interpreter::Host,
 };
 use serde_json::{Value, json};
+use test_case::test_case;
 
 struct SnapshotInspector {
     js: JsInspector,
@@ -197,28 +198,23 @@ fn nested_root_steps_keep_visible_depth() {
 
 /// `DUPN`, `SWAPN` and `EXCHANGE` touch the stack items their immediate selects, not the ones their
 /// opcode-table entry declares.
-#[test]
-fn reconstructed_steps_match_stack_immediates() {
-    let cases: &[&[u8]] = &[
-        &[op::DUPN, 0x80],
-        &[op::SWAPN, 0x80],
-        &[op::SWAPN, 0x90],
-        // An invalid immediate, then one that underflows the stack.
-        &[op::SWAPN, 0x5b],
-        &[op::SWAPN, 0x00],
-        &[op::EXCHANGE, 0x8e],
-        &[op::EXCHANGE, 0x51],
-        &[op::EXCHANGE, 0xff],
-        &[op::EXCHANGE, 0x52],
-        // The interpreter reads the zero padding past the end of the code as the immediate.
-        &[op::EXCHANGE],
-    ];
-    for case in cases {
-        let mut code = Vec::new();
-        for value in 0..40u8 {
-            code.extend_from_slice(&[op::PUSH1, value]);
-        }
-        code.extend_from_slice(case);
-        compare(code.into(), None, 0, SpecId::AMSTERDAM);
+#[test_case(&[op::DUPN, 0x80]; "dupn_0x80")]
+#[test_case(&[op::SWAPN, 0x80]; "swapn_0x80")]
+#[test_case(&[op::SWAPN, 0x90]; "swapn_0x90")]
+// An invalid immediate, then one that underflows the stack.
+#[test_case(&[op::SWAPN, 0x5b]; "swapn_0x5b")]
+#[test_case(&[op::SWAPN, 0x00]; "swapn_0x00")]
+#[test_case(&[op::EXCHANGE, 0x8e]; "exchange_0x8e")]
+#[test_case(&[op::EXCHANGE, 0x51]; "exchange_0x51")]
+#[test_case(&[op::EXCHANGE, 0xff]; "exchange_0xff")]
+#[test_case(&[op::EXCHANGE, 0x52]; "exchange_0x52")]
+// The interpreter reads the zero padding past the end of the code as the immediate.
+#[test_case(&[op::EXCHANGE]; "exchange_padding")]
+fn reconstructed_steps_match_stack_immediates(case: &[u8]) {
+    let mut code = Vec::new();
+    for value in 0..40u8 {
+        code.extend_from_slice(&[op::PUSH1, value]);
     }
+    code.extend_from_slice(case);
+    compare(code.into(), None, 0, SpecId::AMSTERDAM);
 }

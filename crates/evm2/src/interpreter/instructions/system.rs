@@ -604,6 +604,7 @@ mod tests {
     };
     use alloc::vec::Vec;
     use core::assert_matches;
+    use test_case::test_case;
 
     #[test]
     fn call_opcode() {
@@ -1402,11 +1403,30 @@ mod tests {
         Host::execute_message(&mut evm, &mut message).unwrap()
     }
 
-    #[test]
-    fn host_execute_call_charges_as_call_opcode() {
-        let (callee, reverting, delegator) =
-            (Address::repeat_byte(0xc0), Address::repeat_byte(0xc1), Address::repeat_byte(0xde));
-        let empty = Address::repeat_byte(0xe0);
+    const CALLEE: Address = Address::repeat_byte(0xc0);
+    const REVERTING: Address = Address::repeat_byte(0xc1);
+    const DELEGATOR: Address = Address::repeat_byte(0xde);
+    const EMPTY: Address = Address::repeat_byte(0xe0);
+
+    #[test_case(CALLEE, 0, Word::from(10_000), 100_000)]
+    // All but one 64th of what is left.
+    #[test_case(CALLEE, 0, Word::MAX, 100_000)]
+    #[test_case(REVERTING, 0, Word::from(10_000), 100_000)]
+    #[test_case(DELEGATOR, 0, Word::from(10_000), 100_000)]
+    #[test_case(CALLEE, 1, Word::from(10_000), 100_000)]
+    // A value transfer to a new account.
+    #[test_case(EMPTY, 1, Word::from(10_000), 100_000)]
+    // Out of gas for the cold account access.
+    #[test_case(CALLEE, 0, Word::from(10_000), 2_000)]
+    // Out of gas for the delegate's access.
+    #[test_case(DELEGATOR, 0, Word::from(10_000), 2_700)]
+    fn host_execute_call_charges_as_call_opcode(
+        target: Address,
+        value: u64,
+        call_gas: Word,
+        gas_limit: u64,
+    ) {
+        let (callee, reverting, delegator) = (CALLEE, REVERTING, DELEGATOR);
         let database = || {
             let mut database = InMemoryDB::default();
             // The calling frame's own account pays for value transfers.
@@ -1437,37 +1457,16 @@ mod tests {
             database
         };
 
-        for (target, value, call_gas, gas_limit) in [
-            (callee, 0, Word::from(10_000), 100_000),
-            // All but one 64th of what is left.
-            (callee, 0, Word::MAX, 100_000),
-            (reverting, 0, Word::from(10_000), 100_000),
-            (delegator, 0, Word::from(10_000), 100_000),
-            (callee, 1, Word::from(10_000), 100_000),
-            // A value transfer to a new account.
-            (empty, 1, Word::from(10_000), 100_000),
-            // Out of gas for the cold account access.
-            (callee, 0, Word::from(10_000), 2_000),
-            // Out of gas for the delegate's access.
-            (delegator, 0, Word::from(10_000), 2_700),
-        ] {
-            let expected = run_call::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>(
-                op::CALL,
-                database(),
-                target,
-                value,
-                call_gas,
-                gas_limit,
-            );
-            let result = run_call::<HostCallConfig>(
-                HOST_CALL,
-                database(),
-                target,
-                value,
-                call_gas,
-                gas_limit,
-            );
-            assert_eq!(result, expected, "{target} {value} {call_gas} {gas_limit}");
-        }
+        let expected = run_call::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>(
+            op::CALL,
+            database(),
+            target,
+            value,
+            call_gas,
+            gas_limit,
+        );
+        let result =
+            run_call::<HostCallConfig>(HOST_CALL, database(), target, value, call_gas, gas_limit);
+        assert_eq!(result, expected);
     }
 }

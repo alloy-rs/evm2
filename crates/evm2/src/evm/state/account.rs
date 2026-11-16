@@ -739,6 +739,7 @@ mod tests {
         evm::{CacheDB, state::State},
     };
     use alloy_primitives::{Address, Bytes};
+    use test_case::test_case;
 
     #[test]
     fn transfer_to_self_requires_balance() {
@@ -960,86 +961,88 @@ mod tests {
         assert!(state.account_with_skip(&address, true).is_ok());
     }
 
-    #[test]
-    fn account_overrides_update_only_selected_snapshot_fields() {
+    #[test_case(true, false; "balance")]
+    #[test_case(false, true; "nonce")]
+    #[test_case(true, true; "balance_and_nonce")]
+    fn account_overrides_update_only_selected_snapshot_fields(
+        override_balance: bool,
+        override_nonce: bool,
+    ) {
         let address = Address::with_last_byte(0x90);
         let original = empty_account().with_balance(Word::from(100)).with_nonce(7);
-        for (override_balance, override_nonce) in [(true, false), (false, true), (true, true)] {
-            let mut db = CacheDB::default();
-            db.insert_account_info(&address, original.clone());
-            let mut state = State::new(db);
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, original.clone());
+        let mut state = State::new(db);
+        let checkpoint = state.checkpoint();
+        {
+            let mut account = state.account(&address).unwrap();
+            account.set_balance(Word::from(200));
+            account.set_nonce(8);
+            account.warm();
+            account.mark_created();
+            account.mark_destructed();
+            account.set_code_slow(Bytecode::new_eip7702(Address::with_last_byte(1)));
+            if override_balance {
+                account.override_balance(Word::from(300));
+                account.override_balance(Word::from(400));
+                assert_eq!(account.balance(), Word::from(400));
+            }
+            if override_nonce {
+                account.override_nonce(9);
+                account.override_nonce(10);
+                assert_eq!(account.nonce(), 10);
+            }
+            account.add_balance(Word::from(5));
+            assert!(account.bump_nonce());
+        }
+        assert_eq!(state.checkpoint().journal_len(), checkpoint.journal_len() + 1);
+
+        state.rollback(checkpoint, Version::base(SpecId::CANCUN).features);
+        let account = state.account(&address).unwrap();
+        let mut expected = original;
+        if override_balance {
+            expected.balance = Word::from(400);
+        }
+        if override_nonce {
+            expected.nonce = 10;
+        }
+        assert_eq!(account.get(), Some(&expected));
+        assert!(!account.is_touched());
+        assert!(!account.is_warm());
+        assert!(!account.is_created());
+        assert!(!account.is_destructed());
+    }
+
+    #[test_case(Word::ZERO, 0; "zero")]
+    #[test_case(Word::MAX, u64::MAX; "max")]
+    fn account_overrides_materialize_absent_snapshot_without_touching(balance: Word, nonce: u64) {
+        let address = Address::with_last_byte(0x91);
+        for balance_first in [false, true] {
+            let mut state = State::new(CacheDB::default());
             let checkpoint = state.checkpoint();
             {
                 let mut account = state.account(&address).unwrap();
-                account.set_balance(Word::from(200));
-                account.set_nonce(8);
-                account.warm();
-                account.mark_created();
-                account.mark_destructed();
-                account.set_code_slow(Bytecode::new_eip7702(Address::with_last_byte(1)));
-                if override_balance {
-                    account.override_balance(Word::from(300));
-                    account.override_balance(Word::from(400));
-                    assert_eq!(account.balance(), Word::from(400));
+                if balance_first {
+                    account.override_balance(balance);
+                    account.override_nonce(nonce);
+                } else {
+                    account.override_nonce(nonce);
+                    account.override_balance(balance);
                 }
-                if override_nonce {
-                    account.override_nonce(9);
-                    account.override_nonce(10);
-                    assert_eq!(account.nonce(), 10);
-                }
-                account.add_balance(Word::from(5));
-                assert!(account.bump_nonce());
-            }
-            assert_eq!(state.checkpoint().journal_len(), checkpoint.journal_len() + 1);
-
-            state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
-            let account = state.account(&address).unwrap();
-            let mut expected = original.clone();
-            if override_balance {
-                expected.balance = Word::from(400);
-            }
-            if override_nonce {
-                expected.nonce = 10;
-            }
-            assert_eq!(account.get(), Some(&expected));
-            assert!(!account.is_touched());
-            assert!(!account.is_warm());
-            assert!(!account.is_created());
-            assert!(!account.is_destructed());
-        }
-    }
-
-    #[test]
-    fn account_overrides_materialize_absent_snapshot_without_touching() {
-        let address = Address::with_last_byte(0x91);
-        for (balance, nonce) in [(Word::ZERO, 0), (Word::MAX, u64::MAX)] {
-            for balance_first in [false, true] {
-                let mut state = State::new(CacheDB::default());
-                let checkpoint = state.checkpoint();
-                {
-                    let mut account = state.account(&address).unwrap();
-                    if balance_first {
-                        account.override_balance(balance);
-                        account.override_nonce(nonce);
-                    } else {
-                        account.override_nonce(nonce);
-                        account.override_balance(balance);
-                    }
-                    assert_eq!((account.balance(), account.nonce()), (balance, nonce));
-                    assert!(!account.is_touched());
-                    assert!(!account.is_warm());
-                    account.set_balance(Word::ONE);
-                    account.set_nonce(1);
-                }
-                assert_eq!(state.checkpoint().journal_len(), checkpoint.journal_len() + 1);
-
-                state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
-                let account = state.account(&address).unwrap();
-                assert!(account.exists());
                 assert_eq!((account.balance(), account.nonce()), (balance, nonce));
                 assert!(!account.is_touched());
                 assert!(!account.is_warm());
+                account.set_balance(Word::ONE);
+                account.set_nonce(1);
             }
+            assert_eq!(state.checkpoint().journal_len(), checkpoint.journal_len() + 1);
+
+            state.rollback(checkpoint, Version::base(SpecId::CANCUN).features);
+            let account = state.account(&address).unwrap();
+            assert!(account.exists());
+            assert_eq!((account.balance(), account.nonce()), (balance, nonce));
+            assert!(!account.is_touched());
+            assert!(!account.is_warm());
         }
     }
 

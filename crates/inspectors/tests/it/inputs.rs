@@ -16,6 +16,7 @@ use evm2_inspectors::{
     },
     transfer::TransferInspector,
 };
+use test_case::test_case;
 
 /// A single `CALL` passing 64 KiB of memory as calldata, which evm2 copies into a
 /// separate input buffer for the child message.
@@ -202,50 +203,51 @@ fn byte_budget_counts_memory_snapshots() {
     assert_eq!(inspector.recorded_bytes(), 4 * step);
 }
 
-#[test]
-fn byte_budget_covers_immediates_and_memory_deltas() {
+// The PUSH1 immediate is charged after the first step, the MSTORE delta after the third.
+#[test_case(TracingInspectorConfig::none().steps().record_immediate_bytes(), 1, 0; "immediates")]
+#[test_case(TracingInspectorConfig::none().steps().set_step_deltas(true), 3, 31; "memory_deltas")]
+fn byte_budget_covers_immediates_and_memory_deltas(
+    config: TracingInspectorConfig,
+    steps: usize,
+    extra: usize,
+) {
     let code = hex!("60015f5200");
-    // The PUSH1 immediate is charged after the first step, the MSTORE delta after the third.
-    for (config, steps, extra) in [
-        (TracingInspectorConfig::none().steps().record_immediate_bytes(), 1, 0),
-        (TracingInspectorConfig::none().steps().set_step_deltas(true), 3, 31),
-    ] {
-        let step = step_record_bytes(config);
-        let (inspector, completed) = inspect_with_limits(
-            &code,
-            Bytes::new(),
-            config,
-            TraceLimits::default().set_max_recorded_bytes(Some(steps * step + extra)),
-        );
-        assert!(completed);
-        assert!(inspector.limit_exceeded());
-        assert_eq!(inspector.recorded_bytes(), steps * step);
-    }
+    let step = step_record_bytes(config);
+    let (inspector, completed) = inspect_with_limits(
+        &code,
+        Bytes::new(),
+        config,
+        TraceLimits::default().set_max_recorded_bytes(Some(steps * step + extra)),
+    );
+    assert!(completed);
+    assert!(inspector.limit_exceeded());
+    assert_eq!(inspector.recorded_bytes(), steps * step);
+}
+
+#[test_case(TracingInspectorConfig::none().steps(); "steps")]
+#[test_case(TracingInspectorConfig::none().steps().stack_snapshots(); "stack_snapshots")]
+fn byte_budget_counts_steps_and_stack_snapshots(config: TracingInspectorConfig) {
+    let code = hex!("60015f5200");
+    let (unlimited, completed) =
+        inspect_with_limits(&code, Bytes::new(), config, TraceLimits::default());
+    assert!(completed);
+    assert!(!unlimited.limit_exceeded());
+    assert!(unlimited.recorded_bytes() > 0);
+
+    let (inspector, completed) = inspect_with_limits(
+        &code,
+        Bytes::new(),
+        config,
+        TraceLimits::default().set_max_recorded_bytes(Some(unlimited.recorded_bytes() - 1)),
+    );
+    assert!(completed);
+    assert!(inspector.limit_exceeded());
+    assert_eq!(inspector.traces().nodes()[0].trace.steps.len(), 3);
 }
 
 #[test]
-fn byte_budget_counts_steps_and_stack_snapshots() {
+fn byte_budget_stack_snapshots_cost_more_than_steps() {
     let code = hex!("60015f5200");
-    for config in [
-        TracingInspectorConfig::none().steps(),
-        TracingInspectorConfig::none().steps().stack_snapshots(),
-    ] {
-        let (unlimited, completed) =
-            inspect_with_limits(&code, Bytes::new(), config, TraceLimits::default());
-        assert!(completed);
-        assert!(!unlimited.limit_exceeded());
-        assert!(unlimited.recorded_bytes() > 0);
-
-        let (inspector, completed) = inspect_with_limits(
-            &code,
-            Bytes::new(),
-            config,
-            TraceLimits::default().set_max_recorded_bytes(Some(unlimited.recorded_bytes() - 1)),
-        );
-        assert!(completed);
-        assert!(inspector.limit_exceeded());
-        assert_eq!(inspector.traces().nodes()[0].trace.steps.len(), 3);
-    }
     // Full stack snapshots of the same steps cost more than the steps alone.
     let plain = step_record_bytes(TracingInspectorConfig::none().steps());
     let (with_stack, _) = inspect_with_limits(

@@ -14,6 +14,7 @@ use evm2::{
     evm::{AccountInfo, EmptyDB, InMemoryDB},
     registry::HandlerError,
 };
+use test_case::{test_case, test_matrix};
 
 const TRACER: &str = "{ fault: function() {}, result: function() { return 42; } }";
 const TARGET: Address = Address::with_last_byte(0x42);
@@ -42,23 +43,18 @@ fn unset_interrupt_preserves_results() {
     }
 }
 
-#[test]
-fn pre_cancelled_calls_and_creates_abort() {
-    for kind in [
-        TxKind::Call(TARGET),
-        // Empty account and identity precompile have no interpreter steps.
-        TxKind::Call(Address::with_last_byte(0x43)),
-        TxKind::Call(Address::with_last_byte(4)),
-        TxKind::Create,
-    ] {
-        let interrupt = JsInspectorInterrupt::new();
-        interrupt.interrupt();
-        let inspector = JsInspector::new(TRACER.into(), serde_json::Value::Null)
-            .unwrap()
-            .with_interrupt(interrupt);
-        let (_, result) = run(inspector, &hex!("60015000"), kind);
-        assert_interrupted(result);
-    }
+#[test_case(TxKind::Call(TARGET); "call")]
+// Empty account and identity precompile have no interpreter steps.
+#[test_case(TxKind::Call(Address::with_last_byte(0x43)); "call_empty_account")]
+#[test_case(TxKind::Call(Address::with_last_byte(4)); "call_identity_precompile")]
+#[test_case(TxKind::Create; "create")]
+fn pre_cancelled_calls_and_creates_abort(kind: TxKind) {
+    let interrupt = JsInspectorInterrupt::new();
+    interrupt.interrupt();
+    let inspector =
+        JsInspector::new(TRACER.into(), serde_json::Value::Null).unwrap().with_interrupt(interrupt);
+    let (_, result) = run(inspector, &hex!("60015000"), kind);
+    assert_interrupted(result);
 }
 
 #[test]
@@ -75,46 +71,41 @@ fn interrupt_stops_steps_without_js_step_callback() {
     assert_eq!(interp.result(), Err(InstrStop::FatalExternalError));
 }
 
-#[test]
-fn interrupt_during_step_aborts_execution() {
-    for (code, op) in [
-        (&hex!("60015000")[..], "PUSH1"),
-        (&hex!("00")[..], "STOP"),
-        (&hex!("5f5ff3")[..], "RETURN"),
-        (&hex!("5f5ffd")[..], "REVERT"),
-        (&hex!("5f5f5f5f5f600461fffff100")[..], "CALL"),
-        (&hex!("5f5f5ff000")[..], "CREATE"),
-    ] {
-        let script = format!(
-            "{{ step: function(log) {{ if (log.op.toString() === '{op}') interrupt(); }},
-                fault: function() {{ interrupt(); }},
-                result: function() {{ return 42; }} }}"
-        );
-        let inspector = interruptible(&script);
-        let (_, result) = run(inspector, code, TxKind::Call(TARGET));
-        assert_interrupted(result);
-    }
+#[test_case(&hex!("60015000"), "PUSH1"; "push1")]
+#[test_case(&hex!("00"), "STOP"; "stop")]
+#[test_case(&hex!("5f5ff3"), "RETURN"; "return")]
+#[test_case(&hex!("5f5ffd"), "REVERT"; "revert")]
+#[test_case(&hex!("5f5f5f5f5f600461fffff100"), "CALL"; "call")]
+#[test_case(&hex!("5f5f5ff000"), "CREATE"; "create")]
+fn interrupt_during_step_aborts_execution(code: &[u8], op: &str) {
+    let script = format!(
+        "{{ step: function(log) {{ if (log.op.toString() === '{op}') interrupt(); }},
+            fault: function() {{ interrupt(); }},
+            result: function() {{ return 42; }} }}"
+    );
+    let inspector = interruptible(&script);
+    let (_, result) = run(inspector, code, TxKind::Call(TARGET));
+    assert_interrupted(result);
 }
 
-#[test]
-fn interrupt_during_enter_and_exit_aborts() {
-    for callback in ["enter", "exit"] {
-        for code in [
-            // Identity precompile and empty initcode exercise frames without EVM steps.
-            &hex!("5f5f5f5f5f600461fffff100")[..],
-            &hex!("5f5f5ff000")[..],
-            // SELFDESTRUCT invokes enter/exit outside of step_end.
-            &hex!("6043ff")[..],
-        ] {
-            let other = if callback == "enter" { "exit" } else { "enter" };
-            let script = format!(
-                "{{ {callback}: function() {{ interrupt(); }}, {other}: function() {{}},
-                    fault: function() {{}}, result: function() {{ return 42; }} }}"
-            );
-            let (_, result) = run(interruptible(&script), code, TxKind::Call(TARGET));
-            assert_interrupted(result);
-        }
-    }
+#[test_matrix(
+    ["enter", "exit"],
+    [
+        // Identity precompile and empty initcode exercise frames without EVM steps.
+        &hex!("5f5f5f5f5f600461fffff100"),
+        &hex!("5f5f5ff000"),
+        // SELFDESTRUCT invokes enter/exit outside of step_end.
+        &hex!("6043ff"),
+    ]
+)]
+fn interrupt_during_enter_and_exit_aborts(callback: &str, code: &[u8]) {
+    let other = if callback == "enter" { "exit" } else { "enter" };
+    let script = format!(
+        "{{ {callback}: function() {{ interrupt(); }}, {other}: function() {{}},
+            fault: function() {{}}, result: function() {{ return 42; }} }}"
+    );
+    let (_, result) = run(interruptible(&script), code, TxKind::Call(TARGET));
+    assert_interrupted(result);
 }
 
 #[test]
@@ -173,28 +164,30 @@ fn interrupt_survives_clone_and_fuse() {
     }
 }
 
-#[test]
-fn interrupt_rejects_result_collection() {
-    for script in [
-        TRACER,
-        "{fault: function() {}, result: function() { interrupt(); return 42; }}",
-        "{fault: function() {}, result: function() { return {toJSON: function() { interrupt(); return 42; }}; }}",
-    ] {
-        let (mut inspector, result) = run(interruptible(script), &hex!("00"), TxKind::Call(TARGET));
-        let result = result.unwrap();
-        if script == TRACER {
-            inspector.interrupt.as_ref().unwrap().interrupt();
-        }
-        assert!(matches!(
-            inspector.json_result(
-                &result,
-                &transaction(TxKind::Call(TARGET)),
-                &BlockEnvExt::default(),
-                &mut EmptyDB::default()
-            ),
-            Err(JsInspectorError::Interrupted)
-        ));
+#[test_case(TRACER; "interrupted_after_run")]
+#[test_case(
+    "{fault: function() {}, result: function() { interrupt(); return 42; }}";
+    "interrupted_in_result"
+)]
+#[test_case(
+    "{fault: function() {}, result: function() { return {toJSON: function() { interrupt(); return 42; }}; }}";
+    "interrupted_in_to_json"
+)]
+fn interrupt_rejects_result_collection(script: &str) {
+    let (mut inspector, result) = run(interruptible(script), &hex!("00"), TxKind::Call(TARGET));
+    let result = result.unwrap();
+    if script == TRACER {
+        inspector.interrupt.as_ref().unwrap().interrupt();
     }
+    assert!(matches!(
+        inspector.json_result(
+            &result,
+            &transaction(TxKind::Call(TARGET)),
+            &BlockEnvExt::default(),
+            &mut EmptyDB::default()
+        ),
+        Err(JsInspectorError::Interrupted)
+    ));
 }
 
 #[test]

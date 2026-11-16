@@ -355,6 +355,7 @@ mod tests {
     use alloy_primitives::hex;
     use core::assert_matches;
     use rand::{RngExt, SeedableRng, rngs::StdRng};
+    use test_case::test_case;
 
     struct Test {
         input: &'static str,
@@ -582,8 +583,78 @@ mod tests {
         assert_eq!(res.bytes(), expected)
     }
 
-    #[test]
-    fn test_osaka_modexp_input_len() {
+    #[test_case(
+        U256::from(1025),
+        U256::from(1024),
+        U256::from(1024),
+        u64::MAX,
+        Some(PrecompileHalt::ModexpEip7823LimitSize);
+        "base_len_over_limit"
+    )]
+    #[test_case(
+        U256::from(1024),
+        U256::from(1025),
+        U256::from(1024),
+        u64::MAX,
+        Some(PrecompileHalt::ModexpEip7823LimitSize);
+        "exp_len_over_limit"
+    )]
+    #[test_case(
+        U256::from(1024),
+        U256::from(1024),
+        U256::from(1025),
+        u64::MAX,
+        Some(PrecompileHalt::ModexpEip7823LimitSize);
+        "mod_len_over_limit"
+    )]
+    #[test_case(
+        U256::ZERO,
+        U256::ZERO,
+        U256::from(1025),
+        u64::MAX,
+        Some(PrecompileHalt::ModexpEip7823LimitSize);
+        "mod_len_over_limit_empty_base_exp"
+    )]
+    #[test_case(
+        U256::from(1024),
+        U256::from(1024),
+        U256::from(1024),
+        100_000_000,
+        Some(PrecompileHalt::OutOfGas);
+        "out_of_gas"
+    )]
+    #[test_case(
+        U256::ONE << 64,
+        U256::ONE,
+        U256::ONE,
+        u64::MAX,
+        Some(PrecompileHalt::ModexpEip7823LimitSize);
+        "base_len_over_u64"
+    )]
+    #[test_case(
+        U256::ONE,
+        U256::ONE << 64,
+        U256::ONE,
+        u64::MAX,
+        Some(PrecompileHalt::ModexpEip7823LimitSize);
+        "exp_len_over_u64"
+    )]
+    #[test_case(
+        U256::ONE,
+        U256::ONE,
+        U256::ONE << 64,
+        u64::MAX,
+        Some(PrecompileHalt::ModexpEip7823LimitSize);
+        "mod_len_over_u64"
+    )]
+    #[test_case(U256::ZERO, U256::ZERO, U256::ZERO, 100_000_000, None; "empty")]
+    fn test_osaka_modexp_input_len(
+        base_len: U256,
+        exp_len: U256,
+        mod_len: U256,
+        gas: u64,
+        expected: Option<PrecompileHalt>,
+    ) {
         #[derive(Debug)]
         struct TestInput {
             base_len: U256,
@@ -603,82 +674,16 @@ mod tests {
             }
         }
 
-        let test_inputs = [
-            TestInput {
-                base_len: U256::from(1025),
-                exp_len: U256::from(1024),
-                mod_len: U256::from(1024),
-                gas: u64::MAX,
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
-            },
-            TestInput {
-                base_len: U256::from(1024),
-                exp_len: U256::from(1025),
-                mod_len: U256::from(1024),
-                gas: u64::MAX,
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
-            },
-            TestInput {
-                base_len: U256::from(1024),
-                exp_len: U256::from(1024),
-                mod_len: U256::from(1025),
-                gas: u64::MAX,
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
-            },
-            TestInput {
-                base_len: U256::ZERO,
-                exp_len: U256::ZERO,
-                mod_len: U256::from(1025),
-                gas: u64::MAX,
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
-            },
-            TestInput {
-                base_len: U256::from(1024),
-                exp_len: U256::from(1024),
-                mod_len: U256::from(1024),
-                gas: 100_000_000,
-                expected: Some(PrecompileHalt::OutOfGas),
-            },
-            TestInput {
-                base_len: U256::ONE << 64,
-                exp_len: U256::ONE,
-                mod_len: U256::ONE,
-                gas: u64::MAX,
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
-            },
-            TestInput {
-                base_len: U256::ONE,
-                exp_len: U256::ONE << 64,
-                mod_len: U256::ONE,
-                gas: u64::MAX,
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
-            },
-            TestInput {
-                base_len: U256::ONE,
-                exp_len: U256::ONE,
-                mod_len: U256::ONE << 64,
-                gas: u64::MAX,
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
-            },
-            TestInput {
-                base_len: U256::ZERO,
-                exp_len: U256::ZERO,
-                mod_len: U256::ZERO,
-                gas: 100_000_000,
-                expected: None,
-            },
-        ];
-        for test in test_inputs {
-            let input = test.input();
-            let res = run_osaka(&input, &mut GasTracker::new(test.gas)).err();
-            let halt = match &res {
-                Some(PrecompileError::Halt(halt)) => Some(halt),
-                None => None,
-                Some(_) => panic!("test failed: {test:?} result: {res:?}"),
-            };
-            if halt != test.expected.as_ref() {
-                panic!("test failed: {test:?} result: {res:?}");
-            }
+        let test = TestInput { base_len, exp_len, mod_len, gas, expected };
+        let input = test.input();
+        let res = run_osaka(&input, &mut GasTracker::new(test.gas)).err();
+        let halt = match &res {
+            Some(PrecompileError::Halt(halt)) => Some(halt),
+            None => None,
+            Some(_) => panic!("test failed: {test:?} result: {res:?}"),
+        };
+        if halt != test.expected.as_ref() {
+            panic!("test failed: {test:?} result: {res:?}");
         }
     }
 
@@ -707,58 +712,64 @@ mod tests {
         assert_eq!(halt(&input(lengths), run_osaka), PrecompileHalt::OutOfGas);
     }
 
-    #[test]
-    fn test_modexp_edge_cases() {
-        // Test case 1: Zero base with non-zero exponent and modulus
-        let input = hex!(
+    // Zero base with non-zero exponent and modulus
+    #[test_case(
+        &hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              00\
              05\
              07"
-        );
-        let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
-        assert_eq!(res.bytes(), vec![0x00], "0^5 mod 7 should be 0");
-
-        // Test case 2: Base equals modulus
-        let input = hex!(
+        ),
+        0x00;
+        "zero_base"
+    )]
+    // Base equals modulus
+    #[test_case(
+        &hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              07\
              03\
              07"
-        );
-        let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
-        assert_eq!(res.bytes(), vec![0x00], "7^3 mod 7 should be 0");
-
-        // Test case 3: Exponent is zero (result should always be 1)
-        let input = hex!(
+        ),
+        0x00;
+        "base_equals_modulus"
+    )]
+    // Exponent is zero (result should always be 1)
+    #[test_case(
+        &hex!(
             "0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000000\
              0000000000000000000000000000000000000000000000000000000000000001\
              05\
              07"
-        );
-        let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
-        assert_eq!(res.bytes(), vec![0x01], "5^0 mod 7 should be 1");
-
-        // Test case 4: Large base with small modulus
-        // Actually, (2^256 - 1) mod 3 = 0, so 0^2 = 0
-        let input = hex!(
+        ),
+        0x01;
+        "zero_exponent"
+    )]
+    // Large base with small modulus
+    // Actually, (2^256 - 1) mod 3 = 0, so 0^2 = 0
+    // (2^256 - 1) = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+    // This is divisible by 3, so (2^256 - 1) mod 3 = 0
+    // Therefore 0^2 mod 3 = 0
+    #[test_case(
+        &hex!(
             "0000000000000000000000000000000000000000000000000000000000000020\
              0000000000000000000000000000000000000000000000000000000000000001\
              0000000000000000000000000000000000000000000000000000000000000001\
              ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
              02\
              03"
-        );
-        let res = run_byzantium(&input, &mut GasTracker::new(100_000)).unwrap();
-        // (2^256 - 1) = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-        // This is divisible by 3, so (2^256 - 1) mod 3 = 0
-        // Therefore 0^2 mod 3 = 0
-        assert_eq!(res.bytes(), vec![0x00], "Large base mod 3 should reduce correctly");
+        ),
+        0x00;
+        "large_base_small_modulus"
+    )]
+    fn test_modexp_edge_cases(input: &[u8], expected: u8) {
+        let res = run_byzantium(input, &mut GasTracker::new(100_000)).unwrap();
+        assert_eq!(res.bytes(), vec![expected]);
     }
 
     #[test]
@@ -905,44 +916,40 @@ mod tests {
         assert_eq!(res.bytes()[31], 1, "Max value mod (max-1) should be 1");
     }
 
-    #[test]
-    fn test_modexp_consistency_across_forks() {
-        // Test that all three implementations give same results
-        let test_cases = vec![
-            // Small numbers
-            "0000000000000000000000000000000000000000000000000000000000000001\
-             0000000000000000000000000000000000000000000000000000000000000001\
-             0000000000000000000000000000000000000000000000000000000000000001\
-             03\
-             04\
-             05",
-            // Larger computation
-            "0000000000000000000000000000000000000000000000000000000000000008\
-             0000000000000000000000000000000000000000000000000000000000000008\
-             0000000000000000000000000000000000000000000000000000000000000008\
-             0123456789abcdef\
-             fedcba9876543210\
-             1000000000000001",
-        ];
+    // Test that all three implementations give same results
+    // Small numbers
+    #[test_case(
+        "0000000000000000000000000000000000000000000000000000000000000001\
+         0000000000000000000000000000000000000000000000000000000000000001\
+         0000000000000000000000000000000000000000000000000000000000000001\
+         03\
+         04\
+         05";
+        "small_numbers"
+    )]
+    // Larger computation
+    #[test_case(
+        "0000000000000000000000000000000000000000000000000000000000000008\
+         0000000000000000000000000000000000000000000000000000000000000008\
+         0000000000000000000000000000000000000000000000000000000000000008\
+         0123456789abcdef\
+         fedcba9876543210\
+         1000000000000001";
+        "larger_computation"
+    )]
+    fn test_modexp_consistency_across_forks(test_input: &str) {
+        let input = hex::decode(test_input).unwrap();
 
-        for test_input in test_cases {
-            let input = hex::decode(test_input).unwrap();
+        let byzantium_res = run_byzantium(&input, &mut GasTracker::new(10_000_000)).unwrap();
+        let berlin_res = run_berlin(&input, &mut GasTracker::new(10_000_000)).unwrap();
+        let osaka_res = run_osaka(&input, &mut GasTracker::new(10_000_000)).unwrap();
 
-            let byzantium_res = run_byzantium(&input, &mut GasTracker::new(10_000_000)).unwrap();
-            let berlin_res = run_berlin(&input, &mut GasTracker::new(10_000_000)).unwrap();
-            let osaka_res = run_osaka(&input, &mut GasTracker::new(10_000_000)).unwrap();
-
-            assert_eq!(
-                byzantium_res.bytes(),
-                berlin_res.bytes(),
-                "Byzantium and Berlin results should match"
-            );
-            assert_eq!(
-                berlin_res.bytes(),
-                osaka_res.bytes(),
-                "Berlin and Osaka results should match"
-            );
-        }
+        assert_eq!(
+            byzantium_res.bytes(),
+            berlin_res.bytes(),
+            "Byzantium and Berlin results should match"
+        );
+        assert_eq!(berlin_res.bytes(), osaka_res.bytes(), "Berlin and Osaka results should match");
     }
 
     #[test]

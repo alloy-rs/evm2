@@ -337,6 +337,7 @@ mod tests {
         passes::block_analysis::tests::{analyze_asm, analyze_asm_spec, analyze_code_spec},
     };
     use evm2::{SpecId, interpreter::op};
+    use test_case::test_matrix;
 
     /// Returns the gas section cost for the first non-dead instruction (the section head).
     fn section_gas(src: &str) -> u32 {
@@ -432,33 +433,40 @@ mod tests {
         assert_eq!(owed, [3 + 3 + 110 + 2 + 2 + 100, 2 + 100]);
     }
 
-    #[test]
-    fn cold_load_ends_section() {
-        let cases = [
+    /// A base spec with the push of a zero it allows and that push's gas.
+    struct ZeroPush {
+        spec: SpecId,
+        push: &'static str,
+        push_gas: u32,
+    }
+
+    const AMSTERDAM: ZeroPush = ZeroPush { spec: SpecId::AMSTERDAM, push: "PUSH0", push_gas: 2 };
+    const PETERSBURG: ZeroPush =
+        ZeroPush { spec: SpecId::PETERSBURG, push: "PUSH1 0", push_gas: 3 };
+
+    // Active features can enable EIP-2200 and EIP-2929 over any base spec, so sections end at these
+    // opcodes even before Istanbul and Berlin.
+    #[test_matrix(
+        [AMSTERDAM, PETERSBURG],
+        [
             ("{p} BALANCE {p} STOP", op::BALANCE),
             ("{p} EXTCODESIZE {p} STOP", op::EXTCODESIZE),
             ("{p} {p} {p} {p} EXTCODECOPY {p} STOP", op::EXTCODECOPY),
             ("{p} EXTCODEHASH {p} STOP", op::EXTCODEHASH),
             ("{p} SLOAD {p} STOP", op::SLOAD),
-            ("{p} {p} SSTORE {p} STOP", op::SSTORE),
-        ];
+            ("{p} {p} SSTORE {p} STOP", op::SSTORE)
+        ]
+    )]
+    fn cold_load_ends_section(zero: ZeroPush, case: (&str, u8)) {
+        let ZeroPush { spec, push, push_gas } = zero;
+        let (src, opcode) = case;
+        let bytecode = analyze_asm_spec(&src.replace("{p}", push), spec);
+        let (inst, data) = bytecode.iter_insts().find(|(_, data)| data.opcode == opcode).unwrap();
+        assert!(data.ends_sections());
 
-        // Active features can enable EIP-2200 and EIP-2929 over any base spec, so sections end at
-        // these opcodes even before Istanbul and Berlin.
-        for (spec, push, push_gas) in
-            [(SpecId::AMSTERDAM, "PUSH0", 2), (SpecId::PETERSBURG, "PUSH1 0", 3)]
-        {
-            for (src, opcode) in cases {
-                let bytecode = analyze_asm_spec(&src.replace("{p}", push), spec);
-                let (inst, data) =
-                    bytecode.iter_insts().find(|(_, data)| data.opcode == opcode).unwrap();
-                assert!(data.ends_sections());
-
-                let after = bytecode.inst(inst + 1);
-                assert!(after.is_stack_section_head());
-                assert_eq!(after.gas_section.gas_cost, push_gas);
-            }
-        }
+        let after = bytecode.inst(inst + 1);
+        assert!(after.is_stack_section_head());
+        assert_eq!(after.gas_section.gas_cost, push_gas);
     }
 
     /// Disabled opcodes must not contribute stack I/O or gas to the preceding section.

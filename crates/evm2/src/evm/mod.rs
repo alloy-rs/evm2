@@ -2290,6 +2290,7 @@ mod tests {
         fmt,
         sync::atomic::{AtomicUsize, Ordering},
     };
+    use test_case::test_case;
 
     const TEST_TX_TYPE: u8 = 0x00;
     const TEST_PRECOMPILE: Address = Address::with_last_byte(0x42);
@@ -2853,7 +2854,12 @@ mod tests {
         Take,
     }
 
-    fn run_precompile_access(access: PrecompileAccess) {
+    #[test_case(PrecompileAccess::Take; "take_precompiles_panics_during_execution")]
+    #[test_case(PrecompileAccess::Mut; "precompiles_mut_panics_during_execution")]
+    #[test_case(PrecompileAccess::AsMut; "precompiles_as_mut_panics_during_execution")]
+    #[test_case(PrecompileAccess::Set; "set_precompiles_panics_during_execution")]
+    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
+    fn precompile_provider_mutation_panics_during_execution(access: PrecompileAccess) {
         let precompiles = precompiles_with([test_precompile(
             TEST_PRECOMPILE,
             match access {
@@ -3050,30 +3056,6 @@ mod tests {
         assert_eq!(evm.precompiles().precompile_ids(), original_ids);
     }
 
-    #[test]
-    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
-    fn take_precompiles_panics_during_execution() {
-        run_precompile_access(PrecompileAccess::Take);
-    }
-
-    #[test]
-    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
-    fn precompiles_mut_panics_during_execution() {
-        run_precompile_access(PrecompileAccess::Mut);
-    }
-
-    #[test]
-    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
-    fn precompiles_as_mut_panics_during_execution() {
-        run_precompile_access(PrecompileAccess::AsMut);
-    }
-
-    #[test]
-    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
-    fn set_precompiles_panics_during_execution() {
-        run_precompile_access(PrecompileAccess::Set);
-    }
-
     #[derive(Clone, Copy)]
     enum InspectorAccess {
         Mut,
@@ -3082,7 +3064,12 @@ mod tests {
         Clear,
     }
 
-    fn run_inspector_access(access: InspectorAccess) {
+    #[test_case(InspectorAccess::Mut; "inspector_mut_panics_during_execution")]
+    #[test_case(InspectorAccess::Set; "set_inspector_panics_during_execution")]
+    #[test_case(InspectorAccess::SetBoxed; "set_boxed_inspector_panics_during_execution")]
+    #[test_case(InspectorAccess::Clear; "clear_inspector_panics_during_execution")]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn inspector_mutation_panics_during_execution(access: InspectorAccess) {
         struct AccessingInspector {
             access: InspectorAccess,
         }
@@ -3144,30 +3131,6 @@ mod tests {
         };
 
         let _ = evm.run_interpreter(&message);
-    }
-
-    #[test]
-    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
-    fn inspector_mut_panics_during_execution() {
-        run_inspector_access(InspectorAccess::Mut);
-    }
-
-    #[test]
-    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
-    fn set_inspector_panics_during_execution() {
-        run_inspector_access(InspectorAccess::Set);
-    }
-
-    #[test]
-    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
-    fn set_boxed_inspector_panics_during_execution() {
-        run_inspector_access(InspectorAccess::SetBoxed);
-    }
-
-    #[test]
-    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
-    fn clear_inspector_panics_during_execution() {
-        run_inspector_access(InspectorAccess::Clear);
     }
 
     #[test]
@@ -3302,7 +3265,20 @@ mod tests {
         Create,
     }
 
-    fn run_top_level_inspector_clear(hook: TopLevelInspectorHook) {
+    #[test_case(
+        TopLevelInspectorHook::Log;
+        "top_level_log_inspector_clear_panics_during_execution"
+    )]
+    #[test_case(
+        TopLevelInspectorHook::Call;
+        "top_level_call_inspector_clear_panics_during_execution"
+    )]
+    #[test_case(
+        TopLevelInspectorHook::Create;
+        "top_level_create_inspector_clear_panics_during_execution"
+    )]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn top_level_inspector_clear_panics_during_execution(hook: TopLevelInspectorHook) {
         struct ClearingInspector;
 
         impl Inspector<BaseEvmTypes> for ClearingInspector {
@@ -3351,24 +3327,6 @@ mod tests {
                 let _ = Host::execute_message(&mut evm, &mut message);
             }
         }
-    }
-
-    #[test]
-    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
-    fn top_level_log_inspector_clear_panics_during_execution() {
-        run_top_level_inspector_clear(TopLevelInspectorHook::Log);
-    }
-
-    #[test]
-    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
-    fn top_level_call_inspector_clear_panics_during_execution() {
-        run_top_level_inspector_clear(TopLevelInspectorHook::Call);
-    }
-
-    #[test]
-    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
-    fn top_level_create_inspector_clear_panics_during_execution() {
-        run_top_level_inspector_clear(TopLevelInspectorHook::Create);
     }
 
     #[test]

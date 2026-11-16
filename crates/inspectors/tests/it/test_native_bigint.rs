@@ -2,6 +2,7 @@
 
 use alloy_primitives::{U256, uint};
 use boa_engine::{Context, JsValue, Source, js_string};
+use test_case::test_case;
 
 #[test]
 fn test_boa_native_bigint_support() {
@@ -38,30 +39,24 @@ fn test_boa_native_bigint_support() {
     assert_eq!(type_check.as_string().unwrap().to_std_string().unwrap(), "bigint");
 }
 
-#[test]
-fn test_u256_to_boa_bigint() {
+// Test converting U256 values to BigInt
+#[test_case(U256::ZERO; "zero")]
+#[test_case(U256::ONE; "one")]
+#[test_case(U256::from(u64::MAX); "u64_max")]
+#[test_case(uint!(123456789012345678901234567890_U256); "large")]
+#[test_case(U256::MAX; "max")]
+fn test_u256_to_boa_bigint(value: U256) {
     let mut ctx = Context::default();
 
-    // Test converting U256 values to BigInt
-    let test_values = [
-        U256::ZERO,
-        U256::ONE,
-        U256::from(u64::MAX),
-        uint!(123456789012345678901234567890_U256),
-        U256::MAX,
-    ];
+    // Create BigInt from U256 string representation
+    let js_code = format!("BigInt('{value}')");
+    let bigint_val = ctx.eval(Source::from_bytes(js_code.as_bytes())).unwrap();
 
-    for value in test_values {
-        // Create BigInt from U256 string representation
-        let js_code = format!("BigInt('{value}')");
-        let bigint_val = ctx.eval(Source::from_bytes(js_code.as_bytes())).unwrap();
+    assert!(bigint_val.is_bigint());
 
-        assert!(bigint_val.is_bigint());
-
-        // Verify the value matches
-        let result_str = bigint_val.to_string(&mut ctx).unwrap().to_std_string().unwrap();
-        assert_eq!(result_str, value.to_string());
-    }
+    // Verify the value matches
+    let result_str = bigint_val.to_string(&mut ctx).unwrap().to_std_string().unwrap();
+    assert_eq!(result_str, value.to_string());
 }
 
 #[test]

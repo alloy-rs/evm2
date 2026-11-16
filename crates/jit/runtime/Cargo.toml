@@ -46,6 +46,7 @@ wincode = { workspace = true, features = ["std"] }
 evm2-macros.workspace = true
 paste.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt"] }
+test-case.workspace = true
 
 [features]
 default = ["llvm"]

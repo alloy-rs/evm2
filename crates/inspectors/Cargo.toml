@@ -41,6 +41,7 @@ alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-hardforks.workspace = true
 evm2 = { workspace = true, features = ["block"] }
 snapbox = { workspace = true, features = ["term-svg"] }
+test-case.workspace = true
 
 [features]
 default = ["std"]

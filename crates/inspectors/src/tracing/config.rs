@@ -443,27 +443,36 @@ impl TraceStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
+
+    #[test_case(TracingInspectorConfig::default(), false; "default")]
+    #[test_case(TracingInspectorConfig::none(), false; "none")]
+    #[test_case(TracingInspectorConfig::default_geth(), false; "default_geth")]
+    #[test_case(
+        TracingInspectorConfig::from_geth_config(&GethDefaultTracingOptions::default()),
+        false;
+        "geth_config"
+    )]
+    #[test_case(
+        TracingInspectorConfig::from_geth_prestate_config(&PreStateConfig::default()),
+        false;
+        "geth_prestate_config"
+    )]
+    #[test_case(TracingInspectorConfig::parity_statediff(), false; "parity_statediff")]
+    #[test_case(TracingInspectorConfig::parity_vm_trace(), false; "parity_vm_trace")]
+    #[test_case(TracingInspectorConfig::all(), true; "all")]
+    #[test_case(TracingInspectorConfig::default_parity(), true; "default_parity")]
+    #[test_case(
+        TracingInspectorConfig::from_geth_call_config(&CallConfig::default()),
+        true;
+        "geth_call_config"
+    )]
+    fn input_recording_matches_consumers(config: TracingInspectorConfig, record_inputs: bool) {
+        assert_eq!(config.record_inputs, record_inputs);
+    }
 
     #[test]
-    fn input_recording_matches_consumers() {
-        for config in [
-            TracingInspectorConfig::default(),
-            TracingInspectorConfig::none(),
-            TracingInspectorConfig::default_geth(),
-            TracingInspectorConfig::from_geth_config(&GethDefaultTracingOptions::default()),
-            TracingInspectorConfig::from_geth_prestate_config(&PreStateConfig::default()),
-            TracingInspectorConfig::parity_statediff(),
-            TracingInspectorConfig::parity_vm_trace(),
-        ] {
-            assert!(!config.record_inputs);
-        }
-        for config in [
-            TracingInspectorConfig::all(),
-            TracingInspectorConfig::default_parity(),
-            TracingInspectorConfig::from_geth_call_config(&CallConfig::default()),
-        ] {
-            assert!(config.record_inputs);
-        }
+    fn parity_input_recording_matches_consumers() {
         for mask in 0..8 {
             let types: HashSet<_> = [TraceType::Trace, TraceType::VmTrace, TraceType::StateDiff]
                 .into_iter()
@@ -488,32 +497,40 @@ mod tests {
         }
     }
 
-    #[test]
-    fn merge_step_limits_preserves_each_consumers_capture() {
-        let limited = TracingInspectorConfig::from_geth_config(&GethDefaultTracingOptions {
+    /// A geth config whose struct log limit fits two steps.
+    fn limited_config() -> TracingInspectorConfig {
+        TracingInspectorConfig::from_geth_config(&GethDefaultTracingOptions {
             limit: Some(2 * MIN_STRUCT_LOG_JSON_LEN - 1),
             ..Default::default()
-        });
-        let larger = TracingInspectorConfig { step_limit: NonZeroU64::new(4), ..limited };
-        for (other, expected) in [
-            (TracingInspectorConfig::none(), NonZeroU64::new(2)),
-            (larger, NonZeroU64::new(4)),
-            (TracingInspectorConfig::default_geth(), None),
-            (
-                TracingInspectorConfig::from_geth_config(&GethDefaultTracingOptions {
-                    limit: Some(0),
-                    ..Default::default()
-                }),
-                None,
-            ),
-        ] {
-            let mut merged = limited;
-            merged.merge(other);
-            assert_eq!(merged.step_limit, expected);
-            let mut reversed = other;
-            reversed.merge(limited);
-            assert_eq!(reversed.step_limit, expected);
-        }
+        })
+    }
+
+    #[test_case(TracingInspectorConfig::none(), NonZeroU64::new(2); "none")]
+    #[test_case(
+        TracingInspectorConfig { step_limit: NonZeroU64::new(4), ..limited_config() },
+        NonZeroU64::new(4);
+        "larger"
+    )]
+    #[test_case(TracingInspectorConfig::default_geth(), None; "default_geth")]
+    #[test_case(
+        TracingInspectorConfig::from_geth_config(&GethDefaultTracingOptions {
+            limit: Some(0),
+            ..Default::default()
+        }),
+        None;
+        "zero_limit"
+    )]
+    fn merge_step_limits_preserves_each_consumers_capture(
+        other: TracingInspectorConfig,
+        expected: Option<NonZeroU64>,
+    ) {
+        let limited = limited_config();
+        let mut merged = limited;
+        merged.merge(other);
+        assert_eq!(merged.step_limit, expected);
+        let mut reversed = other;
+        reversed.merge(limited);
+        assert_eq!(reversed.step_limit, expected);
     }
 
     #[test]
@@ -553,26 +570,22 @@ mod tests {
         assert!(config.record_stack_snapshots.is_all());
     }
 
-    #[test]
-    fn test_geth_config_memory_snapshots() {
-        for (enable_memory, disable_memory, expected) in [
-            (None, None, false),
-            (Some(true), None, true),
-            (Some(false), None, false),
-            (None, Some(false), true),
-            (None, Some(true), false),
-            (Some(true), Some(true), true),
-            (Some(false), Some(false), false),
-        ] {
-            let config = TracingInspectorConfig::from_geth_config(&GethDefaultTracingOptions {
-                enable_memory,
-                disable_memory,
-                ..Default::default()
-            });
-            assert_eq!(
-                config.record_memory_snapshots, expected,
-                "enable_memory={enable_memory:?}, disable_memory={disable_memory:?}"
-            );
-        }
+    #[test_case(None, None => false)]
+    #[test_case(Some(true), None => true)]
+    #[test_case(Some(false), None => false)]
+    #[test_case(None, Some(false) => true)]
+    #[test_case(None, Some(true) => false)]
+    #[test_case(Some(true), Some(true) => true)]
+    #[test_case(Some(false), Some(false) => false)]
+    fn test_geth_config_memory_snapshots(
+        enable_memory: Option<bool>,
+        disable_memory: Option<bool>,
+    ) -> bool {
+        TracingInspectorConfig::from_geth_config(&GethDefaultTracingOptions {
+            enable_memory,
+            disable_memory,
+            ..Default::default()
+        })
+        .record_memory_snapshots
     }
 }

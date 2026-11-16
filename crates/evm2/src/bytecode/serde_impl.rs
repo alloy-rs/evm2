@@ -91,6 +91,7 @@ mod tests {
     use super::*;
     use crate::bytecode::BytecodeKind;
     use alloy_primitives::{bytes, hex};
+    use test_case::test_case;
 
     #[test]
     fn serde_roundtrip() {
@@ -146,64 +147,62 @@ mod tests {
         }
     }
 
-    #[test]
-    fn serde_revm_json_cases() {
-        let cases = [
-            (
-                r#"{"LegacyAnalyzed":{"bytecode":"0x1234","original_len":2,"jump_table":{"order":"bitvec::order::Lsb0","head":{"width":8,"index":0},"bits":0,"data":[]}}}"#,
-                &hex!("1234")[..],
-                BytecodeKind::Legacy,
-                None,
-            ),
-            (
-                r#"{"Eip7702":{"delegated_address":"0x0000000000000000000000000000000000000042"}}"#,
-                &hex!("ef01000000000000000000000000000000000000000042")[..],
-                BytecodeKind::Eip7702,
-                Some(Address::with_last_byte(0x42)),
-            ),
-        ];
+    #[test_case(
+        r#"{"LegacyAnalyzed":{"bytecode":"0x1234","original_len":2,"jump_table":{"order":"bitvec::order::Lsb0","head":{"width":8,"index":0},"bits":0,"data":[]}}}"#,
+        &hex!("1234"),
+        BytecodeKind::Legacy,
+        None;
+        "legacy_analyzed"
+    )]
+    #[test_case(
+        r#"{"Eip7702":{"delegated_address":"0x0000000000000000000000000000000000000042"}}"#,
+        &hex!("ef01000000000000000000000000000000000000000042"),
+        BytecodeKind::Eip7702,
+        Some(Address::with_last_byte(0x42));
+        "eip7702"
+    )]
+    fn serde_revm_json_cases(
+        json: &str,
+        bytes: &[u8],
+        kind: BytecodeKind,
+        delegated_address: Option<Address>,
+    ) {
+        let bytecode: Bytecode = serde_json::from_str(json).unwrap();
 
-        for (json, bytes, kind, delegated_address) in cases {
-            let bytecode: Bytecode = serde_json::from_str(json).unwrap();
+        assert_eq!(bytecode.kind(), kind);
+        assert_eq!(bytecode.eip7702_address(), delegated_address);
+        assert_eq!(bytecode.original_byte_slice(), bytes);
 
-            assert_eq!(bytecode.kind(), kind);
-            assert_eq!(bytecode.eip7702_address(), delegated_address);
-            assert_eq!(bytecode.original_byte_slice(), bytes);
-
-            let bytecode_json = serde_json::to_string(&bytecode).unwrap();
-            let bytecode_roundtrip: Bytecode = serde_json::from_str(&bytecode_json).unwrap();
-            assert_eq!(bytecode_roundtrip.kind(), kind);
-            assert_eq!(bytecode_roundtrip.eip7702_address(), delegated_address);
-            assert_eq!(bytecode_roundtrip.original_byte_slice(), bytes);
-        }
+        let bytecode_json = serde_json::to_string(&bytecode).unwrap();
+        let bytecode_roundtrip: Bytecode = serde_json::from_str(&bytecode_json).unwrap();
+        assert_eq!(bytecode_roundtrip.kind(), kind);
+        assert_eq!(bytecode_roundtrip.eip7702_address(), delegated_address);
+        assert_eq!(bytecode_roundtrip.original_byte_slice(), bytes);
     }
 
-    #[test]
-    fn messagepack_revm_cases() {
-        let legacy = bytes!("5b6000");
-        let delegated_address = Address::with_last_byte(0x42);
-        let cases = [
-            (revm_bytecode::Bytecode::new_legacy(legacy.clone()), Bytecode::new_legacy(legacy)),
-            (
-                revm_bytecode::Bytecode::new_eip7702(delegated_address),
-                Bytecode::new_eip7702(delegated_address),
-            ),
-        ];
+    #[test_case(
+        revm_bytecode::Bytecode::new_legacy(bytes!("5b6000")),
+        Bytecode::new_legacy(bytes!("5b6000"));
+        "legacy"
+    )]
+    #[test_case(
+        revm_bytecode::Bytecode::new_eip7702(Address::with_last_byte(0x42)),
+        Bytecode::new_eip7702(Address::with_last_byte(0x42));
+        "eip7702"
+    )]
+    fn messagepack_revm_cases(revm: revm_bytecode::Bytecode, expected: Bytecode) {
+        let encoded = rmp_serde::to_vec(&revm).unwrap();
+        let decoded: Bytecode = rmp_serde::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.kind(), expected.kind());
+        assert_eq!(decoded.original_byte_slice(), expected.original_byte_slice());
 
-        for (revm, expected) in cases {
-            let encoded = rmp_serde::to_vec(&revm).unwrap();
-            let decoded: Bytecode = rmp_serde::from_slice(&encoded).unwrap();
-            assert_eq!(decoded.kind(), expected.kind());
-            assert_eq!(decoded.original_byte_slice(), expected.original_byte_slice());
+        let encoded = rmp_serde::to_vec_named(&revm).unwrap();
+        let decoded: Bytecode = rmp_serde::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.original_byte_slice(), expected.original_byte_slice());
 
-            let encoded = rmp_serde::to_vec_named(&revm).unwrap();
-            let decoded: Bytecode = rmp_serde::from_slice(&encoded).unwrap();
-            assert_eq!(decoded.original_byte_slice(), expected.original_byte_slice());
-
-            let encoded = rmp_serde::to_vec(&expected).unwrap();
-            let decoded: Bytecode = rmp_serde::from_slice(&encoded).unwrap();
-            assert_eq!(decoded.original_byte_slice(), expected.original_byte_slice());
-        }
+        let encoded = rmp_serde::to_vec(&expected).unwrap();
+        let decoded: Bytecode = rmp_serde::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.original_byte_slice(), expected.original_byte_slice());
     }
 
     #[test]

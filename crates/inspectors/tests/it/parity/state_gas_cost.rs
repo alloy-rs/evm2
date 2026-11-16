@@ -6,6 +6,7 @@
 //! (core/tracing/hooks.go, `EmitOpcode`).
 
 use super::*;
+use test_case::test_case;
 
 /// Transaction gas limit that leaves a reservoir of 100,000 gas, below the 183,600 gas of an
 /// account creation: the gas above the 2^24 transaction cap.
@@ -64,57 +65,44 @@ fn restoring_sstore_cost_leaves_out_state_gas_refill() {
     }
 }
 
-#[test]
-fn selfdestruct_cost_leaves_out_state_gas() {
-    // Sending the balance to a new account costs 17,000 gas plus the account creation state
-    // gas, which the remaining gas pays when the reservoir is short.
-    for (gas_limit, spilled) in [
-        (1_000_000, NEW_ACCOUNT_STATE_GAS),
-        (SHORT_RESERVOIR_GAS_LIMIT, NEW_ACCOUNT_STATE_GAS - 100_000),
-        (FULL_RESERVOIR_GAS_LIMIT, 0),
+// Sending the balance to a new account costs 17,000 gas plus the account creation state gas,
+// which the remaining gas pays when the reservoir is short.
+#[test_case(1_000_000, NEW_ACCOUNT_STATE_GAS; "empty_reservoir")]
+#[test_case(SHORT_RESERVOIR_GAS_LIMIT, NEW_ACCOUNT_STATE_GAS - 100_000; "short_reservoir")]
+#[test_case(FULL_RESERVOIR_GAS_LIMIT, 0; "full_reservoir")]
+fn selfdestruct_cost_leaves_out_state_gas(gas_limit: u64, spilled: u64) {
+    let code = hex!("6044ff");
+    let (costs, state_costs) = step_costs(&code, 16, gas_limit);
+    assert_eq!(costs[1], 17_000);
+    assert_eq!(state_costs[1], Some(NEW_ACCOUNT_STATE_GAS as i64));
+    for config in [
+        TracingInspectorConfig::parity_vm_trace(),
+        TracingInspectorConfig::parity_vm_trace().set_step_deltas(false),
     ] {
-        let code = hex!("6044ff");
-        let (costs, state_costs) = step_costs(&code, 16, gas_limit);
-        assert_eq!(costs[1], 17_000);
-        assert_eq!(state_costs[1], Some(NEW_ACCOUNT_STATE_GAS as i64));
-        for config in [
-            TracingInspectorConfig::parity_vm_trace(),
-            TracingInspectorConfig::parity_vm_trace().set_step_deltas(false),
-        ] {
-            let inspector =
-                inspect_funded_code(&code, &[], SpecId::AMSTERDAM, config, 16, gas_limit);
-            let remaining = inspector.traces().nodes()[0].trace.steps[1].gas_remaining;
-            let trace = inspector.into_parity_builder().vm_trace();
-            assert_eq!(trace.ops[1].ex.as_ref().unwrap().used, remaining - 17_000 - spilled);
-        }
+        let inspector = inspect_funded_code(&code, &[], SpecId::AMSTERDAM, config, 16, gas_limit);
+        let remaining = inspector.traces().nodes()[0].trace.steps[1].gas_remaining;
+        let trace = inspector.into_parity_builder().vm_trace();
+        assert_eq!(trace.ops[1].ex.as_ref().unwrap().used, remaining - 17_000 - spilled);
     }
 }
 
-#[test]
-fn value_call_to_new_account_cost_leaves_out_state_gas() {
-    // A cold CALL with value forwarding 0xffff gas to a new account. The child returns its gas
-    // and the stipend.
+// A cold CALL with value forwarding 0xffff gas to a new account. The child returns its gas and
+// the stipend.
+#[test_case(1_000_000, NEW_ACCOUNT_STATE_GAS; "empty_reservoir")]
+#[test_case(SHORT_RESERVOIR_GAS_LIMIT, NEW_ACCOUNT_STATE_GAS - 100_000; "short_reservoir")]
+#[test_case(FULL_RESERVOIR_GAS_LIMIT, 0; "full_reservoir")]
+fn value_call_to_new_account_cost_leaves_out_state_gas(gas_limit: u64, spilled: u64) {
     let code = hex!("5f5f5f5f6001604461fffff100");
-    for (gas_limit, spilled) in [
-        (1_000_000, NEW_ACCOUNT_STATE_GAS),
-        (SHORT_RESERVOIR_GAS_LIMIT, NEW_ACCOUNT_STATE_GAS - 100_000),
-        (FULL_RESERVOIR_GAS_LIMIT, 0),
-    ] {
-        let step = call_step_funded(&code, &[], SpecId::AMSTERDAM, 16, gas_limit);
-        assert_eq!(step.cost, 3_000 + 11_300 + 65_535);
-        assert_eq!(step.used, step.gas_remaining - step.cost - spilled + 65_535 + 2_300);
-    }
+    let step = call_step_funded(&code, &[], SpecId::AMSTERDAM, 16, gas_limit);
+    assert_eq!(step.cost, 3_000 + 11_300 + 65_535);
+    assert_eq!(step.used, step.gas_remaining - step.cost - spilled + 65_535 + 2_300);
 }
 
-#[test]
-fn create_cost_leaves_out_state_gas_spilled_from_a_short_reservoir() {
-    for (gas_limit, spilled) in [
-        (1_000_000, NEW_ACCOUNT_STATE_GAS),
-        (SHORT_RESERVOIR_GAS_LIMIT, NEW_ACCOUNT_STATE_GAS - 100_000),
-        (FULL_RESERVOIR_GAS_LIMIT, 0),
-    ] {
-        let step = call_step_funded(&hex!("5f5f5ff000"), &[], SpecId::AMSTERDAM, 0, gas_limit);
-        assert_eq!(step.cost, 12_000);
-        assert_eq!(step.used, step.gas_remaining - 12_000 - spilled);
-    }
+#[test_case(1_000_000, NEW_ACCOUNT_STATE_GAS; "empty_reservoir")]
+#[test_case(SHORT_RESERVOIR_GAS_LIMIT, NEW_ACCOUNT_STATE_GAS - 100_000; "short_reservoir")]
+#[test_case(FULL_RESERVOIR_GAS_LIMIT, 0; "full_reservoir")]
+fn create_cost_leaves_out_state_gas_spilled_from_a_short_reservoir(gas_limit: u64, spilled: u64) {
+    let step = call_step_funded(&hex!("5f5f5ff000"), &[], SpecId::AMSTERDAM, 0, gas_limit);
+    assert_eq!(step.cost, 12_000);
+    assert_eq!(step.used, step.gas_remaining - 12_000 - spilled);
 }

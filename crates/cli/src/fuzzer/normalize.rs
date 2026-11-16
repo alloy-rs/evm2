@@ -339,57 +339,62 @@ pub(crate) fn canonical_log(log: &alloy_primitives::Log) -> CanonicalLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
-    #[test]
-    fn normalized_error_categories() {
-        for (evm2, revm) in [
-            (
-                HandlerError::IntrinsicGasTooLow { required: 21_000, got: 1 },
-                InvalidTransaction::CallGasCostMoreThanGasLimit {
-                    initial_gas: 21_000,
-                    gas_limit: 1,
-                },
-            ),
-            (
-                HandlerError::GasLimitBelowFloor { required: 66_200, got: 60_000 },
-                InvalidTransaction::GasFloorMoreThanGasLimit {
-                    gas_floor: 66_200,
-                    gas_limit: 60_000,
-                },
-            ),
-            (
-                HandlerError::InsufficientFunds { fee: U256::from(10), balance: U256::ZERO },
-                InvalidTransaction::LackOfFundForMaxFee {
-                    fee: Box::new(U256::from(10)),
-                    balance: Box::new(U256::ZERO),
-                },
-            ),
-            (
-                HandlerError::InvalidNonce { expected: 1, got: 2 },
-                InvalidTransaction::NonceTooHigh { tx: 2, state: 1 },
-            ),
-            (HandlerError::NonceOverflow, InvalidTransaction::NonceOverflowInTransaction),
-            (HandlerError::UnsupportedTransactionType(4), InvalidTransaction::Eip7702NotSupported),
-            (
-                HandlerError::IntrinsicGasGreaterThanCap { required: 17_000_000, cap: 16_777_216 },
-                InvalidTransaction::GasFloorMoreThanGasLimit {
-                    gas_floor: 17_000_000,
-                    gas_limit: 16_777_216,
-                },
-            ),
-            (HandlerError::EmptyBlobs, InvalidTransaction::EmptyBlobs),
-            (
-                HandlerError::TooManyBlobs { have: 10, max: 6 },
-                InvalidTransaction::TooManyBlobs { have: 10, max: 6 },
-            ),
-        ] {
-            let evm2 = FuzzError::from(evm2);
-            let revm = FuzzError::from(EVMError::Transaction(revm));
-            assert_eq!(evm2, revm);
-            let mut counts = HashMap::<_, _>::default();
-            counts.insert(evm2, 1);
-            assert_eq!(counts.get(&revm), Some(&1));
-        }
+    #[test_case(
+        HandlerError::IntrinsicGasTooLow { required: 21_000, got: 1 },
+        InvalidTransaction::CallGasCostMoreThanGasLimit { initial_gas: 21_000, gas_limit: 1 };
+        "intrinsic_gas_too_low"
+    )]
+    #[test_case(
+        HandlerError::GasLimitBelowFloor { required: 66_200, got: 60_000 },
+        InvalidTransaction::GasFloorMoreThanGasLimit { gas_floor: 66_200, gas_limit: 60_000 };
+        "gas_limit_below_floor"
+    )]
+    #[test_case(
+        HandlerError::InsufficientFunds { fee: U256::from(10), balance: U256::ZERO },
+        InvalidTransaction::LackOfFundForMaxFee {
+            fee: Box::new(U256::from(10)),
+            balance: Box::new(U256::ZERO),
+        };
+        "insufficient_funds"
+    )]
+    #[test_case(
+        HandlerError::InvalidNonce { expected: 1, got: 2 },
+        InvalidTransaction::NonceTooHigh { tx: 2, state: 1 };
+        "invalid_nonce"
+    )]
+    #[test_case(
+        HandlerError::NonceOverflow,
+        InvalidTransaction::NonceOverflowInTransaction;
+        "nonce_overflow"
+    )]
+    #[test_case(
+        HandlerError::UnsupportedTransactionType(4),
+        InvalidTransaction::Eip7702NotSupported;
+        "unsupported_transaction_type"
+    )]
+    #[test_case(
+        HandlerError::IntrinsicGasGreaterThanCap { required: 17_000_000, cap: 16_777_216 },
+        InvalidTransaction::GasFloorMoreThanGasLimit {
+            gas_floor: 17_000_000,
+            gas_limit: 16_777_216,
+        };
+        "intrinsic_gas_greater_than_cap"
+    )]
+    #[test_case(HandlerError::EmptyBlobs, InvalidTransaction::EmptyBlobs; "empty_blobs")]
+    #[test_case(
+        HandlerError::TooManyBlobs { have: 10, max: 6 },
+        InvalidTransaction::TooManyBlobs { have: 10, max: 6 };
+        "too_many_blobs"
+    )]
+    fn normalized_error_categories(evm2: HandlerError, revm: InvalidTransaction) {
+        let evm2 = FuzzError::from(evm2);
+        let revm = FuzzError::from(EVMError::Transaction(revm));
+        assert_eq!(evm2, revm);
+        let mut counts = HashMap::<_, _>::default();
+        counts.insert(evm2, 1);
+        assert_eq!(counts.get(&revm), Some(&1));
     }
 
     #[test]
