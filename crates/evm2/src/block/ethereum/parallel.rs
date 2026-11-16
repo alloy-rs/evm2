@@ -1024,12 +1024,13 @@ where
                 .as_batched()
                 .expect("batches hold batched operations")
                 .run_batch(ops, &mut access);
-            for (address, key, value) in access.into_writes() {
-                store.put_slot(last_version, address, key, value);
-                if let Some(stream) = &mut stream {
-                    stream.keys.push(WriteKey::Storage(address, key));
-                }
+            let mut writes = access.into_writes();
+            if let Some(stream) = &mut stream {
+                stream.keys.extend(
+                    writes.iter().map(|&(address, key, _)| WriteKey::Storage(address, key)),
+                );
             }
+            store.put_slots(last_version, &mut writes);
         }
         if let (Some(stream), Some(streamer)) = (&mut stream, streamer) {
             let keys = core::mem::take(&mut stream.keys);
@@ -1235,9 +1236,13 @@ fn run_deferred_ops<B: DynDatabaseRef + Sync + ?Sized>(
         };
         let mut writes = DeferredBatchAccess::default();
         batched.commit(ops, &mut writes).map_err(map_database_error)?;
-        for (address, key, value) in writes.into_writes() {
-            access.sstore(&address, key, value).map_err(map_database_error)?;
+        let mut writes = writes.into_writes();
+        if let Some(stream) = &mut access.stream {
+            stream
+                .keys
+                .extend(writes.iter().map(|&(address, key, _)| WriteKey::Storage(address, key)));
         }
+        access.store.write_slots(version, &mut writes);
         ops.push(op);
     }
     Ok(())
@@ -1264,6 +1269,12 @@ impl<B: DynDatabaseRef + Sync + ?Sized> DeferredStorageStore for StoreAccess<'_,
         }
         Ok(())
     }
+}
+
+/// Returns the index of the multi-version store shard holding the slot `key` of `address`.
+#[inline]
+fn storage_shard_index(address: &Address, key: &Word) -> usize {
+    (address[19] as usize ^ key.as_limbs()[0] as usize) % SHARDS
 }
 
 /// Returns the multi-version store version holding the writes of the transaction at `index`.
@@ -2551,7 +2562,7 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
 
     #[inline]
     fn storage_shard(&self, address: &Address, key: &Word) -> &StorageShard {
-        &self.storage[(address[19] as usize ^ key.as_limbs()[0] as usize) % SHARDS]
+        &self.storage[storage_shard_index(address, key)]
     }
 
     /// Locks the shard of the account at `address` to write a version of it, marking it written.
@@ -2845,6 +2856,36 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
     fn put_slot(&self, version: u32, address: Address, key: Word, value: Word) {
         let mut shard = self.write_storage_shard(&address, &key);
         shard.entry((address, key)).or_default().insert(version, SlotWrite::Value(value));
+    }
+
+    /// Writes slots' values at `version` as [`Self::write_slot`] does, locking each shard and the
+    /// write log once.
+    fn write_slots(&self, version: u32, writes: &mut [(Address, Word, Word)]) {
+        if writes.is_empty() {
+            return;
+        }
+        self.put_slots(version, writes);
+        self.log_writes(
+            version,
+            writes.iter().map(|&(address, key, _)| WriteKey::Storage(address, key)),
+        );
+    }
+
+    /// Writes slots' values at `version` as [`Self::put_slot`] does, locking each shard once.
+    /// Sorts `writes` by shard, keeping the order of writes to one slot.
+    fn put_slots(&self, version: u32, writes: &mut [(Address, Word, Word)]) {
+        writes.sort_by_key(|(address, key, _)| storage_shard_index(address, key));
+        for shard_writes in writes
+            .chunk_by(|(a, x, _), (b, y, _)| storage_shard_index(a, x) == storage_shard_index(b, y))
+        {
+            let (address, key, _) = &shard_writes[0];
+            let mut shard = self.storage_shard(address, key).write().expect("lock poisoned");
+            shard.reserve(shard_writes.len());
+            for &(address, key, value) in shard_writes {
+                self.written_slots.insert(slot_hash(&address, &key));
+                shard.entry((address, key)).or_default().insert(version, SlotWrite::Value(value));
+            }
+        }
     }
 
     /// Returns the block's changes once every transaction committed: each account and slot written
