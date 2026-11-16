@@ -824,6 +824,14 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.input()
     }
 
+    /// Borrows the bytes of the active message's input and the host independently, so the input
+    /// can be passed to the host without copying.
+    #[inline]
+    pub const fn input_host(&mut self) -> (&[u8], &mut T::Host<'host>) {
+        let input = self.0.input;
+        (input, self.0.host())
+    }
+
     /// Returns whether the active frame forbids state-changing operations.
     #[inline]
     pub const fn is_static(&self) -> bool {
