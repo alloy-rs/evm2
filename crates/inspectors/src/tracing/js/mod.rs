@@ -62,7 +62,8 @@ pub const RECURSION_LIMIT: usize = 128;
 #[derive(Debug, Default)]
 struct PendingStep {
     snapshot: StepSnapshot,
-    gas_spent_before: u64,
+    /// The remaining gas plus spilled state gas when the step started.
+    gas_before: u64,
     frame_refund: i64,
     instruction: FaultStep,
     active: bool,
@@ -573,7 +574,9 @@ impl JsInspector {
         let cost = if interp.result().is_err_and(InstrStop::is_out_of_gas) {
             pending.instruction.gas
         } else {
-            interp.gas().spent().saturating_sub(pending.gas_spent_before)
+            // The gas the step took, state gas that spilled past the reservoir aside, as the
+            // struct logger counts it.
+            pending.gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill())
         };
         let info = StepInfo {
             cost,
@@ -659,7 +662,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             self.pending_steps.resize_with(index + 1, PendingStep::default);
         }
         let pending = &mut self.pending_steps[index];
-        pending.gas_spent_before = interp.gas().spent();
+        pending.gas_before = interp.gas().remaining_excluding_state_spill();
         pending.frame_refund = interp.gas().refunded();
         pending.instruction = FaultStep {
             pc: interp.pc() as u64,
