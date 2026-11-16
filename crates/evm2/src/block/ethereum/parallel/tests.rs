@@ -1231,3 +1231,39 @@ fn rejected_streamed_batched_commit_leaves_the_executor_unchanged() {
         }
     }
 }
+
+#[test]
+fn log_index_rules_out_reads_not_logged_since_a_mark() {
+    let base = Snapshot(Cache::default());
+    let store = MvStore::new(Cache::default(), &base);
+    let (a, b) = (Address::with_last_byte(1), Address::with_last_byte(2));
+    let key = Word::from(7);
+    store.log_writes(1, [WriteKey::Account(a), WriteKey::Storage(b, key)]);
+    let mark = store.log_mark();
+    let mut reads = ReadSet::default();
+    reads.read_account(a, None, false);
+    reads.read_storage(b, key, Word::ZERO, None);
+    // Keys logged before the mark do not count.
+    assert!(store.unlogged_since(mark, &reads));
+    assert!(!store.logged_since(mark, 5, &reads));
+    // Nor do keys the execution did not read, however many.
+    for index in 0..2 * INDEX_MIN_LOGGED as u8 {
+        let other = Address::with_last_byte(index + 3);
+        store.log_writes(2, [WriteKey::Account(other), WriteKey::Storage(a, key)]);
+    }
+    assert!(store.unlogged_since(mark, &reads));
+    assert!(!store.logged_since(mark, 5, &reads));
+    // A key read and logged since the mark does, below the version validated.
+    store.log_writes(3, [WriteKey::Storage(b, key)]);
+    assert!(!store.unlogged_since(mark, &reads));
+    assert!(store.logged_since(mark, 5, &reads));
+    assert!(!store.logged_since(mark, 3, &reads));
+    assert!(!store.logged_since(store.log_mark(), 5, &reads));
+    // A wipe counts against every storage read.
+    let mark = store.log_mark();
+    store.log_writes(2, [WriteKey::Wipe(b)]);
+    assert!(!store.unlogged_since(mark, &reads));
+    assert!(store.logged_since(mark, 5, &reads));
+    reads.storage.clear();
+    assert!(store.unlogged_since(mark, &reads));
+}

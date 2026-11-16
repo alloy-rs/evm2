@@ -95,7 +95,7 @@ use core::{
     num::NonZeroUsize,
     ops::Deref,
     ptr,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence},
 };
 use std::{
     hash::RandomState,
@@ -110,6 +110,13 @@ const SHARDS: usize = 64;
 
 /// Base-2 logarithm of the number of bits of each [`WriteFilter`] of a [`MvStore`].
 const FILTER_BITS: u32 = 18;
+
+/// The log2 of the number of positions in a [`LogIndex`].
+const LOG_INDEX_BITS: u32 = 12;
+
+/// The number of keys logged since a mark above which [`MvStore::logged_since`] looks the reads
+/// up in the [`LogIndex`] before scanning the log.
+const INDEX_MIN_LOGGED: usize = 8;
 
 /// Number of buckets of a [`Buckets`], each twice the size of the one before.
 const BUCKETS: usize = 32;
@@ -2492,6 +2499,36 @@ impl WriteFilter {
     }
 }
 
+/// The write log position past the latest logged key of each [`WriteFilter`] hash, with the keys
+/// of a hash's top [`LOG_INDEX_BITS`] bits sharing one: a key whose position is at most a mark
+/// was not logged since it, while a greater one may have been.
+struct LogIndex(Box<[AtomicU32]>);
+
+impl LogIndex {
+    fn new() -> Self {
+        Self((0..1usize << LOG_INDEX_BITS).map(|_| AtomicU32::new(0)).collect())
+    }
+
+    /// Returns the position of the keys of `hash`.
+    #[inline]
+    fn entry(&self, hash: u64) -> &AtomicU32 {
+        &self.0[(hash >> (64 - LOG_INDEX_BITS)) as usize]
+    }
+
+    /// Records that the key of `hash` was logged at position `end - 1`. Positions grow under the
+    /// write log's lock, so a store keeps the greatest.
+    #[inline]
+    fn insert(&self, hash: u64, end: u32) {
+        self.entry(hash).store(end, Ordering::Release);
+    }
+
+    /// Returns whether the key of `hash` may have been logged at or after `mark`.
+    #[inline]
+    fn since(&self, hash: u64, mark: u32) -> bool {
+        self.entry(hash).load(Ordering::Acquire) > mark
+    }
+}
+
 /// Returns the [`WriteFilter`] hash of the account at `address`.
 #[inline]
 fn account_hash(address: &Address) -> u64 {
@@ -2536,6 +2573,10 @@ struct MvStore<'s, B: ?Sized> {
     /// written: what can change a value a validation read.
     log: Mutex<WriteLog>,
     log_len: AtomicUsize,
+    /// The log positions of logged account and slot keys, to rule out scanning the log.
+    log_index: LogIndex,
+    /// The log position past the latest logged wipe.
+    log_wipe: AtomicU32,
 }
 
 impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
@@ -2553,6 +2594,8 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
             contracts: RwLock::default(),
             log: Mutex::default(),
             log_len: AtomicUsize::new(0),
+            log_index: LogIndex::new(),
+            log_wipe: AtomicU32::new(0),
         }
     }
 
@@ -2562,6 +2605,14 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
         for key in keys {
             log.keys.push((version, key));
             log.bits.push((version, key.bit()));
+            let end = u32::try_from(log.keys.len()).unwrap_or(u32::MAX);
+            match key {
+                WriteKey::Account(address) => self.log_index.insert(account_hash(&address), end),
+                WriteKey::Storage(address, key) => {
+                    self.log_index.insert(slot_hash(&address, &key), end);
+                }
+                WriteKey::Wipe(_) => self.log_wipe.store(end, Ordering::Release),
+            }
         }
         self.log_len.store(log.keys.len(), Ordering::Release);
     }
@@ -2573,10 +2624,33 @@ impl<'s, B: DynDatabaseRef + Sync + ?Sized> MvStore<'s, B> {
 
     /// Returns whether a key logged since `mark` below `version` is one `reads` read.
     fn logged_since(&self, mark: usize, version: u32, reads: &ReadSet) -> bool {
+        let logged = self.log_mark() - mark;
+        if logged == 0 {
+            return false;
+        }
+        // Looking up every read costs about as much as scanning a few keys of the log.
+        if logged > INDEX_MIN_LOGGED && self.unlogged_since(mark, reads) {
+            return false;
+        }
         let log = self.log.lock().expect("lock poisoned");
         log.bits[mark..].iter().zip(&log.keys[mark..]).any(|(&(at, bit), &(_, key))| {
             at < version && reads.may_touch(bit) && reads.touches(key)
         })
+    }
+
+    /// Returns whether the [`LogIndex`] shows that no key `reads` read was logged since `mark`,
+    /// without locking or scanning the log. `false` leaves it undecided.
+    fn unlogged_since(&self, mark: usize, reads: &ReadSet) -> bool {
+        let Ok(mark) = u32::try_from(mark) else { return false };
+        (reads.storage.is_empty() || self.log_wipe.load(Ordering::Acquire) <= mark)
+            && reads
+                .accounts
+                .iter()
+                .all(|(address, ..)| !self.log_index.since(account_hash(address), mark))
+            && reads
+                .storage
+                .iter()
+                .all(|(address, key, ..)| !self.log_index.since(slot_hash(address, key), mark))
     }
 
     #[inline]
