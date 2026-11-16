@@ -254,6 +254,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 // signals an unaffordable *cold* access. Runtime warmth (`is_warm`, seeded from
                 // the prewarm set on load) decides coldness: a slot warmed earlier this execution
                 // is a cheap warm access and must not be forced out of gas.
+                if !inner.deferred.adds.is_empty() {
+                    // Accessing the slot again makes the transaction depend on its exact value.
+                    inner.deferred.adds.remove(&StorageKey::new(*address, key));
+                }
                 let slot = entry.into_mut();
                 let is_cold = if WARM || skip_cold_load {
                     !slot.is_warm && !inner.prewarm_set.is_storage_warm(address, &key)

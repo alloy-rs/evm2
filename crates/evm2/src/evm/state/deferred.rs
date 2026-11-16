@@ -17,6 +17,32 @@ pub(crate) struct StorageDelta {
     pub(crate) warm: bool,
 }
 
+/// How a transaction changed a storage slot it read only to add to or subtract from it. See
+/// [`State::record_slot_add`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SlotAdd {
+    /// The amount added, or subtracted when `sub` is set.
+    pub(crate) delta: Word,
+    /// Whether the transaction subtracted `delta`.
+    pub(crate) sub: bool,
+}
+
+impl SlotAdd {
+    /// Returns whether the transaction, having read `read`, executes the same when the slot
+    /// starts at `now` instead: the change does not overflow and leaves the slot zero or non-zero
+    /// as it did, which is all gas depends on.
+    pub(crate) fn holds(&self, read: Word, now: Word) -> bool {
+        if read.is_zero() || now.is_zero() {
+            return false;
+        }
+        if self.sub {
+            now >= self.delta && (now == self.delta) == (read == self.delta)
+        } else {
+            now.checked_add(self.delta).is_some()
+        }
+    }
+}
+
 /// A transaction's storage effects deferred to its end.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DeferredStorage {
@@ -27,6 +53,9 @@ pub(crate) struct DeferredStorage {
     /// Slots the transaction's end loaded to resolve blind adds or run deferred operations: its
     /// execution never read them, so it does not depend on their earlier writers.
     pub(crate) resolved: Vec<(Address, Word)>,
+    /// Slots the transaction read only to add to or subtract from them, by slot, so that its
+    /// result applies over a different starting value of the same zero-ness.
+    pub(crate) adds: StorageKeyMap<SlotAdd>,
 }
 
 impl DeferredStorage {
@@ -44,12 +73,13 @@ impl DeferredStorage {
         self.deltas.clear();
         self.ops.clear();
         self.resolved.clear();
+        self.adds.clear();
     }
 
     /// Returns whether nothing is pending or recorded.
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
-        !self.is_pending() && self.resolved.is_empty()
+        !self.is_pending() && self.resolved.is_empty() && self.adds.is_empty()
     }
 }
 
@@ -422,5 +452,23 @@ mod tests {
         let slots = &pending.accounts[&ADDRESS].storage.slots;
         assert_eq!(slots[&Word::from(5)].value, Tracked::from_parts(Word::ZERO, Word::from(6)));
         assert!(!slots.contains_key(&Word::from(6)));
+    }
+
+    #[test]
+    fn slot_add_holds_over_values_of_the_same_zero_ness() {
+        let credit = SlotAdd { delta: Word::from(5), sub: false };
+        let debit = SlotAdd { delta: Word::from(5), sub: true };
+        assert!(credit.holds(Word::from(1), Word::from(100)));
+        assert!(debit.holds(Word::from(10), Word::from(6)));
+        // A debit to zero applies only over a balance it also clears.
+        assert!(debit.holds(Word::from(5), Word::from(5)));
+        assert!(!debit.holds(Word::from(5), Word::from(6)));
+        assert!(!debit.holds(Word::from(10), Word::from(5)));
+        // A debit below zero fails, which the execution over the committed balance would.
+        assert!(!debit.holds(Word::from(10), Word::from(3)));
+        // Zero-ness decides storage gas, and adds must not overflow.
+        assert!(!credit.holds(Word::ZERO, Word::from(1)));
+        assert!(!credit.holds(Word::from(1), Word::ZERO));
+        assert!(!credit.holds(Word::from(1), Word::MAX));
     }
 }

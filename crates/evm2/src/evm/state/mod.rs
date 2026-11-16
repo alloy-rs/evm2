@@ -15,7 +15,7 @@ mod tracked;
 pub(crate) use account::Account;
 pub use account::{AccountFlags, AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
-pub(crate) use deferred::{DeferredStorage, StorageDelta};
+pub(crate) use deferred::{DeferredStorage, SlotAdd, StorageDelta};
 
 #[cfg(all(feature = "std", feature = "block"))]
 pub(crate) use deferred::DeferredStorageStore;
@@ -726,7 +726,11 @@ impl<'a> State<'a> {
         };
         let account = self.accounts.get(address);
         if let Some(slot) = account.and_then(|account| account.storage.slots.get(key)) {
-            return Ok(slot.value.current.wrapping_add(delta));
+            let value = slot.value.current.wrapping_add(delta);
+            if !self.inner.deferred.adds.is_empty() {
+                self.inner.deferred.adds.remove(&StorageKey::new(*address, *key));
+            }
+            return Ok(value);
         }
         let reads_zero =
             account.is_some_and(|account| account.storage.wiped || account.discards_storage());
@@ -1154,6 +1158,34 @@ impl<'a> State<'a> {
     /// no refund, rather than `SSTORE`'s value-dependent schedule.
     pub fn storage_add(&mut self, address: &Address, key: Word, delta: Word) -> DbResult<bool> {
         self.storage(address)?.add(key, delta)
+    }
+
+    /// Returns whether the current transaction, recording how it depends on balances (see
+    /// [`Self::set_track_balance_reads`]), has not accessed the slot `key` of `address`, so that
+    /// a [`Self::record_slot_add`] for its first access applies. Loads nothing.
+    #[inline]
+    pub fn is_slot_untouched(&self, address: &Address, key: &Word) -> bool {
+        self.track_balance_reads
+            && self
+                .accounts
+                .get(address)
+                .is_none_or(|account| !account.storage.slots.contains_key(key))
+            && !self.inner.deferred.deltas.contains_key(&StorageKey::new(*address, *key))
+    }
+
+    /// Records that the current transaction read the slot `key` of `address`, untouched before
+    /// (see [`Self::is_slot_untouched`]), only to add `delta` to it, or subtract it when `sub` is
+    /// set, charging gas that depends only on whether the slot is zero before and after.
+    ///
+    /// Parallel block execution then accepts the transaction over any starting value of the slot
+    /// for which the change does not overflow and keeps that zero-ness, applying the change to it,
+    /// so transactions that credit or debit one balance do not conflict. Any later access to the
+    /// slot in the transaction drops the record: the transaction then depends on its exact value.
+    #[inline]
+    pub fn record_slot_add(&mut self, address: &Address, key: Word, delta: Word, sub: bool) {
+        if self.track_balance_reads && !delta.is_zero() {
+            self.inner.deferred.adds.insert(StorageKey::new(*address, key), SlotAdd { delta, sub });
+        }
     }
 
     /// Defers a storage operation to the end of the current transaction. See

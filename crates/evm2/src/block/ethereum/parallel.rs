@@ -59,7 +59,7 @@ use super::{
     execution::{execute_transaction_without_commit, map_transaction_error},
 };
 use crate::{
-    Evm, EvmFeatures, EvmTypes, TxResult, TxResultWithState, TxStateChanges,
+    Evm, EvmFeatures, EvmTypes, StorageKey, TxResult, TxResultWithState, TxStateChanges,
     block::{
         AccountUpdate, BlockExecutionError, BlockExecutor, ExecutableTx, ReceiptBuilder,
         StateUpdate, bundle_state::StorageSlot, map_database_error,
@@ -67,7 +67,7 @@ use crate::{
     bytecode::Bytecode,
     evm::{
         AccountFlags, AccountInfo, Cache, DbResult, DeferredBatchAccess, DeferredStorageOp,
-        DeferredStorageStore, DynDatabase, DynDatabaseRef, PendingState,
+        DeferredStorageStore, DynDatabase, DynDatabaseRef, PendingState, Tracked,
     },
     interpreter::{Host, Word},
 };
@@ -689,6 +689,7 @@ where
                                 );
                             }
                         }
+                        republish_slots(store, version, &pending_state, &reads.rebase_slots);
                         if pending_state
                             .deferred()
                             .is_some_and(|deferred| !deferred.resolved.is_empty())
@@ -749,7 +750,9 @@ where
         if !reads.validate(&mut self.evm, &outcome.pending_state, &sender).unwrap_or(false) {
             return None;
         }
-        if !rebase_balances(&mut outcome.pending_state, &reads.rebase) {
+        if !rebase_balances(&mut outcome.pending_state, &reads.rebase)
+            || !rebase_slots(&mut outcome.pending_state, &reads.rebase_slots)
+        {
             return None;
         }
         // Resolve blind adds and deferred storage operations against the committed state, as the
@@ -931,6 +934,7 @@ where
                             store.republish_account(version, *address, account.present.as_ref());
                         }
                     }
+                    republish_slots(store, version, &pending_state, &reads.rebase_slots);
                     run_deferred_ops(
                         store,
                         version,
@@ -1142,7 +1146,9 @@ fn settle_batched<T: EvmTypes, B: DynDatabaseRef + Sync + ?Sized>(
     if !valid {
         return None;
     }
-    if !rebase_balances(&mut outcome.pending_state, &reads.rebase) {
+    if !rebase_balances(&mut outcome.pending_state, &reads.rebase)
+        || !rebase_slots(&mut outcome.pending_state, &reads.rebase_slots)
+    {
         return None;
     }
     let Some((beneficiary, reward, eip161, rewarded)) = beneficiary else { return Some(outcome) };
@@ -1165,6 +1171,27 @@ fn settle_batched<T: EvmTypes, B: DynDatabaseRef + Sync + ?Sized>(
 /// Applies the balance changes `pending` made without reading the balances exactly over the
 /// balances earlier transactions left: `rebase` holds each account's balance read and the one
 /// committed. Returns `false` when the transaction must execute again.
+fn rebase_slots(pending: &mut PendingState, rebase: &[(Address, Word, Word, Word)]) -> bool {
+    for &(address, key, read, now) in rebase {
+        let Some(slot) = pending
+            .accounts
+            .get_mut(&address)
+            .and_then(|account| account.storage.slots.get_mut(&key))
+        else {
+            return false;
+        };
+        if slot.value.original != read {
+            return false;
+        }
+        let current = slot.value.current.wrapping_sub(read).wrapping_add(now);
+        slot.value = Tracked::from_parts(now, current);
+    }
+    true
+}
+
+/// Applies the balance changes `pending` made without reading the balances exactly over the
+/// balances earlier transactions left: `rebase` holds each account's balance read and the one
+/// committed. Returns `false` when the transaction must execute again.
 fn rebase_balances(pending: &mut PendingState, rebase: &[(Address, Word, Word)]) -> bool {
     for &(address, read, now) in rebase {
         let Some(account) = pending.accounts.get_mut(&address) else { continue };
@@ -1182,6 +1209,23 @@ fn rebase_balances(pending: &mut PendingState, rebase: &[(Address, Word, Word)])
         }
     }
     true
+}
+
+/// Publishes the values of the slots `pending` changed over committed values it did not read
+/// exactly (see [`rebase_slots`]) in `store` at `version`, over what its execution wrote.
+fn republish_slots<B: DynDatabaseRef + Sync + ?Sized>(
+    store: &MvStore<'_, B>,
+    version: u32,
+    pending: &PendingState,
+    rebase: &[(Address, Word, Word, Word)],
+) {
+    for &(address, key, ..) in rebase {
+        if let Some(slot) =
+            pending.accounts.get(&address).and_then(|account| account.storage.slots.get(&key))
+        {
+            store.write_slot(version, address, key, slot.value.current);
+        }
+    }
 }
 
 /// Returns the beneficiary `original` after the default settlement credits `reward` to it:
@@ -2126,6 +2170,10 @@ struct ReadSet {
     /// Accounts whose committed balance differs from the one read, which the execution did not
     /// read exactly: the balance read and the committed one, filled by [`Self::validate`].
     rebase: Vec<(Address, Word, Word)>,
+    /// Slots whose committed value differs from the one read, which the execution only added to
+    /// or subtracted from (see [`State::record_slot_add`](crate::evm::State::record_slot_add)):
+    /// the slot, the value read and the committed one, filled by [`Self::validate`].
+    rebase_slots: Vec<(Address, Word, Word, Word)>,
     /// The [`key_bit`] of every account and slot read, so that most keys it did not read are
     /// ruled out without searching the reads.
     filter: u64,
@@ -2168,6 +2216,7 @@ impl ReadSet {
         self.accounts.clear();
         self.storage.clear();
         self.rebase.clear();
+        self.rebase_slots.clear();
         self.filter = 0;
         self.slot_accounts = 0;
     }
@@ -2181,8 +2230,9 @@ impl ReadSet {
         pending: &PendingState,
         sender: &Address,
     ) -> DbResult<bool> {
-        let Self { accounts, storage, rebase, .. } = self;
+        let Self { accounts, storage, rebase, rebase_slots, .. } = self;
         rebase.clear();
+        rebase_slots.clear();
         for (address, value, _) in accounts.iter() {
             let now = evm.read_account_info(address)?;
             if now != *value {
@@ -2212,8 +2262,12 @@ impl ReadSet {
             }
         }
         for (address, key, value, _) in storage.iter() {
-            if evm.read_storage(address, key)? != *value {
-                return Ok(false);
+            let now = evm.read_storage(address, key)?;
+            if now != *value {
+                if !slot_add_holds(pending, address, key, *value, now) {
+                    return Ok(false);
+                }
+                rebase_slots.push((*address, *key, *value, now));
             }
         }
         Ok(true)
@@ -2232,8 +2286,9 @@ impl ReadSet {
         pending: &PendingState,
         sender: &Address,
     ) -> bool {
-        let Self { accounts, storage, rebase, .. } = self;
+        let Self { accounts, storage, rebase, rebase_slots, .. } = self;
         rebase.clear();
+        rebase_slots.clear();
         for (address, value, initial) in accounts.iter() {
             // A read of the state before the first transaction still holds while no transaction
             // below `version` wrote the account.
@@ -2274,7 +2329,15 @@ impl ReadSet {
             }
         }
         storage.iter().all(|(address, key, value, initial)| {
-            store.storage_from(address, key, version, *initial).is_ok_and(|(now, _)| now == *value)
+            store.storage_from(address, key, version, *initial).is_ok_and(|(now, _)| {
+                now == *value || {
+                    let holds = slot_add_holds(pending, address, key, *value, now);
+                    if holds {
+                        rebase_slots.push((*address, *key, *value, now));
+                    }
+                    holds
+                }
+            })
         })
     }
 
@@ -2297,7 +2360,9 @@ impl ReadSet {
                             .is_some_and(|floor| balance_only_change(read, now, floor)))
             })
         }) && self.storage.iter().all(|(address, key, value, initial)| {
-            store.storage_from(address, key, version, *initial).is_ok_and(|(v, _)| v == *value)
+            store.storage_from(address, key, version, *initial).is_ok_and(|(now, _)| {
+                now == *value || slot_add_holds(pending, address, key, *value, now)
+            })
         })
     }
 }
@@ -2314,6 +2379,22 @@ fn delta_floor(pending: &PendingState, sender: &Address, address: &Address) -> O
         return None;
     }
     Some(reads.floors.get(address).copied().unwrap_or_default())
+}
+
+/// Returns whether the execution of `pending` read the slot `key` of `address` as `read` only
+/// to add to or subtract from it, and executes the same over `now` instead. See
+/// [`State::record_slot_add`](crate::evm::State::record_slot_add).
+fn slot_add_holds(
+    pending: &PendingState,
+    address: &Address,
+    key: &Word,
+    read: Word,
+    now: Word,
+) -> bool {
+    pending
+        .deferred()
+        .and_then(|deferred| deferred.adds.get(&StorageKey::new(*address, *key)))
+        .is_some_and(|add| add.holds(read, now))
 }
 
 /// Returns whether an account read as `read` and now `now` differs at most in a balance that
