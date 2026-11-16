@@ -213,6 +213,18 @@ pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + '
     }
 }
 
+/// Selects the [`Version`](crate::Version) one transaction runs with.
+///
+/// [`Evm`] calls it with its runtime specification ID, its own version and the transaction before
+/// dispatching each transaction, and runs the transaction with the returned version, or with its
+/// own when it returns `None`. The returned version's features are ignored: the EVM's active
+/// features apply. See [`Evm::set_tx_version_selector`].
+pub type TxVersionSelector<T> = fn(
+    <T as EvmTypesHost>::SpecId,
+    &crate::Version,
+    &<T as EvmTypesHost>::Tx,
+) -> Option<crate::Version>;
+
 /// EVM host and transaction dispatcher.
 #[derive_where(Debug)]
 pub struct Evm<'a, T: EvmTypesHost> {
@@ -243,6 +255,9 @@ pub struct Evm<'a, T: EvmTypesHost> {
     /// Refreshed whenever either changes.
     #[derive_where(skip)]
     runner_supported: bool,
+    /// Selects the version each transaction runs with.
+    #[derive_where(skip)]
+    tx_version_selector: Option<TxVersionSelector<T>>,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
@@ -381,6 +396,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             initial_call_depth: 0,
             interpreter_runner: None,
             runner_supported: false,
+            tx_version_selector: None,
             current_frame: None,
             frames_entered: 0,
             frame_checkpoint: None,
@@ -1312,13 +1328,52 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[inline]
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
+        let evm_version = self
+            .tx_version_selector
+            .and_then(|select| select(self.spec_id, self.execution_config.version(), tx.inner()))
+            .map(|version| self.replace_version(version));
         let guard = self.enter_execution();
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
+        if let Some(version) = evm_version {
+            self.replace_version(version);
+        }
         if result.is_err() {
             self.state.clear_transaction_state();
         }
         result
+    }
+
+    /// Replaces the execution config's version, keeping the active features, and returns the
+    /// previous version.
+    #[inline]
+    fn replace_version(&mut self, version: crate::Version) -> crate::Version {
+        let previous = core::mem::replace(&mut self.execution_config.version, version);
+        self.refresh_runner_support();
+        previous
+    }
+
+    /// Returns the selector of the version each transaction runs with, if any.
+    #[inline]
+    pub const fn tx_version_selector(&self) -> Option<TxVersionSelector<T>> {
+        self.tx_version_selector
+    }
+
+    /// Sets the selector of the version each transaction runs with.
+    ///
+    /// Before dispatching each transaction, the EVM asks `selector` for the transaction's version
+    /// and runs the transaction with it, restoring its own version afterwards. This prices
+    /// transactions of one block differently, such as by the lane they run in, without rebuilding
+    /// the EVM, and applies to every caller of [`Self::transact`] and
+    /// [`Self::transact_with_inspector`]. System calls run with the EVM's own version.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called during execution.
+    #[inline]
+    pub fn set_tx_version_selector(&mut self, selector: Option<TxVersionSelector<T>>) {
+        self.assert_execution_config_mutable();
+        self.tx_version_selector = selector;
     }
 
     /// Executes a transaction for its outcome and discards its state changes.
@@ -3612,6 +3667,54 @@ mod tests {
         let tx = test_tx(0);
 
         assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
+    }
+
+    #[test]
+    fn dispatches_transaction_with_selected_version() {
+        fn handle_test_tx_version(
+            req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
+        ) -> HandlerResult<TxResult> {
+            Ok(TxResultExt {
+                status: true,
+                total_gas_spent: req.host.version().tx_gas_limit_cap,
+                ..TxResultExt::default()
+            })
+        }
+        fn select_version(
+            _spec_id: SpecId,
+            version: &crate::Version,
+            tx: &TxEnvelope,
+        ) -> Option<crate::Version> {
+            (tx.gas_limit() == 7).then(|| {
+                let mut version = *version;
+                version.tx_gas_limit_cap = 7;
+                version
+            })
+        }
+
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(|_| Ok(()), |req, ()| handle_test_tx_version(req)),
+        );
+        let mut version = crate::Version::new(SpecId::OSAKA);
+        version.tx_gas_limit_cap = 42;
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_tx_version_selector(Some(select_version));
+
+        let gas_used = |evm: &mut Evm<'_, BaseEvmTypes>, gas_limit| {
+            evm.transact(&test_tx(gas_limit)).map(|executed| executed.discard().tx_gas_used())
+        };
+        assert_eq!(gas_used(&mut evm, 7), Ok(7));
+        assert_eq!(evm.version().tx_gas_limit_cap, 42, "the EVM's version is restored");
+        assert_eq!(gas_used(&mut evm, 41), Ok(42));
     }
 
     #[test]
