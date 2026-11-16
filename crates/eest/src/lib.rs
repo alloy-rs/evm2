@@ -29,6 +29,8 @@ mod trace;
 mod tx;
 mod types;
 
+#[cfg(feature = "jit")]
+pub use blockchaintest::execute_case_on_jit as execute_blockchain_test_case_on_jit;
 pub use blockchaintest::{
     BlockFailed as BlockchainTestBlockFailed, BlockFinished as BlockchainTestBlockFinished,
     BlockStarted as BlockchainTestBlockStarted, CaseStarted as BlockchainTestCaseStarted,

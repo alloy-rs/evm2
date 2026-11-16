@@ -79,6 +79,7 @@ jemalloc = ["dep:tikv-jemallocator"]
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
+libc.workspace = true
 criterion.workspace = true
 revm = { workspace = true, features = ["test-types"] }
 
@@ -88,4 +89,8 @@ harness = false
 
 [[example]]
 name = "sxreplay"
+required-features = ["sx", "mimalloc"]
+
+[[example]]
+name = "sxanalyze"
 required-features = ["sx", "mimalloc"]

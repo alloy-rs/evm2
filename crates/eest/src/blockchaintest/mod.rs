@@ -8,6 +8,8 @@ mod runner;
 mod types;
 
 pub use error::TestError;
+#[cfg(feature = "jit")]
+pub use execute::execute_case_on_jit;
 pub(crate) use execute::state_stage;
 pub use execute::{
     ExecuteConfig, ExecuteSummary, ExecutionMode, blob_params, execute_case_on, execute_str,

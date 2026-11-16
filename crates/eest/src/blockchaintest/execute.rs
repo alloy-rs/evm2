@@ -244,6 +244,23 @@ pub fn execute_case_on(
     execute_case(path, name, test_case, database, config, hook, &resources)
 }
 
+/// Like [`execute_case_on`], but runs frames through `backend`, which keeps what it compiled
+/// across calls, and lets frames fall back to the interpreter as a node does; the backend's
+/// stats count them. `config.mode` is ignored.
+#[cfg(feature = "jit")]
+pub fn execute_case_on_jit(
+    path: &Path,
+    name: &str,
+    test_case: &BlockchainTestCase,
+    database: &mut InMemoryDB,
+    config: ExecuteConfig,
+    hook: &mut dyn Hook,
+    backend: &evm2_jit_runtime::runtime::JitBackend,
+) -> Result<Option<B256>, TestError> {
+    let resources = ExecutionResources::with_backend(backend.clone());
+    execute_case(path, name, test_case, database, config, hook, &resources)
+}
+
 fn execute_suite_with_resources(
     path: &Path,
     suite: &BlockchainTest,

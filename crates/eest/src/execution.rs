@@ -58,6 +58,9 @@ impl Error for ExecutionResourceError {}
 pub(crate) struct ExecutionResources {
     #[cfg(feature = "jit")]
     backend: Option<JitBackend>,
+    /// Whether [`Self::check_compilations`] fails on failed compilations and fallbacks.
+    #[cfg(feature = "jit")]
+    check: bool,
 }
 
 impl ExecutionResources {
@@ -70,7 +73,13 @@ impl ExecutionResources {
                 Some(crate::jit::make_backend(aot).map_err(ExecutionResourceError)?)
             }
         };
-        Ok(Self { backend })
+        Ok(Self { backend, check: true })
+    }
+
+    /// Runs frames through `backend`, letting them fall back to the interpreter.
+    #[cfg(feature = "jit")]
+    pub(crate) const fn with_backend(backend: JitBackend) -> Self {
+        Self { backend: Some(backend), check: false }
     }
 
     #[cfg(not(feature = "jit"))]
@@ -91,7 +100,7 @@ impl ExecutionResources {
     /// would then pass without exercising compiled code.
     #[cfg(feature = "jit")]
     pub(crate) fn check_compilations(&self) -> Result<(), ExecutionResourceError> {
-        let Some(backend) = &self.backend else { return Ok(()) };
+        let Some(backend) = self.backend.as_ref().filter(|_| self.check) else { return Ok(()) };
         let stats = backend.stats();
         let (failed, fallbacks) = (stats.compilations_failed, stats.interpreter_fallbacks);
         if failed == 0 && fallbacks == 0 {
