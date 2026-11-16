@@ -1231,3 +1231,24 @@ fn rejected_streamed_batched_commit_leaves_the_executor_unchanged() {
         }
     }
 }
+
+#[test]
+fn versions_stay_sorted_in_any_insert_order() {
+    let mut rng = Rng(7);
+    for len in [1, 5, 9, 40] {
+        let mut versions = Versions::default();
+        let mut expected = alloc::collections::BTreeMap::new();
+        for _ in 0..len * 3 {
+            let version = rng.below(len) as u32;
+            let value = rng.next();
+            versions.insert(version, value);
+            expected.insert(version, value);
+        }
+        let actual = match versions {
+            Versions::Empty => Vec::new(),
+            Versions::One(at, value) => vec![(at, value)],
+            Versions::Many(versions) => versions,
+        };
+        assert_eq!(actual, expected.into_iter().collect::<Vec<_>>());
+    }
+}

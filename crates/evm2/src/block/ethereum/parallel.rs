@@ -108,6 +108,9 @@ use std::{
 /// Number of lock shards of the multi-version account and storage maps.
 const SHARDS: usize = 64;
 
+/// Number of a key's latest versions [`Versions::insert`] scans before searching the rest.
+const INSERT_SCAN: usize = 8;
+
 /// Base-2 logarithm of the number of bits of each [`WriteFilter`] of a [`MvStore`].
 const FILTER_BITS: u32 = 18;
 
@@ -3263,20 +3266,18 @@ enum Versions<V> {
 impl<V> Versions<V> {
     /// Sets the value at `version`.
     fn insert(&mut self, version: u32, value: V) {
-        *self = match core::mem::take(self) {
-            Self::Empty => Self::One(version, value),
-            Self::One(at, _) if at == version => Self::One(version, value),
-            Self::One(at, current) => {
+        match self {
+            Self::Empty => *self = Self::One(version, value),
+            Self::One(at, current) if *at == version => *current = value,
+            Self::One(..) => {
+                let Self::One(at, current) = core::mem::take(self) else { unreachable!() };
                 let mut versions = Vec::with_capacity(4);
                 versions.push((at, current));
                 insert_version(&mut versions, version, value);
-                Self::Many(versions)
+                *self = Self::Many(versions);
             }
-            Self::Many(mut versions) => {
-                insert_version(&mut versions, version, value);
-                Self::Many(versions)
-            }
-        };
+            Self::Many(versions) => insert_version(versions, version, value),
+        }
     }
 
     /// Removes the value at `version`, if any.
@@ -3320,9 +3321,27 @@ impl<V> Versions<V> {
 
 /// Sets the value at `version` in versions sorted by version.
 fn insert_version<V>(versions: &mut Vec<(u32, V)>, version: u32, value: V) {
-    match versions.binary_search_by_key(&version, |&(at, _)| at) {
-        Ok(index) => versions[index].1 = value,
-        Err(index) => versions.insert(index, (version, value)),
+    // Transactions mostly finish in block order: look for the place from the end first, so that
+    // a key many transactions write touches only its latest versions.
+    let tail = versions.len().saturating_sub(INSERT_SCAN);
+    let index = match versions[tail..].iter().rposition(|&(at, _)| at <= version) {
+        Some(index) => tail + index,
+        None if tail == 0 => {
+            versions.insert(0, (version, value));
+            return;
+        }
+        None => match versions[..tail].binary_search_by_key(&version, |&(at, _)| at) {
+            Ok(index) => index,
+            Err(index) => {
+                versions.insert(index, (version, value));
+                return;
+            }
+        },
+    };
+    if versions[index].0 == version {
+        versions[index].1 = value;
+    } else {
+        versions.insert(index + 1, (version, value));
     }
 }
 
