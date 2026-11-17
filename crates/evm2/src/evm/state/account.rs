@@ -288,7 +288,7 @@ impl Account {
 /// Returned by [`State::account`](super::State::account). The account has
 /// already been read from the backing database and preserved in the transaction overlay; this
 /// handle ties that overlay slot to the revert journal so a mutation and its rollback bookkeeping
-/// cannot drift apart, mirroring revm's `AccountHandle`.
+/// cannot drift apart.
 ///
 /// The first mutation made through the handle captures a snapshot of the overlay entry (present
 /// value plus the warm/touched/destroyed/created flags); on drop the handle flushes
@@ -298,8 +298,7 @@ impl Account {
 ///
 /// The handle also carries the shared [`StateInner`] (backing database, revert journal, and
 /// transaction-initial base warm set), so it can journal mutations, load code on demand, and answer
-/// warm-access queries without going back through [`State`](super::State), mirroring the database
-/// and access-list references revm's `AccountHandle` holds.
+/// warm-access queries without going back through [`State`](super::State).
 #[derive_where(Debug)]
 pub struct AccountHandle<'a, 'db> {
     /// Address of the account.

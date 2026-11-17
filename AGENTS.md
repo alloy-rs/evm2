@@ -1,9 +1,8 @@
 # Rust EVM
 
-This repo is a reimplementation of revm. When implementing EVM behavior, use
-`bluealloy/revm` as the baseline reference and preserve revm semantics,
-control flow, gas accounting, and host interaction shape as closely as possible unless
-explicitly told otherwise.
+This repo is a Rust EVM. When implementing EVM behavior, preserve the semantics,
+control flow, gas accounting, and host interaction shape of the established reference
+implementation as closely as possible unless explicitly told otherwise.
 
 This is a work-in-progress repo with no public API stability guarantees. Do not add
 backwards-compatibility aliases, deprecated wrappers, compatibility shims, or similar

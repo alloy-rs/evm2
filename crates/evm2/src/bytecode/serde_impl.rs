@@ -20,8 +20,8 @@ enum BytecodeSerdeOld {
     LegacyAnalyzed {
         bytecode: Bytes,
         original_len: usize,
-        // MessagePack encodes struct variants as arrays, so revm's trailing field must be
-        // consumed.
+        // MessagePack encodes struct variants as arrays, so the old format's trailing field
+        // must be consumed.
         #[serde(default, rename = "jump_table")]
         _jump_table: IgnoredAny,
     },
@@ -66,7 +66,7 @@ impl<'de> Visitor<'de> for BytecodeVisitor {
         Ok(Bytecode::from_stored(Bytes::copy_from_slice(value)))
     }
 
-    // Self-describing binary formats such as MessagePack may hold revm's enum encoding.
+    // Self-describing binary formats such as MessagePack may hold the old enum encoding.
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
         from_old(BytecodeSerdeOld::deserialize(MapAccessDeserializer::new(map))?)
     }
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn serde_revm_json_cases() {
+    fn serde_old_json_cases() {
         let cases = [
             (
                 r#"{"LegacyAnalyzed":{"bytecode":"0x1234","original_len":2,"jump_table":{"order":"bitvec::order::Lsb0","head":{"width":8,"index":0},"bits":0,"data":[]}}}"#,

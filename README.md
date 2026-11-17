@@ -4,7 +4,7 @@ Fast, customizable EVM implementation in Rust.
 
 ## Highlights
 
-- up to **2x faster than revm** from a tighter interpreter, static dispatch tables, and cheaper instruction plumbing.
+- up to **2x faster than the most widely used Rust EVM** from a tighter interpreter, static dispatch tables, and cheaper instruction plumbing.
 - **Built for custom EVMs**: extend specs, opcodes, gas schedules, transactions, precompiles, environment data, and inspectors without reshaping the core.
 - **Clean extension boundaries**: typed configuration keeps fork logic, transaction handling, host state, and opcode definitions separate while compiling down to a small execution path.
 

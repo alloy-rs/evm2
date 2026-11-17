@@ -2,6 +2,4 @@
 
 Common [`evm2`] inspector implementations.
 
-Originally:
-- `revm-inspectors`
-- part of `reth` as the `reth-revm-inspectors` crate.
+Ported from Paradigm's EVM inspectors crate, which started as part of `reth`.

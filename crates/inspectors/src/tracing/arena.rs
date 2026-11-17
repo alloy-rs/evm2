@@ -59,9 +59,9 @@ impl CallTraceArena {
     /// node children set.
     ///
     /// A trace without a parent at depth 0 replaces the root node. A trace without a parent at a
-    /// greater depth is attached to the root node instead, which stays an empty placeholder, as in
-    /// revm-inspectors: top-level messages that start below an implicit parent, such as the calls
-    /// of a batch transaction, then share one root.
+    /// greater depth is attached to the root node instead, which stays an empty placeholder, so
+    /// top-level messages that start below an implicit parent, such as the calls of a batch
+    /// transaction, share one root.
     pub(crate) fn push_trace(&mut self, parent: Option<usize>, new_trace: CallTrace) -> usize {
         let parent = match parent {
             Some(parent) => {

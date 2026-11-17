@@ -285,7 +285,7 @@ mod tests {
         );
     }
 
-    // <https://github.com/paradigmxyz/revm-inspectors/pull/353#issuecomment-36146608124>
+    // The reason is 33 bytes long, so its ABI encoding spans two words.
     #[test]
     fn decode_string_revert() {
         let err = hex!(

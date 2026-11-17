@@ -3,8 +3,7 @@
 //! [`PrewarmSet`] holds the warm entries that come from chain/transaction configuration rather
 //! than from an executing opcode: precompiles, the coinbase/beneficiary (EIP-3651), the EIP-2930
 //! access list (addresses and their storage slots), and the non-revertible base warm accounts
-//! (recipient, EIP-7702 authorities, system contracts). It is a port of revm's
-//! `WarmAddresses`, adapted to evm2's primitive types.
+//! (recipient, EIP-7702 authorities, system contracts).
 //!
 //! Warm addresses are tracked in two places. Short addresses — 18 leading zero bytes and a
 //! last-two-byte value below [`SHORT_ADDRESS_CAP`], which is where precompiles and similar
@@ -26,8 +25,8 @@ use alloy_primitives::{
 /// Short-address optimization cap. Addresses with 18 leading zero bytes whose last two bytes are
 /// less than this value are tracked in a bit vector for fast warm lookups.
 ///
-/// revm uses 300, which covers every precompile address in use. The bit array stores whole 64-bit
-/// words, so 300 bits take five words anyway; 320 uses all of them at no extra cost.
+/// 300 covers every precompile address in use. The bit array stores whole 64-bit words, so 300
+/// bits take five words anyway; 320 uses all of them at no extra cost.
 const SHORT_ADDRESS_CAP: usize = 320;
 
 /// Number of non-short warm addresses kept in the inline list before falling back to the map.

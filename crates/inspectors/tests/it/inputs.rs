@@ -350,7 +350,7 @@ fn byte_budget_halt_before_sstore_reports_no_store_delta() {
 }
 
 #[test]
-fn nested_roots_match_revm_inspectors() {
+fn initial_call_depth_roots() {
     let caller = Address::repeat_byte(0xaa);
     let child = Address::with_last_byte(0x43);
     // Send 1 wei to a child that executes STOP.
@@ -400,7 +400,7 @@ fn nested_roots_match_revm_inspectors() {
             .with_limits(TraceLimits::default().set_max_recorded_bytes(Some(0)));
             run(&mut tracer);
             let nodes = tracer.traces().nodes();
-            // Like revm-inspectors, a top-level call above depth zero hangs under an empty root.
+            // A top-level call above depth zero hangs under an empty root.
             let root = usize::from(initial_call_depth > 0);
             assert_eq!(nodes.len(), 2 + root);
             if root == 1 {
@@ -418,7 +418,7 @@ fn nested_roots_match_revm_inspectors() {
             run(&mut tracer);
             let geth = tracer.geth_builder().geth_traces(0, Bytes::new(), Default::default());
             if root == 1 {
-                // As with revm-inspectors, struct logs only follow the root's own steps.
+                // Struct logs only follow the root's own steps.
                 assert!(geth.struct_logs.is_empty());
             } else {
                 assert_eq!(geth.struct_logs[0].depth, u64::from(initial_call_depth) + 1);
@@ -429,7 +429,7 @@ fn nested_roots_match_revm_inspectors() {
                 );
             }
 
-            // Like revm-inspectors, only a call at depth zero counts as top-level.
+            // Only a call at depth zero counts as top-level.
             let mut access = AccessListInspector::default();
             run(&mut access);
             assert_eq!(access.excluded().contains(&caller), root == 0);

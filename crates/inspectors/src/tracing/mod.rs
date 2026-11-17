@@ -116,8 +116,8 @@ pub struct TracingInspector {
     reusable_step_vecs: Vec<Vec<CallTraceStep>>,
     /// The precompiles the host warms, read on the first call that records precompile calls.
     ///
-    /// Addresses a provider only dispatches to on demand, such as Tempo's token precompiles,
-    /// trace like contracts, as with revm-inspectors' warm precompile set.
+    /// Addresses a provider only dispatches to on demand, such as Tempo's token precompiles, are
+    /// not in this set, so they trace like contracts.
     precompiles: Option<PrewarmSet>,
 }
 

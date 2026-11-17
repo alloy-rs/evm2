@@ -1000,13 +1000,11 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
     }
 
     /// Bounds what idle frames keep, so deep or memory-heavy transactions do not add up in a
-    /// long-lived pool. Frames stay pooled, as in revm's frame stack, so deep transactions do not
-    /// allocate them again.
+    /// long-lived pool. Frames stay pooled so deep transactions do not allocate them again.
     ///
     /// Call it when no frame is running, such as before the first frame of a top-level message. A
     /// frame's caller reads its output after it returns to the pool, so trimming then is too
-    /// early. The next top-level message takes the last frame, so it keeps its buffers, as revm
-    /// keeps its shared memory.
+    /// early. The next top-level message takes the last frame, so it keeps its buffers.
     #[inline(never)]
     pub(crate) fn trim(&mut self) {
         let Some((_, rest)) = self.frames.split_last_mut() else { return };

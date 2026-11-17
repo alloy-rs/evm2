@@ -588,9 +588,8 @@ impl<'a> State<'a> {
     ///
     /// When `skip_cold` is true and the account is cold, the access
     /// is skipped and [`LoadError::ColdLoadSkipped`] is returned, leaving the overlay
-    /// untouched. This mirrors revm's `skip_cold_load`/`ColdLoadSkipped` so callers can detect a
-    /// cold access without paying for the load. With `skip_cold` false (or when the account is
-    /// warm) the entry is loaded.
+    /// untouched, so callers can detect a cold access without paying for the load. With
+    /// `skip_cold` false (or when the account is warm) the entry is loaded.
     ///
     /// The load itself is not journaled: the loaded entry holds `original == present` and is a
     /// harmless read cache that [`Self::rollback`] leaves in place. Only later warmth and value
@@ -640,7 +639,7 @@ impl<'a> State<'a> {
     /// this reads the account once and preserves it in the transaction overlay. The returned
     /// [`AccountHandle`] records a revert snapshot on its first mutation, so any changes made
     /// through it are undone together by [`Self::rollback`]. The account is materialized as empty
-    /// only when it is first mutated while absent. This mirrors revm's `AccountHandle`.
+    /// only when it is first mutated while absent.
     ///
     /// Cold accounts are always loaded. Use [`Self::account_with_skip`] to skip them.
     pub fn account(&mut self, address: &Address) -> DbResult<AccountHandle<'_, 'a>> {
