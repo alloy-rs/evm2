@@ -2086,6 +2086,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         &mut self,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
+        if self.current_frame.is_none() {
+            self.interpreter_pool.trim();
+        }
         let checkpoint = self.state.checkpoint();
         let result = if self.inspector.is_some() {
             self.execute_message_inspected(message, None)
