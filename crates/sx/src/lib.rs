@@ -533,35 +533,197 @@ impl Window {
         w.span = offset as u8;
         w
     }
+}
 
-    /// Returns whether the pattern matches the window `w`, read little endian at its first opcode.
+/// Candidates compared at once: at least the most patterns that share their first two opcodes.
+const LANES: usize = 8;
+
+/// Distinct (first, second) opcode pairs of [`PATTERNS`], plus one for "none" and one for slot
+/// opcodes in the code.
+const BLOCKS: usize = {
+    let mut n = 2;
+    let mut i = 0;
+    while i < PATTERNS.len() {
+        let mut j = 0;
+        while j < i
+            && !(PATTERNS[j].op(0) == PATTERNS[i].op(0) && PATTERNS[j].op(1) == PATTERNS[i].op(1))
+        {
+            j += 1;
+        }
+        if j == i {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+};
+
+/// The block of slot opcodes in the code: always matches, one byte, writing the filler.
+const FILL_BLOCK: usize = BLOCKS - 1;
+
+/// The group of slot opcodes in the code.
+const FILL_GROUP: usize = GROUPS;
+
+/// [`Matcher::hash_b`] flags.
+const IS_FIRST: u8 = 1 << 3;
+const HASH_SLOT: u8 = 1 << 4;
+
+/// Index in [`FIRSTS`] by opcode.
+const FIRSTS_INDEX: [u8; 256] = {
+    let mut index = [0; 256];
+    let mut i = 0;
+    while i < FIRSTS.1 {
+        index[FIRSTS.0[i] as usize] = i as u8;
+        i += 1;
+    }
+    index
+};
+
+/// A first opcode's hashes, from its index in [`FIRSTS`].
+const fn first_hashes(op: u8) -> (u8, u8) {
+    let g = FIRSTS_INDEX[op as usize] as u32;
+    // Multipliers picked so the pairs of [`PATTERNS`] get distinct keys (checked below) with few
+    // other pairs of executed code sharing them.
+    ((g.wrapping_mul(11) >> 1) as u8 & 0x7F, (g & 7) as u8 | IS_FIRST)
+}
+
+/// Returns the 11-bit key of an instruction whose opcode has hashes `hash_a` and `hash_b` and whose
+/// next opcode is `second`: a 10-bit pair hash, with bit 10 set for a slot opcode. Bits 0 to 6
+/// index [`Matcher::filter`] and bits 7 to 9 pick the bit there.
+const fn key(hash_a: u8, hash_b: u8, second: u8) -> usize {
+    ((second ^ hash_a) & 0x7F) as usize
+        | (((second >> 5 ^ hash_b) & 7) as usize) << 7
+        | ((hash_b & HASH_SLOT != 0) as usize) << 10
+}
+
+// Distinct pairs have distinct keys, so a key names its pair's block.
+const _: () = {
+    let mut i = 0;
+    while i < PATTERNS.len() {
+        let mut j = 0;
+        while j < i {
+            let (p, q) = (PATTERNS[i], PATTERNS[j]);
+            if p.op(0) != q.op(0) || p.op(1) != q.op(1) {
+                let (pa, pb) = first_hashes(p.op(0));
+                let (qa, qb) = first_hashes(q.op(0));
+                assert!(key(pa, pb, p.op(1)) != key(qa, qb, q.op(1)), "pair hashes collide");
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+};
+
+/// Info bit of a match that jumps to a constant.
+const HAS_TARGET: u32 = 1 << 16;
+
+/// The candidates of one (first, second) opcode pair, longest first, laid out to be compared with
+/// an instruction's window all at once. Unused lanes never match.
+#[derive(Clone, Copy, Debug)]
+#[repr(C, align(64))]
+struct Block {
+    mask: [[u64; LANES]; 3],
+    value: [[u64; LANES]; 3],
+    /// Per lane, then for no match: span, slot << 8, and [`HAS_TARGET`].
+    info: [u32; LANES + 1],
+}
+
+impl Block {
+    const NONE: Self = Self { mask: [[0; LANES]; 3], value: [[1; LANES]; 3], info: [0; LANES + 1] };
+
+    /// Returns the info of the first lane that matches window `w`, or 0.
     #[inline(always)]
-    const fn matches(&self, w: &[u64; 3]) -> bool {
-        ((w[0] & self.mask[0]) ^ self.value[0])
-            | ((w[1] & self.mask[1]) ^ self.value[1])
-            | ((w[2] & self.mask[2]) ^ self.value[2])
-            == 0
+    fn find(&self, w: &[u64; 3]) -> u32 {
+        self.info[(self.hits(w) | 1 << LANES).trailing_zeros() as usize]
+    }
+
+    /// Returns the lanes that match window `w`, one bit each.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    #[inline(always)]
+    fn hits(&self, w: &[u64; 3]) -> u32 {
+        use core::arch::x86_64::*;
+        // SAFETY: The target has AVX-512F, and `Block` is 64-byte aligned with each row 64 bytes.
+        unsafe {
+            let (m, v) =
+                (self.mask.as_ptr().cast::<__m512i>(), self.value.as_ptr().cast::<__m512i>());
+            // (w & mask) ^ value per qword, then the OR of the three.
+            let d = |i: usize| {
+                _mm512_ternarylogic_epi64::<0x6A>(
+                    _mm512_set1_epi64(w[i] as i64),
+                    _mm512_load_si512(m.add(i)),
+                    _mm512_load_si512(v.add(i)),
+                )
+            };
+            let d = _mm512_ternarylogic_epi64::<0xFE>(d(0), d(1), d(2));
+            _mm512_testn_epi64_mask(d, d) as u32
+        }
+    }
+
+    /// Returns the lanes that match window `w`, one bit each.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512f")))]
+    #[inline(always)]
+    fn hits(&self, w: &[u64; 3]) -> u32 {
+        use core::arch::x86_64::*;
+        // SAFETY: The target has AVX2, and `Block` rows are 32-byte aligned halves.
+        unsafe {
+            let (m, v) =
+                (self.mask.as_ptr().cast::<__m256i>(), self.value.as_ptr().cast::<__m256i>());
+            let half = |h: usize| {
+                let mut d = _mm256_setzero_si256();
+                for i in 0..3 {
+                    let x = _mm256_and_si256(
+                        _mm256_set1_epi64x(w[i] as i64),
+                        _mm256_load_si256(m.add(2 * i + h)),
+                    );
+                    d = _mm256_or_si256(
+                        d,
+                        _mm256_xor_si256(x, _mm256_load_si256(v.add(2 * i + h))),
+                    );
+                }
+                _mm256_movemask_pd(_mm256_castsi256_pd(_mm256_cmpeq_epi64(
+                    d,
+                    _mm256_setzero_si256(),
+                ))) as u32
+            };
+            half(0) | half(1) << 4
+        }
+    }
+
+    /// Returns the lanes that match window `w`, one bit each.
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    #[inline(always)]
+    fn hits(&self, w: &[u64; 3]) -> u32 {
+        let mut hits = 0;
+        for i in 0..LANES {
+            let d = ((w[0] & self.mask[0][i]) ^ self.value[0][i])
+                | ((w[1] & self.mask[1][i]) ^ self.value[1][i])
+                | ((w[2] & self.mask[2][i]) ^ self.value[2][i]);
+            hits |= ((d == 0) as u32) << i;
+        }
+        hits
     }
 }
 
-/// Opcode entry flags for the translation loop, above the group in the low byte.
-const JUMPDEST: u16 = 1 << 8;
-const SLOT: u16 = 1 << 9;
-
 /// The superinstructions of a configuration, prepared for [`translate`].
-///
-/// Candidates are indexed by their first two opcodes, longest first, so most instructions are
-/// rejected with one table load.
 #[derive(Clone, Debug)]
 pub struct Matcher {
     ops: Ops,
-    /// By opcode: the group of a first opcode of an active pattern in the low byte (0 for none),
-    /// and [`JUMPDEST`] and [`SLOT`]. Zero for every other opcode.
-    entry: [u16; 256],
-    /// Candidates by group and second opcode: start in [`Self::windows`] in the low byte, count
-    /// above.
-    pairs: [[u16; 256]; GROUPS],
-    windows: [Window; PATTERNS.len()],
+    /// By opcode: the group of a first opcode of an active pattern, [`FILL_GROUP`] for a slot in
+    /// use, else 0.
+    group: [u8; 256],
+    /// Block by group and second opcode, 0 for none.
+    pairs: [[u8; 256]; GROUPS + 1],
+    blocks: [Block; BLOCKS],
+    /// By slot: the offset of the constant jump target's PUSH immediate, and its size << 8.
+    targets: [u16; 256],
+    /// Filter on (first, second) opcode pairs for [`simd`]: by opcode, a 7-bit hash and, in
+    /// `hash_b`, a 3-bit hash with [`IS_FIRST`] or [`HASH_SLOT`]; `filter` holds a bit per hash.
+    hash_a: [u8; 256],
+    hash_b: [u8; 256],
+    filter: [u8; 128],
+    /// Block by [`key`]: a slot opcode's keys name [`FILL_BLOCK`], other keys their pair's block
+    /// or 0.
+    keys: [u8; 2048],
     filler: u8,
     active: bool,
 }
@@ -571,19 +733,22 @@ impl Matcher {
     pub const fn new(ops: Ops) -> Self {
         let mut m = Self {
             ops,
-            entry: [0; 256],
-            pairs: [[0; 256]; GROUPS],
-            windows: [Window::NONE; PATTERNS.len()],
+            group: [0; 256],
+            pairs: [[0; 256]; GROUPS + 1],
+            blocks: [Block::NONE; BLOCKS],
+            targets: [0; 256],
+            hash_a: [0; 256],
+            hash_b: [0; 256],
+            filter: [0; 128],
+            keys: [0; 2048],
             filler: op::INVALID,
             active: false,
         };
-        m.entry[op::JUMPDEST as usize] = JUMPDEST;
         let mut slots = OpSet::EMPTY;
         let mut i = 0;
         while i < PATTERNS.len() {
             if ops.is_active(PATTERNS[i]) {
                 slots.insert(PATTERNS[i].slot);
-                m.entry[PATTERNS[i].slot as usize] |= SLOT;
                 m.active = true;
             }
             i += 1;
@@ -597,8 +762,44 @@ impl Matcher {
             }
             op += 1;
         }
-        // Windows grouped by (first, second) opcode, longest first within a pair.
-        let mut n = 0;
+        // A slot opcode in the code becomes the filler: a one-byte match that always applies.
+        let mut fill =
+            Block { mask: [[0; LANES]; 3], value: [[0; LANES]; 3], info: [0; LANES + 1] };
+        fill.info[0] = 1 | (m.filler as u32) << 8;
+        m.blocks[FILL_BLOCK] = fill;
+        let mut second = 0;
+        while second < 256 {
+            m.pairs[FILL_GROUP][second] = FILL_BLOCK as u8;
+            second += 1;
+        }
+        let mut op = 0;
+        while op < 256 {
+            if slots.contains(op as u8) {
+                m.group[op] = FILL_GROUP as u8;
+            }
+            op += 1;
+        }
+        // The pair filter: a first opcode's group spreads its pairs over the filter.
+        let mut op = 0;
+        while op < 256 {
+            if slots.contains(op as u8) {
+                m.hash_b[op] = HASH_SLOT;
+            }
+            op += 1;
+        }
+        let mut i = 0;
+        while i < PATTERNS.len() {
+            let sx = PATTERNS[i];
+            if ops.is_active(sx) {
+                let (first, second) = (sx.op(0) as usize, sx.op(1));
+                (m.hash_a[first], m.hash_b[first]) = first_hashes(first as u8);
+                let k = key(m.hash_a[first], m.hash_b[first], second);
+                m.filter[k & 0x7F] |= 1 << (k >> 7);
+            }
+            i += 1;
+        }
+        // One block per (first, second) pair, its lanes longest first.
+        let mut n = 1;
         let mut g = 0;
         while g < FIRSTS.1 {
             let first = FIRSTS.0[g];
@@ -609,7 +810,8 @@ impl Matcher {
                     && ops.is_active(PATTERNS[i])
                     && m.pairs[g + 1][second as usize] == 0
                 {
-                    let start = n;
+                    let mut block = Block::NONE;
+                    let mut lane = 0;
                     let mut len = 8;
                     while len >= 2 {
                         let mut j = 0;
@@ -620,19 +822,47 @@ impl Matcher {
                                 && sx.op(1) == second
                                 && ops.is_active(sx)
                             {
-                                m.windows[n] = Window::of(sx);
-                                n += 1;
+                                assert!(lane < LANES, "more patterns share two opcodes than lanes");
+                                let w = Window::of(sx);
+                                let mut q = 0;
+                                while q < 3 {
+                                    block.mask[q][lane] = w.mask[q];
+                                    block.value[q][lane] = w.value[q];
+                                    q += 1;
+                                }
+                                let jump = if w.target_len != 0 { HAS_TARGET } else { 0 };
+                                block.info[lane] = w.span as u32 | (w.slot as u32) << 8 | jump;
+                                m.targets[w.slot as usize] =
+                                    w.target_at as u16 | (w.target_len as u16) << 8;
+                                lane += 1;
                             }
                             j += 1;
                         }
                         len -= 1;
                     }
-                    m.entry[first as usize] |= g as u16 + 1;
-                    m.pairs[g + 1][second as usize] = (start as u16) | (((n - start) as u16) << 8);
+                    m.blocks[n] = block;
+                    m.group[first as usize] = g as u8 + 1;
+                    m.pairs[g + 1][second as usize] = n as u8;
+                    n += 1;
                 }
                 i += 1;
             }
             g += 1;
+        }
+        let mut k = 1024;
+        while k < 2048 {
+            m.keys[k] = FILL_BLOCK as u8;
+            k += 1;
+        }
+        let mut i = 0;
+        while i < PATTERNS.len() {
+            let sx = PATTERNS[i];
+            if ops.is_active(sx) {
+                let g = m.group[sx.op(0) as usize] as usize;
+                let k = key(m.hash_a[sx.op(0) as usize], m.hash_b[sx.op(0) as usize], sx.op(1));
+                m.keys[k] = m.pairs[g][sx.op(1) as usize];
+            }
+            i += 1;
         }
         m
     }
@@ -648,128 +878,384 @@ impl Matcher {
     pub const fn is_active(&self) -> bool {
         self.active
     }
+}
 
-    /// Returns the slot of the longest pattern that matches at instruction `pc`, with its span.
-    ///
-    /// # Safety
-    ///
-    /// `code` must hold [`LOOKAHEAD`] bytes past `pc`.
-    #[inline(always)]
-    unsafe fn find(&self, code: *const u8, pc: usize, op: u8, g: usize) -> Option<&Window> {
-        // SAFETY: An instruction is at most 33 bytes, and the window 24.
-        unsafe {
-            let second = *code.add(pc + instruction_len(op));
-            let pair = self.pairs[g][second as usize];
-            let (start, count) = ((pair & 0xFF) as usize, (pair >> 8) as usize);
-            if count == 0 {
-                return None;
-            }
-            let p = code.add(pc).cast::<u64>();
+/// Translates legacy bytecode to the superinstructions of `matcher`.
+///
+/// `code` is the padded bytecode, `len` its length before padding, and `jumpdests` its jump
+/// destinations, one bit per byte of `code[..len]`, least significant bit first. Returns a copy of
+/// `code` in which the first byte of each sequence that matches an active pattern holds the
+/// pattern's slot, and every other instruction whose opcode is a slot in use holds an undefined
+/// opcode that is not a slot in use. Matching is greedy and longest first; a match that jumps to a
+/// constant that is no jump destination keeps its original bytes.
+///
+/// Translation runs in two passes without data-dependent branches. The first walks the
+/// instructions and lists those whose first two opcodes start a candidate; the second compares each
+/// listed instruction with its candidates at once and takes a match when it starts at or after the
+/// end of the last one.
+pub fn translate(code: &[u8], len: usize, matcher: &Matcher, jumpdests: &[u8]) -> Box<[u8]> {
+    use core::hint::select_unpredictable as select;
+    assert!(len <= code.len());
+    assert!(jumpdests.len() >= len.div_ceil(8));
+    let mut out: Box<[u8]> = code.into();
+    // Instructions below `fast` have the lookahead in bounds; candidates are pc << 11 | key.
+    let fast = if len < 1 << 21 { len.min(code.len().saturating_sub(LOOKAHEAD)) } else { 0 };
+    // Candidates, then the positions of matches that jump to a constant.
+    let mut list: Vec<u32> = Vec::with_capacity(fast + 64 + WALKS + 1);
+    let (src, dst, buf) = (code.as_ptr(), out.as_mut_ptr(), list.as_mut_ptr());
+    let (keys, blocks) = (matcher.keys.as_ptr(), matcher.blocks.as_ptr());
+    let mut pc;
+    // SAFETY: `pc < fast` keeps every read in `code` and every write in `out`, the tables are
+    // indexed by bytes and by blocks they hold, and each pass writes at most one entry per
+    // instruction, below the capacity of `list`.
+    let (jumps, mut free) = unsafe {
+        let n;
+        (n, pc) = candidates(src, code.len(), fast, matcher, buf);
+        // The end of the last match taken.
+        let mut free = 0;
+        let mut j = 0;
+        for i in 0..n {
+            let c = *buf.add(i) as usize;
+            let (at, block) = (c >> 11, *keys.add(c & 0x7FF) as usize);
+            let p = src.add(at).cast::<u64>();
             let w = [
                 u64::from_le(p.read_unaligned()),
                 u64::from_le(p.add(1).read_unaligned()),
                 u64::from_le(p.add(2).read_unaligned()),
             ];
-            for window in self.windows.get_unchecked(start..start + count) {
-                if window.matches(&w) {
-                    return Some(window);
-                }
-            }
+            let info = (*blocks.add(block)).find(&w);
+            let taken = (at >= free) & (info != 0);
+            free = select(taken, at + (info & 0xFF) as usize, free);
+            *dst.add(at) = select(taken, (info >> 8) as u8, *src.add(at));
+            // `j <= i`, so this overwrites only candidates already read.
+            *buf.add(j) = at as u32;
+            j += (taken & (info & HAS_TARGET != 0)) as usize;
         }
-        None
-    }
-}
-
-/// Translates legacy bytecode to the superinstructions of `matcher`.
-///
-/// `code` is the padded bytecode and `len` its length before padding. Returns a copy of `code`
-/// in which the first byte of each sequence that matches an active pattern holds the pattern's
-/// slot, and every other instruction whose opcode is a slot in use holds an undefined opcode that
-/// is not a slot in use. Matching is greedy, longest first, one pass over the instructions.
-///
-/// With `jumpdests`, also marks every `JUMPDEST` instruction in it, one bit per byte of
-/// `code[..len]`, least significant bit first, as jump destination analysis does.
-pub fn translate(
-    code: &[u8],
-    len: usize,
-    matcher: &Matcher,
-    jumpdests: Option<&mut [u8]>,
-) -> Box<[u8]> {
-    assert!(len <= code.len());
-    let mut out: Box<[u8]> = code.into();
-    let mut marks = alloc::vec![0u8; len.div_ceil(8)];
-    // Fused sequences that jump to a constant: (pc, offset of the immediate, its size).
-    let mut jumps: Vec<(u32, u8, u8)> = Vec::new();
-    let dst = out.as_mut_ptr();
-    let src = code.as_ptr();
-    // Instructions below `fast` have the lookahead in bounds.
-    let fast = len.min(code.len().saturating_sub(LOOKAHEAD));
-    let mut pc = 0;
-    // SAFETY: `pc < fast <= len <= code.len() == out.len()`, with the lookahead in bounds, and
-    // `marks` has a bit for each byte below `len`.
-    unsafe {
-        while pc < fast {
-            let op = *src.add(pc);
-            let entry = matcher.entry[op as usize];
-            if entry != 0 {
-                if entry & (JUMPDEST | SLOT) != 0 {
-                    if entry & SLOT != 0 {
-                        *dst.add(pc) = matcher.filler;
-                        pc += 1;
-                        continue;
-                    }
-                    *marks.get_unchecked_mut(pc / 8) |= 1 << (pc % 8);
-                }
-                let g = (entry & 0xFF) as usize;
-                if g != 0
-                    && let Some(w) = matcher.find(src, pc, op, g)
-                {
-                    *dst.add(pc) = w.slot;
-                    if w.target_len != 0 {
-                        jumps.push((pc as u32, w.target_at, w.target_len));
-                    }
-                    pc += w.span as usize;
-                    continue;
-                }
-            }
-            pc += instruction_len(op);
+        list.set_len(j);
+        (list, free)
+    };
+    // A match that jumps to a constant that is no jump destination keeps its original bytes.
+    for &at in &jumps {
+        let at = at as usize;
+        let t = matcher.targets[out[at] as usize] as usize;
+        let (imm, n) = (t & 0xFF, t >> 8);
+        if !valid_target(&code[at + imm..at + imm + n], len, jumpdests) {
+            out[at] = code[at];
         }
     }
     while pc < len {
         let op = code[pc];
-        let entry = matcher.entry[op as usize];
-        if entry & SLOT != 0 {
+        if matcher.group[op as usize] as usize == FILL_GROUP {
             out[pc] = matcher.filler;
-            pc += 1;
-            continue;
-        }
-        if entry & JUMPDEST != 0 {
-            marks[pc / 8] |= 1 << (pc % 8);
-        }
-        match find_slow(code, len, pc, matcher) {
-            Some(sx) => {
+        } else if pc >= free
+            && let Some(sx) = find_slow(code, len, pc, matcher)
+        {
+            let end = match_at(code, len, pc, sx).unwrap();
+            let valid = sx.static_jump().is_none_or(|n| {
+                let at = pc + offsets(sx)[sx.len() - 2] + 1;
+                valid_target(&code[at..at + n], len, jumpdests)
+            });
+            if valid {
                 out[pc] = sx.slot;
-                if let Some(n) = sx.static_jump() {
-                    let at = offsets(sx)[sx.len() - 2] + 1;
-                    jumps.push((pc as u32, at as u8, n as u8));
-                }
-                pc = match_at(code, len, pc, sx).unwrap();
             }
-            None => pc += instruction_len(op),
+            free = end;
         }
-    }
-    // A sequence whose constant target is no jump destination runs unfused, so the fused
-    // instruction never checks its target.
-    for (at, imm, n) in jumps {
-        let (at, imm, n) = (at as usize, imm as usize, n as usize);
-        if !valid_target(&code[at + imm..at + imm + n], len, &marks) {
-            out[at] = code[at];
-        }
-    }
-    if let Some(jumpdests) = jumpdests {
-        jumpdests[..marks.len()].copy_from_slice(&marks);
+        pc += instruction_len(op);
     }
     out
+}
+
+/// One instruction of a candidate walk: lists it in `buf` at `*n` if its first two opcodes start a
+/// candidate, and returns the next instruction.
+///
+/// # Safety
+///
+/// `src` holds [`LOOKAHEAD`] bytes past `pc`, `pc < 1 << 21`, and `buf` has room at `*n`.
+#[inline(always)]
+unsafe fn step(src: *const u8, pc: usize, m: &Matcher, buf: *mut u32, n: &mut usize) -> usize {
+    // SAFETY: As the caller promises.
+    unsafe {
+        let op = *src.add(pc);
+        let ilen = instruction_len(op);
+        let (a, b) = (*m.hash_a.get_unchecked(op as usize), *m.hash_b.get_unchecked(op as usize));
+        let k = key(a, b, *src.add(pc + ilen));
+        *buf.add(*n) = (pc << 11 | k) as u32;
+        *n += ((*m.keys.get_unchecked(k) != 0) & (b & (IS_FIRST | HASH_SLOT) != 0)) as usize;
+        pc + ilen
+    }
+}
+
+/// Walks the instructions from `pc` while below `end` and lists candidates in `buf`; returns how
+/// many, with the first instruction at or after `end`.
+///
+/// # Safety
+///
+/// As for [`step`], with room in `buf` for an entry per byte from `pc` to `end`, plus one.
+#[inline(always)]
+unsafe fn walk(
+    src: *const u8,
+    mut pc: usize,
+    end: usize,
+    m: &Matcher,
+    buf: *mut u32,
+) -> (usize, usize) {
+    let mut n = 0;
+    while pc < end {
+        // SAFETY: As the caller promises.
+        pc = unsafe { step(src, pc, m, buf, &mut n) };
+    }
+    (n, pc)
+}
+
+/// Independent walks the scalar [`candidates`] runs at once.
+const WALKS: usize = 4;
+
+/// Lists the instructions below `fast` whose first two opcodes start a candidate in `buf` and
+/// returns how many, with the first instruction at or after `fast`. Some lists may hold
+/// instructions whose two opcodes start no candidate; matching skips them.
+///
+/// With AVX-512 VBMI2, whole 64-byte blocks run in [`simd`]. Otherwise, a walk from one instruction
+/// to the next waits on each opcode load, so [`WALKS`] walks run interleaved, each from the start
+/// of an equal part of the code as if an instruction started there. Instruction boundaries
+/// resynchronize within a few instructions: a walk is kept from where the previous walk ended, if
+/// it passed that point, and is redone from there otherwise.
+///
+/// # Safety
+///
+/// `src` holds `code_len` bytes, `fast + LOOKAHEAD <= code_len`, `fast < 1 << 21`, and `buf` has
+/// room for an entry per byte below `fast`, plus 64 and [`WALKS`].
+#[inline(always)]
+unsafe fn candidates(
+    src: *const u8,
+    code_len: usize,
+    fast: usize,
+    matcher: &Matcher,
+    buf: *mut u32,
+) -> (usize, usize) {
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx512bw",
+        target_feature = "avx512vbmi",
+        target_feature = "avx512vbmi2"
+    ))]
+    // SAFETY: As the caller promises.
+    unsafe {
+        let (n, pc) = simd::candidates(src, code_len, fast, matcher, buf);
+        let (more, pc) = walk(src, pc, fast, matcher, buf.add(n));
+        return (n + more, pc);
+    }
+    #[allow(unreachable_code)]
+    let _ = code_len;
+    // SAFETY: Walk `k` writes at most one entry per byte of its part, from `bounds[k] + k`.
+    unsafe {
+        if fast < 256 * WALKS {
+            return walk(src, 0, fast, matcher, buf);
+        }
+        let part = fast / WALKS;
+        let bounds: [usize; WALKS + 1] =
+            core::array::from_fn(|k| if k == WALKS { fast } else { k * part });
+        let mut pc: [usize; WALKS] = core::array::from_fn(|k| bounds[k]);
+        let mut n = [0; WALKS];
+        while (0..WALKS).all(|k| pc[k] < bounds[k + 1]) {
+            for k in 0..WALKS {
+                pc[k] = step(src, pc[k], matcher, buf.add(bounds[k] + k), &mut n[k]);
+            }
+        }
+        for k in 0..WALKS {
+            let (more, end) =
+                walk(src, pc[k], bounds[k + 1], matcher, buf.add(bounds[k] + k + n[k]));
+            n[k] += more;
+            pc[k] = end;
+        }
+        // Keep each later walk from where the previous one ended.
+        let mut total = n[0];
+        for k in 1..WALKS {
+            let from = pc[k - 1];
+            let at = bounds[k] + k;
+            let mut q = bounds[k];
+            while q < from {
+                q += instruction_len(*src.add(q));
+            }
+            let (keep, count) = if q == from {
+                // In step: skip the candidates before `from`.
+                let mut skip = 0;
+                while skip < n[k] && (*buf.add(at + skip) as usize >> 11) < from {
+                    skip += 1;
+                }
+                (at + skip, n[k] - skip)
+            } else {
+                let (count, end) = walk(src, from, bounds[k + 1], matcher, buf.add(at));
+                pc[k] = end;
+                (at, count)
+            };
+            core::ptr::copy(buf.add(keep), buf.add(total), count);
+            total += count;
+        }
+        (total, pc[WALKS - 1])
+    }
+}
+
+/// Candidates of whole 64-byte blocks with AVX-512: instruction starts from jump destination
+/// analysis's successor maps, and a vector filter on each start's first two opcodes.
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx512bw",
+    target_feature = "avx512vbmi",
+    target_feature = "avx512vbmi2"
+))]
+mod simd {
+    use super::{HASH_SLOT, IS_FIRST, Matcher};
+    use core::arch::x86_64::*;
+
+    /// Every opcode up to this, and `0x80..` as signed bytes, is one byte long.
+    const PUSHX: i8 = 0x5F;
+
+    const fn lanes(start: u8) -> [u8; 64] {
+        let mut lanes = [0; 64];
+        let mut i = 0;
+        while i < 64 {
+            lanes[i] = start.wrapping_add(i as u8);
+            i += 1;
+        }
+        lanes
+    }
+
+    // SAFETY: Both are 64 bytes.
+    const LANES: __m512i = unsafe { core::mem::transmute(lanes(0)) };
+    /// Added to `max(opcode, PUSHX)` to get the lane of the next instruction.
+    const END_OFFSETS: __m512i = unsafe { core::mem::transmute(lanes(0u8.wrapping_sub(0x5E))) };
+    /// Second table of `vpermt2b`, which keeps offsets past the block.
+    const EXITS: __m512i = unsafe { core::mem::transmute(lanes(64)) };
+
+    /// Returns the successor maps of `ops` for 1, 2, 4, ..., 64 instructions.
+    #[inline]
+    #[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512vbmi2")]
+    fn successors(ops: __m512i) -> [__m512i; 7] {
+        let mut n =
+            [_mm512_add_epi8(_mm512_max_epi8(ops, _mm512_set1_epi8(PUSHX)), END_OFFSETS); 7];
+        for i in 1..7 {
+            n[i] = _mm512_permutex2var_epi8(n[i - 1], n[i - 1], EXITS);
+        }
+        n
+    }
+
+    /// Moves each lane's position along the successor map if the result does not pass the lane.
+    #[inline]
+    #[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512vbmi2")]
+    fn descend(successors: __m512i, positions: __m512i) -> __m512i {
+        let next = _mm512_permutexvar_epi8(positions, successors);
+        _mm512_mask_mov_epi8(positions, _mm512_cmple_epu8_mask(next, LANES), next)
+    }
+
+    /// Returns the lanes of the block with successor maps `n` that start an instruction.
+    #[inline]
+    #[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512vbmi2")]
+    fn starts(n: &[__m512i; 7], entry: __m512i) -> u64 {
+        let mut position = entry;
+        for i in (1..6).rev() {
+            position = descend(n[i], position);
+        }
+        _mm512_cmpeq_epi8_mask(position, LANES)
+            | _mm512_cmpeq_epi8_mask(_mm512_permutexvar_epi8(position, n[0]), LANES)
+    }
+
+    /// Looks up each byte of `ops` in a 256-byte table.
+    #[inline]
+    #[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512vbmi2")]
+    fn lookup(table: &[__m512i; 4], ops: __m512i, high: __mmask64) -> __m512i {
+        _mm512_mask_blend_epi8(
+            high,
+            _mm512_permutex2var_epi8(table[0], ops, table[1]),
+            _mm512_permutex2var_epi8(table[2], ops, table[3]),
+        )
+    }
+
+    /// Lists the candidates of whole 64-byte blocks below `fast` and returns how many, with the
+    /// first instruction after the last block.
+    ///
+    /// # Safety
+    ///
+    /// As for [`super::candidates`].
+    #[inline]
+    #[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512vbmi2")]
+    pub(super) unsafe fn candidates(
+        src: *const u8,
+        code_len: usize,
+        fast: usize,
+        m: &Matcher,
+        buf: *mut u32,
+    ) -> (usize, usize) {
+        // SAFETY: Tables are 64-byte multiples; loads stay below `code_len` (the next block's
+        // load is masked to it); a block writes 64 entries at `buf + n`, with `n` at most the
+        // instructions before it.
+        unsafe {
+            let load4 = |t: &[u8; 256]| -> [__m512i; 4] {
+                core::array::from_fn(|i| _mm512_loadu_si512(t.as_ptr().add(64 * i).cast()))
+            };
+            let (hash_a, hash_b) = (load4(&m.hash_a), load4(&m.hash_b));
+            let filter = [
+                _mm512_loadu_si512(m.filter.as_ptr().cast()),
+                _mm512_loadu_si512(m.filter.as_ptr().add(64).cast()),
+            ];
+            // 1 << k at byte k of each 8.
+            let pow2 = _mm512_set1_epi64(0x8040_2010_0804_0201_u64 as i64);
+            let mut entry = _mm512_setzero_si512();
+            let (mut n, mut base) = (0, 0);
+            while base + 64 <= fast {
+                let ops = _mm512_loadu_si512(src.add(base).cast());
+                let rest = (code_len - base - 64).min(64);
+                let next =
+                    _mm512_maskz_loadu_epi8(u64::MAX >> (64 - rest), src.add(base + 64).cast());
+                let succ = successors(ops);
+                let starts = starts(&succ, entry);
+                entry =
+                    _mm512_sub_epi8(_mm512_permutexvar_epi8(entry, succ[6]), _mm512_set1_epi8(64));
+                // The opcode of each lane's next instruction.
+                let second = _mm512_permutex2var_epi8(ops, succ[0], next);
+                let high = _mm512_movepi8_mask(ops);
+                let a = lookup(&hash_a, ops, high);
+                let b = lookup(&hash_b, ops, high);
+                let byte =
+                    _mm512_permutex2var_epi8(filter[0], _mm512_xor_si512(second, a), filter[1]);
+                let bit = _mm512_and_si512(
+                    _mm512_xor_si512(_mm512_srli_epi16(second, 5), b),
+                    _mm512_set1_epi8(7),
+                );
+                let hit = _mm512_test_epi8_mask(byte, _mm512_shuffle_epi8(pow2, bit));
+                let first = _mm512_test_epi8_mask(b, _mm512_set1_epi8(IS_FIRST as i8));
+                let slot = _mm512_test_epi8_mask(b, _mm512_set1_epi8(HASH_SLOT as i8));
+                let cand = starts & (first & hit | slot);
+                // Each candidate as pc << 11 | key, from its lane, the key's bits 7 to 10 and its
+                // bits 0 to 6.
+                let lanes = _mm512_maskz_compress_epi8(cand, LANES);
+                let high = _mm512_maskz_compress_epi8(
+                    cand,
+                    _mm512_or_si512(
+                        bit,
+                        _mm512_and_si512(_mm512_srli_epi16(b, 1), _mm512_set1_epi8(8)),
+                    ),
+                );
+                let low = _mm512_maskz_compress_epi8(
+                    cand,
+                    _mm512_and_si512(_mm512_xor_si512(second, a), _mm512_set1_epi8(0x7F)),
+                );
+                let at = _mm512_set1_epi32((base << 11) as i32);
+                macro_rules! store {
+                    ($($q:literal)*) => {$(
+                        let p = _mm512_cvtepu8_epi32(_mm512_extracti32x4_epi32::<$q>(lanes));
+                        let h = _mm512_cvtepu8_epi32(_mm512_extracti32x4_epi32::<$q>(high));
+                        let l = _mm512_cvtepu8_epi32(_mm512_extracti32x4_epi32::<$q>(low));
+                        let c = _mm512_ternarylogic_epi32::<0xFE>(_mm512_slli_epi32(p, 11), _mm512_slli_epi32(h, 7), l);
+                        _mm512_storeu_si512(buf.add(n + 16 * $q).cast(), _mm512_add_epi32(c, at));
+                    )*};
+                }
+                store!(0 1 2 3);
+                n += cand.count_ones() as usize;
+                base += 64;
+            }
+            (n, base + _mm512_cvtsi512_si32(entry) as u8 as usize)
+        }
+    }
 }
 
 /// Returns whether the big-endian immediate `bytes` is a jump destination in `marks`.
@@ -828,7 +1314,6 @@ fn match_at(code: &[u8], len: usize, mut pc: usize, sx: Sx) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
 
     /// All Prague opcodes, nothing hooked; slots free.
     fn prague() -> Ops {
@@ -838,6 +1323,11 @@ mod tests {
             if defined { ops.fusable.insert(op) } else { ops.free.insert(op) }
         }
         ops
+    }
+
+    /// [`translate`] with the jump destinations of `code[..len]`.
+    fn tr(code: &[u8], len: usize, matcher: &Matcher) -> Box<[u8]> {
+        translate(code, len, matcher, &reference_jumpdests(&code[..len]))
     }
 
     fn reference_jumpdests(code: &[u8]) -> Vec<u8> {
@@ -885,7 +1375,7 @@ mod tests {
         let code =
             [DUP1, PUSH4, 1, 2, 3, 4, EQ, PUSH2, 0, 15, JUMPI, PUSH2, 0, 15, JUMPI, JUMPDEST];
         let padded = pad(&code);
-        let out = translate(&padded, code.len(), &Matcher::new(prague()), None);
+        let out = tr(&padded, code.len(), &Matcher::new(prague()));
         assert_eq!(out.len(), padded.len());
         assert_eq!(out[0], PATTERNS[1].slot);
         assert_eq!(&out[1..11], &code[1..11]);
@@ -895,7 +1385,7 @@ mod tests {
         let mut code = code;
         code[13] = 14;
         let padded = pad(&code);
-        let out = translate(&padded, code.len(), &Matcher::new(prague()), None);
+        let out = tr(&padded, code.len(), &Matcher::new(prague()));
         assert_eq!(out[0], PATTERNS[1].slot);
         assert_eq!(&out[11..], &padded[11..]);
     }
@@ -906,7 +1396,7 @@ mod tests {
         let code = [JUMPDEST, PUSH0, PUSH1, 1, PUSH1, 2, SHL, SUB];
         let padded = pad(&code);
         let mut ops = prague();
-        let out = translate(&padded, code.len(), &Matcher::new(ops), None);
+        let out = tr(&padded, code.len(), &Matcher::new(ops));
         assert_eq!((out[0], out[2]), (slot(&[JUMPDEST, PUSH0]), slot(&[PUSH1, PUSH1, SHL, SUB])));
         // Before Shanghai PUSH0 is undefined, and before Constantinople SHL is: only the sequence
         // of enabled opcodes fuses.
@@ -914,7 +1404,7 @@ mod tests {
         for op in [JUMPDEST, PUSH1, SUB] {
             ops.fusable.insert(op);
         }
-        let out = translate(&padded, code.len(), &Matcher::new(ops), None);
+        let out = tr(&padded, code.len(), &Matcher::new(ops));
         assert_eq!((out[0], out[1], out[2]), (JUMPDEST, PUSH0, slot(&[PUSH1, PUSH1])));
         assert_eq!(&out[3..], &padded[3..]);
     }
@@ -926,7 +1416,7 @@ mod tests {
         // A slot as an instruction, and as PUSH data, which is not an instruction.
         let code = [slot, PUSH1, slot, PUSH2, 0, 7, JUMPI, JUMPDEST];
         let padded = pad(&code);
-        let out = translate(&padded, code.len(), &Matcher::new(prague()), None);
+        let out = tr(&padded, code.len(), &Matcher::new(prague()));
         // 0x0C, the first undefined opcode, halts like the slot would without superinstructions.
         assert_eq!(out[0], 0x0C);
         assert_eq!(out[2], slot);
@@ -934,7 +1424,7 @@ mod tests {
         // A slot of a pattern that is not active stays as it is.
         let mut ops = prague();
         ops.fusable = OpSet::EMPTY;
-        assert_eq!(translate(&padded, code.len(), &Matcher::new(ops), None)[0], slot);
+        assert_eq!(tr(&padded, code.len(), &Matcher::new(ops))[0], slot);
     }
 
     #[test]
@@ -949,11 +1439,7 @@ mod tests {
             ops.free.insert(op);
         }
         assert!(PATTERNS.iter().all(|sx| !ops.is_active(*sx)));
-        let mut jumps = alloc::vec![0u8; 1];
-        assert_eq!(
-            &translate(&padded, code.len(), &Matcher::new(ops), Some(&mut jumps))[..],
-            &padded[..]
-        );
+        assert_eq!(&tr(&padded, code.len(), &Matcher::new(ops))[..], &padded[..]);
     }
 
     #[test]
@@ -972,7 +1458,7 @@ mod tests {
         use op::*;
         let code = [PUSH1, 1, JUMPDEST, ADD];
         let padded = pad(&code);
-        let out = translate(&padded, code.len(), &Matcher::new(prague()), None);
+        let out = tr(&padded, code.len(), &Matcher::new(prague()));
         assert_eq!(&out[..], &padded[..]);
     }
 
@@ -983,7 +1469,7 @@ mod tests {
         let mut out = code.to_vec();
         let mut pc = 0;
         while pc < len {
-            if m.entry[code[pc] as usize] & SLOT != 0 {
+            if m.group[code[pc] as usize] as usize == FILL_GROUP {
                 out[pc] = m.filler;
                 pc += 1;
                 continue;
@@ -1003,6 +1489,45 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn long_code_matches_reference() {
+        let mut s = 0x9E3779B97F4A7C15u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let alphabet: Vec<u8> =
+            PATTERNS.iter().flat_map(|p| (0..p.len()).map(move |i| p.op(i))).collect();
+        let ops = prague();
+        let mut codes: Vec<Vec<u8>> = Vec::new();
+        // Walks that never resynchronize: every byte a PUSH32, or PUSH2 with JUMPDEST data.
+        codes.push(alloc::vec![op::PUSH32; 5000]);
+        codes.push([op::PUSH2, op::JUMPDEST, op::PUSH2].repeat(2000));
+        codes.push([op::PUSH1, op::PUSH1].repeat(3001));
+        for _ in 0..300 {
+            let n = 1000 + (next() % 9000) as usize;
+            codes.push(
+                (0..n)
+                    .map(|_| {
+                        let r = next();
+                        if r % 5 == 0 {
+                            (r >> 24) as u8
+                        } else {
+                            alphabet[(r >> 8) as usize % alphabet.len()]
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        for code in codes {
+            let padded = pad(&code);
+            let got = tr(&padded, code.len(), &Matcher::new(ops));
+            assert_eq!(&got[..], &reference(&padded, code.len(), &ops)[..], "len {}", code.len());
+        }
     }
 
     #[test]
@@ -1043,7 +1568,7 @@ mod tests {
                 c
             }] {
                 let len = if padded.len() == n + 33 && round % 2 == 1 { padded.len() } else { n };
-                let got = translate(&padded, len, &Matcher::new(ops), None);
+                let got = tr(&padded, len, &Matcher::new(ops));
                 assert_eq!(&got[..], &reference(&padded, len, &ops)[..], "round {round}");
             }
         }
@@ -1075,9 +1600,7 @@ mod tests {
                 })
                 .collect();
             let padded = pad(&code);
-            let mut jumps = alloc::vec![0u8; n.div_ceil(8)];
-            let out = translate(&padded, n, &Matcher::new(ops), Some(&mut jumps));
-            assert_eq!(jumps, reference_jumpdests(&code));
+            let out = tr(&padded, n, &Matcher::new(ops));
             assert_eq!(&out[n..], &padded[n..]);
             // Walk the instructions: every changed byte starts a full match of its pattern, or is a
             // slot turned INVALID; nothing changes elsewhere.

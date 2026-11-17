@@ -606,23 +606,15 @@ mod tests {
             let regular = run(&code, gas, spec, false);
             let sx = run(&code, gas, spec, true);
             assert_eq!(regular, sx, "round {round} spec {spec:?} gas {gas} code {code:02x?}");
-            if spec == SpecId::OSAKA
-                && evm2_sx::translate(
-                    &{
-                        let mut c = code.clone();
-                        c.extend([0; 33]);
-                        c
-                    },
-                    code.len(),
-                    &evm2_sx::Matcher::new(super::ops::<
-                        TestTypes,
-                        crate::BaseEvmConfig<{ SpecId::OSAKA as u32 }>,
-                    >()),
-                    None,
-                )[..code.len()]
-                    != code[..]
-            {
-                fused += 1;
+            if spec == SpecId::OSAKA {
+                let bytecode = legacy_bytecode(code.clone());
+                let matcher = evm2_sx::Matcher::new(super::ops::<
+                    TestTypes,
+                    crate::BaseEvmConfig<{ SpecId::OSAKA as u32 }>,
+                >());
+                let jumps = bytecode.jump_table().as_slice();
+                let out = evm2_sx::translate(bytecode.bytes_slice(), code.len(), &matcher, jumps);
+                fused += (out[..code.len()] != code[..]) as usize;
             }
         }
         assert!(fused > 5_000, "only {fused} programs fused");

@@ -76,12 +76,12 @@ struct BytecodeInner {
 
 /// Frame entries after which legacy code is translated to superinstructions.
 ///
-/// Translation costs about 2 ns per byte of code and saves about a third of a nanosecond per
-/// instruction executed. Most code a block loads runs a few thousand instructions or fewer, so
-/// translating it on first use costs more than it saves; code that is entered this often is
-/// what most instructions run in.
+/// Translation costs about 1.1 ns per byte of code with AVX-512 (2 ns without) and saves about a
+/// third of a nanosecond per instruction executed, and a block loads much code that runs only a few
+/// times. On mainnet blocks, translating on the 4th to 16th entry performs the same, and earlier or
+/// later is slower.
 #[cfg(feature = "sx")]
-pub(crate) const SX_TRANSLATE_AFTER: u32 = 32;
+pub(crate) const SX_TRANSLATE_AFTER: u32 = 8;
 
 /// Legacy bytecode translated to superinstructions, and the opcodes it was translated for.
 #[cfg(feature = "sx")]
@@ -389,8 +389,8 @@ impl Bytecode {
     }
 
     /// Returns the code translated by `matcher`: now with `now`, or else once this is asked for
-    /// the [`SX_TRANSLATE_AFTER`]th time. Translation marks the jump destinations in the same
-    /// pass, so it is the jump analysis when it runs first.
+    /// the [`SX_TRANSLATE_AFTER`]th time. Translation reads the jump destinations of
+    /// [`Self::jump_table`], analyzing them first if needed.
     ///
     /// Returns `None` for bytecode other than legacy, before translation, and when the code was
     /// translated for other opcodes.
@@ -411,17 +411,8 @@ impl Bytecode {
             }
         }
         let sx = inner.sx.get_or_init(|| {
-            let mut jumps =
-                inner.jump_table.get().is_none().then(|| JumpTable::new(inner.original_len));
-            let code = evm2_sx::translate(
-                &inner.bytecode,
-                inner.original_len,
-                matcher,
-                jumps.as_mut().map(JumpTable::as_mut_slice),
-            );
-            if let Some(jumps) = jumps {
-                let _ = inner.jump_table.set(jumps);
-            }
+            let jumps = self.jump_table().as_slice();
+            let code = evm2_sx::translate(&inner.bytecode, inner.original_len, matcher, jumps);
             SxCode { ops: *matcher.ops(), code }
         });
         (sx.ops == *matcher.ops()).then_some(&sx.code)
