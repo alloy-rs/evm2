@@ -11,11 +11,12 @@
 //! state that `mcl_rust` exposes without synchronization, so this backend requires that nothing
 //! else in the process uses mcl for another curve:
 //!
-//! - The first BN254 operation initializes mcl for BN254 (unless the curve is already BN254) and
-//!   disables mcl's G2 order check for every mcl user in the process. If another user initialized a
-//!   different curve first, that user's later operations run on BN254.
-//! - If another user changes the curve afterwards, BN254 operations fail with a fatal
-//!   [`PrecompileError`] instead of computing with the wrong curve.
+//! - The first BN254 operation initializes mcl for BN254 and disables mcl's G2 order check for
+//!   every mcl user in the process. If another user initialized a different curve first, that
+//!   user's later operations run on BN254.
+//! - If another user switches the curve afterwards, BN254 operations fail with a fatal
+//!   [`PrecompileError`] instead of computing with the wrong curve. This check reads mcl's curve
+//!   tag, which an elliptic-curve-only initialization does not update, so it cannot detect that.
 //! - A re-initialization concurrent with BN254 operations rewrites the JIT code in place, which is
 //!   a data race that evm2 cannot detect or prevent.
 //!
@@ -50,11 +51,9 @@ impl Bn254Ops for MclOps {
     fn init() -> Result<(), PrecompileError> {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            // Skip the init if the curve is already set: it rewrites the JIT code in place, which
-            // would race with any other mcl user running on this thread-unsafe global state.
             // CurveType::SNARK (MCL_BN_SNARK1) is the Ethereum-compatible BN254 (alt_bn128).
             // CurveType::BN254 is a different, older BN254 parameterization.
-            if current_curve() == CurveType::SNARK as i32 || mcl_rust::init(CurveType::SNARK) {
+            if mcl_rust::init(CurveType::SNARK) {
                 // mcl checks the G2 order with a generic multiplication by r; `read_g2` uses the
                 // faster endomorphism check instead.
                 unsafe { mclBn_verifyOrderG2(0) };
