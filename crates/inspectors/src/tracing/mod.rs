@@ -453,7 +453,7 @@ impl TracingInspector {
         let record = !self.budget.exceeded()
             && self.config.should_record_opcode(op)
             && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get())
-            && self.budget.reserve(self.step_record_size(op, interp.stack().len()));
+            && self.budget.reserve(self.step_record_size(op, interp));
         if !record {
             // Push a sentinel so that the upcoming `step_end` stays paired with this step.
             self.step_stack.push(PendingStep::new(trace_idx, usize::MAX, 0, 0));
@@ -570,8 +570,9 @@ impl TracingInspector {
     }
 
     /// Returns the bytes a recorded step retains outside of its byte buffers: the step itself, its
-    /// ordering entry, a possible step delta, and its stack snapshots.
-    fn step_record_size(&self, op: OpCode, stack_len: usize) -> usize {
+    /// ordering entry, its possible extra data and step delta, and its stack snapshots.
+    fn step_record_size<T: EvmTypes>(&self, op: OpCode, interp: &Interpreter<'_, '_, T>) -> usize {
+        let stack_len = interp.stack().len();
         let snapshots = self.config.record_stack_snapshots;
         let stack_words = if snapshots.is_all() || snapshots.is_full() {
             stack_len
@@ -585,9 +586,16 @@ impl TracingInspector {
         } else {
             0
         };
+        // The state gas cost is only known in `step_end`, so every EIP-8037 step may need it.
+        let has_extra = (self.config.record_returndata_snapshots
+            && !interp.return_data().is_empty())
+            || (self.config.record_immediate_bytes && immediate_size(op.get()) != 0)
+            || interp.version().feature(EvmFeatures::EIP8037);
+        let extra = if has_extra { size_of::<CallTraceStepExtra>() } else { 0 };
         let delta = if self.config.record_step_deltas { size_of::<StepDelta>() } else { 0 };
         size_of::<CallTraceStep>()
             + size_of::<TraceMemberOrder>()
+            + extra
             + delta
             + (stack_words + push_words) * size_of::<U256>()
     }
