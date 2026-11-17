@@ -93,9 +93,9 @@ pub(crate) fn boxed_precompile_provider<'a, T: EvmTypesHost, P: PrecompileProvid
 ) -> Box<dyn PrecompileProvider<T> + 'a> {
     if typeid::of::<P>() == typeid::of::<Box<dyn PrecompileProvider<T> + 'a>>() {
         let precompiles = ManuallyDrop::new(precompiles);
-        // SAFETY: The type IDs match ignoring lifetimes, and `T: 'static` leaves the object bound
-        // as the only lifetime, so `P` is a `Box<dyn PrecompileProvider<T> + 'b>` with `'b: 'a` by
-        // `P: 'a`. `precompiles` is not dropped after this move.
+        // SAFETY: The type IDs match up to lifetimes, so `P` is a `Box<dyn PrecompileProvider<U> +
+        // 'b>` with `U` equal to `T` up to lifetimes. `EvmTypesHost: 'static` holds for both, so
+        // `U` is `T`, and `P: 'a` gives `'b: 'a`. `precompiles` is not dropped after this move.
         return unsafe {
             ptr::read((&raw const *precompiles).cast::<Box<dyn PrecompileProvider<T> + 'a>>())
         };

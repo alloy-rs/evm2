@@ -234,9 +234,9 @@ pub(crate) fn boxed_inspector<'a, T: EvmTypesHost, I: Inspector<T> + 'a>(
 ) -> Box<dyn Inspector<T> + 'a> {
     if typeid::of::<I>() == typeid::of::<Box<dyn Inspector<T> + 'a>>() {
         let inspector = ManuallyDrop::new(inspector);
-        // SAFETY: The type IDs match ignoring lifetimes, and `T: 'static` leaves the object bound
-        // as the only lifetime, so `I` is a `Box<dyn Inspector<T> + 'b>` with `'b: 'a` by `I: 'a`.
-        // `inspector` is not dropped after this move.
+        // SAFETY: The type IDs match up to lifetimes, so `I` is a `Box<dyn Inspector<U> + 'b>` with
+        // `U` equal to `T` up to lifetimes. `EvmTypesHost: 'static` holds for both, so `U` is `T`,
+        // and `I: 'a` gives `'b: 'a`. `inspector` is not dropped after this move.
         return unsafe { ptr::read((&raw const *inspector).cast::<Box<dyn Inspector<T> + 'a>>()) };
     }
     Box::new(inspector)

@@ -892,6 +892,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Replaces the precompile provider.
+    ///
+    /// A `Box<dyn PrecompileProvider<T>>` is stored as is, so [`Self::precompiles_as`] sees the
+    /// boxed provider's concrete type.
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.set_boxed_precompiles(boxed_precompile_provider(precompiles));
@@ -1018,6 +1021,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Sets the active execution inspector.
+    ///
+    /// A `Box<dyn Inspector<T>>` is stored as is, so [`Self::clear_inspector_as`] sees the boxed
+    /// inspector's concrete type.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.set_boxed_inspector(boxed_inspector(inspector));
@@ -3172,12 +3178,19 @@ mod tests {
 
     #[test]
     fn set_inspector_with_boxed_inspector_downcasts_to_the_inner_inspector() {
+        struct HeapInspector(Vec<u8>);
+
+        impl Inspector<BaseEvmTypes> for HeapInspector {}
+
         let mut evm = lifecycle_evm();
-        let boxed: Box<dyn Inspector<BaseEvmTypes>> = Box::new(NoopInspector::default());
+        let inspector = Box::new(HeapInspector(vec![1]));
+        let ptr = &raw const *inspector;
 
-        evm.set_inspector(boxed);
+        evm.set_inspector(inspector as Box<dyn Inspector<BaseEvmTypes>>);
 
-        assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
+        let inspector = evm.clear_inspector_as::<HeapInspector>().unwrap();
+        assert_eq!(&raw const *inspector, ptr);
+        assert_eq!(inspector.0, [1]);
     }
 
     #[test]
