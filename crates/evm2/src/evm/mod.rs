@@ -2118,7 +2118,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         if contract != target {
             let transferred = match self.state.transfer(contract, target, &balance)? {
                 Ok(()) => true,
-                // Like revm, the beneficiary's balance wraps. Reaching this needs a total supply
+                // The beneficiary's balance wraps. Reaching this needs a total supply
                 // above `U256::MAX`.
                 Err(InstrStop::OverflowPayment) => {
                     self.state.account(contract)?.set_balance(Word::ZERO);
@@ -4478,7 +4478,7 @@ mod tests {
         code.extend_from_slice(target.as_slice());
         code.push(op::SELFDESTRUCT);
 
-        // Before Cancun the contract is destroyed even though the credit overflows, as in revm.
+        // Before Cancun the contract is destroyed even though the credit overflows.
         let (_, contract_balance, target_balance) =
             run_overflow_contract(SpecId::SHANGHAI, code, target);
 

@@ -433,7 +433,7 @@ pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult
 /// With [`EvmFeatures::BALANCE_CHECK`] off, [`EvmFeatures::BALANCE_TOP_UP`] and
 /// [`EvmFeatures::FEE_CHARGE`] on, a sender holding less than `effective_upfront` (the effective
 /// fee plus the transaction value) is topped up to it, so that after the effective fee is charged
-/// it keeps `max(balance - fee, value)`, as revm does.
+/// it keeps `max(balance - fee, value)`.
 pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
@@ -1366,7 +1366,7 @@ mod tests {
     #[rstest::rstest]
     #[case::top_up_to_value(100_000, 0)]
     #[case::keeps_balance_minus_fee(1_000_000, 789_995)]
-    fn balance_top_up_matches_revm(#[case] balance: u64, #[case] expected: u64) {
+    fn balance_top_up_keeps_balance_minus_fee(#[case] balance: u64, #[case] expected: u64) {
         let caller = Address::with_last_byte(0xaa);
         let recipient = Address::with_last_byte(0xbb);
         let mut database = InMemoryDB::default();
@@ -1396,7 +1396,7 @@ mod tests {
         );
 
         assert!(evm.transact(&tx).unwrap().commit().is_success());
-        // revm: max(balance - effective fee, value), minus the transferred value.
+        // max(balance - effective fee, value), minus the transferred value.
         assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(expected));
         assert_eq!(evm.read_account_info(&recipient).unwrap().unwrap().balance, U256::from(5));
     }
@@ -1428,7 +1428,7 @@ mod tests {
             caller,
         );
 
-        // As in revm, nothing is topped up without fee charging, so the value transfer fails.
+        // Nothing is topped up without fee charging, so the value transfer fails.
         let result = evm.transact(&tx).unwrap().commit();
         assert_eq!(result.stop, InstrStop::OutOfFunds);
         assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(3));

@@ -566,7 +566,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Adds `delta` to the balance, touching the account.
     ///
-    /// Like revm's `incr_balance`, the balance is left unchanged when the sum overflows. A zero
+    /// The balance is left unchanged when the sum overflows. A zero
     /// delta only touches the account, matching the EVM's value-bearing-call semantics.
     #[inline]
     pub fn add_balance(&mut self, delta: Word) {
