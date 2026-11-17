@@ -709,7 +709,7 @@ fn valid_expiry() -> Frame {
 }
 
 #[test]
-fn frame_environment_errors_follow_revm_precedence() {
+fn frame_environment_errors_follow_validation_order() {
     let version = Version::new(SpecId::BOGOTA);
     let mut tx = payload();
     tx.chain_id = 2;
@@ -1283,7 +1283,7 @@ mod nonces {
     }
 
     #[test]
-    fn empty_key_nonce_errors_match_revm_without_consuming_the_nonce() {
+    fn empty_key_nonce_mismatches_report_invalid_nonce_without_consuming_it() {
         for inspected in [false, true] {
             for (sequence, message) in
                 [(4, "nonce 4 too low, expected 5"), (6, "nonce 6 too high, expected 5")]

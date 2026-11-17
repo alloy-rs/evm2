@@ -203,7 +203,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     if !host.feature(EvmFeatures::EIP8141) {
         return Err(HandlerError::UnsupportedTransactionType(6));
     }
-    // Match Revm's environment validation before frame structure and signatures.
+    // Check fees, blobs, nonces and gas limits before frame structure and signatures.
     let gas = match req.frame_gas {
         Some(reservation) if reservation.tx == tx => reservation.gas,
         _ => FrameGas::calculate(tx, host.version())

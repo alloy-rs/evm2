@@ -2591,7 +2591,6 @@ dependencies = [
  "phf",
  "postcard",
  "rand 0.10.3",
- "revm",
  "revm-bytecode",
  "ripemd",
  "rmp-serde",

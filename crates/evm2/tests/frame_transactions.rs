@@ -1055,7 +1055,7 @@ fn native_frame_prefix_dispatches_for_custom_transaction_envelopes() {
 }
 
 #[test]
-fn unsuccessful_prefix_frames_report_the_revm_validation_error() {
+fn unsuccessful_prefix_frames_fail_validation_without_consuming_the_nonce() {
     for body in [&[0x5f, 0x5f, 0xfd][..], &[0xfe][..]] {
         let mut evm = evm(body, &[]);
         let tx = recovered(payload(vec![
