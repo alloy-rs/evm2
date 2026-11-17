@@ -1015,6 +1015,8 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
         for frame in &mut self.frames {
             frame.memory.clear();
             frame.memory.shrink_to(MAX_IDLE_MEMORY);
+            // Replaced rather than cleared, which would keep the buffer.
+            frame.return_data = Bytes::new();
         }
     }
 
