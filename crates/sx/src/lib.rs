@@ -35,13 +35,21 @@ pub mod op {
     pub const MUL: u8 = 0x02;
     pub const SUB: u8 = 0x03;
     pub const LT: u8 = 0x10;
+    pub const SLT: u8 = 0x12;
     pub const GT: u8 = 0x11;
     pub const SGT: u8 = 0x13;
     pub const EQ: u8 = 0x14;
     pub const ISZERO: u8 = 0x15;
     pub const AND: u8 = 0x16;
+    pub const OR: u8 = 0x17;
+    pub const XOR: u8 = 0x18;
+    pub const NOT: u8 = 0x19;
     pub const SHL: u8 = 0x1B;
     pub const SHR: u8 = 0x1C;
+    pub const SAR: u8 = 0x1D;
+    pub const CALLVALUE: u8 = 0x34;
+    pub const CALLDATALOAD: u8 = 0x35;
+    pub const CALLDATASIZE: u8 = 0x36;
     pub const POP: u8 = 0x50;
     pub const MLOAD: u8 = 0x51;
     pub const MSTORE: u8 = 0x52;
@@ -52,16 +60,20 @@ pub mod op {
     pub const PUSH1: u8 = 0x60;
     pub const PUSH2: u8 = 0x61;
     pub const PUSH4: u8 = 0x63;
+    pub const PUSH8: u8 = 0x67;
     pub const PUSH20: u8 = 0x73;
     pub const PUSH32: u8 = 0x7F;
     pub const DUP1: u8 = 0x80;
     pub const DUP2: u8 = 0x81;
     pub const DUP3: u8 = 0x82;
     pub const DUP4: u8 = 0x83;
+    pub const DUP5: u8 = 0x84;
+    pub const DUP8: u8 = 0x87;
     pub const SWAP1: u8 = 0x90;
     pub const SWAP2: u8 = 0x91;
     pub const SWAP3: u8 = 0x92;
     pub const SWAP4: u8 = 0x93;
+    pub const SWAP8: u8 = 0x97;
     pub const DUPN: u8 = 0xE6;
     pub const SWAPN: u8 = 0xE7;
     pub const EXCHANGE: u8 = 0xE8;
@@ -159,29 +171,66 @@ pub const fn instruction_len(op: u8) -> usize {
 /// Returns whether `op` is a slot of [`PATTERNS`].
 #[inline(always)]
 pub const fn is_slot(op: u8) -> bool {
-    op >= SLOT_BASE && op - SLOT_BASE < PATTERNS.len() as u8
+    IS_SLOT[op as usize]
 }
+
+/// Opcodes superinstructions may use, all undefined from Frontier through Osaka. A pattern only
+/// applies where its slot is undefined, so a later spec that defines one turns that pattern off.
+const SLOTS: [u8; 105] = {
+    let mut slots = [0; 105];
+    let mut n = 0;
+    let mut op = 0xB0;
+    while op <= 0xEF {
+        slots[n] = op as u8;
+        n += 1;
+        op += 1;
+    }
+    op = 0x21;
+    while op <= 0x2F {
+        slots[n] = op as u8;
+        n += 1;
+        op += 1;
+    }
+    op = 0xA5;
+    while op <= 0xAF {
+        slots[n] = op as u8;
+        n += 1;
+        op += 1;
+    }
+    // 0x0C stays free: translation writes it over slot bytes that are instructions in the code.
+    let more = [0x0D, 0x0E, 0x0F, 0x1F, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0xF6, 0xF7, 0xF8, 0xF9, 0xFB, 0xFC];
+    let mut i = 0;
+    while i < more.len() {
+        slots[n] = more[i];
+        n += 1;
+        i += 1;
+    }
+    assert!(n == 105);
+    slots
+};
+
+const IS_SLOT: [bool; 256] = {
+    let mut is = [false; 256];
+    let mut i = 0;
+    while i < PATTERNS.len() {
+        is[PATTERNS[i].slot as usize] = true;
+        i += 1;
+    }
+    is
+};
 
 /// Returns the stack words an opcode of [`PATTERNS`] takes and leaves.
 const fn stack_io(op: u8) -> (usize, usize) {
     match op {
         op::POP | op::JUMP => (1, 0),
         op::JUMPI | op::MSTORE => (2, 0),
-        op::ISZERO | op::MLOAD => (1, 1),
+        op::ISZERO | op::NOT | op::MLOAD | op::CALLDATALOAD => (1, 1),
         op::JUMPDEST => (0, 0),
-        op::PUSH0..=op::PUSH32 => (0, 1),
-        op::DUP1..=op::DUP4 => ((op - op::DUP1) as usize + 1, (op - op::DUP1) as usize + 2),
-        op::SWAP1..=op::SWAP4 => ((op - op::SWAP1) as usize + 2, (op - op::SWAP1) as usize + 2),
-        op::ADD
-        | op::MUL
-        | op::SUB
-        | op::LT
-        | op::GT
-        | op::SGT
-        | op::EQ
-        | op::AND
-        | op::SHL
-        | op::SHR => (2, 1),
+        op::PUSH0..=op::PUSH32 | op::CALLDATASIZE | op::CALLVALUE => (0, 1),
+        op::DUP1..=op::DUP8 => ((op - op::DUP1) as usize + 1, (op - op::DUP1) as usize + 2),
+        op::SWAP1..=op::SWAP8 => ((op - op::SWAP1) as usize + 2, (op - op::SWAP1) as usize + 2),
+        op::ADD | op::MUL | op::SUB | op::LT | op::GT | op::SLT | op::SGT | op::EQ | op::AND
+        | op::OR | op::XOR | op::SHL | op::SHR | op::SAR => (2, 1),
         _ => panic!("opcode not used by patterns"),
     }
 }
@@ -206,8 +255,6 @@ const fn pack(ops: &[u8]) -> u64 {
     packed
 }
 
-/// First slot. `SLOT_BASE..SLOT_BASE + PATTERNS.len()` are undefined in every Ethereum spec.
-const SLOT_BASE: u8 = 0xB0;
 
 macro_rules! patterns {
     ($([$($op:ident)+],)*) => {{
@@ -215,7 +262,7 @@ macro_rules! patterns {
         let mut out = [Sx { slot: 0, ops: 0 }; [$(stringify!($($op)+),)*].len()];
         let mut i = 0;
         while i < pats.len() {
-            out[i] = Sx { slot: SLOT_BASE + i as u8, ops: pats[i] };
+            out[i] = Sx { slot: SLOTS[i], ops: pats[i] };
             i += 1;
         }
         out
@@ -224,8 +271,10 @@ macro_rules! patterns {
 
 /// The superinstructions, in the order a greedy search picked them on 12,700 mainnet blocks
 /// spread over blocks 25,428,996 to 26,427,495 (18.5 billion executed instructions), each one
-/// saving the most dispatches given the ones before it.
-pub const PATTERNS: [Sx; 43] = patterns![
+/// saving the most dispatches given the ones before it. Patterns that start with JUMPDEST are
+/// three or more instructions long: a jump always lands on the JUMPDEST handler, which keeps the
+/// jump's own dispatch predictable, so fusing a JUMPDEST only pays when it removes two dispatches.
+pub const PATTERNS: [Sx; 105] = patterns![
     [PUSH2 JUMPI],
     [DUP1 PUSH4 EQ PUSH2 JUMPI],
     [PUSH2 JUMP],
@@ -269,6 +318,70 @@ pub const PATTERNS: [Sx; 43] = patterns![
     [MLOAD DUP4 DUP3 ADD MSTORE PUSH1],
     [DUP2 AND],
     [PUSH1 SHL],
+    // A second greedy pass on top of the patterns above.
+    [PUSH2 DUP2 PUSH2 JUMP],
+    [SWAP1 PUSH1 SAR PUSH2 JUMP],
+    [PUSH2 SWAP2 SWAP1 PUSH2 JUMP],
+    [SWAP1 POP SWAP2 SWAP1 POP JUMP],
+    [PUSH1 ADD SHR SWAP1 PUSH1 SAR PUSH2 JUMP],
+    [DUP1 SWAP2 SUB SWAP1],
+    [PUSH1 DUP1],
+    [DUP5 ADD],
+    [DUP3 GT OR PUSH2 JUMPI],
+    [PUSH1 DUP3 ADD],
+    [JUMPDEST DUP4 DUP2 LT ISZERO PUSH2 JUMPI],
+    [SWAP1 DUP2 MSTORE PUSH1 ADD PUSH1],
+    [POP POP POP POP],
+    [PUSH1 PUSH1 MSTORE PUSH1 CALLDATASIZE LT],
+    [DUP1 ISZERO PUSH2 JUMPI],
+    [PUSH2 SWAP1],
+    [SWAP2 ADD],
+    [PUSH1 MSTORE],
+    [DUP3 AND],
+    [DUP3 DUP5 SUB SLT],
+    [MLOAD PUSH1],
+    [JUMPDEST PUSH1 DUP1],
+    [SUB PUSH2 JUMPI],
+    [DUP3 DUP3],
+    [PUSH1 NOT],
+    [JUMPDEST SWAP3 SWAP2 POP POP JUMP],
+    [JUMPDEST SWAP1 POP],
+    [LT ISZERO PUSH2 JUMPI],
+    [PUSH2 PUSH2],
+    [ISZERO ISZERO],
+    [SWAP3 POP],
+    [JUMPDEST POP PUSH1 ADD SWAP1 JUMP],
+    [JUMPDEST PUSH2 PUSH2 JUMP],
+    [DUP1 DUP4 SUB DUP2],
+    [PUSH2 MLOAD],
+    [DUP2 ADD SWAP1 DUP2 LT PUSH8],
+    [DUP4 PUSH2 JUMP],
+    [SWAP2 POP POP],
+    [ADD MLOAD],
+    [PUSH2 PUSH1],
+    [POP PUSH1],
+    [SWAP2 SWAP1 PUSH4 AND JUMP],
+    [ADD MLOAD DUP4 DUP3 ADD MSTORE PUSH1],
+    [LT PUSH2 JUMPI],
+    [EQ PUSH2 JUMPI],
+    [JUMPDEST PUSH1 MLOAD],
+    [SLT PUSH2 JUMPI],
+    // A third pass, for the remaining undefined opcodes.
+    [DUP2 DUP2],
+    [JUMPDEST PUSH2 JUMP],
+    [JUMPDEST PUSH1 PUSH1 PUSH1 SHL SUB],
+    [CALLDATALOAD PUSH1 SHR],
+    [PUSH1 PUSH1 MSTORE CALLVALUE DUP1 ISZERO PUSH2 JUMPI],
+    [JUMPDEST POP PUSH1 CALLDATASIZE LT PUSH2 JUMPI],
+    [JUMPDEST SWAP2 SWAP1],
+    [PUSH1 DUP3 DUP5 SUB SLT ISZERO PUSH2 JUMPI],
+    [DUP2 ADD SWAP1 PUSH2 SWAP2 SWAP1 PUSH2 JUMP],
+    [ADD MSTORE],
+    [DUP3 DUP2 MUL SWAP4 SWAP1 SWAP4 ADD SWAP3],
+    [JUMPDEST DUP1 DUP3 ADD DUP1 DUP3],
+    [DUP2 MLOAD],
+    [PUSH1 PUSH1 PUSH1 SHL SUB AND],
+    [DUP1 CALLDATALOAD],
 ];
 
 const _: () = {
@@ -738,7 +851,7 @@ mod tests {
     #[test]
     fn slots() {
         for (i, sx) in PATTERNS.iter().enumerate() {
-            assert_eq!(sx.slot as usize, 0xB0 + i);
+            assert_eq!(sx.slot, SLOTS[i]);
             assert!(prague().free.contains(sx.slot));
             assert!(Window::of(*sx).span as usize <= WINDOW);
         }
@@ -811,7 +924,7 @@ mod tests {
         let mut ops = prague();
         ops.fusable.insert(DUPN);
         ops.free = OpSet::EMPTY;
-        for op in 0xB0..=0xDF {
+        for op in SLOTS {
             ops.free.insert(op);
         }
         assert!(PATTERNS.iter().all(|sx| !ops.is_active(*sx)));
@@ -951,13 +1064,13 @@ mod tests {
             while pc < n {
                 let (a, b) = (padded[pc], out[pc]);
                 if a == b {
-                    assert!(!(0xB0..0xB0 + PATTERNS.len() as u8).contains(&b), "slot left in code");
+                    assert!(!is_slot(b), "slot left in code");
                     pc += instruction_len(a);
                 } else if b == 0x0C {
                     assert!(is_slot(a));
                     pc += 1;
                 } else {
-                    let sx = PATTERNS[(b - 0xB0) as usize];
+                    let sx = *PATTERNS.iter().find(|p| p.slot == b).expect("slot");
                     assert_eq!(sx.op(0), a);
                     let end = match_at(&padded, n, pc, sx).expect("no match");
                     for q in pc + 1..end {

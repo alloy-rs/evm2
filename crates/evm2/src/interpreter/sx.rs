@@ -15,18 +15,22 @@ use super::{
     private::{Instruction, InstructionFlags, split_gas_state},
 };
 use crate::{
-    EvmConfig, EvmTypesHost, OpcodeConfig, SpecId, constants::STACK_LIMIT, utils::WordExt,
+    EvmConfig, EvmTypesHost, OpcodeConfig, SpecId,
+    constants::STACK_LIMIT,
+    utils::{WordExt, read_word_padded},
 };
 use core::{hint::cold_path, marker::PhantomData};
 use evm2_sx::{OpSet, Ops, PATTERNS, Sx, op};
 
-const _: () = assert!(PATTERNS.len() == 43, "update `for_each_pattern!`");
+const _: () = assert!(PATTERNS.len() == 105, "update `for_each_pattern!`");
 
 macro_rules! for_each_pattern {
     ($m:ident) => {
         $m!(
-            0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
-            24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42
+            0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29
+            30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59
+            60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89
+            90 91 92 93 94 95 96 97 98 99 100 101 102 103 104
         )
     };
 }
@@ -172,17 +176,23 @@ const fn plan(sx: Sx) -> Plan {
                 vals += 1;
             }
             op::POP => len -= 1,
-            op::DUP1..=op::DUP4 => {
+            op::DUP1..=op::DUP8 => {
                 stack[len] = stack[len - (op - op::DUP1) as usize - 1];
                 len += 1;
             }
-            op::SWAP1..=op::SWAP4 => {
+            op::SWAP1..=op::SWAP8 => {
                 let other = len - (op - op::SWAP1) as usize - 2;
                 let top = stack[len - 1];
                 stack[len - 1] = stack[other];
                 stack[other] = top;
             }
-            op::ISZERO | op::MLOAD => {
+            op::CALLDATASIZE | op::CALLVALUE => {
+                s.out = vals as u8;
+                stack[len] = s.out;
+                len += 1;
+                vals += 1;
+            }
+            op::ISZERO | op::NOT | op::MLOAD | op::CALLDATALOAD => {
                 s.a = stack[len - 1];
                 s.out = vals as u8;
                 stack[len - 1] = s.out;
@@ -325,7 +335,7 @@ fn run<T: EvmTypesHost, const I: usize>(
             }
         )*};
     }
-    inputs!(0 1 2 3 4 5 6 7);
+    inputs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
 
     macro_rules! steps {
         ($($i:literal)*) => {$(
@@ -349,6 +359,25 @@ fn run<T: EvmTypesHost, const I: usize>(
                     op::SGT => v[out] = word(i256_lt(&v[b], &v[a])),
                     op::EQ => v[out] = word(eq(&v[a], &v[b])),
                     op::AND => v[out] = v[a] & v[b],
+                    op::OR => v[out] = v[a] | v[b],
+                    op::XOR => v[out] = v[a] ^ v[b],
+                    op::NOT => v[out] = !v[a],
+                    op::SLT => v[out] = word(i256_lt(&v[a], &v[b])),
+                    op::SAR => {
+                        let shift = v[a].to_usize_saturated();
+                        v[out] = if shift < 256 {
+                            v[b].arithmetic_shr(shift)
+                        } else if v[b].bit(255) {
+                            Word::MAX
+                        } else {
+                            Word::ZERO
+                        };
+                    }
+                    op::CALLDATASIZE => v[out] = Word::from(state.input().len() as u64),
+                    op::CALLVALUE => v[out] = state.message().value,
+                    op::CALLDATALOAD => {
+                        v[out] = read_word_padded(state.input(), v[a].to_usize_saturated()).into();
+                    }
                     op::SHL => {
                         let shift = v[a].to_usize_saturated();
                         v[out] = if shift < 256 { v[b] << shift } else { Word::ZERO };
@@ -462,9 +491,13 @@ mod tests {
     }
 
     fn run(code: &[u8], gas_limit: u64, spec: SpecId, sx: bool) -> Outcome {
+        // Call data and a value, for CALLDATALOAD, CALLDATASIZE and CALLVALUE.
+        let input: Vec<u8> = (0..68u8).map(|i| i.wrapping_mul(37) ^ 0xA5).collect();
         let message = Message::<TestTypes> {
             code: legacy_bytecode(code.to_vec()),
             gas_limit,
+            input: alloy_primitives::Bytes::from(input).into(),
+            value: Word::from(0x1234_5678u64),
             ..test_message()
         };
         let mut interpreter = Interpreter::<TestTypes>::new(&message);
