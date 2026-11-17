@@ -4,8 +4,8 @@ use crate::{
     opcode::immediate_size,
     tracing::{
         types::{
-            CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
-            TraceMemberOrder,
+            CallKind, CallTraceNode, CallTraceStepExtra, RecordedMemory, SelfdestructTrace,
+            StepDelta, StorageChange, StorageChangeReason, TraceMemberOrder,
         },
         utils::step_cost,
     },
@@ -369,7 +369,7 @@ impl TracingInspector {
     #[allow(clippy::too_many_arguments)]
     fn start_trace_on_call(
         &mut self,
-        depth: usize,
+        depth: u16,
         address: Address,
         input_data: Bytes,
         value: U256,
@@ -453,10 +453,10 @@ impl TracingInspector {
         let record = !self.budget.exceeded()
             && self.config.should_record_opcode(op)
             && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get())
-            && self.budget.reserve(self.step_record_size(op, interp.stack().len()));
+            && self.budget.reserve(self.step_record_size(op, interp));
         if !record {
             // Push a sentinel so that the upcoming `step_end` stays paired with this step.
-            self.step_stack.push(PendingStep::new(trace_idx, usize::MAX, 0));
+            self.step_stack.push(PendingStep::new(trace_idx, usize::MAX, 0, 0));
             return;
         }
 
@@ -520,29 +520,26 @@ impl TracingInspector {
 
         let step_idx = node.trace.steps.len();
         node.trace.steps.push(CallTraceStep {
-            pc: interp.pc(),
+            // A larger `pc` needs more than 4 GiB of bytecode.
+            pc: u32::try_from(interp.pc()).unwrap_or(u32::MAX),
             op,
             stack,
             memory,
-            returndata,
             gas_remaining: interp.gas().remaining(),
             gas_refund_counter: interp.gas().refunded() as u64,
-            immediate_bytes,
+            // The state gas cost is populated in `step_end`, and the decoded data never is in
+            // `TracingInspector`.
+            extra: CallTraceStepExtra { returndata, immediate_bytes, ..Default::default() }.boxed(),
 
             // These fields will be populated in `step_end`.
             push_stack: None,
             gas_cost: 0,
-            state_gas_cost: None,
             state_gas_reservoir: interp
                 .version()
                 .feature(EvmFeatures::EIP8037)
                 .then_some(interp.gas().reservoir()),
-            state_gas_spent: interp.gas().state_gas_spent(),
             storage_change,
             status: None,
-
-            // This is never populated in `TracingInspector`.
-            decoded: None,
         });
 
         node.ordering.push(TraceMemberOrder::Step(step_idx));
@@ -550,6 +547,7 @@ impl TracingInspector {
             trace_idx,
             step_idx,
             interp.gas().remaining_excluding_state_spill(),
+            interp.gas().state_gas_spent(),
         ));
 
         if self.config.record_step_deltas {
@@ -572,8 +570,9 @@ impl TracingInspector {
     }
 
     /// Returns the bytes a recorded step retains outside of its byte buffers: the step itself, its
-    /// ordering entry, a possible step delta, and its stack snapshots.
-    fn step_record_size(&self, op: OpCode, stack_len: usize) -> usize {
+    /// ordering entry, its possible extra data and step delta, and its stack snapshots.
+    fn step_record_size<T: EvmTypes>(&self, op: OpCode, interp: &Interpreter<'_, '_, T>) -> usize {
+        let stack_len = interp.stack().len();
         let snapshots = self.config.record_stack_snapshots;
         let stack_words = if snapshots.is_all() || snapshots.is_full() {
             stack_len
@@ -587,9 +586,16 @@ impl TracingInspector {
         } else {
             0
         };
+        // The state gas cost is only known in `step_end`, so every EIP-8037 step may need it.
+        let has_extra = (self.config.record_returndata_snapshots
+            && !interp.return_data().is_empty())
+            || (self.config.record_immediate_bytes && immediate_size(op.get()) != 0)
+            || interp.version().feature(EvmFeatures::EIP8037);
+        let extra = if has_extra { size_of::<CallTraceStepExtra>() } else { 0 };
         let delta = if self.config.record_step_deltas { size_of::<StepDelta>() } else { 0 };
         size_of::<CallTraceStep>()
             + size_of::<TraceMemberOrder>()
+            + extra
             + delta
             + (stack_words + push_words) * size_of::<U256>()
     }
@@ -615,8 +621,13 @@ impl TracingInspector {
     /// Invoked on [Inspector::step_end].
     #[cold]
     fn fill_step_on_step_end<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        let Some(PendingStep { trace_idx, step_idx, gas_before, gas_after_charge }) =
-            self.step_stack.pop()
+        let Some(PendingStep {
+            trace_idx,
+            step_idx,
+            gas_before,
+            state_gas_spent,
+            gas_after_charge,
+        }) = self.step_stack.pop()
         else {
             return;
         };
@@ -631,7 +642,7 @@ impl TracingInspector {
             step.push_stack.is_none()
                 && step.gas_cost == 0
                 && step.status.is_none()
-                && step.decoded.is_none(),
+                && step.decoded().is_none(),
             "step in step_end is already filled: {trace_idx} -> {step:#?}",
         );
 
@@ -663,9 +674,9 @@ impl TracingInspector {
                 gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill()),
             ),
         };
-        let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
+        let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
-            step.state_gas_cost = Some(state_gas_delta);
+            step.extra.get_or_insert_default().state_gas_cost = Some(state_gas_delta);
         }
 
         // set the status
@@ -805,7 +816,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             Bytes::new()
         };
         self.start_trace_on_call(
-            usize::from(message.depth),
+            message.depth,
             to,
             input,
             message.value,
@@ -848,7 +859,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             Bytes::new()
         };
         self.start_trace_on_call(
-            usize::from(message.depth),
+            message.depth,
             message.destination,
             input,
             message.value,
@@ -880,10 +891,11 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         if self.trace_stack.is_empty() {
             return;
         }
-        let node = self.last_trace();
-        node.trace.selfdestruct_address = Some(*contract);
-        node.trace.selfdestruct_refund_target = Some(*target);
-        node.trace.selfdestruct_transferred_value = Some(*value);
+        self.last_trace().trace.selfdestruct = Some(Box::new(SelfdestructTrace {
+            address: Some(*contract),
+            refund_target: Some(*target),
+            transferred_value: Some(*value),
+        }));
     }
 }
 
@@ -998,14 +1010,16 @@ struct PendingStep {
     step_idx: usize,
     /// The remaining gas plus spilled state gas when the step started.
     gas_before: u64,
+    /// The state gas spent when the step started.
+    state_gas_spent: i64,
     /// The same measure once a call or create step charged everything it charges before its
     /// message starts.
     gas_after_charge: Option<u64>,
 }
 
 impl PendingStep {
-    const fn new(trace_idx: usize, step_idx: usize, gas_before: u64) -> Self {
-        Self { trace_idx, step_idx, gas_before, gas_after_charge: None }
+    const fn new(trace_idx: usize, step_idx: usize, gas_before: u64, state_gas_spent: i64) -> Self {
+        Self { trace_idx, step_idx, gas_before, state_gas_spent, gas_after_charge: None }
     }
 }
 
