@@ -1005,10 +1005,12 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
     ///
     /// Call it when no frame is running, such as before the first frame of a top-level message. A
     /// frame's caller reads its output after it returns to the pool, so trimming then is too
-    /// early.
+    /// early. The next top-level message takes the last frame, so it keeps its buffers, as revm
+    /// keeps its shared memory.
     #[inline(never)]
     pub(crate) fn trim(&mut self) {
-        for frame in &mut self.frames {
+        let Some((_, rest)) = self.frames.split_last_mut() else { return };
+        for frame in rest {
             frame.memory.clear();
             frame.memory.shrink_to(MAX_IDLE_MEMORY);
             // Replaced rather than cleared, which would keep the buffer.
