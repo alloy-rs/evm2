@@ -799,9 +799,7 @@ impl<'a> State<'a> {
     ) -> DbResult<Result<(), InstrStop>> {
         // TODO check order of operations, we could potentially simplify it and do a lot more with
         // only one hashmap lookup.
-        // Preserve any balance the address already held (e.g. funds sent before creation) and add
-        // the endowment. This runs before the caller pays, so an overflow leaves both unchanged.
-        let balance = {
+        {
             let target = self.account(address)?;
             if target
                 .get()
@@ -809,11 +807,11 @@ impl<'a> State<'a> {
             {
                 return Ok(Err(InstrStop::CreateCollision));
             }
-            let Some(balance) = target.balance().checked_add(*value) else {
+            // Checked before the caller pays, so an overflow leaves both accounts unchanged.
+            if target.balance().checked_add(*value).is_none() {
                 return Ok(Err(InstrStop::OverflowPayment));
-            };
-            balance
-        };
+            }
+        }
 
         // Deduct the endowment from the caller. A zero endowment moves nothing and leaves the
         // caller untouched, matching the prior `transfer` behaviour.
@@ -826,6 +824,9 @@ impl<'a> State<'a> {
         }
 
         let mut target = self.account(address)?;
+        // Preserve any balance the address already held (e.g. funds sent before creation) and add
+        // the endowment.
+        let balance = target.balance().wrapping_add(*value);
         #[cfg(feature = "account-ext")]
         let extension = target.get().map(|info| info.extension.clone()).unwrap_or_default();
         *target.get_or_insert() = AccountInfo {
@@ -1793,5 +1794,22 @@ mod tests {
         assert_eq!((slot.original(), slot.current()), (Word::from(6), Word::from(6)));
         assert!(!state.accounts[&address].storage.slots.contains_key(&unloaded));
         assert!(!state.take_pending_state().is_changed());
+    }
+
+    #[test]
+    fn create_account_over_its_own_creator_keeps_the_balance() {
+        let address = Address::with_last_byte(1);
+        let mut state = State::new(CacheDB::default());
+        state.account(&address).unwrap().set_balance(Word::from(10));
+
+        let created = state.create_account(
+            &address,
+            &address,
+            &Word::from(5),
+            Version::base(crate::SpecId::CANCUN).features,
+        );
+
+        assert_eq!(created.unwrap(), Ok(()));
+        assert_eq!(state.account(&address).unwrap().balance(), Word::from(10));
     }
 }
