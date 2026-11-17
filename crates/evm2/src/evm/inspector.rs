@@ -135,8 +135,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Called after each instruction executes.
     ///
-    /// The interpreter's pc is at the next instruction. The hook may edit the stack and the pc,
-    /// which decides the instruction that runs next.
+    /// After a successful instruction the interpreter's pc is at the next instruction. The hook may
+    /// edit the stack and the pc, which decides the instruction that runs next.
     ///
     /// If the instruction ran out of gas, the interpreter's remaining gas reads 0.
     #[inline]

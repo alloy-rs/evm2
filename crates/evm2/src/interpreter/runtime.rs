@@ -520,6 +520,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.host = Some(NonNull::from(host));
         self.inspector = None;
         self.reload = false;
+        self.skip_step = false;
     }
 
     /// Runs the host's instruction implementation for the opcode at `pc` on the interpreter
@@ -928,7 +929,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
         }
-        // SAFETY: `pc` is in bounds of the bytecode.
+        // SAFETY: `set_pc` bounds-checks the pc a hook sets.
         let moved = self.0.pc != pc.as_ptr() && self.0.result.is_ok();
         self.0.skip_step = moved && self.0.steps.contains(unsafe { *self.0.pc });
         (Pc::new(self.0.pc), self.0.stack_len)
