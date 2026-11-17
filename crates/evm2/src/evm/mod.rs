@@ -893,8 +893,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Replaces the precompile provider.
     ///
-    /// A `Box<dyn PrecompileProvider<T>>` is stored as is, so [`Self::precompiles_as`] sees the
-    /// boxed provider's concrete type.
+    /// A `Box<dyn PrecompileProvider<T>>` with no extra bounds is stored as is, so
+    /// [`Self::precompiles_as`] sees the boxed provider's concrete type.
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.set_boxed_precompiles(boxed_precompile_provider(precompiles));
@@ -1022,8 +1022,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Sets the active execution inspector.
     ///
-    /// A `Box<dyn Inspector<T>>` is stored as is, so [`Self::clear_inspector_as`] sees the boxed
-    /// inspector's concrete type.
+    /// A `Box<dyn Inspector<T>>` with no extra bounds is stored as is, so
+    /// [`Self::clear_inspector_as`] sees the boxed inspector's concrete type.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.set_boxed_inspector(boxed_inspector(inspector));
