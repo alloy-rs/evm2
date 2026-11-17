@@ -135,9 +135,9 @@ struct Step {
 /// A superinstruction compiled to straight-line code over numbered values.
 ///
 /// The stack words it reads are values `0..input`, value `k` being the word `k + 1` deep. DUP, SWAP
-/// and POP only move value numbers, so they cost nothing at run time; every other opcode makes a new
-/// value. When the sequence ends, `out` holds the values of the stack slots from `input` deep up, and
-/// only slots whose value changed are written.
+/// and POP only move value numbers, so they cost nothing at run time; every other opcode makes a
+/// new value. When the sequence ends, `out` holds the values of the stack slots from `input` deep
+/// up, and only slots whose value changed are written.
 #[derive(Clone, Copy)]
 struct Plan {
     input: usize,
@@ -161,7 +161,8 @@ const fn plan(sx: Sx) -> Plan {
     }
     let mut vals = input;
     let none = Step { a: NONE, b: NONE, out: NONE, imm: 0 };
-    let mut p = Plan { input, steps: [none; 8], out: [NONE; VALS], out_len: 0, jump: NONE, cond: NONE };
+    let mut p =
+        Plan { input, steps: [none; 8], out: [NONE; VALS], out_len: 0, jump: NONE, cond: NONE };
     let mut i = 0;
     while i < sx.len() {
         let op = sx.op(i);
@@ -255,7 +256,8 @@ unsafe fn immediate(p: *const u8, n: usize) -> Word {
     Word::from_limbs(limbs)
 }
 
-/// A hint that keeps a branch a branch; nightly only, where the tail-call backend needs it anyway.
+/// A hint that keeps a branch a branch; nightly only, where the tail-call backend needs it
+/// anyway.
 #[cfg(tco)]
 use core::hint::likely;
 #[cfg(not(tco))]
@@ -272,13 +274,13 @@ fn word(b: bool) -> Word {
 // Scalar limb arithmetic, so values stay in general registers: ruint's comparisons load words as
 // vectors, which keeps them in memory.
 #[inline(always)]
-fn is_zero(w: &Word) -> bool {
+const fn is_zero(w: &Word) -> bool {
     let l = w.as_limbs();
     (l[0] | l[1] | l[2] | l[3]) == 0
 }
 
 #[inline(always)]
-fn eq(a: &Word, b: &Word) -> bool {
+const fn eq(a: &Word, b: &Word) -> bool {
     let (a, b) = (a.as_limbs(), b.as_limbs());
     ((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2]) | (a[3] ^ b[3])) == 0
 }

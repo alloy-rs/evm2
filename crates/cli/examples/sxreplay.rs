@@ -179,9 +179,10 @@ mod jit {
 }
 
 #[cfg(not(feature = "jit"))]
+#[allow(clippy::missing_const_for_fn)]
 mod jit {
     use super::*;
-    pub(crate) type Backend = ();
+    pub(crate) struct Backend;
     pub(crate) fn backend(_: Jit) -> Backend {
         panic!("JIT modes need --features jit")
     }
@@ -252,7 +253,8 @@ impl Counters {
             attr[1] = config; // cycles, instructions, branch misses
             attr[5] = 1 | 1 << 5 | 1 << 6; // disabled, exclude_kernel, exclude_hv
             // SAFETY: `attr` outlives the call.
-            *fd = unsafe { libc::syscall(libc::SYS_perf_event_open, attr.as_ptr(), 0, -1, -1, 0) } as i32;
+            *fd = unsafe { libc::syscall(libc::SYS_perf_event_open, attr.as_ptr(), 0, -1, -1, 0) }
+                as i32;
             assert!(*fd >= 0, "perf_event_open: {}", std::io::Error::last_os_error());
         }
         Some(Self { fds })
@@ -406,11 +408,10 @@ fn main() {
                         if warm {
                             prewarm(&db, spec);
                         }
-                        let profile = perf_ctl.as_mut().filter(|p| p.mode == *m);
-                        let profile = profile.map(|p| {
+                        let mut profile = perf_ctl.as_mut().filter(|p| p.mode == *m);
+                        if let Some(p) = profile.as_mut() {
                             p.send("enable\n");
-                            p
-                        });
+                        }
                         if let Some(c) = &counters {
                             c.start();
                         }
@@ -443,12 +444,11 @@ fn main() {
                         let r = jit::run(&path, name, case, &mut db, timed, backend);
                         let ns = start.elapsed().as_nanos();
                         std::hint::black_box(r).expect("replay");
-                        if let Some(backend) = &fresh {
-                            if rep == 0 {
-                                jit::report(&chunk, m, backend);
-                            }
+                        if let Some(backend) = &fresh
+                            && rep == 0
+                        {
+                            jit::report(&chunk, m, backend);
                         }
-                        drop(fresh);
                         ns
                     }
                 };
@@ -461,6 +461,10 @@ fn main() {
         }
     }
     // Tearing down the JIT runtime with resident code crashes; the run is over, so skip it.
+    #[allow(
+        clippy::forget_non_drop,
+        reason = "the backend is a placeholder without the jit feature"
+    )]
     std::mem::forget(warm_jit);
     // SAFETY: Nothing is left to flush but stdout, which is flushed here.
     use std::io::Write;

@@ -115,7 +115,9 @@ impl Sx {
     pub const fn static_jump(self) -> Option<usize> {
         let n = self.len();
         match (self.op(n - 1), self.op(n - 2)) {
-            (op::JUMP | op::JUMPI, push @ op::PUSH1..=op::PUSH32) => Some((push - op::PUSH0) as usize),
+            (op::JUMP | op::JUMPI, push @ op::PUSH1..=op::PUSH32) => {
+                Some((push - op::PUSH0) as usize)
+            }
             _ => None,
         }
     }
@@ -198,7 +200,8 @@ const SLOTS: [u8; 105] = {
         op += 1;
     }
     // 0x0C stays free: translation writes it over slot bytes that are instructions in the code.
-    let more = [0x0D, 0x0E, 0x0F, 0x1F, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0xF6, 0xF7, 0xF8, 0xF9, 0xFB, 0xFC];
+    let more =
+        [0x0D, 0x0E, 0x0F, 0x1F, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0xF6, 0xF7, 0xF8, 0xF9, 0xFB, 0xFC];
     let mut i = 0;
     while i < more.len() {
         slots[n] = more[i];
@@ -229,8 +232,20 @@ const fn stack_io(op: u8) -> (usize, usize) {
         op::PUSH0..=op::PUSH32 | op::CALLDATASIZE | op::CALLVALUE => (0, 1),
         op::DUP1..=op::DUP8 => ((op - op::DUP1) as usize + 1, (op - op::DUP1) as usize + 2),
         op::SWAP1..=op::SWAP8 => ((op - op::SWAP1) as usize + 2, (op - op::SWAP1) as usize + 2),
-        op::ADD | op::MUL | op::SUB | op::LT | op::GT | op::SLT | op::SGT | op::EQ | op::AND
-        | op::OR | op::XOR | op::SHL | op::SHR | op::SAR => (2, 1),
+        op::ADD
+        | op::MUL
+        | op::SUB
+        | op::LT
+        | op::GT
+        | op::SLT
+        | op::SGT
+        | op::EQ
+        | op::AND
+        | op::OR
+        | op::XOR
+        | op::SHL
+        | op::SHR
+        | op::SAR => (2, 1),
         _ => panic!("opcode not used by patterns"),
     }
 }
@@ -255,7 +270,6 @@ const fn pack(ops: &[u8]) -> u64 {
     packed
 }
 
-
 macro_rules! patterns {
     ($([$($op:ident)+],)*) => {{
         let pats = [$(pack(&[$(op::$op),+]),)*];
@@ -271,7 +285,8 @@ macro_rules! patterns {
 
 /// The superinstructions, in the order a greedy search picked them on 12,700 mainnet blocks
 /// spread over blocks 25,428,996 to 26,427,495 (18.5 billion executed instructions), each one
-/// saving the most dispatches given the ones before it. Patterns that start with JUMPDEST are
+/// saving the most dispatches given the ones before it; four slots whose patterns later, longer
+/// ones made unreachable went to the next best candidates. Patterns that start with JUMPDEST are
 /// three or more instructions long: a jump always lands on the JUMPDEST handler, which keeps the
 /// jump's own dispatch predictable, so fusing a JUMPDEST only pays when it removes two dispatches.
 pub const PATTERNS: [Sx; 105] = patterns![
@@ -300,7 +315,7 @@ pub const PATTERNS: [Sx; 105] = patterns![
     [PUSH1 MLOAD],
     [JUMPDEST PUSH1 DUP2 SGT ISZERO PUSH2 JUMPI],
     [SWAP1 DUP1 MUL PUSH1 DUP2 SWAP1 SHR],
-    [DUP2 MUL SWAP4 SWAP1 SWAP4 ADD SWAP3],
+    [DUP2 MSTORE],
     [JUMPDEST PUSH0],
     [DUP2 LT PUSH2 JUMPI],
     [PUSH1 SHR],
@@ -315,12 +330,12 @@ pub const PATTERNS: [Sx; 105] = patterns![
     [PUSH1 SWAP1 DUP2 MSTORE PUSH1 PUSH1],
     [DUP1 DUP3],
     [ADD PUSH2 JUMP],
-    [MLOAD DUP4 DUP3 ADD MSTORE PUSH1],
+    [DUP1 MLOAD],
     [DUP2 AND],
     [PUSH1 SHL],
     // A second greedy pass on top of the patterns above.
     [PUSH2 DUP2 PUSH2 JUMP],
-    [SWAP1 PUSH1 SAR PUSH2 JUMP],
+    [JUMPDEST POP POP],
     [PUSH2 SWAP2 SWAP1 PUSH2 JUMP],
     [SWAP1 POP SWAP2 SWAP1 POP JUMP],
     [PUSH1 ADD SHR SWAP1 PUSH1 SAR PUSH2 JUMP],
@@ -338,7 +353,7 @@ pub const PATTERNS: [Sx; 105] = patterns![
     [SWAP2 ADD],
     [PUSH1 MSTORE],
     [DUP3 AND],
-    [DUP3 DUP5 SUB SLT],
+    [SWAP1 SWAP2],
     [MLOAD PUSH1],
     [JUMPDEST PUSH1 DUP1],
     [SUB PUSH2 JUMPI],
@@ -674,7 +689,12 @@ impl Matcher {
 ///
 /// With `jumpdests`, also marks every `JUMPDEST` instruction in it, one bit per byte of
 /// `code[..len]`, least significant bit first, as jump destination analysis does.
-pub fn translate(code: &[u8], len: usize, matcher: &Matcher, jumpdests: Option<&mut [u8]>) -> Box<[u8]> {
+pub fn translate(
+    code: &[u8],
+    len: usize,
+    matcher: &Matcher,
+    jumpdests: Option<&mut [u8]>,
+) -> Box<[u8]> {
     assert!(len <= code.len());
     let mut out: Box<[u8]> = code.into();
     let mut marks = alloc::vec![0u8; len.div_ceil(8)];
@@ -862,7 +882,8 @@ mod tests {
     fn fuses_longest_and_keeps_layout() {
         use op::*;
         // DUP1 PUSH4 sel EQ PUSH2 dst JUMPI, then PUSH2 dst JUMPI, to the JUMPDEST at 15.
-        let code = [DUP1, PUSH4, 1, 2, 3, 4, EQ, PUSH2, 0, 15, JUMPI, PUSH2, 0, 15, JUMPI, JUMPDEST];
+        let code =
+            [DUP1, PUSH4, 1, 2, 3, 4, EQ, PUSH2, 0, 15, JUMPI, PUSH2, 0, 15, JUMPI, JUMPDEST];
         let padded = pad(&code);
         let out = translate(&padded, code.len(), &Matcher::new(prague()), None);
         assert_eq!(out.len(), padded.len());
