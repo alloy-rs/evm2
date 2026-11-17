@@ -54,6 +54,7 @@ fn run_probe<I: evm2::Inspector<BaseEvmTypes>>(inspector: &mut I) {
         &Bytes::new(),
         U256::ZERO,
         &mut gas,
+        false,
     )
     .unwrap();
     assert!(execute_initial_frame(&mut evm, frame, &mut gas, 100_000, 0).unwrap().is_success());

@@ -566,6 +566,12 @@ pub struct InitialFrame<T: EvmTypes> {
 /// The frame's `gas_limit`/`reservoir` snapshot `tx_gas` after the charges. When a charge runs out
 /// of gas the transaction stays valid but is included as an out-of-gas halt: the returned frame
 /// is [`halted_initial_frame`], which [`execute_initial_frame`] halts without entering execution.
+/// When `require_code` is set for a system call, reject empty destination code at its initial
+/// account load, before resolving EIP-7702 delegation.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The frame needs transaction inputs and its system-call code policy."
+)]
 pub fn prepare_initial_frame<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
@@ -574,6 +580,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     input: &Bytes,
     value: U256,
     tx_gas: &mut GasTracker,
+    require_code: bool,
 ) -> HandlerResult<InitialFrame<T>> {
     // A failed charge leaves `tx_gas` out of range, so the halted frame reports the budget the
     // phase started with.
@@ -587,7 +594,11 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 let mut account = host.state.account(&to)?;
                 // A nonexistent recipient reads as an empty account (EIP-161).
                 let recipient_is_empty = account.get().is_none_or(AccountInfo::is_empty);
-                (recipient_is_empty, account.load_code()?)
+                let code = account.load_code()?;
+                if require_code && code.is_empty() {
+                    return Err(HandlerError::MissingSystemContractCode(to));
+                }
+                (recipient_is_empty, code)
             };
             let mut code_address = to;
             if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
@@ -1419,6 +1430,7 @@ mod tests {
             &Bytes::new(),
             U256::ZERO,
             &mut tx_gas,
+            false,
         )
         .unwrap();
         assert_eq!(message.destination, target);

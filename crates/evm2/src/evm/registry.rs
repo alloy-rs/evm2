@@ -10,7 +10,7 @@
 use crate::{AnyError, DatabaseError, EvmTypesHost, ExecutionError};
 use alloc::sync::Arc;
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{U256, map::HashMap};
+use alloy_primitives::{Address, U256, map::HashMap};
 use core::{error::Error, fmt, marker::PhantomData};
 use thiserror::Error;
 
@@ -23,6 +23,9 @@ pub enum HandlerError {
     /// Database error propagated as a transaction handler failure.
     #[error("database error: {0}")]
     Database(#[source] DatabaseError),
+    /// A system call requires code, but its destination has none.
+    #[error("system contract {0} has no code")]
+    MissingSystemContractCode(Address),
     /// Unrecoverable execution error.
     #[error("fatal error: {0}")]
     Fatal(#[source] AnyError),

@@ -129,6 +129,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         &tx.input,
         tx.value,
         &mut tx_gas,
+        false,
     )?;
     let result =
         execute_initial_frame(req.host, frame, &mut tx_gas, execution_gas_limit, reservoir)?;

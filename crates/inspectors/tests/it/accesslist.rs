@@ -176,6 +176,7 @@ fn later_top_level_call_keeps_slots_touched_by_earlier_calls() {
             &Bytes::new(),
             U256::ZERO,
             &mut gas,
+            false,
         )
         .unwrap();
         assert!(execute_initial_frame(&mut evm, frame, &mut gas, 100_000, 0).unwrap().is_success());
