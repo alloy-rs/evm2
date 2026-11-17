@@ -1841,9 +1841,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         message: &'frame Message<T>,
     ) -> Result<InstrStop, ExecutionError> {
         let guard = self.enter_execution();
-        if guard.evm.current_frame.is_none() {
-            guard.evm.interpreter_pool.trim();
-        }
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
         if let Some((range, frame)) = message.input.borrowed_range() {
@@ -2089,6 +2086,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         &mut self,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
+        if self.current_frame.is_none() {
+            self.interpreter_pool.trim();
+        }
         let checkpoint = self.state.checkpoint();
         let result = if self.inspector.is_some() {
             self.execute_message_inspected(message, None)

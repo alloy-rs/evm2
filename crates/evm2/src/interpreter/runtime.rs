@@ -1009,6 +1009,7 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
     /// frame's caller reads its output after it returns to the pool, so trimming then is too
     /// early. Frames return in the order they finish, so the shallowest, most reused ones are
     /// last.
+    #[inline(never)]
     pub(crate) fn trim(&mut self) {
         let excess = self.frames.len().saturating_sub(MAX_IDLE_FRAMES);
         self.frames.drain(..excess);
