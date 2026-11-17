@@ -726,7 +726,32 @@ pub struct Matcher {
     keys: [u8; 2048],
     filler: u8,
     active: bool,
+    variant: Variant,
 }
+
+/// Which superinstructions a translation uses: the patterns that apply, and the byte written over
+/// slot opcodes in the code. Configurations with the same variant translate code the same way, so
+/// a translation made for one applies to the other (most forks change opcodes no pattern uses).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Variant {
+    /// Bit `i` is set when [`PATTERNS`]`[i]` applies.
+    pub active: u128,
+    /// The undefined opcode written over slot opcodes in the code.
+    pub filler: u8,
+}
+
+const _: () = assert!(PATTERNS.len() <= 128, "a variant has a bit per pattern");
+
+/// Index in [`PATTERNS`] by slot, or `u8::MAX`.
+const SLOT_INDEX: [u8; 256] = {
+    let mut index = [u8::MAX; 256];
+    let mut i = 0;
+    while i < PATTERNS.len() {
+        index[PATTERNS[i].slot as usize] = i as u8;
+        i += 1;
+    }
+    index
+};
 
 impl Matcher {
     /// Prepares the superinstructions that apply with `ops`; see [`Ops::is_active`].
@@ -743,6 +768,7 @@ impl Matcher {
             keys: [0; 2048],
             filler: op::INVALID,
             active: false,
+            variant: Variant { active: 0, filler: 0 },
         };
         let mut slots = OpSet::EMPTY;
         let mut i = 0;
@@ -750,6 +776,7 @@ impl Matcher {
             if ops.is_active(PATTERNS[i]) {
                 slots.insert(PATTERNS[i].slot);
                 m.active = true;
+                m.variant.active |= 1 << i;
             }
             i += 1;
         }
@@ -877,6 +904,157 @@ impl Matcher {
     #[inline]
     pub const fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// Returns the variant of the translations it makes.
+    #[inline]
+    pub const fn variant(&self) -> Variant {
+        let mut v = self.variant;
+        v.filler = self.filler;
+        v
+    }
+}
+
+/// Stored translations: a record of the bytes translation changed, which turns the original code
+/// back into its translation much faster than translating it again.
+///
+/// A record is a version byte, the [`Variant`] (16-byte pattern mask and filler), the code length
+/// (u32), the number of changes (u32) and a checksum (u64) of all of it, then each change as the
+/// distance from the previous one (LEB128) and its byte. All integers are little endian.
+pub mod record {
+    use super::{PATTERNS, SLOT_INDEX, Variant, is_slot, match_at, offsets, valid_target};
+    use alloc::{boxed::Box, vec::Vec};
+
+    const VERSION: u8 = 1;
+    const HEADER: usize = 1 + 16 + 1 + 4 + 4 + 8;
+
+    /// Returns the record of translation `translated` of `code`, which is `len` bytes long.
+    pub fn encode(variant: Variant, code: &[u8], len: usize, translated: &[u8]) -> Vec<u8> {
+        assert!(len <= code.len() && len <= translated.len() && len <= u32::MAX as usize);
+        let mut out = Vec::with_capacity(HEADER + len / 4);
+        out.push(VERSION);
+        out.extend_from_slice(&variant.active.to_le_bytes());
+        out.push(variant.filler);
+        out.extend_from_slice(&(len as u32).to_le_bytes());
+        out.extend_from_slice(&[0; 12]);
+        let (mut count, mut last) = (0u32, 0usize);
+        for pc in 0..len {
+            if translated[pc] != code[pc] {
+                let mut delta = pc - last;
+                while delta >= 0x80 {
+                    out.push(delta as u8 | 0x80);
+                    delta >>= 7;
+                }
+                out.push(delta as u8);
+                out.push(translated[pc]);
+                last = pc;
+                count += 1;
+            }
+        }
+        out[22..26].copy_from_slice(&count.to_le_bytes());
+        let sum = checksum(&out);
+        out[26..34].copy_from_slice(&sum.to_le_bytes());
+        out
+    }
+
+    /// Applies `record` to `code`, the padded code that is `len` bytes long with jump destinations
+    /// `jumpdests`, and returns the variant and the translation.
+    ///
+    /// Returns `None` for a record that does not check out: of another version or length, with a
+    /// wrong checksum, or with a change that is not at an instruction start past the last match,
+    /// that is no superinstruction of its variant whose sequence is at that position, or whose
+    /// constant jump target is no jump destination. Every translation accepted this way runs
+    /// like the code: immediates are untouched and fused sequences do not overlap.
+    pub fn decode(
+        record: &[u8],
+        code: &[u8],
+        len: usize,
+        jumpdests: &[u8],
+    ) -> Option<(Variant, Box<[u8]>)> {
+        if record.len() < HEADER || record[0] != VERSION || len > code.len() {
+            return None;
+        }
+        let u32_at = |i: usize| u32::from_le_bytes(record[i..i + 4].try_into().unwrap()) as usize;
+        let active = u128::from_le_bytes(record[1..17].try_into().unwrap());
+        let variant = Variant { active, filler: record[17] };
+        let count = u32_at(22);
+        let sum = u64::from_le_bytes(record[26..34].try_into().unwrap());
+        if u32_at(18) != len || checksum(record) != sum {
+            return None;
+        }
+        let mut out: Box<[u8]> = code.into();
+        let (mut at, mut pc) = (HEADER, 0usize);
+        // The next instruction start not inside an accepted match.
+        let mut walk = 0usize;
+        for i in 0..count {
+            let mut delta = 0usize;
+            let mut shift = 0;
+            loop {
+                let b = *record.get(at)?;
+                at += 1;
+                delta |= ((b & 0x7F) as usize).checked_shl(shift)?;
+                shift += 7;
+                if b < 0x80 {
+                    break;
+                }
+            }
+            if i > 0 && delta == 0 {
+                return None;
+            }
+            pc = pc.checked_add(delta)?;
+            let byte = *record.get(at)?;
+            at += 1;
+            if pc >= len {
+                return None;
+            }
+            while walk < pc {
+                walk += super::instruction_len(code[walk]);
+            }
+            if walk != pc {
+                return None;
+            }
+            let slot_index = SLOT_INDEX[byte as usize] as usize;
+            let end = if byte == variant.filler {
+                (is_slot(code[pc]) && active >> SLOT_INDEX[code[pc] as usize] & 1 != 0)
+                    .then_some(pc + 1)
+            } else if slot_index < PATTERNS.len() && active >> slot_index & 1 != 0 {
+                let sx = PATTERNS[slot_index];
+                match_at(code, len, pc, sx).filter(|_| {
+                    sx.static_jump().is_none_or(|n| {
+                        let imm = pc + offsets(sx)[sx.len() - 2] + 1;
+                        valid_target(&code[imm..imm + n], len, jumpdests)
+                    })
+                })
+            } else {
+                None
+            };
+            walk = end?;
+            out[pc] = byte;
+        }
+        (at == record.len()).then_some((variant, out))
+    }
+
+    /// A 64-bit checksum of `record` with its checksum field as zero.
+    fn checksum(record: &[u8]) -> u64 {
+        let mut h = 0x243F_6A88_85A3_08D3u64;
+        let mut mix = |w: u64| {
+            h = (h ^ w).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            h ^= h >> 29;
+        };
+        let (head, tail) = record.split_at(HEADER);
+        for c in head[..26].chunks(8) {
+            let mut w = [0u8; 8];
+            w[..c.len()].copy_from_slice(c);
+            mix(u64::from_le_bytes(w));
+        }
+        let mut chunks = tail.chunks_exact(8);
+        for c in &mut chunks {
+            mix(u64::from_le_bytes(c.try_into().unwrap()));
+        }
+        let mut w = [0u8; 8];
+        w[..chunks.remainder().len()].copy_from_slice(chunks.remainder());
+        mix(u64::from_le_bytes(w) ^ (record.len() as u64) << 56);
+        h
     }
 }
 
@@ -1489,6 +1667,88 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn records_round_trip_and_reject_damage() {
+        let mut s = 0x6A09E667F3BCC908u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let alphabet: Vec<u8> =
+            PATTERNS.iter().flat_map(|p| (0..p.len()).map(move |i| p.op(i))).collect();
+        let m = Matcher::new(prague());
+        let mut changed = 0;
+        for round in 0..2000 {
+            let n = (next() % 600) as usize;
+            let code: Vec<u8> = (0..n)
+                .map(|_| {
+                    let r = next();
+                    if r % 5 == 0 {
+                        (r >> 24) as u8
+                    } else {
+                        alphabet[(r >> 8) as usize % alphabet.len()]
+                    }
+                })
+                .collect();
+            let padded = pad(&code);
+            let jumps = reference_jumpdests(&code);
+            let out = translate(&padded, n, &m, &jumps);
+            let rec = record::encode(m.variant(), &padded, n, &out);
+            let (variant, back) = record::decode(&rec, &padded, n, &jumps).expect("round trip");
+            assert_eq!(variant, m.variant());
+            assert_eq!(&back[..], &out[..], "round {round}");
+            // Any one flipped byte is rejected.
+            if rec.len() > 34 {
+                let mut bad = rec.clone();
+                let i = 34 + (next() as usize % (rec.len() - 34));
+                bad[i] ^= 1 << (next() % 8);
+                assert!(record::decode(&bad, &padded, n, &jumps).is_none());
+                changed += 1;
+            }
+            // A record for other code of the same length is rejected unless the changes fit it.
+            assert!(record::decode(&rec, &padded, n + 1, &jumps).is_none());
+        }
+        assert!(changed > 1000);
+    }
+
+    #[test]
+    fn records_that_change_immediates_or_overlap_are_rejected() {
+        use op::*;
+        let m = Matcher::new(prague());
+        let check = |code: &[u8], at: usize, ops: &[u8]| {
+            let padded = pad(code);
+            let jumps = reference_jumpdests(code);
+            let mut forged = translate(&padded, code.len(), &m, &jumps);
+            forged[at] = slot(ops);
+            let rec = record::encode(m.variant(), &padded, code.len(), &forged);
+            record::decode(&rec, &padded, code.len(), &jumps).is_none()
+        };
+        // POP POP as the immediate of PUSH2: not an instruction start.
+        assert!(check(&[PUSH2, POP, POP, 0x00], 1, &[POP, POP]));
+        // POP POP inside DUP2 POP POP ... after a match that covers it.
+        assert!(check(&[POP, POP, POP, POP, 0x00], 1, &[POP, POP]));
+    }
+
+    #[test]
+    fn record_with_a_bad_jump_is_rejected() {
+        use op::*;
+        // PUSH2 0x0005 JUMPI, JUMPDEST at 5: fused. A record that fuses a jump to 6 is not
+        // accepted, even with a correct checksum.
+        let code = [PUSH2, 0, 5, JUMPI, 0x00, JUMPDEST, PUSH2, 0, 6, JUMPI];
+        let padded = pad(&code);
+        let jumps = reference_jumpdests(&code);
+        let m = Matcher::new(prague());
+        let out = translate(&padded, code.len(), &m, &jumps);
+        assert_eq!(out[0], slot(&[PUSH2, JUMPI]));
+        assert_eq!(out[6], PUSH2);
+        let mut forged = out.clone();
+        forged[6] = slot(&[PUSH2, JUMPI]);
+        let rec = record::encode(m.variant(), &padded, code.len(), &forged);
+        assert!(record::decode(&rec, &padded, code.len(), &jumps).is_none());
     }
 
     #[test]

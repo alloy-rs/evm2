@@ -83,11 +83,11 @@ struct BytecodeInner {
 #[cfg(feature = "sx")]
 pub(crate) const SX_TRANSLATE_AFTER: u32 = 8;
 
-/// Legacy bytecode translated to superinstructions, and the opcodes it was translated for.
+/// Legacy bytecode translated to superinstructions, and the variant it was translated for.
 #[cfg(feature = "sx")]
 #[derive(Debug)]
 struct SxCode {
-    ops: evm2_sx::Ops,
+    variant: evm2_sx::Variant,
     code: alloc::boxed::Box<[u8]>,
 }
 
@@ -413,9 +413,39 @@ impl Bytecode {
         let sx = inner.sx.get_or_init(|| {
             let jumps = self.jump_table().as_slice();
             let code = evm2_sx::translate(&inner.bytecode, inner.original_len, matcher, jumps);
-            SxCode { ops: *matcher.ops(), code }
+            SxCode { variant: matcher.variant(), code }
         });
-        (sx.ops == *matcher.ops()).then_some(&sx.code)
+        (sx.variant == matcher.variant()).then_some(&sx.code)
+    }
+
+    /// Returns a record of this code's translation to superinstructions, to store and load with
+    /// [`Self::set_sx_record`] instead of translating again; `None` until it is translated, as
+    /// [`ExecutionConfig::analyze`](crate::evm::config::ExecutionConfig::analyze) does.
+    #[cfg(feature = "sx")]
+    pub fn sx_record(&self) -> Option<alloc::vec::Vec<u8>> {
+        let inner = self.inner();
+        let sx = inner.sx.get()?;
+        Some(evm2_sx::record::encode(sx.variant, &inner.bytecode, inner.original_len, &sx.code))
+    }
+
+    /// Loads a translation from a record made by [`Self::sx_record`] for this code, unless the code
+    /// is translated already, and returns whether it holds the recorded translation now.
+    ///
+    /// A record is checked before it is used: one that does not fit this code is ignored, and a
+    /// recorded translation is used only by configurations it was made for.
+    #[cfg(feature = "sx")]
+    pub fn set_sx_record(&self, record: &[u8]) -> bool {
+        if !self.is_legacy() || self.inner().sx.get().is_some() {
+            return false;
+        }
+        let inner = self.inner();
+        let jumps = self.jump_table().as_slice();
+        let Some((variant, code)) =
+            evm2_sx::record::decode(record, &inner.bytecode, inner.original_len, jumps)
+        else {
+            return false;
+        };
+        inner.sx.set(SxCode { variant, code }).is_ok()
     }
 
     /// Calculates or returns cached hash of the bytecode.

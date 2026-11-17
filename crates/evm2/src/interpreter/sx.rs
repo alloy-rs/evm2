@@ -636,6 +636,52 @@ mod tests {
     }
 
     #[test]
+    fn records_load_and_run_like_translation() {
+        let mut s = 0x3C6EF372FE94F82Bu64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let mut config =
+            ExecutionConfig::<TestTypes>::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        config.set_superinstructions(true);
+        let prague = {
+            let mut c = ExecutionConfig::<TestTypes>::for_base_spec::<BaseEvmConfigSelector>(
+                SpecId::PRAGUE,
+            );
+            c.set_superinstructions(true);
+            c
+        };
+        let mut loaded = 0;
+        for _ in 0..500 {
+            let code = random_code(&mut next);
+            let original = legacy_bytecode(code.clone());
+            config.analyze(&original);
+            let record = original.sx_record().expect("translated");
+            let copy = legacy_bytecode(code.clone());
+            assert!(copy.sx_record().is_none());
+            assert!(copy.set_sx_record(&record));
+            assert!(!copy.set_sx_record(&record), "loads once");
+            assert_eq!(copy.sx_record().as_deref(), Some(&record[..]));
+            // Prague and Osaka differ in CLZ only, which no pattern uses: same variant.
+            let table = config.sx_table().unwrap();
+            assert_eq!(table.matcher.variant(), prague.sx_table().unwrap().matcher.variant());
+            assert_eq!(
+                copy.sx_code(&table.matcher, false),
+                original.sx_code(&table.matcher, false)
+            );
+            // A record of other code is rejected.
+            let mut other = code.clone();
+            other.push(op::JUMPDEST);
+            assert!(!legacy_bytecode(other).set_sx_record(&record));
+            loaded += 1;
+        }
+        assert_eq!(loaded, 500);
+    }
+
+    #[test]
     fn applies_per_spec() {
         let on = |spec| {
             let mut config =
