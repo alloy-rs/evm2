@@ -21,7 +21,10 @@
 //! With `PIN_CPU` set, the timed runs execute on that CPU only, and everything else (fixture
 //! loading, JIT compile threads) on the CPUs other than it and its SMT siblings.
 //!
-//! Prints one tab-separated line per timed run: chunk, mode, rep, nanoseconds.
+//! Prints one tab-separated line per timed run: chunk, mode, rep, nanoseconds; with `COUNTERS=1`
+//! (needs perf access) also user-space cycles, instructions and branch misses of the timed region.
+//! With `PERF_CTL` and `PERF_ACK` naming the fifos of `perf record --control fifo:CTL,ACK -D -1`,
+//! profiling is enabled only around timed runs of the mode in `PROFILE_MODE`.
 
 use evm2::{SpecId, evm::InMemoryDB};
 use evm2_eest::{
@@ -194,6 +197,9 @@ mod jit {
     }
     pub(crate) fn report(_: &str, _: &str, _: &Backend) {}
     pub(crate) fn start(_: &Backend) {}
+    pub(crate) fn threads() -> usize {
+        0
+    }
     pub(crate) fn precompile(_: &Backend, _: &InMemoryDB, _: SpecId) -> (usize, usize) {
         unreachable!()
     }
@@ -228,6 +234,79 @@ fn interp(
         .map_err(|e| e.to_string())
 }
 
+/// User-space hardware counters of the calling thread.
+struct Counters {
+    fds: [i32; 3],
+}
+
+impl Counters {
+    fn open() -> Option<Self> {
+        if std::env::var_os("COUNTERS").is_none_or(|v| v == "0") {
+            return None;
+        }
+        // perf_event_attr, PERF_ATTR_SIZE_VER5 bytes.
+        let mut fds = [0; 3];
+        for (fd, config) in fds.iter_mut().zip([0u64, 1, 5]) {
+            let mut attr = [0u64; 14];
+            attr[0] = 112u64 << 32; // type PERF_TYPE_HARDWARE (0), size 112
+            attr[1] = config; // cycles, instructions, branch misses
+            attr[5] = 1 | 1 << 5 | 1 << 6; // disabled, exclude_kernel, exclude_hv
+            // SAFETY: `attr` outlives the call.
+            *fd = unsafe { libc::syscall(libc::SYS_perf_event_open, attr.as_ptr(), 0, -1, -1, 0) } as i32;
+            assert!(*fd >= 0, "perf_event_open: {}", std::io::Error::last_os_error());
+        }
+        Some(Self { fds })
+    }
+
+    fn start(&self) {
+        for fd in self.fds {
+            // SAFETY: `fd` is a perf event; RESET then ENABLE.
+            unsafe {
+                libc::ioctl(fd, 0x2403, 0);
+                libc::ioctl(fd, 0x2400, 0);
+            }
+        }
+    }
+
+    fn stop(&self) -> [u64; 3] {
+        let mut out = [0; 3];
+        for (i, fd) in self.fds.iter().enumerate() {
+            // SAFETY: DISABLE, then read the 8-byte count.
+            unsafe {
+                libc::ioctl(*fd, 0x2401, 0);
+                libc::read(*fd, (&raw mut out[i]).cast(), 8);
+            }
+        }
+        out
+    }
+}
+
+/// Enables a `perf record --control` session around timed runs of one mode.
+struct PerfCtl {
+    ctl: std::fs::File,
+    ack: std::fs::File,
+    mode: String,
+}
+
+impl PerfCtl {
+    fn open() -> Option<Self> {
+        let ctl = std::env::var("PERF_CTL").ok()?;
+        let ack = std::env::var("PERF_ACK").ok()?;
+        Some(Self {
+            ctl: std::fs::OpenOptions::new().write(true).open(ctl).unwrap(),
+            ack: std::fs::File::open(ack).unwrap(),
+            mode: std::env::var("PROFILE_MODE").unwrap_or_default(),
+        })
+    }
+
+    fn send(&mut self, cmd: &str) {
+        use std::io::{Read, Write};
+        self.ctl.write_all(cmd.as_bytes()).unwrap();
+        let mut buf = [0u8; 5];
+        self.ack.read_exact(&mut buf).unwrap();
+    }
+}
+
 /// Moves the calling thread to CPU `cpu`, or lets it run on `cpus` again.
 fn pin(cpus: &[usize]) {
     // SAFETY: `set` is a valid CPU set for this call.
@@ -260,6 +339,8 @@ fn main() {
     let modes: Vec<(String, Mode)> =
         args[1].split(',').map(|m| (m.to_string(), parse(m))).collect();
     let timed = Config { validate: false, ..Default::default() };
+    let counters = Counters::open();
+    let mut perf_ctl = PerfCtl::open();
     let checked = Config { validate: false, compare_receipt_root: true, ..Default::default() };
     for path in &args[2..] {
         let path = PathBuf::from(path);
@@ -318,15 +399,31 @@ fn main() {
             for k in 0..modes.len() {
                 let (m, mode) = &modes[(k + rep) % modes.len()];
                 let mut db = pre();
+                let mut extra = String::new();
                 let ns = match *mode {
                     Mode::Interp { sx, warm } => {
                         set_sx(sx);
                         if warm {
                             prewarm(&db, spec);
                         }
+                        let profile = perf_ctl.as_mut().filter(|p| p.mode == *m);
+                        let profile = profile.map(|p| {
+                            p.send("enable\n");
+                            p
+                        });
+                        if let Some(c) = &counters {
+                            c.start();
+                        }
                         let start = Instant::now();
                         let r = interp(&path, name, case, &mut db, timed);
                         let ns = start.elapsed().as_nanos();
+                        if let Some(c) = &counters {
+                            let [cyc, ins, bm] = c.stop();
+                            extra = format!("\t{cyc}\t{ins}\t{bm}");
+                        }
+                        if let Some(p) = profile {
+                            p.send("disable\n");
+                        }
                         std::hint::black_box(r).expect("replay");
                         ns
                     }
@@ -355,7 +452,7 @@ fn main() {
                         ns
                     }
                 };
-                println!("{chunk}\t{m}\t{rep}\t{ns}");
+                println!("{chunk}\t{m}\t{rep}\t{ns}{extra}");
                 drop(db);
             }
         }

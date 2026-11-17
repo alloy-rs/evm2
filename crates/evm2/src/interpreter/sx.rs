@@ -20,13 +20,13 @@ use crate::{
 use core::{hint::cold_path, marker::PhantomData};
 use evm2_sx::{OpSet, Ops, PATTERNS, Sx, op};
 
-const _: () = assert!(PATTERNS.len() == 48, "update `for_each_pattern!`");
+const _: () = assert!(PATTERNS.len() == 43, "update `for_each_pattern!`");
 
 macro_rules! for_each_pattern {
     ($m:ident) => {
         $m!(
             0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
-            24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47
+            24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42
         )
     };
 }
@@ -103,7 +103,8 @@ const fn flags(sx: Sx) -> InstructionFlags {
     let mut flags = InstructionFlags::SETS_PC;
     let mut i = 0;
     while i < sx.len() {
-        if matches!(sx.op(i), op::MLOAD | op::MSTORE) {
+        // MLOAD and MSTORE charge memory expansion; a jump charges the JUMPDEST it skips.
+        if matches!(sx.op(i), op::MLOAD | op::MSTORE | op::JUMP | op::JUMPI) {
             flags = flags.union(InstructionFlags::DYNAMIC_GAS);
         }
         i += 1;
@@ -111,91 +112,112 @@ const fn flags(sx: Sx) -> InstructionFlags {
     flags
 }
 
-/// Returns the code offset of each opcode of `sx` from its first, and the sequence length last.
-const fn offsets(sx: Sx) -> [usize; 9] {
-    let mut offsets = [0; 9];
+/// No value.
+const NONE: u8 = u8::MAX;
+
+/// Values a plan may hold: the input words, then one per opcode that produces a word.
+const VALS: usize = 16;
+
+/// One opcode of a plan: the values it reads (`a` the top) and writes, and the code offset of a
+/// PUSH immediate.
+#[derive(Clone, Copy)]
+struct Step {
+    a: u8,
+    b: u8,
+    out: u8,
+    imm: u8,
+}
+
+/// A superinstruction compiled to straight-line code over numbered values.
+///
+/// The stack words it reads are values `0..input`, value `k` being the word `k + 1` deep. DUP, SWAP
+/// and POP only move value numbers, so they cost nothing at run time; every other opcode makes a new
+/// value. When the sequence ends, `out` holds the values of the stack slots from `input` deep up, and
+/// only slots whose value changed are written.
+#[derive(Clone, Copy)]
+struct Plan {
+    input: usize,
+    steps: [Step; 8],
+    out: [u8; VALS],
+    out_len: usize,
+    /// The target and condition of a final JUMP or JUMPI.
+    jump: u8,
+    cond: u8,
+}
+
+const fn plan(sx: Sx) -> Plan {
+    let (input, growth) = sx.stack_bounds();
+    let offsets = evm2_sx::offsets(sx);
+    assert!(input + growth <= VALS);
+    let mut stack = [NONE; VALS];
+    let mut len = 0;
+    while len < input {
+        stack[len] = (input - 1 - len) as u8;
+        len += 1;
+    }
+    let mut vals = input;
+    let none = Step { a: NONE, b: NONE, out: NONE, imm: 0 };
+    let mut p = Plan { input, steps: [none; 8], out: [NONE; VALS], out_len: 0, jump: NONE, cond: NONE };
     let mut i = 0;
     while i < sx.len() {
-        offsets[i + 1] = offsets[i] + evm2_sx::instruction_len(sx.op(i));
+        let op = sx.op(i);
+        let mut s = none;
+        match op {
+            op::JUMPDEST => {}
+            op::PUSH0..=op::PUSH32 => {
+                s.out = vals as u8;
+                s.imm = offsets[i] as u8 + 1;
+                stack[len] = s.out;
+                len += 1;
+                vals += 1;
+            }
+            op::POP => len -= 1,
+            op::DUP1..=op::DUP4 => {
+                stack[len] = stack[len - (op - op::DUP1) as usize - 1];
+                len += 1;
+            }
+            op::SWAP1..=op::SWAP4 => {
+                let other = len - (op - op::SWAP1) as usize - 2;
+                let top = stack[len - 1];
+                stack[len - 1] = stack[other];
+                stack[other] = top;
+            }
+            op::ISZERO | op::MLOAD => {
+                s.a = stack[len - 1];
+                s.out = vals as u8;
+                stack[len - 1] = s.out;
+                vals += 1;
+            }
+            op::MSTORE => {
+                s.a = stack[len - 1];
+                s.b = stack[len - 2];
+                len -= 2;
+            }
+            op::JUMP => {
+                p.jump = stack[len - 1];
+                len -= 1;
+            }
+            op::JUMPI => {
+                p.jump = stack[len - 1];
+                p.cond = stack[len - 2];
+                len -= 2;
+            }
+            _ => {
+                s.a = stack[len - 1];
+                s.b = stack[len - 2];
+                s.out = vals as u8;
+                stack[len - 2] = s.out;
+                len -= 1;
+                vals += 1;
+            }
+        }
+        p.steps[i] = s;
         i += 1;
     }
-    let mut j = sx.len() + 1;
-    while j < 9 {
-        offsets[j] = offsets[sx.len()];
-        j += 1;
-    }
-    offsets
-}
-
-/// The words a superinstruction pushed and has not yet stored, above the stack in memory.
-///
-/// Every opcode of a sequence is known at compile time, so the number of cached words is known at
-/// each step and the cache lives in registers: a word pushed and popped within the sequence never
-/// reaches memory.
-struct Top {
-    cache: [Word; 4],
-    n: usize,
-    /// One past the topmost word in memory.
-    sp: *mut Word,
-}
-
-impl Top {
-    /// Returns the word `depth` words from the top, 1 being the top.
-    #[inline(always)]
-    const unsafe fn get(&self, depth: usize) -> Word {
-        if depth <= self.n {
-            self.cache[self.n - depth]
-        } else {
-            unsafe { self.sp.sub(depth - self.n).read() }
-        }
-    }
-
-    #[inline(always)]
-    const unsafe fn set(&mut self, depth: usize, value: Word) {
-        if depth <= self.n {
-            self.cache[self.n - depth] = value;
-        } else {
-            unsafe { self.sp.sub(depth - self.n).write(value) }
-        }
-    }
-
-    #[inline(always)]
-    const unsafe fn pop(&mut self) -> Word {
-        if self.n > 0 {
-            self.n -= 1;
-            self.cache[self.n]
-        } else {
-            unsafe {
-                self.sp = self.sp.sub(1);
-                self.sp.read()
-            }
-        }
-    }
-
-    #[inline(always)]
-    const unsafe fn push(&mut self, value: Word) {
-        if self.n == self.cache.len() {
-            unsafe {
-                self.sp.write(self.cache[0]);
-                self.sp = self.sp.add(1);
-            }
-            self.cache = [self.cache[1], self.cache[2], self.cache[3], value];
-        } else {
-            self.cache[self.n] = value;
-            self.n += 1;
-        }
-    }
-
-    /// Stores the cached words and returns one past the top of the stack.
-    #[inline(always)]
-    unsafe fn flush(self) -> *mut Word {
-        unsafe {
-            for i in 0..self.n {
-                self.sp.add(i).write(self.cache[i]);
-            }
-            self.sp.add(self.n)
-        }
-    }
+    assert!(vals <= VALS);
+    p.out = stack;
+    p.out_len = len;
+    p
 }
 
 /// Reads the `n`-byte big-endian immediate at `p`. Code is padded past its end, so reading up to
@@ -223,10 +245,48 @@ unsafe fn immediate(p: *const u8, n: usize) -> Word {
     Word::from_limbs(limbs)
 }
 
+/// A hint that keeps a branch a branch; nightly only, where the tail-call backend needs it anyway.
+#[cfg(tco)]
+use core::hint::likely;
+#[cfg(not(tco))]
+#[inline(always)]
+const fn likely(b: bool) -> bool {
+    b
+}
+
 #[inline(always)]
 fn word(b: bool) -> Word {
     Word::from(b as u64)
 }
+
+// Scalar limb arithmetic, so values stay in general registers: ruint's comparisons load words as
+// vectors, which keeps them in memory.
+#[inline(always)]
+fn is_zero(w: &Word) -> bool {
+    let l = w.as_limbs();
+    (l[0] | l[1] | l[2] | l[3]) == 0
+}
+
+#[inline(always)]
+fn eq(a: &Word, b: &Word) -> bool {
+    let (a, b) = (a.as_limbs(), b.as_limbs());
+    ((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2]) | (a[3] ^ b[3])) == 0
+}
+
+/// Returns whether `a < b`.
+#[inline(always)]
+fn lt(a: &Word, b: &Word) -> bool {
+    let (a, b) = (a.as_limbs(), b.as_limbs());
+    // Subtract with borrow; the final borrow is the answer.
+    let (_, c0) = a[0].overflowing_sub(b[0]);
+    let (_, c1) = a[1].borrowing_sub(b[1], c0);
+    let (_, c2) = a[2].borrowing_sub(b[2], c1);
+    let (_, c3) = a[3].borrowing_sub(b[3], c2);
+    c3
+}
+
+/// Static gas of the JUMPDEST a jump skips; 1 in every spec.
+const JUMPDEST_GAS: u64 = 1;
 
 /// Runs superinstruction `I`.
 #[inline(always)]
@@ -235,9 +295,11 @@ fn run<T: EvmTypesHost, const I: usize>(
     stack: StackMut<'_>,
     state: &mut InterpreterState<'_, '_, T>,
 ) -> Result {
+    let input = const { plan(PATTERNS[I]).input };
+    let growth = const { PATTERNS[I].stack_bounds().1 };
+    let out_len = const { plan(PATTERNS[I]).out_len };
     let len = const { PATTERNS[I].len() };
-    let (input, growth) = const { PATTERNS[I].stack_bounds() };
-    let offsets = const { offsets(PATTERNS[I]) };
+    let span = const { evm2_sx::offsets(PATTERNS[I])[PATTERNS[I].len()] };
 
     // SAFETY: Words below the length are initialized, and the checks keep every access in bounds.
     let (base, stack_len) = unsafe { stack.into_raw_parts() };
@@ -250,106 +312,127 @@ fn run<T: EvmTypesHost, const I: usize>(
         cold_path();
         return Err(InstrStop::StackOverflow);
     }
-    let mut top = Top { cache: [Word::ZERO; 4], n: 0, sp: unsafe { base.add(height) } };
+    // The stack slots the sequence reads and writes, from `input` deep.
+    let window = unsafe { base.add(height - input) };
     let code = pc.as_ptr();
-    // A final JUMP or JUMPI: the target, and the condition for JUMPI.
-    let mut jump: Option<(Word, Option<Word>)> = None;
+    let mut v = [Word::ZERO; VALS];
+
+    macro_rules! inputs {
+        ($($k:literal)*) => {$(
+            if $k < input {
+                // SAFETY: The value is within the stack's length.
+                v[$k] = unsafe { window.add(input - 1 - $k).read() };
+            }
+        )*};
+    }
+    inputs!(0 1 2 3 4 5 6 7);
 
     macro_rules! steps {
         ($($i:literal)*) => {$(
             if $i < len {
                 let op = const { PATTERNS[I].op($i) };
-                // SAFETY: The checks above cover the stack accesses, and the immediate is in the
-                // padded code.
-                unsafe {
-                    match op {
-                        op::JUMPDEST => {}
-                        op::PUSH0..=op::PUSH32 => {
-                            let n = (op - op::PUSH0) as usize;
-                            top.push(immediate(code.add(offsets[$i] + 1), n));
-                        }
-                        op::POP => {
-                            let _ = top.pop();
-                        }
-                        op::DUP1..=op::DUP4 => {
-                            let v = top.get((op - op::DUP1) as usize + 1);
-                            top.push(v);
-                        }
-                        op::SWAP1..=op::SWAP4 => {
-                            let k = (op - op::SWAP1) as usize + 2;
-                            let (a, b) = (top.get(1), top.get(k));
-                            top.set(1, b);
-                            top.set(k, a);
-                        }
-                        op::ISZERO => {
-                            let a = top.pop();
-                            top.push(word(a.is_zero()));
-                        }
-                        op::ADD | op::MUL | op::SUB | op::LT | op::GT | op::SGT | op::EQ
-                        | op::AND | op::SHL | op::SHR => {
-                            let a = top.pop();
-                            let b = top.pop();
-                            top.push(match op {
-                                op::ADD => a.wrapping_add(b),
-                                op::MUL => a.wrapping_mul(b),
-                                op::SUB => a.wrapping_sub(b),
-                                op::LT => word(a < b),
-                                op::GT => word(a > b),
-                                op::SGT => word(i256_lt(&b, &a)),
-                                op::EQ => word(a == b),
-                                op::AND => a & b,
-                                op::SHL => {
-                                    let shift = a.to_usize_saturated();
-                                    if shift < 256 { b << shift } else { Word::ZERO }
-                                }
-                                _ => {
-                                    let shift = a.to_usize_saturated();
-                                    if shift < 256 { b >> shift } else { Word::ZERO }
-                                }
-                            });
-                        }
-                        op::MLOAD => {
-                            let offset = top.pop().to_usize()?;
-                            let (gas, state) = split_gas_state(&raw mut *state);
-                            state.resize_memory(gas, offset, 32)?;
-                            top.push(state.memory().get_word(offset));
-                        }
-                        op::MSTORE => {
-                            let offset = top.pop().to_usize()?;
-                            let value = top.pop();
-                            let (gas, state) = split_gas_state(&raw mut *state);
-                            state.resize_memory(gas, offset, 32)?;
-                            state.memory().set(offset, &value.to_be_bytes::<32>());
-                        }
-                        op::JUMP => jump = Some((top.pop(), None)),
-                        op::JUMPI => {
-                            let target = top.pop();
-                            jump = Some((target, Some(top.pop())));
-                        }
-                        _ => unreachable!(),
+                let a = const { plan(PATTERNS[I]).steps[$i].a as usize % VALS };
+                let b = const { plan(PATTERNS[I]).steps[$i].b as usize % VALS };
+                let out = const { plan(PATTERNS[I]).steps[$i].out as usize % VALS };
+                let imm = const { plan(PATTERNS[I]).steps[$i].imm as usize };
+                match op {
+                    op::PUSH0..=op::PUSH32 => {
+                        // SAFETY: The immediate is in the padded code.
+                        v[out] = unsafe { immediate(code.add(imm), (op - op::PUSH0) as usize) };
                     }
+                    op::ISZERO => v[out] = word(is_zero(&v[a])),
+                    op::ADD => v[out] = v[a].wrapping_add(v[b]),
+                    op::MUL => v[out] = v[a].wrapping_mul(v[b]),
+                    op::SUB => v[out] = v[a].wrapping_sub(v[b]),
+                    op::LT => v[out] = word(lt(&v[a], &v[b])),
+                    op::GT => v[out] = word(lt(&v[b], &v[a])),
+                    op::SGT => v[out] = word(i256_lt(&v[b], &v[a])),
+                    op::EQ => v[out] = word(eq(&v[a], &v[b])),
+                    op::AND => v[out] = v[a] & v[b],
+                    op::SHL => {
+                        let shift = v[a].to_usize_saturated();
+                        v[out] = if shift < 256 { v[b] << shift } else { Word::ZERO };
+                    }
+                    op::SHR => {
+                        let shift = v[a].to_usize_saturated();
+                        v[out] = if shift < 256 { v[b] >> shift } else { Word::ZERO };
+                    }
+                    op::MLOAD => {
+                        let offset = v[a].to_usize()?;
+                        // SAFETY: `state` is valid for the call.
+                        let (gas, state) = unsafe { split_gas_state(&raw mut *state) };
+                        state.resize_memory(gas, offset, 32)?;
+                        v[out] = state.memory().get_word(offset);
+                    }
+                    op::MSTORE => {
+                        let offset = v[a].to_usize()?;
+                        // SAFETY: `state` is valid for the call.
+                        let (gas, state) = unsafe { split_gas_state(&raw mut *state) };
+                        state.resize_memory(gas, offset, 32)?;
+                        state.memory().set(offset, &v[b].to_be_bytes::<32>());
+                    }
+                    _ => {}
                 }
             }
         )*};
     }
     steps!(0 1 2 3 4 5 6 7);
 
-    // SAFETY: The final height is within the checked bounds.
-    *stack_len = unsafe { top.flush().offset_from(base) } as usize;
-    if let Some((target, cond)) = jump
-        && cond.is_none_or(|cond| !cond.is_zero())
-    {
-        let target = target.to_usize_saturated();
+    macro_rules! outputs {
+        ($($k:literal)*) => {$(
+            if $k < out_len {
+                let id = const { plan(PATTERNS[I]).out[$k] as usize % VALS };
+                // A slot keeps its word when it holds the input that was there.
+                if !(id < input && input - 1 - id == $k) {
+                    // SAFETY: The slot is below the checked limit.
+                    unsafe { window.add($k).write(v[id]) };
+                }
+            }
+        )*};
+    }
+    outputs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
+    *stack_len = height - input + out_len;
+
+    let jump = const { plan(PATTERNS[I]).jump };
+    let cond = const { plan(PATTERNS[I]).cond };
+    let taken = jump != NONE && (cond == NONE || !is_zero(&v[cond as usize % VALS]));
+    // A branch rather than a select: a predicted branch lets the next dispatch start before the
+    // condition is known.
+    if likely(taken) {
         let bytecode = state.bytecode();
-        if !bytecode.is_valid_jumpdest(target) {
-            cold_path();
-            return Err(InstrStop::InvalidJump);
-        }
-        // SAFETY: `target` is a valid jump destination of the running code.
-        unsafe { pc.set_unchecked(bytecode, target) };
+        let target = match const { PATTERNS[I].static_jump() } {
+            Some(n) if n <= 8 => {
+                // Translation fused this jump only because its constant target is a jump
+                // destination.
+                let at = const { evm2_sx::offsets(PATTERNS[I])[PATTERNS[I].len() - 2] + 1 };
+                // SAFETY: The immediate is in the padded code.
+                (unsafe {
+                    u64::from_be_bytes(code.add(at).cast::<[u8; 8]>().read_unaligned())
+                        >> (8 * (8 - n))
+                }) as usize
+            }
+            _ => {
+                let target = v[jump as usize % VALS].to_usize_saturated();
+                if !bytecode.is_valid_jumpdest(target) {
+                    cold_path();
+                    return Err(InstrStop::InvalidJump);
+                }
+                target
+            }
+        };
+        // Run the JUMPDEST the jump lands on here, unless translation fused it with what follows:
+        // charge its gas and continue after it, saving its dispatch.
+        // SAFETY: `target` is a jump destination, so it and the byte after it are in the code.
+        let lands_on_jumpdest = unsafe { *bytecode.as_ptr().add(target) } == op::JUMPDEST;
+        let skip = lands_on_jumpdest as usize;
+        // SAFETY: `state` is valid for the call.
+        let (gas, state) = unsafe { split_gas_state(&raw mut *state) };
+        gas.spend(JUMPDEST_GAS * skip as u64)?;
+        // SAFETY: `target` is a jump destination; past a JUMPDEST is the next instruction.
+        unsafe { pc.set_unchecked(state.bytecode(), target + skip) };
     } else {
         // SAFETY: The sequence is in the code.
-        unsafe { pc.advance_unchecked(offsets[len]) };
+        unsafe { pc.advance_unchecked(span) };
     }
     Ok(())
 }

@@ -26,7 +26,7 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 
 /// Opcodes used by [`PATTERNS`].
 #[allow(missing_docs)]
@@ -96,6 +96,28 @@ impl Sx {
             i += 1;
         }
         (-min as usize, max as usize)
+    }
+
+    /// Returns the size of the PUSH that supplies the target of a final JUMP or JUMPI, when the
+    /// opcode before the jump is that PUSH: the jump goes to a constant, which translation checks.
+    pub const fn static_jump(self) -> Option<usize> {
+        let n = self.len();
+        match (self.op(n - 1), self.op(n - 2)) {
+            (op::JUMP | op::JUMPI, push @ op::PUSH1..=op::PUSH32) => Some((push - op::PUSH0) as usize),
+            _ => None,
+        }
+    }
+
+    /// Returns the net change of the stack height when the sequence completes.
+    pub const fn stack_delta(self) -> isize {
+        let mut delta = 0;
+        let mut i = 0;
+        while i < self.len() {
+            let (input, output) = stack_io(self.op(i));
+            delta += output as isize - input as isize;
+            i += 1;
+        }
+        delta
     }
 
     /// Returns the number of opcodes it runs.
@@ -203,7 +225,7 @@ macro_rules! patterns {
 /// The superinstructions, in the order a greedy search picked them on 12,700 mainnet blocks
 /// spread over blocks 25,428,996 to 26,427,495 (18.5 billion executed instructions), each one
 /// saving the most dispatches given the ones before it.
-pub const PATTERNS: [Sx; 48] = patterns![
+pub const PATTERNS: [Sx; 43] = patterns![
     [PUSH2 JUMPI],
     [DUP1 PUSH4 EQ PUSH2 JUMPI],
     [PUSH2 JUMP],
@@ -215,13 +237,11 @@ pub const PATTERNS: [Sx; 48] = patterns![
     [SWAP1 POP],
     [SWAP3 SWAP2 POP POP JUMP],
     [PUSH1 ADD],
-    [JUMPDEST PUSH2],
     [DUP3 ADD],
     [SWAP1 JUMP],
     [DUP2 MSTORE PUSH1 ADD],
     [DUP2 LT ISZERO PUSH2 JUMPI],
     [DUP2 ADD],
-    [JUMPDEST POP],
     [SWAP2 SWAP1],
     [POP JUMP],
     [SWAP1 DUP2],
@@ -239,9 +259,7 @@ pub const PATTERNS: [Sx; 48] = patterns![
     [SWAP4 SWAP3 POP POP POP JUMP],
     [DUP4 ADD],
     [DUP2 EQ PUSH2 JUMPI],
-    [JUMPDEST DUP1],
     [GT ISZERO PUSH2 JUMPI],
-    [JUMPDEST DUP2],
     [GT PUSH2 JUMPI],
     [SWAP2 POP],
     [PUSH2 DUP3 PUSH2 JUMP],
@@ -250,7 +268,6 @@ pub const PATTERNS: [Sx; 48] = patterns![
     [ADD PUSH2 JUMP],
     [MLOAD DUP4 DUP3 ADD MSTORE PUSH1],
     [DUP2 AND],
-    [JUMPDEST SWAP1],
     [PUSH1 SHL],
 ];
 
@@ -360,13 +377,21 @@ struct Window {
     value: [u64; 3],
     span: u8,
     slot: u8,
+    /// For a constant jump target: the offset of its PUSH immediate, and its size (0 for none).
+    target_at: u8,
+    target_len: u8,
 }
 
 impl Window {
-    const NONE: Self = Self { mask: [0; 3], value: [0; 3], span: 0, slot: 0 };
+    const NONE: Self =
+        Self { mask: [0; 3], value: [0; 3], span: 0, slot: 0, target_at: 0, target_len: 0 };
 
     const fn of(sx: Sx) -> Self {
         let mut w = Self { span: 0, slot: sx.slot, ..Self::NONE };
+        if let Some(n) = sx.static_jump() {
+            w.target_at = offsets(sx)[sx.len() - 2] as u8 + 1;
+            w.target_len = n as u8;
+        }
         let mut offset = 0;
         let mut i = 0;
         while i < sx.len() {
@@ -502,7 +527,7 @@ impl Matcher {
     ///
     /// `code` must hold [`LOOKAHEAD`] bytes past `pc`.
     #[inline(always)]
-    unsafe fn find(&self, code: *const u8, pc: usize, op: u8, g: usize) -> Option<(u8, usize)> {
+    unsafe fn find(&self, code: *const u8, pc: usize, op: u8, g: usize) -> Option<&Window> {
         // SAFETY: An instruction is at most 33 bytes, and the window 24.
         unsafe {
             let second = *code.add(pc + instruction_len(op));
@@ -519,7 +544,7 @@ impl Matcher {
             ];
             for window in self.windows.get_unchecked(start..start + count) {
                 if window.matches(&w) {
-                    return Some((window.slot, window.span as usize));
+                    return Some(window);
                 }
             }
         }
@@ -536,24 +561,19 @@ impl Matcher {
 ///
 /// With `jumpdests`, also marks every `JUMPDEST` instruction in it, one bit per byte of
 /// `code[..len]`, least significant bit first, as jump destination analysis does.
-pub fn translate(
-    code: &[u8],
-    len: usize,
-    matcher: &Matcher,
-    mut jumpdests: Option<&mut [u8]>,
-) -> Box<[u8]> {
+pub fn translate(code: &[u8], len: usize, matcher: &Matcher, jumpdests: Option<&mut [u8]>) -> Box<[u8]> {
     assert!(len <= code.len());
-    if let Some(jumpdests) = jumpdests.as_deref() {
-        assert!(jumpdests.len() >= len.div_ceil(8));
-    }
     let mut out: Box<[u8]> = code.into();
+    let mut marks = alloc::vec![0u8; len.div_ceil(8)];
+    // Fused sequences that jump to a constant: (pc, offset of the immediate, its size).
+    let mut jumps: Vec<(u32, u8, u8)> = Vec::new();
     let dst = out.as_mut_ptr();
     let src = code.as_ptr();
     // Instructions below `fast` have the lookahead in bounds.
     let fast = len.min(code.len().saturating_sub(LOOKAHEAD));
     let mut pc = 0;
     // SAFETY: `pc < fast <= len <= code.len() == out.len()`, with the lookahead in bounds, and
-    // `jumpdests` has a bit for each byte below `len`.
+    // `marks` has a bit for each byte below `len`.
     unsafe {
         while pc < fast {
             let op = *src.add(pc);
@@ -565,16 +585,17 @@ pub fn translate(
                         pc += 1;
                         continue;
                     }
-                    if let Some(jumpdests) = jumpdests.as_deref_mut() {
-                        *jumpdests.get_unchecked_mut(pc / 8) |= 1 << (pc % 8);
-                    }
+                    *marks.get_unchecked_mut(pc / 8) |= 1 << (pc % 8);
                 }
                 let g = (entry & 0xFF) as usize;
                 if g != 0
-                    && let Some((slot, span)) = matcher.find(src, pc, op, g)
+                    && let Some(w) = matcher.find(src, pc, op, g)
                 {
-                    *dst.add(pc) = slot;
-                    pc += span;
+                    *dst.add(pc) = w.slot;
+                    if w.target_len != 0 {
+                        jumps.push((pc as u32, w.target_at, w.target_len));
+                    }
+                    pc += w.span as usize;
                     continue;
                 }
             }
@@ -589,25 +610,64 @@ pub fn translate(
             pc += 1;
             continue;
         }
-        if entry & JUMPDEST != 0
-            && let Some(jumpdests) = jumpdests.as_deref_mut()
-        {
-            jumpdests[pc / 8] |= 1 << (pc % 8);
+        if entry & JUMPDEST != 0 {
+            marks[pc / 8] |= 1 << (pc % 8);
         }
         match find_slow(code, len, pc, matcher) {
-            Some((slot, span)) => {
-                out[pc] = slot;
-                pc += span;
+            Some(sx) => {
+                out[pc] = sx.slot;
+                if let Some(n) = sx.static_jump() {
+                    let at = offsets(sx)[sx.len() - 2] + 1;
+                    jumps.push((pc as u32, at as u8, n as u8));
+                }
+                pc = match_at(code, len, pc, sx).unwrap();
             }
             None => pc += instruction_len(op),
         }
     }
+    // A sequence whose constant target is no jump destination runs unfused, so the fused
+    // instruction never checks its target.
+    for (at, imm, n) in jumps {
+        let (at, imm, n) = (at as usize, imm as usize, n as usize);
+        if !valid_target(&code[at + imm..at + imm + n], len, &marks) {
+            out[at] = code[at];
+        }
+    }
+    if let Some(jumpdests) = jumpdests {
+        jumpdests[..marks.len()].copy_from_slice(&marks);
+    }
     out
+}
+
+/// Returns whether the big-endian immediate `bytes` is a jump destination in `marks`.
+fn valid_target(bytes: &[u8], len: usize, marks: &[u8]) -> bool {
+    let n = bytes.len();
+    if n > 8 && bytes[..n - 8].iter().any(|&b| b != 0) {
+        return false;
+    }
+    let target = bytes[n.saturating_sub(8)..].iter().fold(0u64, |acc, &b| acc << 8 | b as u64);
+    target < len as u64 && marks[target as usize / 8] >> (target % 8) & 1 != 0
+}
+
+/// Returns the code offset of each opcode of `sx` from its first, and the sequence length last.
+pub const fn offsets(sx: Sx) -> [usize; 9] {
+    let mut offsets = [0; 9];
+    let mut i = 0;
+    while i < sx.len() {
+        offsets[i + 1] = offsets[i] + instruction_len(sx.op(i));
+        i += 1;
+    }
+    let mut j = sx.len() + 1;
+    while j < 9 {
+        offsets[j] = offsets[sx.len()];
+        j += 1;
+    }
+    offsets
 }
 
 /// [`Matcher::find`] near the end of code without padding.
 #[cold]
-fn find_slow(code: &[u8], len: usize, pc: usize, matcher: &Matcher) -> Option<(u8, usize)> {
+fn find_slow(code: &[u8], len: usize, pc: usize, matcher: &Matcher) -> Option<Sx> {
     let mut longest: Option<Sx> = None;
     for sx in PATTERNS {
         if matcher.ops.is_active(sx)
@@ -618,7 +678,7 @@ fn find_slow(code: &[u8], len: usize, pc: usize, matcher: &Matcher) -> Option<(u
             longest = Some(sx);
         }
     }
-    longest.map(|sx| (sx.slot, match_at(code, len, pc, sx).unwrap() - pc))
+    longest
 }
 
 /// Returns the end of `sx`'s match at instruction `pc`, if it matches there.
@@ -664,6 +724,11 @@ mod tests {
         table
     }
 
+    /// The slot of the pattern that runs `ops`.
+    fn slot(ops: &[u8]) -> u8 {
+        PATTERNS.iter().find(|p| p.ops == pack(ops)).expect("no such pattern").slot
+    }
+
     fn pad(code: &[u8]) -> Vec<u8> {
         let mut v = code.to_vec();
         v.extend_from_slice(&[0; 33]);
@@ -683,8 +748,8 @@ mod tests {
     #[test]
     fn fuses_longest_and_keeps_layout() {
         use op::*;
-        // DUP1 PUSH4 sel EQ PUSH2 dst JUMPI, then PUSH2 dst JUMPI.
-        let code = [DUP1, PUSH4, 1, 2, 3, 4, EQ, PUSH2, 0, 9, JUMPI, PUSH2, 0, 9, JUMPI];
+        // DUP1 PUSH4 sel EQ PUSH2 dst JUMPI, then PUSH2 dst JUMPI, to the JUMPDEST at 15.
+        let code = [DUP1, PUSH4, 1, 2, 3, 4, EQ, PUSH2, 0, 15, JUMPI, PUSH2, 0, 15, JUMPI, JUMPDEST];
         let padded = pad(&code);
         let out = translate(&padded, code.len(), &Matcher::new(prague()), None);
         assert_eq!(out.len(), padded.len());
@@ -692,6 +757,13 @@ mod tests {
         assert_eq!(&out[1..11], &code[1..11]);
         assert_eq!(out[11], PATTERNS[0].slot);
         assert_eq!(&out[12..], &padded[12..]);
+        // A constant target that is no JUMPDEST leaves the sequence unfused.
+        let mut code = code;
+        code[13] = 14;
+        let padded = pad(&code);
+        let out = translate(&padded, code.len(), &Matcher::new(prague()), None);
+        assert_eq!(out[0], PATTERNS[1].slot);
+        assert_eq!(&out[11..], &padded[11..]);
     }
 
     #[test]
@@ -701,7 +773,7 @@ mod tests {
         let padded = pad(&code);
         let mut ops = prague();
         let out = translate(&padded, code.len(), &Matcher::new(ops), None);
-        assert_eq!((out[0], out[2]), (PATTERNS[28].slot, PATTERNS[5].slot));
+        assert_eq!((out[0], out[2]), (slot(&[JUMPDEST, PUSH0]), slot(&[PUSH1, PUSH1, SHL, SUB])));
         // Before Shanghai PUSH0 is undefined, and before Constantinople SHL is: only the sequence
         // of enabled opcodes fuses.
         ops.fusable = OpSet::EMPTY;
@@ -709,7 +781,7 @@ mod tests {
             ops.fusable.insert(op);
         }
         let out = translate(&padded, code.len(), &Matcher::new(ops), None);
-        assert_eq!((out[0], out[1], out[2]), (JUMPDEST, PUSH0, PATTERNS[31].slot));
+        assert_eq!((out[0], out[1], out[2]), (JUMPDEST, PUSH0, slot(&[PUSH1, PUSH1])));
         assert_eq!(&out[3..], &padded[3..]);
     }
 
@@ -718,7 +790,7 @@ mod tests {
         use op::*;
         let slot = PATTERNS[0].slot;
         // A slot as an instruction, and as PUSH data, which is not an instruction.
-        let code = [slot, PUSH1, slot, PUSH2, 0, 5, JUMPI];
+        let code = [slot, PUSH1, slot, PUSH2, 0, 7, JUMPI, JUMPDEST];
         let padded = pad(&code);
         let out = translate(&padded, code.len(), &Matcher::new(prague()), None);
         // 0x0C, the first undefined opcode, halts like the slot would without superinstructions.
@@ -773,6 +845,7 @@ mod tests {
     /// Greedy longest match, one candidate at a time.
     fn reference(code: &[u8], len: usize, ops: &Ops) -> Vec<u8> {
         let m = Matcher::new(*ops);
+        let marks = reference_jumpdests(&code[..len]);
         let mut out = code.to_vec();
         let mut pc = 0;
         while pc < len {
@@ -782,9 +855,15 @@ mod tests {
                 continue;
             }
             match find_slow(code, len, pc, &m) {
-                Some((slot, span)) => {
-                    out[pc] = slot;
-                    pc += span;
+                Some(sx) => {
+                    let ok = sx.static_jump().is_none_or(|n| {
+                        let at = pc + offsets(sx)[sx.len() - 2] + 1;
+                        valid_target(&code[at..at + n], len, &marks)
+                    });
+                    if ok {
+                        out[pc] = sx.slot;
+                    }
+                    pc = match_at(code, len, pc, sx).unwrap();
                 }
                 None => pc += instruction_len(code[pc]),
             }
