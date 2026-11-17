@@ -566,19 +566,16 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Adds `delta` to the balance, touching the account.
     ///
-    /// Like revm's `incr_balance`, the balance is left unchanged and `false` is returned when the
-    /// sum overflows. A zero delta only touches the account, matching the EVM's value-bearing-call
-    /// semantics.
+    /// Like revm's `incr_balance`, the balance is left unchanged when the sum overflows. A zero
+    /// delta only touches the account, matching the EVM's value-bearing-call semantics.
     #[inline]
-    pub fn add_balance(&mut self, delta: Word) -> bool {
+    pub fn add_balance(&mut self, delta: Word) {
         self.touch();
-        let Some(balance) = self.balance().checked_add(delta) else {
-            return false;
-        };
-        if !delta.is_zero() {
+        if !delta.is_zero()
+            && let Some(balance) = self.balance().checked_add(delta)
+        {
             self.set_balance(balance);
         }
-        true
     }
 
     /// Sets the account nonce, touching the account and recording a revert snapshot.
