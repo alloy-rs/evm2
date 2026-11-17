@@ -353,7 +353,6 @@ where
             stream_state,
             &mut |state| emit_state(&mut self.state_update_hook, state),
             self.spec_id,
-            context,
             &mut requests,
         )?;
 

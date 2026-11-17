@@ -384,7 +384,6 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     stream_state: bool,
     on_state_update: &mut impl FnMut(StateUpdate),
     spec_id: SpecId,
-    context: BlockExecutionContext<'_>,
     requests: &mut Requests,
 ) -> Result<(), BlockExecutionError> {
     if !spec_id.enables(SpecId::PRAGUE) {
