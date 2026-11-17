@@ -104,8 +104,6 @@ pub enum InstrStop {
     OutOfOffset,
     /// Address collision during contract creation.
     CreateCollision,
-    /// Balance overflow while transferring value.
-    OverflowPayment,
     /// Error in precompiled contract execution.
     PrecompileError,
     /// Exceeded contract size limit during creation.
@@ -118,6 +116,8 @@ pub enum InstrStop {
     FatalExternalError,
     /// Invalid encoding of an instruction's immediate operand.
     InvalidImmediateEncoding,
+    /// Balance overflow while transferring value.
+    OverflowPayment,
     /// The inspector's config changed while a `hooked` instruction ran. The dispatch exits with
     /// this stop after the instruction, and the frame continues on the table for the new config. No
     /// instruction returns it, and a frame never reports it.
