@@ -1,6 +1,6 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrStop, Memory, Message, Pc, Result, StackBacking, StackMut,
-    StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageInput, Pc, Result, StackBacking,
+    StackMut, StackRef, Word,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
@@ -44,12 +44,20 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     output: Range<u32>,
     #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
+    /// The bytes of the message's input: the message's own bytes, or the caller's memory for an
+    /// input that is a range of it, with the lifetime erased. The suspended caller does not change
+    /// its memory until this frame returns.
+    pub(in crate::interpreter) input: &'frame [u8],
+    /// The number [`Evm`](crate::Evm) gave this frame when it entered it, which tells a range of
+    /// this frame's memory from one of another frame. Zero for a frame that `Evm` does not run.
+    frame: u64,
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     /// Opcodes the inspector steps on the table this frame runs on.
     steps: OpcodeSet,
-    /// Whether the running instruction is `hooked`.
-    hooked_running: bool,
+    /// Whether the inspector's config changed while the last `hooked` instruction ran. The frame
+    /// leaves the dispatch after the instruction and continues on the table for the new config.
+    reload: bool,
     /// The last sparse inspected run's step set, the config table it was built from, and the
     /// table.
     #[derive_where(skip)]
@@ -64,6 +72,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
+    /// Whether [`Self::call_input`] returns a range of memory. Set only for frames that
+    /// [`Evm`](crate::Evm) runs, which resolves the range against this frame's memory.
+    lends_memory: bool,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
@@ -103,12 +114,15 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             error: None,
             output: 0..0,
             message: None,
+            input: &[],
+            frame: 0,
             is_static: false,
+            lends_memory: false,
             return_data: Bytes::new(),
             host: None,
             inspector: None,
             steps: OpcodeSet::EMPTY,
-            hooked_running: false,
+            reload: false,
             inspect_table: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
@@ -129,7 +143,10 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.error = None;
         self.output = 0..0;
         self.message = Some(message);
+        self.input = message.input.as_owned().map_or(&[][..], |input| &input[..]);
         self.is_static = is_static;
+        self.lends_memory = false;
+        self.frame = 0;
         self.return_data = Bytes::new();
     }
 
@@ -144,6 +161,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.bytecode = Default::default();
         self.bytecode_ref = None;
         self.message = None;
+        self.input = &[];
         self.host = None;
         self.inspector = None;
     }
@@ -212,8 +230,15 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Returns the original active bytecode as a byte slice.
     #[inline]
-    pub fn original_bytecode_slice(&self) -> &[u8] {
+    pub fn original_bytecode_slice(&self) -> &'frame [u8] {
         self.bytecode.original_byte_slice()
+    }
+
+    /// Returns the frame's active bytecode, padded and analyzed, which outlives the borrow of the
+    /// interpreter.
+    #[inline]
+    pub const fn active_bytecode(&self) -> &'frame Bytecode {
+        self.bytecode
     }
 
     /// Calculates or returns the cached hash of the original active bytecode.
@@ -262,6 +287,54 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn memory_mut(&mut self) -> &mut Memory {
         &mut self.memory
+    }
+
+    /// Returns the range of memory at `offset` of `len` bytes as the input of a call message: a
+    /// range of this frame's memory when this frame is run by [`Evm`](crate::Evm), and a copy
+    /// otherwise.
+    ///
+    /// The range is only meaningful for the host that runs this frame, which reads it from this
+    /// frame's memory when it executes the message, so it must be in bounds of memory.
+    #[inline]
+    #[doc(hidden)]
+    pub fn call_input(&self, offset: usize, len: usize) -> MessageInput {
+        if len == 0 {
+            return MessageInput::default();
+        }
+        if !self.lends_memory {
+            return Bytes::copy_from_slice(self.memory.slice(offset, len)).into();
+        }
+        MessageInput::borrowed(offset..offset + len, self.frame)
+    }
+
+    /// Returns the bytes of the active message's input.
+    #[inline]
+    pub const fn input(&self) -> &[u8] {
+        self.input
+    }
+
+    /// Returns the number [`Evm`](crate::Evm) gave this frame when it entered it.
+    #[inline]
+    pub(crate) const fn frame(&self) -> u64 {
+        self.frame
+    }
+
+    /// Sets the number [`Evm`](crate::Evm) gave this frame when it entered it.
+    #[inline]
+    pub(crate) const fn set_frame(&mut self, frame: u64) {
+        self.frame = frame;
+    }
+
+    /// Sets the bytes of the active message's input.
+    #[inline]
+    pub(crate) const fn set_input(&mut self, input: &'frame [u8]) {
+        self.input = input;
+    }
+
+    /// Lets [`Self::call_input`] return ranges of this frame's memory for the rest of this frame.
+    #[inline]
+    pub(crate) const fn lend_memory(&mut self) {
+        self.lends_memory = true;
     }
 
     /// Returns the current interpreter result.
@@ -442,6 +515,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.features = version.features;
         self.host = Some(NonNull::from(host));
         self.inspector = None;
+        self.reload = false;
     }
 
     /// Runs the host's instruction implementation for the opcode at `pc` on the interpreter
@@ -566,8 +640,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             }
             cold_path();
             self.result = Ok(());
-            // SAFETY: The stop left the pc at the message instruction, which a next one follows.
-            self.pc = unsafe { self.pc.add(dispatch::instruction_len(*self.pc)) };
+            self.reload = false;
         }
     }
 
@@ -687,9 +760,8 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.steps
     }
 
-    /// Stops the instruction with [`InstrStop::Reload`] if the inspector's config no longer
-    /// matches the table this frame runs on. A message instruction calls it after its child
-    /// message and returns the result.
+    /// Requests a reload if the inspector's config no longer matches the table this frame runs on.
+    /// The dispatch calls it after each `hooked` instruction returns, and leaves for the reload.
     #[inline(always)]
     pub(crate) fn note_inspector_config_change(&mut self) {
         if self.0.inspector.is_some() {
@@ -699,21 +771,18 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline(never)]
     fn reload_if_config_changed(&mut self) {
-        assert!(self.0.hooked_running, "an instruction that runs a message must be `hooked`");
-        if self.0.result.is_ok()
-            && let Some(inspector) = self.0.inspector
+        if let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
             && unsafe { inspector.as_ref() }.inspector_config().steps() != self.0.steps
         {
-            self.set_result(Err(InstrStop::Reload));
+            self.0.reload = true;
         }
     }
 
-    /// Records whether the running instruction is `hooked`, so that the dispatch stored the latest
-    /// state into the interpreter before it ran.
+    /// Returns whether the running instruction requested a reload.
     #[inline]
-    pub(crate) const fn set_hooked_running(&mut self, running: bool) {
-        self.0.hooked_running = running;
+    pub(crate) const fn reload_requested(&self) -> bool {
+        self.0.reload
     }
 
     #[inline]
@@ -754,6 +823,12 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         // SAFETY: `message` is initialized at the beginning of `run` and remains set for
         // instruction execution.
         unsafe { self.0.message.unwrap_unchecked() }
+    }
+
+    /// Returns the bytes of the active message's input.
+    #[inline]
+    pub const fn input(&self) -> &[u8] {
+        self.0.input()
     }
 
     /// Returns whether the active frame forbids state-changing operations.
@@ -846,14 +921,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
         self.set_pc_stack_len(pc.as_ptr(), stack_len);
-        let reload = self.0.result == Err(InstrStop::Reload);
-        if reload {
-            cold_path();
-            // The hook sees the instruction as done, with the pc after it.
-            self.set_result(Ok(()));
-            // SAFETY: A next instruction follows the instruction at `pc`.
-            self.0.pc = unsafe { pc.as_ptr().add(dispatch::instruction_len(pc.op())) };
-        } else if self.0.result.is_err() {
+        if self.0.result.is_err() {
             cold_path();
             if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
                 // An out-of-gas frame has burned all its gas, so 0 is the real remaining gas.
@@ -865,11 +933,9 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             inspector.as_mut().step_end(&mut self.0);
         }
         // A stop the hook set wins over the reload.
-        if reload {
-            self.0.pc = pc.as_ptr();
-            if self.0.result.is_ok() {
-                self.set_result(Err(InstrStop::Reload));
-            }
+        if self.0.reload && self.0.result.is_ok() {
+            cold_path();
+            self.set_result(Err(InstrStop::Reload));
         }
     }
 
@@ -888,6 +954,9 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         }
     }
 }
+
+/// The most memory capacity in bytes that each frame of a pool keeps when trimmed.
+const MAX_IDLE_MEMORY: usize = 64 * 1024;
 
 #[derive(Default)]
 pub(crate) struct InterpreterPool<T: EvmTypesHost> {
@@ -928,6 +997,25 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
         // SAFETY: The returned borrow is tied to `&mut self`; the erased frame references are
         // empty.
         unsafe { trustme::decouple_interpreter_lt_mut(frame) }
+    }
+
+    /// Bounds what idle frames keep, so deep or memory-heavy transactions do not add up in a
+    /// long-lived pool. Frames stay pooled, as in revm's frame stack, so deep transactions do not
+    /// allocate them again.
+    ///
+    /// Call it when no frame is running, such as before the first frame of a top-level message. A
+    /// frame's caller reads its output after it returns to the pool, so trimming then is too
+    /// early. The next top-level message takes the last frame, so it keeps its buffers, as revm
+    /// keeps its shared memory.
+    #[inline(never)]
+    pub(crate) fn trim(&mut self) {
+        let Some((_, rest)) = self.frames.split_last_mut() else { return };
+        for frame in rest {
+            frame.memory.clear();
+            frame.memory.shrink_to(MAX_IDLE_MEMORY);
+            // Replaced rather than cleared, which would keep the buffer.
+            frame.return_data = Bytes::new();
+        }
     }
 
     pub(crate) fn last_mut<'frame, 'host>(&mut self) -> Option<&mut Interpreter<'frame, 'host, T>> {

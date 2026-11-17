@@ -47,14 +47,15 @@ pub struct DecodedCallTrace {
 
 /// A trace of a call with optional decoded data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize), serde(from = "trace_serde::CallTraceDe"))]
 pub struct CallTrace {
     /// The inspector-visible depth of the call.
     ///
-    /// The root starts at [`evm2::Version::initial_call_depth`], normally zero.
+    /// Top-level calls start at [`evm2::Evm::initial_call_depth`], normally zero. Above zero,
+    /// they are children of an empty root at depth zero.
     ///
     /// The depth of a call's steps is the depth of the call plus one.
-    pub depth: usize,
+    pub depth: u16,
     /// Whether the call was successful.
     pub success: bool,
     /// The caller address.
@@ -71,22 +72,8 @@ pub struct CallTrace {
     /// [`TracingInspectorConfig::record_precompile_calls`](crate::tracing::TracingInspectorConfig::record_precompile_calls)
     /// is set, otherwise `None`.
     pub maybe_precompile: Option<bool>,
-    /// The address of the selfdestructed contract.
-    pub selfdestruct_address: Option<Address>,
-    /// Holds the target for the selfdestruct refund target.
-    ///
-    /// This is only `Some` if a selfdestruct was executed and the call is executed before the
-    /// Cancun hardfork.
-    ///
-    /// See [`is_selfdestruct`](Self::is_selfdestruct) for more information.
-    pub selfdestruct_refund_target: Option<Address>,
-    /// The value transferred on a selfdestruct.
-    ///
-    /// This is only `Some` if a selfdestruct was executed and the call is executed before the
-    /// Cancun hardfork.
-    ///
-    /// See [`is_selfdestruct`](Self::is_selfdestruct) for more information.
-    pub selfdestruct_transferred_value: Option<U256>,
+    /// The selfdestruct this call executed, `None` for the calls that executed none.
+    pub selfdestruct: Option<Box<SelfdestructTrace>>,
     /// The kind of call.
     pub kind: CallKind,
     /// The value transferred in the call.
@@ -104,7 +91,6 @@ pub struct CallTrace {
     /// `None` if recording is disabled or the frame never initializes an interpreter.
     /// `Some` contains the recorded bytes, which may be empty.
     /// See [`TracingInspectorConfig::record_bytecode`](crate::tracing::TracingInspectorConfig::record_bytecode).
-    #[cfg_attr(feature = "serde", serde(default))]
     pub bytecode: Option<Bytes>,
     /// The total gas cost of the call.
     pub gas_used: u64,
@@ -122,7 +108,6 @@ pub struct CallTrace {
     /// and storage require [`record_step_deltas`]; gas balances are recorded independently.
     ///
     /// [`record_step_deltas`]: crate::tracing::TracingInspectorConfig::record_step_deltas
-    #[cfg_attr(feature = "serde", serde(default))]
     pub step_deltas: Vec<StepDelta>,
     /// Optional complementary decoded call data.
     pub decoded: Option<Box<DecodedCallTrace>>,
@@ -130,7 +115,6 @@ pub struct CallTrace {
     ///
     /// A step limit, an opcode filter or the trace budget can leave it out, and the call then
     /// follows an unrelated step in the parent's ordering.
-    #[cfg_attr(feature = "serde", serde(default))]
     pub parent_step_omitted: bool,
 }
 
@@ -163,7 +147,44 @@ impl CallTrace {
     #[inline]
     pub const fn is_selfdestruct(&self) -> bool {
         matches!(self.status, Some(InstrStop::SelfDestruct))
-            || self.selfdestruct_refund_target.is_some()
+            || self.selfdestruct_refund_target().is_some()
+    }
+
+    /// Returns the address of the selfdestructed contract.
+    #[inline]
+    pub const fn selfdestruct_address(&self) -> Option<Address> {
+        match &self.selfdestruct {
+            Some(selfdestruct) => selfdestruct.address,
+            None => None,
+        }
+    }
+
+    /// Returns the selfdestruct refund target.
+    ///
+    /// This is only `Some` if a selfdestruct was executed and the call is executed before the
+    /// Cancun hardfork.
+    ///
+    /// See [`is_selfdestruct`](Self::is_selfdestruct) for more information.
+    #[inline]
+    pub const fn selfdestruct_refund_target(&self) -> Option<Address> {
+        match &self.selfdestruct {
+            Some(selfdestruct) => selfdestruct.refund_target,
+            None => None,
+        }
+    }
+
+    /// Returns the value transferred on a selfdestruct.
+    ///
+    /// This is only `Some` if a selfdestruct was executed and the call is executed before the
+    /// Cancun hardfork.
+    ///
+    /// See [`is_selfdestruct`](Self::is_selfdestruct) for more information.
+    #[inline]
+    pub const fn selfdestruct_transferred_value(&self) -> Option<U256> {
+        match &self.selfdestruct {
+            Some(selfdestruct) => selfdestruct.transferred_value,
+            None => None,
+        }
     }
 
     /// Returns the error message if it is an erroneous result.
@@ -192,6 +213,19 @@ impl CallTrace {
     pub(crate) fn decoded_return_data(&self) -> Option<&str> {
         self.decoded.as_ref()?.return_data.as_deref()
     }
+}
+
+/// The selfdestruct a call executed, see [`CallTrace::selfdestruct`].
+///
+/// Boxed in the [`CallTrace`], since most calls execute no selfdestruct.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SelfdestructTrace {
+    /// The address of the selfdestructed contract.
+    pub address: Option<Address>,
+    /// The selfdestruct refund target.
+    pub refund_target: Option<Address>,
+    /// The value transferred on the selfdestruct.
+    pub transferred_value: Option<U256>,
 }
 
 /// Additional decoded data enhancing the [CallLog].
@@ -375,9 +409,9 @@ impl CallTraceNode {
     pub fn parity_selfdestruct_action(&self) -> Option<Action> {
         self.is_selfdestruct().then(|| {
             Action::Selfdestruct(SelfdestructAction {
-                address: self.trace.selfdestruct_address.unwrap_or_default(),
-                refund_address: self.trace.selfdestruct_refund_target.unwrap_or_default(),
-                balance: self.trace.selfdestruct_transferred_value.unwrap_or_default(),
+                address: self.trace.selfdestruct_address().unwrap_or_default(),
+                refund_address: self.trace.selfdestruct_refund_target().unwrap_or_default(),
+                balance: self.trace.selfdestruct_transferred_value().unwrap_or_default(),
             })
         })
     }
@@ -386,9 +420,9 @@ impl CallTraceNode {
     pub fn geth_selfdestruct_call_trace(&self) -> Option<CallFrame> {
         self.is_selfdestruct().then(|| CallFrame {
             typ: "SELFDESTRUCT".to_string(),
-            from: self.trace.selfdestruct_address.unwrap_or_default(),
-            to: self.trace.selfdestruct_refund_target,
-            value: self.trace.selfdestruct_transferred_value,
+            from: self.trace.selfdestruct_address().unwrap_or_default(),
+            to: self.trace.selfdestruct_refund_target(),
+            value: self.trace.selfdestruct_transferred_value(),
             ..Default::default()
         })
     }
@@ -651,13 +685,16 @@ pub enum DecodedTraceStep {
 
 /// Represents a tracked call step during execution
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize),
+    serde(from = "step_serde::CallTraceStepDe")
+)]
 pub struct CallTraceStep {
     // Fields filled in `step`
     /// Program counter before step execution
-    pub pc: usize,
+    pub pc: u32,
     /// Opcode to be executed
-    #[cfg_attr(feature = "serde", serde(with = "opcode_serde"))]
     pub op: OpCode,
     /// Stack before step execution
     pub stack: Option<Box<[U256]>>,
@@ -667,8 +704,6 @@ pub struct CallTraceStep {
     ///
     /// This will be `None` only if memory capture is disabled.
     pub memory: Option<RecordedMemory>,
-    /// Returndata before step execution
-    pub returndata: Bytes,
     /// Remaining gas before step execution
     pub gas_remaining: u64,
     /// Gas refund counter before step execution
@@ -678,21 +713,14 @@ pub struct CallTraceStep {
     // Fields filled in `step_end`
     /// Gas cost of step execution
     pub gas_cost: u64,
-    /// Net state-gas change caused by this step.
-    pub state_gas_cost: Option<i64>,
     /// State-gas reservoir before this step.
     pub state_gas_reservoir: Option<u64>,
-    /// State-gas spent before this step, used to calculate `state_gas_cost`.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub state_gas_spent: i64,
     /// Final status of the step
     ///
     /// This is set after the step was executed.
     pub status: Option<InstrStop>,
-    /// Immediate bytes of the step
-    pub immediate_bytes: Option<Bytes>,
-    /// Optional complementary decoded step data.
-    pub decoded: Option<Box<DecodedTraceStep>>,
+    /// The data that most steps do not have, `None` if the step has none of it.
+    pub extra: Option<Box<CallTraceStepExtra>>,
 }
 
 impl CallTraceStep {
@@ -710,14 +738,14 @@ impl CallTraceStep {
             error: self.as_error(),
             gas: self.gas_remaining,
             gas_cost: self.gas_cost,
-            state_gas_cost: self.state_gas_cost,
+            state_gas_cost: self.state_gas_cost(),
             state_gas_reservoir: self.state_gas_reservoir,
             op: if self.op.is_valid() {
                 self.op.as_str().into()
             } else {
                 format!("opcode {:#x} not defined", self.op.get()).into()
             },
-            pc: self.pc as u64,
+            pc: self.pc.into(),
             // geth omits a zero refund and empty memory and return data.
             refund_counter: (self.gas_refund_counter != 0).then_some(self.gas_refund_counter),
             stack,
@@ -771,9 +799,71 @@ impl CallTraceStep {
         self.is_error().then(|| format!("{:?}", self.status))
     }
 
+    /// Returns the returndata before step execution, empty if it was not recorded.
+    #[inline]
+    pub fn returndata(&self) -> &Bytes {
+        static EMPTY: Bytes = Bytes::new();
+        self.extra.as_deref().map_or(&EMPTY, |extra| &extra.returndata)
+    }
+
+    /// Returns the net state-gas change caused by this step.
+    #[inline]
+    pub fn state_gas_cost(&self) -> Option<i64> {
+        self.extra.as_deref()?.state_gas_cost
+    }
+
+    /// Returns the immediate bytes of the step.
+    #[inline]
+    pub fn immediate_bytes(&self) -> Option<&Bytes> {
+        self.extra.as_deref()?.immediate_bytes.as_ref()
+    }
+
+    /// Returns the complementary decoded step data.
+    #[inline]
+    pub fn decoded(&self) -> Option<&DecodedTraceStep> {
+        self.extra.as_deref()?.decoded.as_deref()
+    }
+
     /// Returns `DecodedTraceStep` from `CallTraceStep`.
     pub fn decoded_mut(&mut self) -> &mut DecodedTraceStep {
-        self.decoded.get_or_insert_with(|| Box::new(DecodedTraceStep::Line(String::new())))
+        self.extra
+            .get_or_insert_default()
+            .decoded
+            .get_or_insert_with(|| Box::new(DecodedTraceStep::Line(String::new())))
+    }
+}
+
+// A trace holds one step per executed opcode and one call trace per call.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(size_of::<CallTraceStep>() == 128);
+    assert!(size_of::<CallTrace>() == 264);
+};
+
+/// The data of a [`CallTraceStep`] that most steps do not have.
+///
+/// Boxed in the step, so that a step without it does not pay for its size.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CallTraceStepExtra {
+    /// Returndata before step execution
+    pub returndata: Bytes,
+    /// Net state-gas change caused by this step.
+    pub state_gas_cost: Option<i64>,
+    /// Immediate bytes of the step
+    pub immediate_bytes: Option<Bytes>,
+    /// Optional complementary decoded step data.
+    pub decoded: Option<Box<DecodedTraceStep>>,
+}
+
+impl CallTraceStepExtra {
+    /// Boxes the data for [`CallTraceStep::extra`], `None` if all of it is empty.
+    #[inline]
+    pub fn boxed(self) -> Option<Box<Self>> {
+        let empty = self.returndata.is_empty()
+            && self.state_gas_cost.is_none()
+            && self.immediate_bytes.is_none()
+            && self.decoded.is_none();
+        (!empty).then(|| Box::new(self))
     }
 }
 
@@ -903,6 +993,229 @@ impl RecordedMemory {
 impl AsRef<[u8]> for RecordedMemory {
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
+    }
+}
+
+/// Serializes a [`CallTrace`] as one flat struct, independently of its in-memory layout.
+#[cfg(feature = "serde")]
+mod trace_serde {
+    use super::*;
+    use serde::{Deserialize, Serialize, Serializer};
+
+    #[derive(Serialize)]
+    #[serde(rename = "CallTrace")]
+    struct CallTraceSer<'a> {
+        depth: usize,
+        success: bool,
+        caller: &'a Address,
+        address: &'a Address,
+        maybe_precompile: Option<bool>,
+        selfdestruct_address: Option<Address>,
+        selfdestruct_refund_target: Option<Address>,
+        selfdestruct_transferred_value: Option<U256>,
+        kind: CallKind,
+        value: &'a U256,
+        data: &'a Bytes,
+        output: &'a Bytes,
+        bytecode: &'a Option<Bytes>,
+        gas_used: u64,
+        gas_limit: u64,
+        gas_refund_counter: u64,
+        status: Option<InstrStop>,
+        steps: &'a [CallTraceStep],
+        step_deltas: &'a [StepDelta],
+        decoded: &'a Option<Box<DecodedCallTrace>>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        parent_step_omitted: bool,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename = "CallTrace")]
+    pub(super) struct CallTraceDe {
+        depth: usize,
+        success: bool,
+        caller: Address,
+        address: Address,
+        maybe_precompile: Option<bool>,
+        selfdestruct_address: Option<Address>,
+        selfdestruct_refund_target: Option<Address>,
+        selfdestruct_transferred_value: Option<U256>,
+        kind: CallKind,
+        value: U256,
+        data: Bytes,
+        output: Bytes,
+        #[serde(default)]
+        bytecode: Option<Bytes>,
+        gas_used: u64,
+        gas_limit: u64,
+        gas_refund_counter: u64,
+        status: Option<InstrStop>,
+        steps: Vec<CallTraceStep>,
+        #[serde(default)]
+        step_deltas: Vec<StepDelta>,
+        decoded: Option<Box<DecodedCallTrace>>,
+        #[serde(default)]
+        parent_step_omitted: bool,
+    }
+
+    impl Serialize for CallTrace {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            CallTraceSer {
+                depth: self.depth.into(),
+                success: self.success,
+                caller: &self.caller,
+                address: &self.address,
+                maybe_precompile: self.maybe_precompile,
+                selfdestruct_address: self.selfdestruct_address(),
+                selfdestruct_refund_target: self.selfdestruct_refund_target(),
+                selfdestruct_transferred_value: self.selfdestruct_transferred_value(),
+                kind: self.kind,
+                value: &self.value,
+                data: &self.data,
+                output: &self.output,
+                bytecode: &self.bytecode,
+                gas_used: self.gas_used,
+                gas_limit: self.gas_limit,
+                gas_refund_counter: self.gas_refund_counter,
+                status: self.status,
+                steps: &self.steps,
+                step_deltas: &self.step_deltas,
+                decoded: &self.decoded,
+                parent_step_omitted: self.parent_step_omitted,
+            }
+            .serialize(serializer)
+        }
+    }
+
+    impl From<CallTraceDe> for CallTrace {
+        fn from(trace: CallTraceDe) -> Self {
+            let selfdestruct = SelfdestructTrace {
+                address: trace.selfdestruct_address,
+                refund_target: trace.selfdestruct_refund_target,
+                transferred_value: trace.selfdestruct_transferred_value,
+            };
+            Self {
+                // A depth above the call depth limit is not a recorded trace.
+                depth: trace.depth.try_into().unwrap_or(u16::MAX),
+                success: trace.success,
+                caller: trace.caller,
+                address: trace.address,
+                maybe_precompile: trace.maybe_precompile,
+                selfdestruct: (selfdestruct != SelfdestructTrace::default())
+                    .then(|| Box::new(selfdestruct)),
+                kind: trace.kind,
+                value: trace.value,
+                data: trace.data,
+                output: trace.output,
+                bytecode: trace.bytecode,
+                gas_used: trace.gas_used,
+                gas_limit: trace.gas_limit,
+                gas_refund_counter: trace.gas_refund_counter,
+                status: trace.status,
+                steps: trace.steps,
+                step_deltas: trace.step_deltas,
+                decoded: trace.decoded,
+                parent_step_omitted: trace.parent_step_omitted,
+            }
+        }
+    }
+}
+
+/// Serializes a [`CallTraceStep`] as one flat struct, independently of its in-memory layout.
+#[cfg(feature = "serde")]
+mod step_serde {
+    use super::*;
+    use serde::{Deserialize, Serialize, Serializer};
+
+    #[derive(Serialize)]
+    #[serde(rename = "CallTraceStep")]
+    struct CallTraceStepSer<'a> {
+        pc: usize,
+        #[serde(with = "opcode_serde")]
+        op: OpCode,
+        stack: &'a Option<Box<[U256]>>,
+        push_stack: &'a Option<Box<[U256]>>,
+        memory: &'a Option<RecordedMemory>,
+        returndata: &'a Bytes,
+        gas_remaining: u64,
+        gas_refund_counter: u64,
+        storage_change: &'a Option<Box<StorageChange>>,
+        gas_cost: u64,
+        state_gas_cost: Option<i64>,
+        state_gas_reservoir: Option<u64>,
+        status: Option<InstrStop>,
+        immediate_bytes: Option<&'a Bytes>,
+        decoded: Option<&'a DecodedTraceStep>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename = "CallTraceStep")]
+    pub(super) struct CallTraceStepDe {
+        pc: usize,
+        #[serde(with = "opcode_serde")]
+        op: OpCode,
+        stack: Option<Box<[U256]>>,
+        push_stack: Option<Box<[U256]>>,
+        memory: Option<RecordedMemory>,
+        returndata: Bytes,
+        gas_remaining: u64,
+        gas_refund_counter: u64,
+        storage_change: Option<Box<StorageChange>>,
+        gas_cost: u64,
+        state_gas_cost: Option<i64>,
+        state_gas_reservoir: Option<u64>,
+        status: Option<InstrStop>,
+        immediate_bytes: Option<Bytes>,
+        decoded: Option<Box<DecodedTraceStep>>,
+    }
+
+    impl Serialize for CallTraceStep {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            CallTraceStepSer {
+                pc: self.pc as usize,
+                op: self.op,
+                stack: &self.stack,
+                push_stack: &self.push_stack,
+                memory: &self.memory,
+                returndata: self.returndata(),
+                gas_remaining: self.gas_remaining,
+                gas_refund_counter: self.gas_refund_counter,
+                storage_change: &self.storage_change,
+                gas_cost: self.gas_cost,
+                state_gas_cost: self.state_gas_cost(),
+                state_gas_reservoir: self.state_gas_reservoir,
+                status: self.status,
+                immediate_bytes: self.immediate_bytes(),
+                decoded: self.decoded(),
+            }
+            .serialize(serializer)
+        }
+    }
+
+    impl From<CallTraceStepDe> for CallTraceStep {
+        fn from(step: CallTraceStepDe) -> Self {
+            Self {
+                // Code that large cannot be executed.
+                pc: step.pc.try_into().unwrap_or(u32::MAX),
+                op: step.op,
+                stack: step.stack,
+                push_stack: step.push_stack,
+                memory: step.memory,
+                gas_remaining: step.gas_remaining,
+                gas_refund_counter: step.gas_refund_counter,
+                storage_change: step.storage_change,
+                gas_cost: step.gas_cost,
+                state_gas_reservoir: step.state_gas_reservoir,
+                status: step.status,
+                extra: CallTraceStepExtra {
+                    returndata: step.returndata,
+                    state_gas_cost: step.state_gas_cost,
+                    immediate_bytes: step.immediate_bytes,
+                    decoded: step.decoded,
+                }
+                .boxed(),
+            }
+        }
     }
 }
 

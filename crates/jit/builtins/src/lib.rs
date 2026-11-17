@@ -242,7 +242,7 @@ pub unsafe fn __revmc_builtin_calldatacopy<T: EvmTypesHost>(
         let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
         let data_offset = data_offset.to_u256().saturating_to::<usize>();
-        let input = ecx.input().as_ref();
+        let input = ecx.input();
         let input = unsafe { core::slice::from_raw_parts(input.as_ptr(), input.len()) };
         ecx.memory_mut().set_data(memory_offset, data_offset, len, input);
     }
@@ -254,8 +254,8 @@ pub unsafe fn __revmc_builtin_codecopy<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
-    let bytecode = ecx.bytecode();
-    unsafe { copy_operation(ecx, sp, bytecode.as_ref()) }
+    let code = ecx.interpreter().original_bytecode_slice();
+    unsafe { copy_operation(ecx, sp, code) }
 }
 
 #[inline]
@@ -459,8 +459,8 @@ pub unsafe fn __revmc_builtin_sstore<T: EvmTypesHost>(
 
     ecx.gas.spend(ecx.gas_params().get(GasId::SstoreStatic))?;
 
-    let additional_cold_cost = ecx.gas_params().get(GasId::ColdStorageAdditionalCost);
-    let skip_cold = ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
+    let cold_cost = ecx.gas_params().get(GasId::ColdStorageCost);
+    let skip_cold = ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < cold_cost;
     let index = index.to_u256();
     let value = value.to_u256();
     let state_load = ecx
@@ -689,7 +689,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
                 caller_info.nonce,
                 value,
                 depth,
-                ecx.version(),
+                ecx.host().initial_call_depth(),
             )
             .is_some()
         {
@@ -728,7 +728,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(code.clone()),
-        input: code,
+        input: code.into(),
         value,
         code_address: destination,
         caller_is_static: false,
@@ -795,12 +795,12 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
     pop!(sp; in_offset, in_len, out_offset, out_len);
 
     let in_len = word_to_usize(in_len.to_u256())?;
-    let input = if in_len != 0 {
+    let in_offset = if in_len != 0 {
         let in_offset = word_to_usize(in_offset.to_u256())?;
         ensure_memory(ecx, in_offset, in_len)?;
-        Bytes::copy_from_slice(ecx.memory().slice(in_offset, in_len))
+        in_offset
     } else {
-        Bytes::new()
+        0
     };
 
     let out_len = word_to_usize(out_len.to_u256())?;
@@ -820,6 +820,7 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
             call_kind == CallKind::Call,
             local_gas_limit,
         )?;
+    let input = ecx.interpreter().call_input(in_offset, in_len);
 
     let current = ecx.message();
     let (destination, caller, call_value, code_address) = match call_kind {
@@ -962,18 +963,8 @@ pub unsafe fn __revmc_builtin_do_return<T: EvmTypesHost>(
 ) -> BuiltinResult {
     let rev![offset, len] = sp;
     let len = word_to_usize(len.to_u256())?;
-    let output = if len != 0 {
-        let offset = word_to_usize(offset.to_u256())?;
-        let Some(end) = offset.checked_add(len) else {
-            return Err(InstrStop::MemoryOOG.into());
-        };
-        ensure_memory(ecx, offset, len)?;
-        offset as u32..end as u32
-    } else {
-        0..0
-    };
-    ecx.interpreter_mut().set_output(output);
-    Err(result.into())
+    let offset = if len != 0 { word_to_usize(offset.to_u256())? } else { 0 };
+    do_return_range(ecx, offset, len, result)
 }
 
 #[inline]
@@ -983,8 +974,16 @@ pub unsafe fn __revmc_builtin_do_return_cc<T: EvmTypesHost>(
     len: u64,
     result: InstrStop,
 ) -> BuiltinResult {
-    let offset = offset as usize;
-    let len = len as usize;
+    do_return_range(ecx, offset as usize, len as usize, result)
+}
+
+#[inline]
+fn do_return_range<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    offset: usize,
+    len: usize,
+    result: InstrStop,
+) -> BuiltinResult {
     let output = if len != 0 {
         let Some(end) = offset.checked_add(len) else {
             return Err(InstrStop::MemoryOOG.into());
@@ -1167,7 +1166,9 @@ mod tests {
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.call_static_flags
                 .push(interp.is_static() || message.kind == MessageKind::StaticCall);
-            self.calls.push(message.clone());
+            let mut message = message.clone();
+            message.input = message.input.to_bytes(interp.memory()).into();
+            self.calls.push(message);
             Some(self.execute_result.clone())
         }
 
@@ -1284,7 +1285,7 @@ mod tests {
         assert_eq!(inspector.calls[0].kind, MessageKind::Call);
         assert_eq!(inspector.calls[0].destination, target);
         assert_eq!(inspector.calls[0].caller, caller);
-        assert_eq!(inspector.calls[0].input.as_ref(), b"in");
+        assert_eq!(inspector.calls[0].input.as_owned().unwrap()[..], *b"in");
         assert!(!inspector.call_static_flags[0]);
     }
 
@@ -1440,7 +1441,7 @@ mod tests {
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
         assert_eq!(inspector.creates.len(), 1);
         assert_eq!(inspector.creates[0].kind, MessageKind::Create);
-        assert_eq!(inspector.creates[0].input.as_ref(), initcode);
+        assert_eq!(inspector.creates[0].input.as_owned().unwrap()[..], initcode);
     }
 
     #[test]
@@ -1484,7 +1485,7 @@ mod tests {
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
         assert_eq!(inspector.creates.len(), 1);
         assert_eq!(inspector.creates[0].kind, MessageKind::Create2);
-        assert_eq!(inspector.creates[0].input.as_ref(), initcode);
+        assert_eq!(inspector.creates[0].input.as_owned().unwrap()[..], initcode);
         assert_eq!(inspector.creates[0].salt, B256::from(salt.to_be_bytes()));
     }
 

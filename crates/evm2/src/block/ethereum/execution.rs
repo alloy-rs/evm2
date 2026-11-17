@@ -128,10 +128,10 @@ impl TryFrom<HandlerError> for EthInvalidTxError {
 }
 
 /// Additional block-level execution context.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct BlockExecutionContext<'a> {
-    /// Pre-block system calls to run before transaction execution.
-    pub system_calls: Option<BlockSystemCalls>,
+    /// Inputs of the pre-block system calls to run before transaction execution.
+    pub system_calls: BlockSystemCalls,
     /// Pre-merge ommer headers included in the block.
     pub ommers: Option<&'a [Header]>,
     /// Post-block withdrawals to apply after transaction execution.
@@ -267,9 +267,7 @@ pub fn pre_execution_system_call_state_changes<T: EvmTypes>(
     block_number: u64,
     context: BlockExecutionContext<'_>,
 ) -> Result<(), BlockExecutionError> {
-    let Some(system_calls) = context.system_calls else {
-        return Ok(());
-    };
+    let system_calls = context.system_calls;
 
     if spec_id.enables(SpecId::CANCUN) {
         let parent_beacon_block_root = system_calls
@@ -319,7 +317,7 @@ where
     R: TxReceipt<Log = Log>,
 {
     let mut requests = Requests::default();
-    if context.system_calls.is_none() || !spec_id.enables(SpecId::PRAGUE) {
+    if !spec_id.enables(SpecId::PRAGUE) {
         return Ok(requests);
     }
 
@@ -386,31 +384,32 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     stream_state: bool,
     on_state_update: &mut impl FnMut(StateUpdate),
     spec_id: SpecId,
-    context: BlockExecutionContext<'_>,
     requests: &mut Requests,
 ) -> Result<(), BlockExecutionError> {
-    if context.system_calls.is_none() || !spec_id.enables(SpecId::PRAGUE) {
+    if !spec_id.enables(SpecId::PRAGUE) {
         return Ok(());
     }
 
-    let withdrawal_requests = execute_request_system_call(
+    let withdrawal_requests = execute_system_call(
         evm,
         block_state,
         stream_state,
         on_state_update,
         WITHDRAWAL_REQUEST_ADDRESS,
+        Bytes::new(),
     )?;
     requests.push_request_with_type(
         WITHDRAWAL_REQUEST_TYPE,
         withdrawal_requests.output.iter().copied(),
     );
 
-    let consolidation_requests = execute_request_system_call(
+    let consolidation_requests = execute_system_call(
         evm,
         block_state,
         stream_state,
         on_state_update,
         CONSOLIDATION_REQUEST_ADDRESS,
+        Bytes::new(),
     )?;
     requests.push_request_with_type(
         CONSOLIDATION_REQUEST_TYPE,
@@ -418,24 +417,26 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     );
 
     if spec_id.enables(SpecId::AMSTERDAM) {
-        let builder_deposit_requests = execute_request_system_call(
+        let builder_deposit_requests = execute_system_call(
             evm,
             block_state,
             stream_state,
             on_state_update,
             BUILDER_DEPOSIT_REQUEST_ADDRESS,
+            Bytes::new(),
         )?;
         requests.push_request_with_type(
             BUILDER_DEPOSIT_REQUEST_TYPE,
             builder_deposit_requests.output.iter().copied(),
         );
 
-        let builder_exit_requests = execute_request_system_call(
+        let builder_exit_requests = execute_system_call(
             evm,
             block_state,
             stream_state,
             on_state_update,
             BUILDER_EXIT_REQUEST_ADDRESS,
+            Bytes::new(),
         )?;
         requests.push_request_with_type(
             BUILDER_EXIT_REQUEST_TYPE,
@@ -444,22 +445,6 @@ pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     }
 
     Ok(())
-}
-
-/// Runs a request system call. A target without code makes the block invalid: the EVM itself
-/// treats a call to it as a successful no-op.
-fn execute_request_system_call<T: EvmTypes>(
-    evm: &mut Evm<'_, T>,
-    block_state: &mut BlockState,
-    stream_state: bool,
-    on_state_update: &mut impl FnMut(StateUpdate),
-    address: Address,
-) -> Result<TxResult<T>, BlockExecutionError> {
-    let info = evm.read_account_info(&address).map_err(map_database_error)?;
-    if info.is_none_or(|info| info.is_empty_code_hash()) {
-        return Err(BlockValidationError::SystemContractEmpty { address }.into());
-    }
-    execute_system_call(evm, block_state, stream_state, on_state_update, address, Bytes::new())
 }
 
 fn execute_system_call<T: EvmTypes>(

@@ -13,17 +13,23 @@ mod geth_js;
 #[cfg(feature = "std")]
 mod inputs;
 #[cfg(feature = "std")]
+mod moved_precompiles;
+#[cfg(feature = "std")]
 mod opcode;
 #[cfg(feature = "std")]
 mod otterscan;
 #[cfg(feature = "std")]
 mod parity;
+#[cfg(feature = "serde")]
+mod serde;
 #[cfg(feature = "std")]
 mod stack;
 #[cfg(feature = "js-tracer")]
 mod test_native_bigint;
 #[cfg(feature = "std")]
 mod transfer;
+#[cfg(feature = "std")]
+mod unlisted_precompiles;
 #[cfg(feature = "std")]
 mod writer;
 
