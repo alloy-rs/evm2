@@ -628,6 +628,7 @@ pub fn populate_state_diff(
 mod tests {
     use super::*;
     use crate::tracing::types::{CallTrace, SelfdestructTrace};
+    use alloc::boxed::Box;
     use alloy_primitives::U256;
 
     #[test]
