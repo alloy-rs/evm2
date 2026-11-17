@@ -1574,32 +1574,43 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
-        let nested = message.depth > self.initial_call_depth;
-        // A too-deep create fails on depth alone, without reading the creator.
-        let info = if message.depth <= self.max_call_depth() && (message.value > 0 || nested) {
-            self.state.account_info_untracked(&message.caller)?
+        let initial_call_depth = self.initial_call_depth;
+        let max_depth = self.max_call_depth();
+        if message.depth > initial_call_depth && message.depth <= max_depth {
+            // A nested creator is loaded already: check it and bump its nonce through one handle.
+            let mut caller = self.state.account(&message.caller)?;
+            if let Some(stop) = create_preaccess_failure(
+                caller.balance(),
+                caller.nonce(),
+                message.value,
+                message.depth,
+                initial_call_depth,
+            ) {
+                return Err(stop.into());
+            }
+            caller.bump_nonce();
         } else {
-            None
-        };
-        let (balance, nonce) = info.as_ref().map_or((Word::ZERO, 0), |i| (i.balance, i.nonce));
-        if let Some(stop) = create_preaccess_failure(
-            balance,
-            nonce,
-            message.value,
-            message.depth,
-            self.initial_call_depth,
-        ) {
-            return Err(stop.into());
+            // A too-deep create fails on depth alone, without reading the creator.
+            let info = if message.depth <= max_depth && message.value > 0 {
+                self.state.account_info_untracked(&message.caller)?
+            } else {
+                None
+            };
+            let (balance, nonce) = info.as_ref().map_or((Word::ZERO, 0), |i| (i.balance, i.nonce));
+            if let Some(stop) = create_preaccess_failure(
+                balance,
+                nonce,
+                message.value,
+                message.depth,
+                initial_call_depth,
+            ) {
+                return Err(stop.into());
+            }
         }
 
         // `destination` already holds the contract address (derived when the message was
         // constructed); warm it before running the initcode.
         self.state.account(&message.destination)?.warm();
-
-        if nested && let Err(code) = self.state.account(&message.caller).map(|mut a| a.bump_nonce())
-        {
-            return Err(code.into());
-        }
 
         Ok(())
     }
