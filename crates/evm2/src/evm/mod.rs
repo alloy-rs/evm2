@@ -3050,6 +3050,16 @@ mod tests {
     }
 
     #[test]
+    fn set_precompiles_with_boxed_provider_downcasts_to_the_inner_provider() {
+        let mut evm = lifecycle_evm();
+        let boxed: Box<dyn PrecompileProvider<BaseEvmTypes>> = Box::new(precompiles_with([]));
+
+        evm.set_precompiles(boxed);
+
+        assert!(evm.precompiles_as::<Precompiles>().is_some());
+    }
+
+    #[test]
     fn take_precompiles_preserves_provider_and_can_be_restored() {
         let mut evm = lifecycle_evm();
         let original_ids = evm.precompiles().precompile_ids();
@@ -3158,6 +3168,16 @@ mod tests {
         };
 
         let _ = evm.run_interpreter(&message);
+    }
+
+    #[test]
+    fn set_inspector_with_boxed_inspector_downcasts_to_the_inner_inspector() {
+        let mut evm = lifecycle_evm();
+        let boxed: Box<dyn Inspector<BaseEvmTypes>> = Box::new(NoopInspector::default());
+
+        evm.set_inspector(boxed);
+
+        assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
     }
 
     #[test]
