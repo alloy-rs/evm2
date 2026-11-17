@@ -26,7 +26,7 @@ use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
 use crate::precompiles::{PrecompileError, PrecompileHalt};
 use alloy_primitives::hex;
 use mcl_rust::{CurveType, Fp, Fp2, Fr, G1, G2, GT};
-use std::sync::{Once, OnceLock};
+use std::sync::OnceLock;
 
 // Not exposed by `mcl_rust`.
 unsafe extern "C" {
@@ -49,18 +49,23 @@ impl Bn254Ops for MclOps {
 
     #[inline]
     fn init() -> Result<(), PrecompileError> {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
+        static INIT: OnceLock<bool> = OnceLock::new();
+        let initialized = *INIT.get_or_init(|| {
             // CurveType::SNARK (MCL_BN_SNARK1) is the Ethereum-compatible BN254 (alt_bn128).
             // CurveType::BN254 is a different, older BN254 parameterization.
-            if mcl_rust::init(CurveType::SNARK) {
+            let initialized = mcl_rust::init(CurveType::SNARK);
+            if initialized {
                 // mcl checks the G2 order with a generic multiplication by r; `read_g2` uses the
                 // faster endomorphism check instead.
                 unsafe { mclBn_verifyOrderG2(0) };
             }
+            initialized
         });
+        if !initialized {
+            return Err(PrecompileError::Fatal("mcl BN254 initialization failed".into()));
+        }
 
-        // Another mcl user may have switched the global curve, before our init or since.
+        // Another mcl user may have switched the global curve since our init.
         if current_curve() != CurveType::SNARK as i32 {
             return Err(PrecompileError::Fatal(
                 "mcl is not initialized for BN254: another user of mcl in this process changed \
