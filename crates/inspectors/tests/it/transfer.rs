@@ -4,8 +4,10 @@ use crate::utils::{
     AccountInfo, Bytecode, Context, DatabaseCommit, ExecutionResult, Output, SpecId, TestDbExt,
     TransactTo, TxEnv, a,
 };
-use alloy_primitives::{Address, B256, Log, U256, address, bytes, hex};
-use evm2::evm::InMemoryDB;
+use alloy_primitives::{Address, B256, Bytes, Log, U256, address, bytes, hex};
+use evm2::{
+    BaseEvmTypes, Evm, Inspector, Precompiles, ethereum::ethereum_tx_registry, evm::InMemoryDB,
+};
 use evm2_inspectors::{
     tracing::{TracingInspector, TracingInspectorConfig},
     transfer::{
@@ -735,3 +737,20 @@ const CASES: &[TransferCase] = &[
         expected: &[],
     },
 ];
+
+#[test]
+fn logs_outside_any_frame_are_kept() {
+    // Embedders emit logs before the first call or after the last, e.g. a fee transfer.
+    let spec = evm2::SpecId::CANCUN;
+    let mut host = Evm::<BaseEvmTypes>::new(
+        spec,
+        Default::default(),
+        ethereum_tx_registry(spec),
+        InMemoryDB::default(),
+        Precompiles::base(spec),
+    );
+    let mut inspector = TransferInspector::new(false).with_logs(true);
+    let log = Log::new_unchecked(a(1), vec![TRANSFER_EVENT_TOPIC], Bytes::new());
+    Inspector::<BaseEvmTypes>::log(&mut inspector, &log, &mut host);
+    assert_eq!(inspector.logs(), [log]);
+}
