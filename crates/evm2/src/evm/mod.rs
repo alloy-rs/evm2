@@ -2116,7 +2116,18 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
 
         if contract != target {
-            let transferred = self.state.transfer(contract, target, &balance)?.is_ok();
+            let transferred = match self.state.transfer(contract, target, &balance)? {
+                Ok(()) => true,
+                // Like revm, the beneficiary's balance wraps. Reaching this needs a total supply
+                // above `U256::MAX`.
+                Err(InstrStop::OverflowPayment) => {
+                    self.state.account(contract)?.set_balance(Word::ZERO);
+                    let mut beneficiary = self.state.account(target)?;
+                    beneficiary.set_balance(beneficiary.balance().wrapping_add(balance));
+                    true
+                }
+                Err(_) => false,
+            };
             if transferred {
                 self.log_eip7708_transfer(contract, target, &balance);
             }
@@ -4383,7 +4394,11 @@ mod tests {
 
     /// Runs `code` as a contract holding 10 wei, with `prefunded` holding `U256::MAX - 1` wei.
     /// Returns storage slot 0 and the final balances of the contract and of `prefunded`.
-    fn run_overflow_contract(code: Vec<u8>, prefunded: Address) -> (Option<U256>, U256, U256) {
+    fn run_overflow_contract(
+        spec: SpecId,
+        code: Vec<u8>,
+        prefunded: Address,
+    ) -> (Option<U256>, U256, U256) {
         let contract = Address::repeat_byte(0x11);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
@@ -4398,11 +4413,11 @@ mod tests {
             AccountInfo::default().with_balance(U256::MAX - U256::ONE),
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
+            spec,
             BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
+            ethereum_tx_registry(spec),
             database,
-            Precompiles::base(SpecId::CANCUN),
+            Precompiles::base(spec),
         );
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
@@ -4419,7 +4434,9 @@ mod tests {
             .find(|c| c.address == contract)
             .and_then(|c| c.storage.slots.get(&U256::ZERO).map(|s| s.value.current));
         let _ = executed.commit();
-        let mut balance = |address| evm.read_account_info(&address).unwrap().unwrap().balance;
+        let mut balance = |address| {
+            evm.read_account_info(&address).unwrap().map_or(U256::ZERO, |info| info.balance)
+        };
         (slot0, balance(contract), balance(prefunded))
     }
 
@@ -4431,7 +4448,8 @@ mod tests {
         code.extend_from_slice(target.as_slice());
         code.extend([op::GAS, op::CALL, op::PUSH0, op::SSTORE, op::STOP]);
 
-        let (success, contract_balance, target_balance) = run_overflow_contract(code, target);
+        let (success, contract_balance, target_balance) =
+            run_overflow_contract(SpecId::CANCUN, code, target);
 
         assert_eq!(success, Some(U256::ZERO), "a failed CALL pushes 0");
         assert_eq!(contract_balance, U256::from(10));
@@ -4445,11 +4463,27 @@ mod tests {
         let code =
             vec![op::PUSH0, op::PUSH0, op::PUSH1, 5, op::CREATE, op::PUSH0, op::SSTORE, op::STOP];
 
-        let (address, contract_balance, created_balance) = run_overflow_contract(code, created);
+        let (address, contract_balance, created_balance) =
+            run_overflow_contract(SpecId::CANCUN, code, created);
 
         assert_eq!(address, Some(U256::ZERO), "a failed CREATE pushes 0");
         assert_eq!(contract_balance, U256::from(10));
         assert_eq!(created_balance, U256::MAX - U256::ONE);
+    }
+
+    #[test]
+    fn selfdestruct_beneficiary_balance_overflow_wraps() {
+        let target = Address::repeat_byte(0x22);
+        let mut code = vec![op::PUSH20];
+        code.extend_from_slice(target.as_slice());
+        code.push(op::SELFDESTRUCT);
+
+        // Before Cancun the contract is destroyed even though the credit overflows, as in revm.
+        let (_, contract_balance, target_balance) =
+            run_overflow_contract(SpecId::SHANGHAI, code, target);
+
+        assert_eq!(contract_balance, U256::ZERO);
+        assert_eq!(target_balance, U256::from(8));
     }
 
     #[test]
