@@ -1,7 +1,7 @@
 //! Transaction-scoped persistent storage overlay.
 
-use super::{DbResult, JournalEntry, StateInner, Tracked};
-use crate::{LoadError, interpreter::Word};
+use super::{DbResult, JournalEntry, StateInner, StorageDelta, Tracked};
+use crate::{LoadError, interpreter::Word, storage_key::StorageKey};
 use alloy_primitives::{
     Address,
     map::{U256Map, hash_map},
@@ -142,6 +142,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub fn is_warm(&self, key: &Word) -> bool {
         self.storage.slots.get(key).is_some_and(|slot| slot.is_warm)
             || self.inner.prewarm_set.is_storage_warm(self.address, key)
+            || self.pending_delta(key).is_some_and(|pending| pending.warm)
     }
 
     /// Loads a storage slot without skipping cold accesses and returns a journaled handle.
@@ -195,6 +196,18 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
 
     #[inline(always)]
     fn into_slot_inner<const WARM: bool>(
+        self,
+        key: Word,
+        skip_cold_load: bool,
+    ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
+        if !self.inner.deferred.deltas.is_empty() {
+            return self.into_slot_resolving::<WARM>(key, skip_cold_load);
+        }
+        self.load_slot::<WARM>(key, skip_cold_load)
+    }
+
+    #[inline(always)]
+    fn load_slot<const WARM: bool>(
         self,
         key: Word,
         skip_cold_load: bool,
@@ -258,6 +271,78 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value.set_current(Word::ZERO);
         });
+    }
+
+    /// Adds `delta` to the slot at `key`, wrapping, without reading it, and returns whether the
+    /// access was cold for EIP-2929 gas accounting. Warms the slot.
+    ///
+    /// The slot ends exactly as if it had been loaded, incremented and written, but a slot not
+    /// loaded yet stays unloaded: the add is kept pending, and the slot is loaded with its pending
+    /// adds applied when it is next accessed, or at the end of the transaction (see
+    /// [`State::storage_add`](super::State::storage_add)). A slot already loaded, or of an account
+    /// whose storage reads as zero, is written straight away.
+    pub fn add(self, key: Word, delta: Word) -> DbResult<bool> {
+        let pending = self.pending_delta(&key);
+        let known =
+            self.storage.slots.contains_key(&key) || self.storage.wiped || self.discards_storage;
+        if pending.is_none() && known {
+            let (mut slot, is_cold) =
+                self.into_slot_with_skip_and_warm(key, false).map_err(|error| match error {
+                    LoadError::Database(error) => error,
+                    LoadError::ColdLoadSkipped => unreachable!("cold-load skipping is disabled"),
+                })?;
+            slot.set(slot.current().wrapping_add(delta));
+            return Ok(is_cold);
+        }
+        let warmed = !self.is_warm(&key);
+        let address = *self.address;
+        let pending = self.inner.deferred.deltas.entry(StorageKey::new(address, key)).or_default();
+        pending.delta = pending.delta.wrapping_add(delta);
+        pending.warm |= warmed;
+        self.inner.push_journal(|| JournalEntry::StorageDeltaAdded { address, key, delta, warmed });
+        Ok(warmed)
+    }
+
+    /// Returns the slot's pending blind adds.
+    #[inline]
+    fn pending_delta(&self, key: &Word) -> Option<StorageDelta> {
+        let deltas = &self.inner.deferred.deltas;
+        if deltas.is_empty() {
+            return None;
+        }
+        deltas.get(&StorageKey::new(*self.address, *key)).copied()
+    }
+
+    /// Loads a slot as [`Self::into_slot_inner`] does, first applying its pending blind adds to
+    /// the loaded value.
+    #[cold]
+    #[inline(never)]
+    fn into_slot_resolving<const WARM: bool>(
+        self,
+        key: Word,
+        skip_cold_load: bool,
+    ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
+        let Some(pending) = self.pending_delta(&key) else {
+            return self.load_slot::<WARM>(key, skip_cold_load);
+        };
+        if skip_cold_load && !self.is_warm(&key) {
+            return Err(LoadError::ColdLoadSkipped);
+        }
+        let (mut slot, _) = self.load_slot::<false>(key, false)?;
+        let address = *slot.address;
+        slot.inner.deferred.deltas.remove(&StorageKey::new(address, key));
+        slot.inner.push_journal(|| JournalEntry::StorageDeltaResolved {
+            address,
+            key,
+            delta: pending.delta,
+            warm: pending.warm,
+        });
+        if pending.warm {
+            slot.warm();
+        }
+        let is_cold = WARM && slot.warm();
+        slot.set(slot.current().wrapping_add(pending.delta));
+        Ok((slot, is_cold))
     }
 }
 

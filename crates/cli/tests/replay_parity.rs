@@ -12,7 +12,10 @@ use evm2_eest::{
     blockchaintest::{BlockchainTestCase, DecodedBlock, ForkSpec},
     execute_blockchain_tests_suite,
 };
-use std::path::{Path, PathBuf};
+use std::{
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+};
 
 const FIXTURE: &str = "data/mainnet-25347446-25347455.bin.zst";
 
@@ -140,6 +143,38 @@ fn mainnet_replay_receipt_validation_preserves_hook_outcomes() {
     let mut revm_hook = TransactionRecorder::default();
     fixture.execute_revm(&mut revm_hook);
     assert_eq!(hook.0, revm_hook.0);
+}
+
+/// Executing each block's transactions in parallel must pass the receipt root checks and commit
+/// every transaction exactly as sequential execution does, on every thread count.
+#[test]
+fn mainnet_parallel_replay_matches_sequential() {
+    let path = workspace_path(FIXTURE);
+    let suite = evm2_eest::read_blockchain_fixture(&path).expect("fixture must decode");
+    let replay = |parallel_threads| {
+        let mut hook = TransactionRecorder::default();
+        let summary = execute_blockchain_tests_suite(
+            &path,
+            &suite,
+            BlockchainTestExecuteConfig {
+                compare_receipt_root: true,
+                parallel_threads,
+                ..Default::default()
+            },
+            &NameFilter::default(),
+            &mut hook,
+        )
+        .expect("EEST replay must succeed");
+        assert_eq!(summary.executed, 1);
+        hook.0
+            .into_iter()
+            .map(|tx| (tx.block_index, tx.transaction_index, tx.gas_used, tx.success, tx.logs))
+            .collect::<Vec<_>>()
+    };
+    let sequential = replay(None);
+    for threads in [1, 2, 4, 8] {
+        assert_eq!(replay(NonZeroUsize::new(threads)), sequential, "{threads} threads");
+    }
 }
 
 /// The replay loops commit every block; a fixture that expects an invalid block
