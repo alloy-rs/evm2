@@ -443,7 +443,7 @@ pub struct HostConfig {
     pub(crate) opcodes: Option<HostOpcodes>,
     /// Suffix of the builtin symbols in objects an out-of-process helper compiles.
     pub(crate) symbol_suffix: Option<usize>,
-    /// `None` for the base host, whose builtins are the exported `__revmc_builtin_*` symbols.
+    /// `None` for the base host, whose builtins are the exported `__evm2_builtin_*` symbols.
     pub(crate) resolver: Option<fn(Builtin) -> usize>,
 }
 

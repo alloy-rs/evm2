@@ -91,13 +91,13 @@ fn fail<T: EvmTypesHost>(ecx: &mut EvmContext<'_, '_, '_, T>, e: BuiltinError) -
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_panic<T: EvmTypesHost>(data: *const u8, len: usize) -> ! {
+pub unsafe fn __evm2_builtin_panic<T: EvmTypesHost>(data: *const u8, len: usize) -> ! {
     let msg = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(data, len)) };
     panic!("{msg}");
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_assert_spec_id<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_assert_spec_id<T: EvmTypesHost>(
     ecx: &EvmContext<'_, '_, '_, T>,
     expected: u32,
 ) {
@@ -109,57 +109,57 @@ pub unsafe fn __revmc_builtin_assert_spec_id<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_div<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+pub unsafe fn __evm2_builtin_div<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
     let divisor = b.to_u256();
     *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_div(divisor) }.into();
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_sdiv<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+pub unsafe fn __evm2_builtin_sdiv<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
     *b = i256::i256_div(a.to_u256(), b.to_u256()).into();
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_mod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+pub unsafe fn __evm2_builtin_mod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
     let divisor = b.to_u256();
     *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_rem(divisor) }.into();
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_smod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+pub unsafe fn __evm2_builtin_smod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
     *b = i256::i256_mod(a.to_u256(), b.to_u256()).into();
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_addmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
+pub unsafe fn __evm2_builtin_addmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
     *c = a.to_u256().add_mod(b.to_u256(), c.to_u256()).into();
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_mulmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
+pub unsafe fn __evm2_builtin_mulmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
     *c = a.to_u256().mul_mod(b.to_u256(), c.to_u256()).into();
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_exp<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_exp<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
     let rev![_, exponent] = &*sp;
     ecx.gas.spend(ecx.gas_params().exp_cost(exponent.to_u256()))?;
-    unsafe { __revmc_builtin_pow::<T>(sp) };
+    unsafe { __evm2_builtin_pow::<T>(sp) };
     Ok(())
 }
 
 /// `EXP` without gas, for compiled code that already charged the dynamic gas of a constant
 /// exponent in its section.
 #[inline]
-pub unsafe fn __revmc_builtin_pow<T: EvmTypesHost>(rev![base, exponent]: &mut [EvmWord; 2]) {
+pub unsafe fn __evm2_builtin_pow<T: EvmTypesHost>(rev![base, exponent]: &mut [EvmWord; 2]) {
     *exponent = base.to_u256().pow(exponent.to_u256()).into();
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_keccak256<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_keccak256<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
@@ -169,7 +169,7 @@ pub unsafe fn __revmc_builtin_keccak256<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_keccak256_cc<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_keccak256_cc<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     out: &mut EvmWord,
     offset: u64,
@@ -196,7 +196,7 @@ fn do_keccak256<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_balance<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_balance<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
@@ -206,7 +206,7 @@ pub unsafe fn __revmc_builtin_balance<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_calldataload<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_calldataload<T: EvmTypesHost>(
     ecx: &EvmContext<'_, '_, '_, T>,
     offset_ptr: &mut EvmWord,
 ) {
@@ -214,7 +214,7 @@ pub unsafe fn __revmc_builtin_calldataload<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_calldataload_c<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_calldataload_c<T: EvmTypesHost>(
     ecx: &EvmContext<'_, '_, '_, T>,
     offset_ptr: &mut EvmWord,
     offset: u64,
@@ -231,7 +231,7 @@ fn do_calldataload<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_calldatacopy<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_calldatacopy<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
@@ -250,7 +250,7 @@ pub unsafe fn __revmc_builtin_calldatacopy<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_codecopy<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_codecopy<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
@@ -259,7 +259,7 @@ pub unsafe fn __revmc_builtin_codecopy<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_extcodesize<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_extcodesize<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
@@ -269,7 +269,7 @@ pub unsafe fn __revmc_builtin_extcodesize<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_extcodecopy<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_extcodecopy<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 4],
 ) -> BuiltinResult {
@@ -293,7 +293,7 @@ pub unsafe fn __revmc_builtin_extcodecopy<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_returndatacopy<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_returndatacopy<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
@@ -320,7 +320,7 @@ pub unsafe fn __revmc_builtin_returndatacopy<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_extcodehash<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_extcodehash<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
@@ -331,7 +331,7 @@ pub unsafe fn __revmc_builtin_extcodehash<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_blockhash<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_blockhash<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     number_ptr: &mut EvmWord,
 ) -> BuiltinResult {
@@ -367,7 +367,7 @@ pub unsafe fn __revmc_builtin_blockhash<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_self_balance<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_self_balance<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     slot: &mut EvmWord,
 ) -> BuiltinResult {
@@ -382,7 +382,7 @@ pub unsafe fn __revmc_builtin_self_balance<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_difficulty<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_difficulty<T: EvmTypesHost>(
     ecx: &EvmContext<'_, '_, '_, T>,
     slot: &mut EvmWord,
 ) {
@@ -393,7 +393,7 @@ pub unsafe fn __revmc_builtin_difficulty<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_blob_hash<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_blob_hash<T: EvmTypesHost>(
     ecx: &EvmContext<'_, '_, '_, T>,
     index_ptr: &mut EvmWord,
 ) {
@@ -403,7 +403,7 @@ pub unsafe fn __revmc_builtin_blob_hash<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_mresize<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_mresize<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     min_size: u64,
 ) -> BuiltinResult {
@@ -411,7 +411,7 @@ pub unsafe fn __revmc_builtin_mresize<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_sload<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_sload<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     index: &mut EvmWord,
 ) -> BuiltinResult {
@@ -432,17 +432,17 @@ pub unsafe fn __revmc_builtin_sload<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_sload_c<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_sload_c<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     index: &mut EvmWord,
     key: u64,
 ) -> BuiltinResult {
     *index = U256::from(key).into();
-    unsafe { __revmc_builtin_sload(ecx, index) }
+    unsafe { __evm2_builtin_sload(ecx, index) }
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_sstore<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_sstore<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
@@ -485,7 +485,7 @@ pub unsafe fn __revmc_builtin_sstore<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_tload<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_tload<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     key: &mut EvmWord,
 ) {
@@ -495,7 +495,7 @@ pub unsafe fn __revmc_builtin_tload<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_tstore<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_tstore<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
@@ -507,7 +507,7 @@ pub unsafe fn __revmc_builtin_tstore<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_host_instruction<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: *mut EvmWord,
     pc: usize,
@@ -559,7 +559,7 @@ pub unsafe fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_mcopy<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_mcopy<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
@@ -576,7 +576,7 @@ pub unsafe fn __revmc_builtin_mcopy<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_log<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_log<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: *mut EvmWord,
     n: u8,
@@ -607,7 +607,7 @@ pub unsafe fn __revmc_builtin_log<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_create<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: *mut EvmWord,
     create_kind: CreateKind,
@@ -762,7 +762,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_call<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: *mut EvmWord,
     call_kind: CallKind,
@@ -956,7 +956,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_do_return<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_do_return<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 2],
     result: InstrStop,
@@ -968,7 +968,7 @@ pub unsafe fn __revmc_builtin_do_return<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_do_return_cc<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_do_return_cc<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     offset: u64,
     len: u64,
@@ -998,7 +998,7 @@ fn do_return_range<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
+pub unsafe fn __evm2_builtin_selfdestruct<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     target: &mut EvmWord,
 ) -> BuiltinResult {
@@ -1079,45 +1079,45 @@ mod abi {
     use super::*;
 
     builtins_abi! {
-        __revmc_builtin_panic(data: *const u8, len: usize) -> !;
-        __revmc_builtin_div(sp: &mut [EvmWord; 2]);
-        __revmc_builtin_sdiv(sp: &mut [EvmWord; 2]);
-        __revmc_builtin_mod(sp: &mut [EvmWord; 2]);
-        __revmc_builtin_smod(sp: &mut [EvmWord; 2]);
-        __revmc_builtin_addmod(sp: &mut [EvmWord; 3]);
-        __revmc_builtin_mulmod(sp: &mut [EvmWord; 3]);
-        __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_, '_, '_, T>, expected: u32);
-        __revmc_builtin_exp(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
-        __revmc_builtin_pow(sp: &mut [EvmWord; 2]);
-        __revmc_builtin_keccak256(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
-        __revmc_builtin_keccak256_cc(ecx: &mut EvmContext<'_, '_, '_, T>, out: &mut EvmWord, offset: u64, len: u64) -> BuiltinResult;
-        __revmc_builtin_balance(ecx: &mut EvmContext<'_, '_, '_, T>, address: &mut EvmWord) -> BuiltinResult;
-        __revmc_builtin_calldataload(ecx: &EvmContext<'_, '_, '_, T>, offset_ptr: &mut EvmWord);
-        __revmc_builtin_calldataload_c(ecx: &EvmContext<'_, '_, '_, T>, offset_ptr: &mut EvmWord, offset: u64);
-        __revmc_builtin_calldatacopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 3]) -> BuiltinResult;
-        __revmc_builtin_codecopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 3]) -> BuiltinResult;
-        __revmc_builtin_extcodesize(ecx: &mut EvmContext<'_, '_, '_, T>, address: &mut EvmWord) -> BuiltinResult;
-        __revmc_builtin_extcodecopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 4]) -> BuiltinResult;
-        __revmc_builtin_returndatacopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 3]) -> BuiltinResult;
-        __revmc_builtin_extcodehash(ecx: &mut EvmContext<'_, '_, '_, T>, address: &mut EvmWord) -> BuiltinResult;
-        __revmc_builtin_blockhash(ecx: &mut EvmContext<'_, '_, '_, T>, number_ptr: &mut EvmWord) -> BuiltinResult;
-        __revmc_builtin_self_balance(ecx: &mut EvmContext<'_, '_, '_, T>, slot: &mut EvmWord) -> BuiltinResult;
-        __revmc_builtin_difficulty(ecx: &EvmContext<'_, '_, '_, T>, slot: &mut EvmWord);
-        __revmc_builtin_blob_hash(ecx: &EvmContext<'_, '_, '_, T>, index_ptr: &mut EvmWord);
-        __revmc_builtin_mresize(ecx: &mut EvmContext<'_, '_, '_, T>, min_size: u64) -> BuiltinResult;
-        __revmc_builtin_sload(ecx: &mut EvmContext<'_, '_, '_, T>, index: &mut EvmWord) -> BuiltinResult;
-        __revmc_builtin_sload_c(ecx: &mut EvmContext<'_, '_, '_, T>, index: &mut EvmWord, key: u64) -> BuiltinResult;
-        __revmc_builtin_sstore(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
-        __revmc_builtin_tload(ecx: &mut EvmContext<'_, '_, '_, T>, key: &mut EvmWord);
-        __revmc_builtin_tstore(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
-        __revmc_builtin_mcopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 3]) -> BuiltinResult;
-        __revmc_builtin_host_instruction(ecx: &mut EvmContext<'_, '_, '_, T>, sp: *mut EvmWord, pc: usize, io: usize) -> BuiltinResult;
-        __revmc_builtin_log(ecx: &mut EvmContext<'_, '_, '_, T>, sp: *mut EvmWord, n: u8) -> BuiltinResult;
-        __revmc_builtin_create(ecx: &mut EvmContext<'_, '_, '_, T>, sp: *mut EvmWord, create_kind: CreateKind) -> BuiltinResult;
-        __revmc_builtin_call(ecx: &mut EvmContext<'_, '_, '_, T>, sp: *mut EvmWord, call_kind: CallKind) -> BuiltinResult;
-        __revmc_builtin_do_return(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2], result: InstrStop) -> BuiltinResult;
-        __revmc_builtin_do_return_cc(ecx: &mut EvmContext<'_, '_, '_, T>, offset: u64, len: u64, result: InstrStop) -> BuiltinResult;
-        __revmc_builtin_selfdestruct(ecx: &mut EvmContext<'_, '_, '_, T>, target: &mut EvmWord) -> BuiltinResult;
+        __evm2_builtin_panic(data: *const u8, len: usize) -> !;
+        __evm2_builtin_div(sp: &mut [EvmWord; 2]);
+        __evm2_builtin_sdiv(sp: &mut [EvmWord; 2]);
+        __evm2_builtin_mod(sp: &mut [EvmWord; 2]);
+        __evm2_builtin_smod(sp: &mut [EvmWord; 2]);
+        __evm2_builtin_addmod(sp: &mut [EvmWord; 3]);
+        __evm2_builtin_mulmod(sp: &mut [EvmWord; 3]);
+        __evm2_builtin_assert_spec_id(ecx: &EvmContext<'_, '_, '_, T>, expected: u32);
+        __evm2_builtin_exp(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
+        __evm2_builtin_pow(sp: &mut [EvmWord; 2]);
+        __evm2_builtin_keccak256(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
+        __evm2_builtin_keccak256_cc(ecx: &mut EvmContext<'_, '_, '_, T>, out: &mut EvmWord, offset: u64, len: u64) -> BuiltinResult;
+        __evm2_builtin_balance(ecx: &mut EvmContext<'_, '_, '_, T>, address: &mut EvmWord) -> BuiltinResult;
+        __evm2_builtin_calldataload(ecx: &EvmContext<'_, '_, '_, T>, offset_ptr: &mut EvmWord);
+        __evm2_builtin_calldataload_c(ecx: &EvmContext<'_, '_, '_, T>, offset_ptr: &mut EvmWord, offset: u64);
+        __evm2_builtin_calldatacopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 3]) -> BuiltinResult;
+        __evm2_builtin_codecopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 3]) -> BuiltinResult;
+        __evm2_builtin_extcodesize(ecx: &mut EvmContext<'_, '_, '_, T>, address: &mut EvmWord) -> BuiltinResult;
+        __evm2_builtin_extcodecopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 4]) -> BuiltinResult;
+        __evm2_builtin_returndatacopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 3]) -> BuiltinResult;
+        __evm2_builtin_extcodehash(ecx: &mut EvmContext<'_, '_, '_, T>, address: &mut EvmWord) -> BuiltinResult;
+        __evm2_builtin_blockhash(ecx: &mut EvmContext<'_, '_, '_, T>, number_ptr: &mut EvmWord) -> BuiltinResult;
+        __evm2_builtin_self_balance(ecx: &mut EvmContext<'_, '_, '_, T>, slot: &mut EvmWord) -> BuiltinResult;
+        __evm2_builtin_difficulty(ecx: &EvmContext<'_, '_, '_, T>, slot: &mut EvmWord);
+        __evm2_builtin_blob_hash(ecx: &EvmContext<'_, '_, '_, T>, index_ptr: &mut EvmWord);
+        __evm2_builtin_mresize(ecx: &mut EvmContext<'_, '_, '_, T>, min_size: u64) -> BuiltinResult;
+        __evm2_builtin_sload(ecx: &mut EvmContext<'_, '_, '_, T>, index: &mut EvmWord) -> BuiltinResult;
+        __evm2_builtin_sload_c(ecx: &mut EvmContext<'_, '_, '_, T>, index: &mut EvmWord, key: u64) -> BuiltinResult;
+        __evm2_builtin_sstore(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
+        __evm2_builtin_tload(ecx: &mut EvmContext<'_, '_, '_, T>, key: &mut EvmWord);
+        __evm2_builtin_tstore(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2]) -> BuiltinResult;
+        __evm2_builtin_mcopy(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 3]) -> BuiltinResult;
+        __evm2_builtin_host_instruction(ecx: &mut EvmContext<'_, '_, '_, T>, sp: *mut EvmWord, pc: usize, io: usize) -> BuiltinResult;
+        __evm2_builtin_log(ecx: &mut EvmContext<'_, '_, '_, T>, sp: *mut EvmWord, n: u8) -> BuiltinResult;
+        __evm2_builtin_create(ecx: &mut EvmContext<'_, '_, '_, T>, sp: *mut EvmWord, create_kind: CreateKind) -> BuiltinResult;
+        __evm2_builtin_call(ecx: &mut EvmContext<'_, '_, '_, T>, sp: *mut EvmWord, call_kind: CallKind) -> BuiltinResult;
+        __evm2_builtin_do_return(ecx: &mut EvmContext<'_, '_, '_, T>, sp: &mut [EvmWord; 2], result: InstrStop) -> BuiltinResult;
+        __evm2_builtin_do_return_cc(ecx: &mut EvmContext<'_, '_, '_, T>, offset: u64, len: u64, result: InstrStop) -> BuiltinResult;
+        __evm2_builtin_selfdestruct(ecx: &mut EvmContext<'_, '_, '_, T>, target: &mut EvmWord) -> BuiltinResult;
     }
 }
 
@@ -1267,7 +1267,7 @@ mod tests {
             frame.stack.set(6, EvmWord::from(Word::from(50_000)));
 
             let sp = frame.stack.as_mut_ptr();
-            unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::Call) };
+            unsafe { abi::__evm2_builtin_call(&mut frame.ecx, sp, CallKind::Call) };
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
             assert_eq!(frame.ecx.return_data(), child_output.as_ref());
@@ -1312,7 +1312,7 @@ mod tests {
             write_call_stack(frame.stack, target, 50_000, Some(stack_value));
 
             let sp = frame.stack.as_mut_ptr();
-            unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::CallCode) };
+            unsafe { abi::__evm2_builtin_call(&mut frame.ecx, sp, CallKind::CallCode) };
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
         }
@@ -1350,7 +1350,7 @@ mod tests {
             write_call_stack(frame.stack, target, 50_000, None);
 
             let sp = frame.stack.as_mut_ptr();
-            unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::DelegateCall) };
+            unsafe { abi::__evm2_builtin_call(&mut frame.ecx, sp, CallKind::DelegateCall) };
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
         }
@@ -1387,7 +1387,7 @@ mod tests {
             write_call_stack(frame.stack, target, 50_000, None);
 
             let sp = frame.stack.as_mut_ptr();
-            unsafe { abi::__revmc_builtin_call(&mut frame.ecx, sp, CallKind::StaticCall) };
+            unsafe { abi::__evm2_builtin_call(&mut frame.ecx, sp, CallKind::StaticCall) };
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::ONE);
         }
@@ -1432,7 +1432,7 @@ mod tests {
             frame.stack.set(2, EvmWord::ZERO);
 
             let sp = frame.stack.as_mut_ptr();
-            unsafe { abi::__revmc_builtin_create(&mut frame.ecx, sp, CreateKind::Create) };
+            unsafe { abi::__evm2_builtin_create(&mut frame.ecx, sp, CreateKind::Create) };
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
             assert!(frame.ecx.return_data().is_empty());
@@ -1476,7 +1476,7 @@ mod tests {
             frame.stack.set(3, EvmWord::ZERO);
 
             let sp = frame.stack.as_mut_ptr();
-            unsafe { abi::__revmc_builtin_create(&mut frame.ecx, sp, CreateKind::Create2) };
+            unsafe { abi::__evm2_builtin_create(&mut frame.ecx, sp, CreateKind::Create2) };
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
             assert!(frame.ecx.return_data().is_empty());
@@ -1538,7 +1538,7 @@ mod tests {
                     }
 
                     let sp = frame.stack.as_mut_ptr();
-                    unsafe { abi::__revmc_builtin_create(&mut frame.ecx, sp, create_kind) };
+                    unsafe { abi::__evm2_builtin_create(&mut frame.ecx, sp, create_kind) };
 
                     assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &EvmWord::ZERO);
                     assert!(frame.ecx.return_data().is_empty());
