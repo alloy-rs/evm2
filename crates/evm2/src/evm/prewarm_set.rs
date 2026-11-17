@@ -25,7 +25,7 @@ use alloy_primitives::{
 /// Short-address optimization cap. Addresses with 18 leading zero bytes whose last two bytes are
 /// less than this value are tracked in a bit vector for fast warm lookups.
 ///
-/// 300 covers every precompile address in use. The bit array stores whole 64-bit words, so 300
+/// Precompile addresses in use stay below 300. The bit array stores whole 64-bit words, so 300
 /// bits take five words anyway; 320 uses all of them at no extra cost.
 const SHORT_ADDRESS_CAP: usize = 320;
 

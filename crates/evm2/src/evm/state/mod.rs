@@ -587,9 +587,9 @@ impl<'a> State<'a> {
     /// database when it has not been loaded yet.
     ///
     /// When `skip_cold` is true and the account is cold, the access
-    /// is skipped and [`LoadError::ColdLoadSkipped`] is returned, leaving the overlay
-    /// untouched, so callers can detect a cold access without paying for the load. With
-    /// `skip_cold` false (or when the account is warm) the entry is loaded.
+    /// is skipped and [`LoadError::ColdLoadSkipped`] is returned without touching the overlay, so
+    /// callers can detect a cold access without paying for the load. With `skip_cold` false (or
+    /// when the account is warm) the entry is loaded.
     ///
     /// The load itself is not journaled: the loaded entry holds `original == present` and is a
     /// harmless read cache that [`Self::rollback`] leaves in place. Only later warmth and value

@@ -268,7 +268,8 @@ def mresize_call_count(path: str) -> int:
     try:
         with open(path) as f:
             for line in f:
-                if "call" in line and "@__evm2_builtin_mresize" in line:
+                # Base dumps built before the symbol rename use an older prefix.
+                if "call" in line and re.search(r"@__\w+_builtin_mresize", line):
                     calls += 1
     except FileNotFoundError:
         pass
