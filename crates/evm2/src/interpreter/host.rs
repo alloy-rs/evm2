@@ -133,6 +133,13 @@ pub trait Host<T: EvmTypesHost> {
     /// must keep it at a stable address while the interpreter runs.
     fn tx_env(&mut self) -> &TxEnv<T>;
 
+    /// Returns the inspector-visible depth of top-level messages.
+    ///
+    /// The call depth limit and the nested-create nonce check are measured from this depth, and
+    /// inspectors compare against it to find the top-level message. It should be at most
+    /// `u16::MAX - CALL_DEPTH_LIMIT - 1` so the deepest message stays representable.
+    fn initial_call_depth(&self) -> u16;
+
     /// Loads account information.
     fn load_account(
         &mut self,
@@ -178,6 +185,35 @@ pub trait Host<T: EvmTypesHost> {
         &mut self,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError>;
+
+    /// Executes a call message from outside an interpreter frame, such as from a precompile, with
+    /// the charges of the call opcode of its kind.
+    ///
+    /// Fill in [`MessageExt::kind`](super::MessageExt::kind) (a call kind), the target,
+    /// destination, caller, value, input, depth,
+    /// [`caller_is_static`](super::MessageExt::caller_is_static) and extension as the opcode does,
+    /// with the gas to forward in [`gas_limit`](super::MessageExt::gas_limit). This charges `gas`
+    /// for the opcode's static gas, a value transfer, the account access of the target and of its
+    /// EIP-7702 delegate and a new account, forwards at most all but one 64th of the remaining gas,
+    /// sets the message's code, code address, gas limit and reservoir, executes it and merges the
+    /// child's gas into `gas`, as [`call_with`](super::instructions::call_with) does.
+    ///
+    /// A child that reverts or halts returns a result that is not a success. A charge that runs
+    /// out of gas, a value transfer inside a static frame and a fatal child stop return
+    /// [`HostError::Halt`].
+    ///
+    /// Implementations should not override this, so that it keeps charging as the opcodes do.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the message kind is not a call kind.
+    fn execute_call(
+        &mut self,
+        gas: &mut GasTracker,
+        message: &mut Message<T>,
+    ) -> Result<MessageResult<T>, HostError> {
+        super::instructions::execute_call(self, gas, message)
+    }
 
     /// Registers the current contract for self-destruction.
     fn selfdestruct(
