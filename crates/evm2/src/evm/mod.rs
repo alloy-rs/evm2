@@ -405,13 +405,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         gas: &mut GasTracker,
     ) -> Result<PrecompileOutput, PrecompileError> {
         let guard = self.enter_execution();
-        let precompiles = guard.evm.precompiles.as_mut() as *mut dyn PrecompileProvider<T>;
+        let precompiles = guard.evm.precompiles.as_ref() as *const dyn PrecompileProvider<T>;
         let evm_ptr = guard.evm as *mut Self;
         // SAFETY: Precompile execution may need access to both the provider and the host EVM.
-        // The provider is not moved or replaced during this call, and `execute` is expected to
-        // preserve `Evm` invariants while using the host reference.
+        // The provider is not moved or replaced while the EVM runs, and is only borrowed shared,
+        // so a precompile that calls back into the EVM can re-enter it without aliasing a
+        // `&mut`. `execute` is expected to preserve `Evm` invariants while using the host
+        // reference.
         unsafe {
-            (&mut *precompiles)
+            (&*precompiles)
                 .execute(&mut *evm_ptr, message, gas)
                 .expect("precompile was checked before execution")
         }
