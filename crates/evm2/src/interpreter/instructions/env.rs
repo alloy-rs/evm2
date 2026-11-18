@@ -23,6 +23,10 @@ fn load_account<T: EvmTypesHost>(
     if account.is_cold {
         cx.gas.spend(cold_load_gas)?;
     }
+    // TIP-1175: the bytecode is charged as a second step, only when its load was cold.
+    if account.is_code_cold {
+        cx.gas.spend(cx.state.gas_params().cold_code_additional_cost())?;
+    }
     Ok(account)
 }
 

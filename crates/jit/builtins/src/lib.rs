@@ -903,9 +903,14 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         .load_account(&to, true, skip_cold_load)
         .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
 
+    let additional_code_cost = version.gas_params.cold_code_additional_cost();
     let mut cost = 0;
     if account.is_cold {
         cost += additional_cold_cost;
+    }
+    // TIP-1175: see the interpreter's `load_acc_and_calc_gas`.
+    if account.is_code_cold {
+        cost += additional_code_cost;
     }
     let mut new_account_state_gas = 0;
     let mut code = account.code;
@@ -924,6 +929,9 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
             .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
+        }
+        if delegated_account.is_code_cold {
+            cost += additional_code_cost;
         }
         code = delegated_account.code;
         code_address = delegated_address;

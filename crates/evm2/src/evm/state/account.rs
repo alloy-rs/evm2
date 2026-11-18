@@ -167,6 +167,9 @@ bitflags! {
         /// The account is touched for transaction-finalization account-lifetime rules. Kept
         /// through finalization.
         const TOUCHED = 1 << 1;
+        /// The account's bytecode is warm in the current transaction: it was loaded and paid for,
+        /// or deployed, in this transaction (Tempo TIP-1175).
+        const CODE_WARM = 1 << 2;
         /// The account has been self-destructed in the current transaction. Kept through
         /// finalization, also on an EIP-8246 survivor.
         const DESTROYED = 1 << 3;
@@ -433,6 +436,17 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             || self.inner.prewarm_set.is_warm(&self.address)
     }
 
+    /// Returns whether the account's bytecode is warm for Tempo TIP-1175 gas accounting.
+    ///
+    /// Bytecode is warm once it was loaded, or deployed, in this transaction, and for every
+    /// address in the transaction's base warm set (precompiles, coinbase, EIP-2930 access list).
+    /// Account warmth alone does not make bytecode warm.
+    #[inline]
+    pub fn is_code_warm(&self) -> bool {
+        self.tracked.flags.contains(AccountFlags::CODE_WARM)
+            || self.inner.prewarm_set.is_warm(&self.address)
+    }
+
     /// Returns whether the account has been marked self-destructed in the current transaction.
     #[inline]
     pub const fn is_destructed(&self) -> bool {
@@ -557,6 +571,38 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         true
     }
 
+    /// Marks the account's bytecode warm for Tempo TIP-1175 gas accounting.
+    ///
+    /// Returns `true` if the bytecode was cold before this call. The change is journaled: when
+    /// this handle already recorded an account snapshot, that snapshot restores the flag on
+    /// rollback; otherwise a [`JournalEntry::CodeWarmed`] is recorded.
+    #[inline]
+    pub fn warm_code(&mut self) -> bool {
+        if self.is_code_warm() {
+            return false;
+        }
+        if self.snapshot.is_none() {
+            self.inner.journal.push(JournalEntry::CodeWarmed { address: self.address });
+        }
+        self.tracked.flags.insert(AccountFlags::CODE_WARM);
+        true
+    }
+
+    /// Loads the account's bytecode as a step separate from the account load, and warms it for
+    /// Tempo TIP-1175 gas accounting.
+    ///
+    /// Returns the bytecode and whether its load was cold: the account has code, the code is not
+    /// an EIP-7702 delegation designator (which is part of the account itself) and it was not
+    /// warm. Only a cold load warms the bytecode, so the caller charges
+    /// [`GasParams::cold_code_additional_cost`](crate::version::GasParams::cold_code_additional_cost)
+    /// exactly when this returns `true`, and a later load in the transaction is free.
+    #[inline]
+    pub fn load_code_and_warm(&mut self) -> DbResult<(Bytecode, bool)> {
+        let code = self.load_code()?;
+        let is_cold = !code.is_empty() && !code.is_eip7702() && self.warm_code();
+        Ok((code, is_cold))
+    }
+
     /// Sets the account balance, touching the account and recording a revert snapshot.
     #[inline]
     pub fn set_balance(&mut self, balance: Word) {
@@ -607,6 +653,9 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         let account = self.present_mut();
         account.code_hash = code_hash;
         account.code = Some(code);
+        // Code deployed in this transaction is warm (TIP-1175). `touch` recorded the snapshot that
+        // restores the flag on rollback.
+        self.tracked.flags.insert(AccountFlags::CODE_WARM);
     }
 
     /// Sets the account code, computing its hash, touching the account and recording a revert

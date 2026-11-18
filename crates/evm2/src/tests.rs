@@ -790,3 +790,197 @@ fn apply_auth_list_accepts_custom_filtered_authorizations() {
     let per_auth = evm.version().gas_params.get(GasId::TxEip7702AuthRefund);
     assert_eq!(refunds.execution_refund, per_auth);
 }
+
+// Tempo TIP-1175: bytecode loads are priced separately from account loads.
+
+const CODE_COST: u32 = 1_000;
+
+/// Runs `entry_code` as the target of a top-level call and returns the total execution gas
+/// (top-level charges included), with the bytecode load priced at `code_cost`.
+fn code_load_gas(
+    spec: SpecId,
+    code_cost: u32,
+    entry_code: &[u8],
+    accounts: &[(Address, Bytecode)],
+    prewarm: &[Address],
+) -> u64 {
+    let caller = Address::with_last_byte(0xca);
+    let entry = Address::with_last_byte(0xe0);
+    let mut version = Version::new(spec);
+    version.gas_params.set(GasId::ColdCodeAdditionalCost, code_cost);
+    let mut database = InMemoryDB::default();
+    database
+        .insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1u64 << 60)));
+    database.insert_account_info(
+        &entry,
+        AccountInfo::default().with_code(legacy_bytecode(entry_code.to_vec())),
+    );
+    for (address, code) in accounts {
+        database.insert_account_info(address, AccountInfo::default().with_code(code.clone()));
+    }
+    let mut evm = TestEvm::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(spec, version),
+        spec,
+        BlockEnvExt::default(),
+        TxRegistry::new(),
+        database,
+        Precompiles::base(spec),
+    );
+    evm.warm_precompiles();
+    evm.state.prewarm(&caller);
+    evm.state.prewarm(&entry);
+    for address in prewarm {
+        evm.state.prewarm(address);
+    }
+    let mut gas = GasTracker::new(1_000_000);
+    let mut frame = prepare_initial_frame(
+        &mut evm,
+        caller,
+        0,
+        TxKind::Call(entry),
+        &Default::default(),
+        U256::ZERO,
+        &mut gas,
+    )
+    .unwrap();
+    let result = Host::execute_message(&mut evm, &mut frame.message).unwrap();
+    assert!(result.is_success(), "{:?}", result.stop);
+    (1_000_000 - gas.remaining()) + result.gas.spent()
+}
+
+/// Returns how many cold bytecode loads `entry_code` pays for, checking that Ethereum pricing
+/// (zero) is unaffected.
+fn cold_code_loads(
+    entry_code: &[u8],
+    accounts: &[(Address, Bytecode)],
+    prewarm: &[Address],
+) -> u64 {
+    let base = code_load_gas(SpecId::PRAGUE, 0, entry_code, accounts, prewarm);
+    let priced = code_load_gas(SpecId::PRAGUE, CODE_COST, entry_code, accounts, prewarm);
+    let extra = priced - base;
+    assert_eq!(extra % u64::from(CODE_COST), 0, "extra gas {extra}");
+    extra / u64::from(CODE_COST)
+}
+
+const CONTRACT: Address = Address::with_last_byte(0xc0);
+const EOA: Address = Address::with_last_byte(0xe1);
+const DELEGATING: Address = Address::with_last_byte(0xd0);
+const REVERTER: Address = Address::with_last_byte(0xbe);
+
+fn code_accounts() -> Vec<(Address, Bytecode)> {
+    // REVERTER loads CONTRACT's code and reverts, rolling back the warmth.
+    let mut reverter = Vec::new();
+    push_address(&mut reverter, &CONTRACT);
+    reverter.extend([op::EXTCODESIZE, op::POP]);
+    push_all(&mut reverter, [0, 0]);
+    reverter.push(op::REVERT);
+    vec![
+        (CONTRACT, legacy_bytecode(vec![op::STOP])),
+        (EOA, Bytecode::default()),
+        (DELEGATING, Bytecode::new_eip7702(CONTRACT)),
+        (REVERTER, legacy_bytecode(reverter)),
+    ]
+}
+
+fn ext_op(code: &mut Vec<u8>, opcode: u8, address: &Address) {
+    match opcode {
+        op::EXTCODECOPY => {
+            push_all(code, [0, 0, 0]);
+            push_address(code, address);
+            code.push(op::EXTCODECOPY);
+        }
+        op::STATICCALL | op::DELEGATECALL => {
+            push_all(code, [0, 0, 0, 0]);
+            push_address(code, address);
+            code.extend([op::GAS, opcode, op::POP]);
+        }
+        op::CALL | op::CALLCODE => {
+            push_all(code, [0, 0, 0, 0, 0]);
+            push_address(code, address);
+            code.extend([op::GAS, opcode, op::POP]);
+        }
+        _ => {
+            push_address(code, address);
+            code.extend([opcode, op::POP]);
+        }
+    }
+}
+
+fn program(steps: &[(u8, Address)]) -> Vec<u8> {
+    let mut code = Vec::new();
+    for (opcode, address) in steps {
+        ext_op(&mut code, *opcode, address);
+    }
+    code.push(op::STOP);
+    code
+}
+
+#[rstest::rstest]
+#[case::extcodesize_once(&[(op::EXTCODESIZE, CONTRACT)], 1)]
+#[case::extcodesize_twice_charged_once(&[(op::EXTCODESIZE, CONTRACT), (op::EXTCODESIZE, CONTRACT)], 1)]
+#[case::extcodecopy(&[(op::EXTCODECOPY, CONTRACT)], 1)]
+#[case::extcodehash_is_account_only(&[(op::EXTCODEHASH, CONTRACT)], 0)]
+#[case::balance_is_account_only(&[(op::BALANCE, CONTRACT)], 0)]
+#[case::warm_account_still_pays_code(&[(op::BALANCE, CONTRACT), (op::EXTCODESIZE, CONTRACT)], 1)]
+#[case::code_then_balance(&[(op::EXTCODESIZE, CONTRACT), (op::BALANCE, CONTRACT)], 1)]
+#[case::call(&[(op::CALL, CONTRACT)], 1)]
+#[case::callcode(&[(op::CALLCODE, CONTRACT)], 1)]
+#[case::delegatecall(&[(op::DELEGATECALL, CONTRACT)], 1)]
+#[case::staticcall(&[(op::STATICCALL, CONTRACT)], 1)]
+#[case::call_then_extcodecopy(&[(op::STATICCALL, CONTRACT), (op::EXTCODECOPY, CONTRACT)], 1)]
+#[case::address_without_code(&[(op::EXTCODESIZE, EOA), (op::CALL, EOA)], 0)]
+#[case::precompile(&[(op::EXTCODESIZE, Address::with_last_byte(2)), (op::STATICCALL, Address::with_last_byte(2))], 0)]
+#[case::extcode_on_delegating_account(&[(op::EXTCODESIZE, DELEGATING), (op::EXTCODECOPY, DELEGATING)], 0)]
+#[case::call_follows_delegation(&[(op::STATICCALL, DELEGATING)], 1)]
+#[case::delegation_target_warmed(&[(op::STATICCALL, DELEGATING), (op::EXTCODESIZE, CONTRACT)], 1)]
+#[case::reverted_load_is_rolled_back(&[(op::STATICCALL, REVERTER), (op::EXTCODESIZE, CONTRACT)], 3)]
+#[case::own_code_is_prewarmed(&[(op::EXTCODESIZE, Address::with_last_byte(0xe0))], 0)]
+fn tip1175_code_load_pricing(#[case] steps: &[(u8, Address)], #[case] expected: u64) {
+    assert_eq!(cold_code_loads(&program(steps), &code_accounts(), &[]), expected);
+}
+
+#[test]
+fn tip1175_prewarmed_code_is_free() {
+    let code = program(&[(op::EXTCODESIZE, CONTRACT), (op::STATICCALL, CONTRACT)]);
+    assert_eq!(cold_code_loads(&code, &code_accounts(), &[CONTRACT]), 0);
+}
+
+#[rstest::rstest]
+fn tip1175_code_deployed_in_tx_is_warm(#[values(false, true)] reverted_first: bool) {
+    // Initcode returning the one-byte runtime code 0x00.
+    let initcode = hex!("600060005360016000f3");
+    let mut code = Vec::new();
+    push(&mut code, Word::from_be_slice(&initcode));
+    push(&mut code, 0);
+    code.push(op::MSTORE);
+    if reverted_first {
+        // A CREATE2 that reverts (initcode = REVERT) leaves nothing warm behind.
+        push(&mut code, Word::from_be_slice(&hex!("60006000fd")));
+        push(&mut code, 0x40);
+        code.push(op::MSTORE);
+        push_all(&mut code, [7, 5, 0x40 + 27, 0]);
+        code.extend([op::CREATE2, op::POP]);
+    }
+    push_all(&mut code, [7, 10, 22, 0]);
+    code.extend([op::CREATE2, op::EXTCODESIZE]);
+    // Halt unless the deployed code is one byte, so a failed deployment can't pass vacuously.
+    push(&mut code, 1);
+    code.push(op::EQ);
+    let jumpdest = code.len() + 4;
+    push(&mut code, jumpdest);
+    code.extend([op::JUMPI, op::INVALID, op::JUMPDEST, op::STOP]);
+    assert_eq!(code[jumpdest], op::JUMPDEST);
+    assert_eq!(cold_code_loads(&code, &[], &[]), 0);
+}
+
+#[rstest::rstest]
+#[case::eip2780_charges_target(SpecId::AMSTERDAM, 1)]
+#[case::free_resolution_warms_target(SpecId::PRAGUE, 0)]
+fn tip1175_top_level_delegation(#[case] spec: SpecId, #[case] expected: u64) {
+    // The transaction target delegates to CONTRACT; the target then loads CONTRACT's code again,
+    // which is warm either way.
+    let mut accounts = code_accounts();
+    accounts.push((Address::with_last_byte(0xe0), Bytecode::new_eip7702(CONTRACT)));
+    let gas = |cost| code_load_gas(spec, cost, &[], &accounts, &[]);
+    assert_eq!(gas(CODE_COST) - gas(0), expected * u64::from(CODE_COST));
+}

@@ -67,6 +67,11 @@ pub enum JournalEntry {
         /// Previous transient storage value.
         previous: Option<Word>,
     },
+    /// Account bytecode was warmed by Tempo TIP-1175 code load tracking.
+    CodeWarmed {
+        /// Account address.
+        address: Address,
+    },
     /// Storage slot was warmed by EIP-2929 access tracking.
     StorageWarmed {
         /// Account address.

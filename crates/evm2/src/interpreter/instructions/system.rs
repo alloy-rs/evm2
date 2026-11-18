@@ -90,9 +90,15 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
     let skip_cold_load = remaining_gas < additional_cold_cost;
     let account = host.load_account(&to, true, skip_cold_load)?;
 
+    let additional_code_cost = gas_params.cold_code_additional_cost();
     let mut cost = 0;
     if account.is_cold {
         cost += additional_cold_cost;
+    }
+    // TIP-1175: a cold bytecode load is charged on top of the account access. A delegation
+    // designator is part of the account, so a delegating target pays only for its account.
+    if account.is_code_cold {
+        cost += additional_code_cost;
     }
     let mut code = account.code;
     let mut code_address = to;
@@ -107,6 +113,9 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
         let delegated_account = host.load_account(&delegated_address, true, skip_cold_load)?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
+        }
+        if delegated_account.is_code_cold {
+            cost += additional_code_cost;
         }
         code = delegated_account.code;
         code_address = delegated_address;

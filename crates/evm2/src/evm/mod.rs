@@ -2000,8 +2000,15 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             None => (Word::ZERO, 0, B256::ZERO, true),
         };
 
-        // load code
-        let code = if load_code { account.load_code()? } else { Bytecode::default() };
+        // Load the bytecode as a separate step. Code warmth is only tracked when the code load has
+        // a price (Tempo TIP-1175); Ethereum leaves it at zero and skips the bookkeeping.
+        let (code, is_code_cold) = if !load_code {
+            (Bytecode::default(), false)
+        } else if self.execution_config.version().gas_params.cold_code_additional_cost() != 0 {
+            account.load_code_and_warm()?
+        } else {
+            (account.load_code()?, false)
+        };
         Ok(AccountLoad {
             balance,
             nonce,
@@ -2010,6 +2017,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             is_empty,
             is_empty_for_new_account_gas,
             is_cold,
+            is_code_cold,
             _non_exhaustive: (),
         })
     }
@@ -2175,6 +2183,13 @@ pub struct AccountLoad {
     pub is_empty_for_new_account_gas: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
+    /// Whether the bytecode load was cold and must pay
+    /// [`GasParams::cold_code_additional_cost`](crate::version::GasParams::cold_code_additional_cost)
+    /// (Tempo TIP-1175).
+    ///
+    /// Only set when the code was requested, the account has code that is not an EIP-7702
+    /// delegation designator, the code was not yet warm and the price is non-zero.
+    pub is_code_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }

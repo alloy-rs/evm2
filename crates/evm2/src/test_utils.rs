@@ -148,6 +148,7 @@ impl Host<TestTypes> for TestHost {
                 !self.exists && !self.is_touched
             },
             is_cold: self.is_cold,
+            is_code_cold: false,
             _non_exhaustive: (),
         })
     }

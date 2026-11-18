@@ -622,11 +622,23 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     if load.is_cold && tx_gas.spend(cold_additional).is_err() {
                         return Ok(halted(host));
                     }
+                    let cold_code_additional =
+                        host.version().gas_params.cold_code_additional_cost();
+                    if load.is_code_cold && tx_gas.spend(cold_code_additional).is_err() {
+                        return Ok(halted(host));
+                    }
                     code = load.code;
                 } else {
+                    // The delegation target is resolved for free here, so its bytecode is warmed
+                    // for free with it (TIP-1175).
+                    let track_code = host.version().gas_params.cold_code_additional_cost() != 0;
                     let mut account = host.state.account(&delegated_address)?;
                     account.warm();
-                    code = account.load_code()?;
+                    code = if track_code {
+                        account.load_code_and_warm()?.0
+                    } else {
+                        account.load_code()?
+                    };
                 }
                 code_address = delegated_address;
             }
