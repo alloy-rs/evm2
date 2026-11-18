@@ -128,7 +128,7 @@ use crate::{
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
-    version::{EvmFeatures, GasId, GasParams},
+    version::{EvmFeatures, GasId},
 };
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
@@ -148,11 +148,14 @@ pub mod inspector;
 pub mod precompile;
 pub mod registry;
 mod system;
+mod tx_gas;
 pub use system::{
     BEACON_ROOTS_ADDRESS, BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS,
     CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS, SYSTEM_CALL_GAS_LIMIT,
     SYSTEM_MAX_SSTORES_PER_CALL, SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
 };
+pub use tx_gas::TxGasSchedule;
+use tx_gas::TxGasState;
 
 mod any;
 pub use any::NonStaticAny;
@@ -213,34 +216,6 @@ pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + '
     }
 }
 
-/// Selects the gas parameters one transaction runs with.
-///
-/// [`Evm`] calls it with its runtime specification ID, its own gas parameters and the transaction
-/// before validating or dispatching each transaction, and runs the transaction with the returned
-/// gas parameters, or with its own when it returns `None`. Only gas parameters change: the rest of
-/// the EVM's [`Version`](crate::Version), such as its chain ID, gas caps, memory limit and
-/// features, always applies. See [`Evm::set_tx_gas_params_selector`].
-pub type TxGasParamsSelector<T> =
-    fn(<T as EvmTypesHost>::SpecId, &GasParams, &<T as EvmTypesHost>::Tx) -> Option<GasParams>;
-
-/// The EVM's own gas parameters while a transaction runs with selected ones.
-#[derive(Clone, Copy)]
-struct TxGasParamsScope {
-    /// The EVM's own gas parameters.
-    base: GasParams,
-    /// The interpreter runner's verdict for the EVM's own gas parameters.
-    base_runner_supported: bool,
-}
-
-/// What [`Evm::exit_tx_gas_params`] restores.
-struct TxGasParamsRestore {
-    gas_params: GasParams,
-    runner_supported: bool,
-    scope: Option<TxGasParamsScope>,
-    /// The gas parameters installed for the transaction.
-    installed: GasParams,
-}
-
 /// EVM host and transaction dispatcher.
 #[derive_where(Debug)]
 pub struct Evm<'a, T: EvmTypesHost> {
@@ -271,15 +246,9 @@ pub struct Evm<'a, T: EvmTypesHost> {
     /// Refreshed whenever either changes.
     #[derive_where(skip)]
     runner_supported: bool,
-    /// Selects the gas parameters each transaction runs with.
+    /// The alternate gas schedule for some transactions, if any.
     #[derive_where(skip)]
-    tx_gas_params_selector: Option<TxGasParamsSelector<T>>,
-    /// The EVM's own gas parameters while a transaction runs with selected ones.
-    #[derive_where(skip)]
-    tx_gas_params_scope: Option<TxGasParamsScope>,
-    /// The interpreter runner's verdict for the last selected gas parameters.
-    #[derive_where(skip)]
-    selected_runner_support: Option<(GasParams, bool)>,
+    tx_gas: Option<TxGasState<T>>,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
@@ -418,9 +387,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             initial_call_depth: 0,
             interpreter_runner: None,
             runner_supported: false,
-            tx_gas_params_selector: None,
-            tx_gas_params_scope: None,
-            selected_runner_support: None,
+            tx_gas: None,
             current_frame: None,
             frames_entered: 0,
             frame_checkpoint: None,
@@ -484,11 +451,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn refresh_runner_support(&mut self) {
-        self.selected_runner_support = None;
         self.runner_supported = self
             .interpreter_runner
             .as_ref()
             .is_some_and(|runner| runner.supports(&self.execution_config));
+        self.refresh_tx_gas_runner_support();
     }
 
     #[inline]
@@ -672,6 +639,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
         self.refresh_runner_support();
+        self.derive_tx_gas();
     }
 
     #[inline]
@@ -688,6 +656,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // Refresh before the old registry and precompiles drop, so an unwinding destructor
         // cannot leave a stale verdict.
         self.refresh_runner_support();
+        self.derive_tx_gas();
         self.registry = registry;
         self.precompiles = precompiles;
     }
@@ -1279,97 +1248,6 @@ impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     }
 }
 
-/// Restores the gas parameters [`Evm::enter_tx_gas_params`] replaced when dropped, including on
-/// unwind.
-struct TxGasParamsGuard<'guard, 'evm, T: EvmTypes> {
-    evm: &'guard mut Evm<'evm, T>,
-    restore: Option<TxGasParamsRestore>,
-}
-
-impl<'guard, 'evm, T: EvmTypes> Drop for TxGasParamsGuard<'guard, 'evm, T> {
-    #[inline]
-    fn drop(&mut self) {
-        if let Some(restore) = self.restore.take() {
-            self.evm.exit_tx_gas_params(restore);
-        }
-    }
-}
-
-impl<'a, T: EvmTypes> Evm<'a, T> {
-    /// Switches to the gas parameters the [`TxGasParamsSelector`] selects for `tx`, if any.
-    #[inline]
-    fn enter_tx_gas_params(&mut self, tx: &Recovered<T::Tx>) -> Option<TxGasParamsRestore> {
-        let select = self.tx_gas_params_selector?;
-        let current = self.execution_config.version.gas_params;
-        let base = self.tx_gas_params_scope.map_or(current, |scope| scope.base);
-        let target = match select(self.spec_id, &base, tx.inner()) {
-            Some(selected) => {
-                assert!(
-                    selected.get(GasId::MaxRefundQuotient) != 0,
-                    "selected max refund quotient must be non-zero"
-                );
-                selected
-            }
-            // A transaction dispatched while another runs with selected gas parameters runs with
-            // the EVM's own.
-            None if self.tx_gas_params_scope.is_some() => base,
-            None => return None,
-        };
-        let restore = TxGasParamsRestore {
-            gas_params: current,
-            runner_supported: self.runner_supported,
-            scope: self.tx_gas_params_scope,
-            installed: target,
-        };
-        let scope = *self
-            .tx_gas_params_scope
-            .get_or_insert(TxGasParamsScope { base, base_runner_supported: self.runner_supported });
-        if target != current {
-            self.execution_config.version.gas_params = target;
-            self.runner_supported = if target == scope.base {
-                scope.base_runner_supported
-            } else if let Some((params, supported)) = self.selected_runner_support
-                && params == target
-            {
-                supported
-            } else {
-                self.refresh_runner_support();
-                self.selected_runner_support = Some((target, self.runner_supported));
-                self.runner_supported
-            };
-        }
-        Some(restore)
-    }
-
-    /// Restores the gas parameters [`Self::enter_tx_gas_params`] replaced, unless the handler
-    /// replaced the execution config meanwhile, whose gas parameters then stay.
-    #[inline]
-    fn exit_tx_gas_params(&mut self, restore: TxGasParamsRestore) {
-        if self.execution_config.version.gas_params == restore.installed {
-            self.execution_config.version.gas_params = restore.gas_params;
-            self.runner_supported = restore.runner_supported;
-        }
-        self.tx_gas_params_scope = restore.scope;
-    }
-
-    /// Runs `f` with the EVM's own gas parameters, restoring the selected ones afterwards.
-    #[inline]
-    pub(crate) fn with_own_gas_params<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        let Some(scope) = self.tx_gas_params_scope else { return f(self) };
-        let restore = TxGasParamsRestore {
-            gas_params: self.execution_config.version.gas_params,
-            runner_supported: self.runner_supported,
-            scope: Some(scope),
-            installed: scope.base,
-        };
-        self.tx_gas_params_scope = None;
-        self.execution_config.version.gas_params = scope.base;
-        self.runner_supported = scope.base_runner_supported;
-        let guard = TxGasParamsGuard { evm: self, restore: Some(restore) };
-        f(guard.evm)
-    }
-}
-
 /// The concrete types of the erased database, precompile provider, and inspector.
 #[cfg(feature = "async")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1444,8 +1322,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[inline]
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let restore = self.enter_tx_gas_params(tx);
-        let scope = TxGasParamsGuard { evm: self, restore };
+        let scope = self.tx_gas_guard(tx.inner());
         let guard = scope.evm.enter_execution();
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
@@ -1454,40 +1331,6 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
             self.state.clear_transaction_state();
         }
         result
-    }
-
-    /// Returns the selector of the gas parameters each transaction runs with, if any.
-    #[inline]
-    pub const fn tx_gas_params_selector(&self) -> Option<TxGasParamsSelector<T>> {
-        self.tx_gas_params_selector
-    }
-
-    /// Sets the selector of the gas parameters each transaction runs with.
-    ///
-    /// Before validating or dispatching each transaction, the EVM asks `selector` for the
-    /// transaction's gas parameters and runs the transaction with them, restoring its own
-    /// afterwards, including when the transaction unwinds. This prices transactions of one block
-    /// differently, such as by the lane they run in, without rebuilding the EVM, and applies to
-    /// every caller of [`Self::transact`], [`Self::transact_with_inspector`] and
-    /// [`Self::validate_tx`], so validation charges the same intrinsic gas execution does.
-    ///
-    /// The selector always receives the EVM's own gas parameters, also for a transaction a handler
-    /// dispatches while another runs, and such a transaction runs with the EVM's own gas
-    /// parameters when the selector returns `None`. System calls, including
-    /// [`Self::execute_system_call`] from a handler, run with the EVM's own gas parameters. If a
-    /// handler replaces the execution config, the EVM keeps the new config's gas parameters.
-    ///
-    /// The interpreter runner's verdict is cached for the EVM's own and the last selected gas
-    /// parameters, so alternating between two schedules doesn't query the runner per transaction.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called during execution. Validating or dispatching a transaction panics if the
-    /// selector returns gas parameters with a zero [`GasId::MaxRefundQuotient`].
-    #[inline]
-    pub fn set_tx_gas_params_selector(&mut self, selector: Option<TxGasParamsSelector<T>>) {
-        self.assert_execution_config_mutable();
-        self.tx_gas_params_selector = selector;
     }
 
     /// Executes a transaction for its outcome and discards its state changes.
@@ -1509,8 +1352,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// Uses the active validation rules; callers must configure any pool-specific relaxations.
     pub fn validate_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<()> {
         let result = self.registry.try_get_by_type(tx.ty()).and_then(|handler| {
-            let restore = self.enter_tx_gas_params(tx);
-            let scope = TxGasParamsGuard { evm: self, restore };
+            let scope = self.tx_gas_guard(tx.inner());
             handler.validate(tx.as_recovered_ref(), scope.evm)
         });
         self.state.clear_transaction_state();
@@ -3784,26 +3626,36 @@ mod tests {
         assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
-    /// Cold account cost a selected transaction runs with in [`selector_evm`].
-    const SELECTED_COLD_ACCOUNT_COST: u32 = 7;
+    /// Cold account cost of the alternate gas parameters in [`schedule_evm`].
+    const ALTERNATE_COLD_ACCOUNT_COST: u32 = 7;
 
     fn cold_account_cost(evm: &Evm<'_, BaseEvmTypes>) -> u64 {
-        evm.version().gas_params.get(GasId::ColdAccountAdditionalCost)
+        u64::from(evm.version().gas_params[GasId::ColdAccountAdditionalCost])
     }
 
-    /// Selects [`SELECTED_COLD_ACCOUNT_COST`] for nonces 7, 9 and 11.
-    fn select_gas_params(_spec_id: SpecId, own: &GasParams, tx: &TxEnvelope) -> Option<GasParams> {
-        matches!(alloy_consensus::Transaction::nonce(tx), 7 | 9 | 11).then(|| {
-            let mut params = *own;
-            params[GasId::ColdAccountAdditionalCost] = SELECTED_COLD_ACCOUNT_COST;
-            params
-        })
+    /// Changes only the cold account cost.
+    fn derive_alternate(
+        _spec_id: SpecId,
+        own: &crate::version::GasParams,
+    ) -> Option<crate::version::GasParams> {
+        let mut alternate = *own;
+        alternate[GasId::ColdAccountAdditionalCost] = ALTERNATE_COLD_ACCOUNT_COST;
+        Some(alternate)
     }
 
-    /// An EVM with [`select_gas_params`] installed, whose handler reports the cold account cost it
-    /// runs with as gas spent and its validation the cold account cost through `validated`, and
-    /// panics for nonce 9.
-    fn selector_evm(
+    /// Selects nonces 7, 9 and 11.
+    fn select_alternate(tx: &TxEnvelope) -> bool {
+        matches!(alloy_consensus::Transaction::nonce(tx), 7 | 9 | 11)
+    }
+
+    const SCHEDULE: TxGasSchedule<BaseEvmTypes> =
+        TxGasSchedule { derive: derive_alternate, select: select_alternate };
+
+    /// An EVM with [`SCHEDULE`] installed, whose handler reports the cold account cost it runs
+    /// with as gas spent and its validation the cold account cost through `validated`. The handler
+    /// panics for nonce 9, and for nonce 11 reports the cold account cost of a system call and of a
+    /// nested transaction as `system * 1_000_000 + nested`.
+    fn schedule_evm(
         validated: &'static core::sync::atomic::AtomicU64,
     ) -> Evm<'static, BaseEvmTypes> {
         let registry = TxRegistry::new().with_handler(
@@ -3817,26 +3669,20 @@ mod tests {
                 },
                 |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
                     assert_ne!(req.tx.nonce, 9, "handler unwinds");
-                    if req.tx.nonce == 11 {
-                        // System calls and nested transactions run with the EVM's own gas params.
-                        let selected = cold_account_cost(req.host);
-                        let own = req.host.with_own_gas_params(|evm| cold_account_cost(evm));
+                    let total_gas_spent = if req.tx.nonce == 11 {
+                        let installed = cold_account_cost(req.host);
+                        let system = req.host.with_own_gas_params(|evm| cold_account_cost(evm));
                         let nested = test_tx(41);
-                        let restore = req.host.enter_tx_gas_params(&nested).unwrap();
-                        let nested = cold_account_cost(req.host);
-                        req.host.exit_tx_gas_params(restore);
-                        assert_eq!(cold_account_cost(req.host), selected);
-                        return Ok(TxResultExt {
-                            status: true,
-                            total_gas_spent: own * 1_000_000 + nested,
-                            ..TxResultExt::default()
-                        });
-                    }
-                    Ok(TxResultExt {
-                        status: true,
-                        total_gas_spent: cold_account_cost(req.host),
-                        ..TxResultExt::default()
-                    })
+                        let nested = {
+                            let guard = req.host.tx_gas_guard(nested.inner());
+                            cold_account_cost(guard.evm)
+                        };
+                        assert_eq!(cold_account_cost(req.host), installed);
+                        system * 1_000_000 + nested
+                    } else {
+                        cold_account_cost(req.host)
+                    };
+                    Ok(TxResultExt { status: true, total_gas_spent, ..TxResultExt::default() })
                 },
             ),
         );
@@ -3850,21 +3696,27 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.set_tx_gas_params_selector(Some(select_gas_params));
+        evm.set_tx_gas_schedule(Some(SCHEDULE));
         evm
     }
 
-    #[test]
-    fn dispatches_transaction_with_selected_gas_params() {
-        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-        let mut evm = selector_evm(&VALIDATED);
-        let own = cold_account_cost(&evm);
-        assert_ne!(own, SELECTED_COLD_ACCOUNT_COST as u64);
+    fn gas_used(evm: &mut Evm<'_, BaseEvmTypes>, nonce: u64) -> HandlerResult<u64> {
+        evm.transact(&test_tx(nonce)).map(|executed| executed.discard().tx_gas_used())
+    }
 
-        let gas_used = |evm: &mut Evm<'_, BaseEvmTypes>, nonce| {
-            evm.transact(&test_tx(nonce)).map(|executed| executed.discard().tx_gas_used())
-        };
-        assert_eq!(gas_used(&mut evm, 7), Ok(SELECTED_COLD_ACCOUNT_COST as u64));
+    #[test]
+    fn dispatches_transaction_with_alternate_gas_params() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        let own = cold_account_cost(&evm);
+        assert_ne!(own, u64::from(ALTERNATE_COLD_ACCOUNT_COST));
+        assert_eq!(
+            evm.tx_gas.as_ref().unwrap().swapped_entries(),
+            1,
+            "only the changed entry is swapped per transaction"
+        );
+
+        assert_eq!(gas_used(&mut evm, 7), Ok(u64::from(ALTERNATE_COLD_ACCOUNT_COST)));
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
         assert_eq!(evm.version().tx_gas_limit_cap, 42, "the rest of the version is kept");
         assert_eq!(gas_used(&mut evm, 41), Ok(own));
@@ -3873,19 +3725,52 @@ mod tests {
             evm.validate_tx(&test_tx(nonce)).unwrap();
             VALIDATED.load(core::sync::atomic::Ordering::Relaxed)
         };
-        assert_eq!(validated(&mut evm, 7), SELECTED_COLD_ACCOUNT_COST as u64);
+        assert_eq!(validated(&mut evm, 7), u64::from(ALTERNATE_COLD_ACCOUNT_COST));
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
         assert_eq!(validated(&mut evm, 41), own);
 
+        // System calls and nested transactions inside an alternate transaction run with the
+        // EVM's own gas parameters.
         assert_eq!(gas_used(&mut evm, 11), Ok(own * 1_000_000 + own));
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
+
+        evm.set_tx_gas_schedule(None);
+        assert_eq!(gas_used(&mut evm, 7), Ok(own), "removing the schedule prices every tx alike");
+    }
+
+    #[test]
+    fn derives_alternate_gas_params_again_when_config_changes() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        fn derive_half(
+            _: SpecId,
+            own: &crate::version::GasParams,
+        ) -> Option<crate::version::GasParams> {
+            let mut alternate = *own;
+            alternate[GasId::ColdAccountAdditionalCost] /= 2;
+            Some(alternate)
+        }
+        let mut evm = schedule_evm(&VALIDATED);
+        evm.set_tx_gas_schedule(Some(TxGasSchedule {
+            derive: derive_half,
+            select: select_alternate,
+        }));
+
+        let mut version = crate::Version::new(SpecId::OSAKA);
+        version.gas_params[GasId::ColdAccountAdditionalCost] = 1_000;
+        let block = *evm.block();
+        evm.set_block_and_execution_config_within_spec(
+            block,
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+        );
+        assert_eq!(gas_used(&mut evm, 7), Ok(500), "derived from the new config");
+        assert_eq!(gas_used(&mut evm, 41), Ok(1_000));
     }
 
     #[test]
     #[cfg(feature = "std")]
     fn restores_gas_params_when_transaction_unwinds() {
         static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-        let mut evm = selector_evm(&VALIDATED);
+        let mut evm = schedule_evm(&VALIDATED);
         let own = cold_account_cost(&evm);
 
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -3893,29 +3778,31 @@ mod tests {
         }));
         assert!(unwound.is_err());
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
-        assert_eq!(
-            evm.transact(&test_tx(41)).map(|executed| executed.discard().tx_gas_used()),
-            Ok(own)
-        );
+        assert_eq!(gas_used(&mut evm, 41), Ok(own));
     }
 
     #[test]
-    #[should_panic = "selected max refund quotient must be non-zero"]
-    fn rejects_invalid_selected_gas_params() {
-        fn select_invalid(_: SpecId, own: &GasParams, _: &TxEnvelope) -> Option<GasParams> {
-            let mut params = *own;
-            params[GasId::MaxRefundQuotient] = 0;
-            Some(params)
+    #[should_panic = "alternate max refund quotient must be non-zero"]
+    fn rejects_invalid_alternate_gas_params() {
+        fn derive_invalid(
+            _: SpecId,
+            own: &crate::version::GasParams,
+        ) -> Option<crate::version::GasParams> {
+            let mut alternate = *own;
+            alternate[GasId::MaxRefundQuotient] = 0;
+            Some(alternate)
         }
         static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-        let mut evm = selector_evm(&VALIDATED);
-        evm.set_tx_gas_params_selector(Some(select_invalid));
-        let _ = evm.transact(&test_tx(0));
+        let mut evm = schedule_evm(&VALIDATED);
+        evm.set_tx_gas_schedule(Some(TxGasSchedule {
+            derive: derive_invalid,
+            select: select_alternate,
+        }));
     }
 
     #[test]
     fn validates_unregistered_transaction_without_selecting_gas_params() {
-        fn select_never(_: SpecId, _: &GasParams, _: &TxEnvelope) -> Option<GasParams> {
+        fn select_never(_: &TxEnvelope) -> bool {
             panic!("selector called for an unregistered transaction type")
         }
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -3925,7 +3812,10 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.set_tx_gas_params_selector(Some(select_never));
+        evm.set_tx_gas_schedule(Some(TxGasSchedule {
+            derive: derive_alternate,
+            select: select_never,
+        }));
         assert!(evm.validate_tx(&test_tx(0)).is_err());
         assert!(evm.transact(&test_tx(0)).is_err());
     }

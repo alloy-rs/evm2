@@ -145,7 +145,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// transaction lifecycle for finalization.
     ///
     /// It runs with the EVM's own gas parameters, also from a handler of a transaction that runs
-    /// with selected ones (see [`Evm::set_tx_gas_params_selector`]).
+    /// with alternate ones (see [`Evm::set_tx_gas_schedule`]).
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
         self.with_own_gas_params(|evm| evm.execute_own_system_call(tx))
     }
