@@ -13,9 +13,8 @@ fn load_account<T: EvmTypesHost>(
     load_code: bool,
 ) -> Result<AccountLoad> {
     let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
-    let cold_code_gas = cx.state.gas_params().cold_code_additional_cost();
     // TIP-1175: a priced code load is a second step, after the account access is paid for.
-    let priced_code = load_code && cold_code_gas != 0;
+    let priced_code = load_code && cx.state.gas_params().prices_code_load();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let account_address = addr.to_address();
     let mut account = cx
@@ -27,14 +26,14 @@ fn load_account<T: EvmTypesHost>(
         cx.gas.spend(cold_load_gas)?;
     }
     if priced_code {
-        let skip_cold_load = cx.gas.remaining() < cold_code_gas;
+        let skip_cold_load = cx.gas.remaining() < cx.state.gas_params().min_cold_code_cost();
         let load = cx
             .state
             .host()
             .load_code(&account_address, skip_cold_load)
             .map_err(|error| cx.state.fail(error))?;
         if load.is_cold {
-            cx.gas.spend(cold_code_gas)?;
+            cx.gas.spend(cx.state.gas_params().cold_code_cost(&load.code))?;
         }
         account.code = load.code;
     }

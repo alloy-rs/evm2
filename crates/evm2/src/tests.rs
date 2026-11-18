@@ -794,12 +794,14 @@ fn apply_auth_list_accepts_custom_filtered_authorizations() {
 // Tempo TIP-1175: bytecode loads are priced separately from account loads.
 
 const CODE_COST: u32 = 1_000;
+const DELEGATION_COST: u32 = 300;
 
 /// Runs `entry_code` as the target of a top-level call and returns the total execution gas
 /// (top-level charges included), with the bytecode load priced at `code_cost`.
-fn code_load_gas(
+fn code_load_gas_priced(
     spec: SpecId,
     code_cost: u32,
+    delegation_cost: u32,
     entry_code: &[u8],
     accounts: &[(Address, Bytecode)],
     prewarm: &[Address],
@@ -808,6 +810,7 @@ fn code_load_gas(
     let entry = Address::with_last_byte(0xe0);
     let mut version = Version::new(spec);
     version.gas_params.set(GasId::ColdCodeAdditionalCost, code_cost);
+    version.gas_params.set(GasId::ColdDelegationCodeAdditionalCost, delegation_cost);
     let mut database = InMemoryDB::default();
     database
         .insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1u64 << 60)));
@@ -846,6 +849,16 @@ fn code_load_gas(
     let result = Host::execute_message(&mut evm, &mut frame.message).unwrap();
     assert!(result.is_success(), "{:?}", result.stop);
     (1_000_000 - gas.remaining()) + result.gas.spent()
+}
+
+fn code_load_gas(
+    spec: SpecId,
+    code_cost: u32,
+    entry_code: &[u8],
+    accounts: &[(Address, Bytecode)],
+    prewarm: &[Address],
+) -> u64 {
+    code_load_gas_priced(spec, code_cost, 0, entry_code, accounts, prewarm)
 }
 
 /// Returns how many cold bytecode loads `entry_code` pays for, checking that Ethereum pricing
@@ -988,6 +1001,7 @@ fn tip1175_top_level_delegation(#[case] spec: SpecId, #[case] expected: u64) {
 fn tip1175_host() -> TestEvm {
     let mut version = Version::new(SpecId::PRAGUE);
     version.gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
+    version.gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
     let mut database = InMemoryDB::default();
     for (address, code) in code_accounts() {
         database.insert_account_info(&address, AccountInfo::default().with_code(code));
@@ -1020,7 +1034,6 @@ fn tip1175_skipped_cold_code_load_halts_without_warming() {
 
 #[rstest::rstest]
 #[case::without_code(EOA)]
-#[case::delegation_designator(DELEGATING)]
 #[case::precompile(Address::with_last_byte(2))]
 fn tip1175_free_code_load_is_never_skipped(#[case] address: Address) {
     let mut evm = tip1175_host();
@@ -1071,4 +1084,43 @@ fn tip1175_code_load_gas_boundary(#[case] opcode: u8, #[case] gas: u64, #[case] 
     let result = Host::execute_message(&mut evm, &mut message).unwrap();
     assert_eq!(result.is_success(), success, "{:?}", result.stop);
     assert_eq!(evm.state.account(&CONTRACT).unwrap().is_code_warm(), success);
+}
+
+#[rstest::rstest]
+#[case::extcodesize(&[(op::EXTCODESIZE, DELEGATING)], DELEGATION_COST)]
+#[case::extcodesize_twice(&[(op::EXTCODESIZE, DELEGATING), (op::EXTCODECOPY, DELEGATING)], DELEGATION_COST)]
+#[case::extcodehash_is_account_only(&[(op::EXTCODEHASH, DELEGATING)], 0)]
+#[case::call_pays_designator_and_target(&[(op::STATICCALL, DELEGATING)], DELEGATION_COST + CODE_COST)]
+#[case::call_then_extcode_is_warm(
+    &[(op::STATICCALL, DELEGATING), (op::EXTCODESIZE, DELEGATING), (op::EXTCODESIZE, CONTRACT)],
+    DELEGATION_COST + CODE_COST
+)]
+#[case::contract_pays_code_price(&[(op::EXTCODESIZE, CONTRACT)], CODE_COST)]
+fn tip1175_delegation_designator_pricing(#[case] steps: &[(u8, Address)], #[case] expected: u32) {
+    let code = program(steps);
+    let gas = |code_cost, delegation_cost| {
+        code_load_gas_priced(
+            SpecId::PRAGUE,
+            code_cost,
+            delegation_cost,
+            &code,
+            &code_accounts(),
+            &[],
+        )
+    };
+    assert_eq!(gas(CODE_COST, DELEGATION_COST) - gas(0, 0), u64::from(expected));
+}
+
+#[test]
+fn tip1175_skipped_designator_load_halts_without_warming() {
+    let mut evm = tip1175_host();
+    Host::load_account(&mut evm, &DELEGATING, false, false).unwrap();
+    assert!(matches!(
+        Host::load_code(&mut evm, &DELEGATING, true),
+        Err(crate::HostError::Halt(InstrStop::OutOfGas))
+    ));
+    assert!(!evm.state.account(&DELEGATING).unwrap().is_code_warm());
+    let load = Host::load_code(&mut evm, &DELEGATING, false).unwrap();
+    assert!(load.is_cold);
+    assert!(load.code.is_eip7702());
 }

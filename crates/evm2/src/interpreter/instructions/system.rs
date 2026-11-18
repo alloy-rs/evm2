@@ -87,10 +87,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
 
     let additional_cold_cost = gas_params.cold_account_additional_cost();
     // TIP-1175: a priced code load is a second step, after the account access, and is skipped
-    // when it can't be paid for. A delegation designator is part of the account, so a delegating
-    // account pays only for its account.
-    let additional_code_cost = gas_params.cold_code_additional_cost();
-    let priced_code = additional_code_cost != 0;
+    // when it can't be paid for. A delegating account's designator is a code load at its own
+    // price, and the delegation target then pays its account access and its bytecode.
+    let min_code_cost = gas_params.min_cold_code_cost();
+    let priced_code = gas_params.prices_code_load();
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
     let mut account = host.load_account(&to, !priced_code, skip_cold_load)?;
@@ -100,10 +100,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
         cost += additional_cold_cost;
     }
     if priced_code {
-        let skip_cold_load = remaining_gas < cost.saturating_add(additional_code_cost);
+        let skip_cold_load = remaining_gas < cost.saturating_add(min_code_cost);
         let load = host.load_code(&to, skip_cold_load)?;
         if load.is_cold {
-            cost += additional_code_cost;
+            cost += gas_params.cold_code_cost(&load.code);
         }
         account.code = load.code;
     }
@@ -124,10 +124,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
         }
         code = delegated_account.code;
         if priced_code {
-            let skip_cold_load = remaining_gas < cost.saturating_add(additional_code_cost);
+            let skip_cold_load = remaining_gas < cost.saturating_add(min_code_cost);
             let load = host.load_code(&delegated_address, skip_cold_load)?;
             if load.is_cold {
-                cost += additional_code_cost;
+                cost += gas_params.cold_code_cost(&load.code);
             }
             code = load.code;
         }

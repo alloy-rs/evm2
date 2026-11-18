@@ -612,9 +612,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     if tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
                         return Ok(halted(host));
                     }
-                    let cold_code_additional =
-                        host.version().gas_params.cold_code_additional_cost();
-                    let priced_code = cold_code_additional != 0;
+                    let priced_code = host.version().gas_params.prices_code_load();
                     let skip_cold_load = tx_gas.remaining() < cold_additional;
                     let load = match Host::load_account(
                         host,
@@ -632,13 +630,15 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     code = load.code;
                     // TIP-1175: the target's code is a second step, skipped when unaffordable.
                     if priced_code {
-                        let skip_cold_load = tx_gas.remaining() < cold_code_additional;
+                        let skip_cold_load =
+                            tx_gas.remaining() < host.version().gas_params.min_cold_code_cost();
                         let load = match Host::load_code(host, &delegated_address, skip_cold_load) {
                             Ok(load) => load,
                             Err(HostError::Halt(_)) => return Ok(halted(host)),
                             Err(HostError::Execution(error)) => return Err(error.into()),
                         };
-                        if load.is_cold && tx_gas.spend(cold_code_additional).is_err() {
+                        let cost = host.version().gas_params.cold_code_cost(&load.code);
+                        if load.is_cold && tx_gas.spend(cost).is_err() {
                             return Ok(halted(host));
                         }
                         code = load.code;
@@ -646,7 +646,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 } else {
                     // The delegation target is resolved for free here, so its bytecode is warmed
                     // for free with it (TIP-1175).
-                    let track_code = host.version().gas_params.cold_code_additional_cost() != 0;
+                    let track_code = host.version().gas_params.prices_code_load();
                     let mut account = host.state.account(&delegated_address)?;
                     account.warm();
                     code = if track_code {

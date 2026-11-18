@@ -2019,8 +2019,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         address: &Address,
         skip_cold_load: bool,
     ) -> Result<CodeLoad, HostError> {
-        let track_code =
-            self.execution_config.version().gas_params.cold_code_additional_cost() != 0;
+        let track_code = self.execution_config.version().gas_params.prices_code_load();
         let mut account = self.state.account(address)?;
         let (code, is_cold) = if track_code {
             account.load_code_with_skip(skip_cold_load)?
@@ -2201,10 +2200,10 @@ pub struct CodeLoad {
     /// Account bytecode, empty for an account without code.
     pub code: Bytecode,
     /// Whether the load was cold and must pay
-    /// [`GasParams::cold_code_additional_cost`](crate::version::GasParams::cold_code_additional_cost).
+    /// [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost) for `code`.
     ///
-    /// Only set when the price is non-zero, the account has code that is not an EIP-7702
-    /// delegation designator and that code was not yet warm.
+    /// Only set when code loads are priced and the account has code, an EIP-7702 delegation
+    /// designator included, that was not yet warm.
     pub is_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),

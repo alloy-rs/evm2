@@ -897,8 +897,8 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
 
     let additional_cold_cost = version.gas_params.cold_account_additional_cost();
     // TIP-1175: see the interpreter's `load_acc_and_calc_gas`.
-    let additional_code_cost = version.gas_params.cold_code_additional_cost();
-    let priced_code = additional_code_cost != 0;
+    let min_code_cost = version.gas_params.min_cold_code_cost();
+    let priced_code = version.gas_params.prices_code_load();
     let remaining_gas = ecx.gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
     let mut account = ecx
@@ -911,13 +911,13 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         cost += additional_cold_cost;
     }
     if priced_code {
-        let skip_cold_load = remaining_gas < cost.saturating_add(additional_code_cost);
+        let skip_cold_load = remaining_gas < cost.saturating_add(min_code_cost);
         let load = ecx
             .host()
             .load_code(&to, skip_cold_load)
             .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
         if load.is_cold {
-            cost += additional_code_cost;
+            cost += version.gas_params.cold_code_cost(&load.code);
         }
         account.code = load.code;
     }
@@ -941,13 +941,13 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         }
         code = delegated_account.code;
         if priced_code {
-            let skip_cold_load = remaining_gas < cost.saturating_add(additional_code_cost);
+            let skip_cold_load = remaining_gas < cost.saturating_add(min_code_cost);
             let load = ecx
                 .host()
                 .load_code(&delegated_address, skip_cold_load)
                 .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
             if load.is_cold {
-                cost += additional_code_cost;
+                cost += version.gas_params.cold_code_cost(&load.code);
             }
             code = load.code;
         }

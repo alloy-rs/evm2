@@ -591,11 +591,11 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Loads the account's bytecode as a step separate from the account load, and warms it for
     /// Tempo TIP-1175 gas accounting.
     ///
-    /// Returns the bytecode and whether its load was cold: the account has code, the code is not
-    /// an EIP-7702 delegation designator (which is part of the account itself) and it was not
-    /// warm. Only a cold load warms the bytecode, so the caller charges
-    /// [`GasParams::cold_code_additional_cost`](crate::version::GasParams::cold_code_additional_cost)
-    /// exactly when this returns `true`, and a later load in the transaction is free.
+    /// Returns the bytecode and whether its load was cold: the account has code (an EIP-7702
+    /// delegation designator included) that was not warm. Only a cold load warms the code, so the
+    /// caller charges
+    /// [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost) exactly when this
+    /// returns `true`, and a later load in the transaction is free.
     #[inline]
     pub fn load_code_and_warm(&mut self) -> DbResult<(Bytecode, bool)> {
         self.load_code_with_skip(false).map_err(|error| match error {
@@ -605,12 +605,12 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     }
 
     /// Like [`Self::load_code_and_warm`], but with `skip_cold_load` a cold load returns
-    /// [`LoadError::ColdLoadSkipped`] instead, without warming the code, so a caller that can't
-    /// pay for it halts before the bytecode is used.
+    /// [`LoadError::ColdLoadSkipped`] instead, without reading the code from the database or
+    /// warming it, so a caller that can't pay for it halts first.
     ///
-    /// Accounts without code, warm code and EIP-7702 delegation designators are never skipped,
-    /// since they cost nothing extra. Telling a designator apart needs the code, so when the code
-    /// is not already in memory it is read from the database before the skip is decided.
+    /// Whether the load is cold is known from the account's code hash and code warmth alone, so
+    /// the skip is decided before the code is read. Accounts without code and warm code are never
+    /// skipped.
     #[inline]
     pub fn load_code_with_skip(
         &mut self,
@@ -621,13 +621,10 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if !has_code || self.is_code_warm() {
             return Ok((self.load_code()?, false));
         }
-        let code = self.load_code()?;
-        if code.is_empty() || code.is_eip7702() {
-            return Ok((code, false));
-        }
         if skip_cold_load {
             return Err(LoadError::ColdLoadSkipped);
         }
+        let code = self.load_code()?;
         self.warm_code();
         Ok((code, true))
     }
