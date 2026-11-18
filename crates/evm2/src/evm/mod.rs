@@ -638,8 +638,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.set_block(block);
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
-        // The schedule's table was precomputed for the replaced config.
-        self.tx_gas = None;
+        self.retain_tx_gas_for_config();
         self.refresh_runner_support();
     }
 
@@ -655,9 +654,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
         // Refresh before the old registry and precompiles drop, so an unwinding destructor
-        // cannot leave a stale verdict. The schedule's table was precomputed for the replaced
-        // config.
-        self.tx_gas = None;
+        // cannot leave a stale verdict.
+        self.retain_tx_gas_for_config();
         self.refresh_runner_support();
         self.registry = registry;
         self.precompiles = precompiles;
@@ -3732,9 +3730,22 @@ mod tests {
     }
 
     #[test]
-    fn changing_execution_config_removes_schedule() {
+    fn changing_execution_config_keeps_schedule_only_for_same_gas_params() {
         static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
         let mut evm = schedule_evm(&VALIDATED);
+        let own = cold_account_cost(&evm);
+
+        // Same gas parameters, such as a segment boundary within one spec: the schedule stays.
+        let mut same = *evm.version();
+        same.tx_gas_limit_cap = 43;
+        let block = *evm.block();
+        evm.set_block_and_execution_config_within_spec(
+            block,
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, same),
+        );
+        assert_eq!(gas_used(&mut evm, 7), Ok(u64::from(ALTERNATE_COLD_ACCOUNT_COST)));
+        assert_eq!(gas_used(&mut evm, 41), Ok(own));
+
         let mut version = crate::Version::new(SpecId::OSAKA);
         version.gas_params[GasId::ColdAccountAdditionalCost] = 1_000;
         let block = *evm.block();

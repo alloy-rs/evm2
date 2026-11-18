@@ -39,6 +39,8 @@ impl<T: EvmTypesHost> core::fmt::Debug for TxGasSchedule<T> {
 /// An installed [`TxGasSchedule`].
 pub(super) struct TxGasState<T: EvmTypesHost> {
     select: fn(&T::Tx) -> bool,
+    /// The EVM's own table the schedule was installed for.
+    base: GasParams,
     /// The table that is not installed: the schedule's while the EVM's own is installed, and the
     /// EVM's own while the schedule's is.
     other: GasParams,
@@ -76,11 +78,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// validation charges the same intrinsic gas execution does. Only gas parameters change: the
     /// rest of the EVM's [`Version`](crate::Version) applies to every transaction.
     ///
-    /// The schedule's table is precomputed for the current execution config, so changing the
-    /// execution config removes the schedule: install it again for the new config. Changing the
-    /// interpreter runner keeps it. System calls, including [`Self::execute_system_call`] from a
-    /// handler, run with the EVM's own gas parameters. A transaction a handler dispatches while a
-    /// selected transaction runs keeps the schedule's gas parameters.
+    /// The schedule's table is precomputed for the EVM's current gas parameters. Changing the
+    /// execution config keeps the schedule while the new config has the same gas parameters, such
+    /// as at a segment boundary within one spec, and removes it otherwise: install it again for the
+    /// new config. Changing the interpreter runner keeps it. System calls, including
+    /// [`Self::execute_system_call`] from a handler, run with the EVM's own gas parameters. A
+    /// transaction a handler dispatches while a selected transaction runs keeps the schedule's gas
+    /// parameters.
     ///
     /// # Panics
     ///
@@ -96,12 +100,23 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             );
             TxGasState {
                 select: schedule.select,
+                base: self.execution_config.version.gas_params,
                 other: schedule.gas_params,
                 other_runner_supported: false,
                 swapped: false,
             }
         });
         self.refresh_tx_gas_runner_support();
+    }
+
+    /// Removes the schedule unless the newly installed execution config has the gas parameters it
+    /// was installed for.
+    pub(super) fn retain_tx_gas_for_config(&mut self) {
+        if self.tx_gas.as_ref().is_some_and(|state| {
+            state.swapped || state.base != self.execution_config.version.gas_params
+        }) {
+            self.tx_gas = None;
+        }
     }
 
     /// Records the interpreter runner's verdict for the table that is not installed.
