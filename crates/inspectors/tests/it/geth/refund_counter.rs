@@ -16,7 +16,7 @@ fn step_refund_counter_spans_frames() {
     parent_code.extend([op::GAS, op::DELEGATECALL, op::STOP]);
     let child_code = [op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP];
 
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &parent,
         AccountInfo { code: Some(Bytecode::new_raw(parent_code.into())), ..Default::default() },
@@ -87,7 +87,7 @@ fn step_refund_counter_drops_reverted_child() {
     parent_code.extend([op::GAS, op::DELEGATECALL, op::STOP]);
     let child_code = [op::PUSH0, op::PUSH0, op::SSTORE, op::PUSH0, op::PUSH0, op::REVERT];
 
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &parent,
         AccountInfo { code: Some(Bytecode::new_raw(parent_code.into())), ..Default::default() },
