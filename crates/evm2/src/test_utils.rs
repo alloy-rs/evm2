@@ -148,8 +148,18 @@ impl Host<TestTypes> for TestHost {
                 !self.exists && !self.is_touched
             },
             is_cold: self.is_cold,
-            is_code_cold: false,
             _non_exhaustive: (),
+        })
+    }
+
+    fn load_code(
+        &mut self,
+        _address: &Address,
+        _skip_cold_load: bool,
+    ) -> Result<crate::evm::CodeLoad, crate::HostError> {
+        Ok(crate::evm::CodeLoad {
+            code: Bytecode::new_legacy(self.code.clone()),
+            ..Default::default()
         })
     }
 

@@ -13,19 +13,30 @@ fn load_account<T: EvmTypesHost>(
     load_code: bool,
 ) -> Result<AccountLoad> {
     let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
+    let cold_code_gas = cx.state.gas_params().cold_code_additional_cost();
+    // TIP-1175: a priced code load is a second step, after the account access is paid for.
+    let priced_code = load_code && cold_code_gas != 0;
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let account_address = addr.to_address();
-    let account = cx
+    let mut account = cx
         .state
         .host()
-        .load_account(&account_address, load_code, skip_cold_load)
+        .load_account(&account_address, load_code && !priced_code, skip_cold_load)
         .map_err(|error| cx.state.fail(error))?;
     if account.is_cold {
         cx.gas.spend(cold_load_gas)?;
     }
-    // TIP-1175: the bytecode is charged as a second step, only when its load was cold.
-    if account.is_code_cold {
-        cx.gas.spend(cx.state.gas_params().cold_code_additional_cost())?;
+    if priced_code {
+        let skip_cold_load = cx.gas.remaining() < cold_code_gas;
+        let load = cx
+            .state
+            .host()
+            .load_code(&account_address, skip_cold_load)
+            .map_err(|error| cx.state.fail(error))?;
+        if load.is_cold {
+            cx.gas.spend(cold_code_gas)?;
+        }
+        account.code = load.code;
     }
     Ok(account)
 }

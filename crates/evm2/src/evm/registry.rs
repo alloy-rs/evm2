@@ -527,6 +527,14 @@ mod tests {
             unimplemented!()
         }
 
+        fn load_code(
+            &mut self,
+            _address: &Address,
+            _skip_cold_load: bool,
+        ) -> Result<crate::evm::CodeLoad, crate::HostError> {
+            unimplemented!()
+        }
+
         fn block_hash(&mut self, _number: &Word) -> Result<B256, DatabaseError> {
             unimplemented!()
         }

@@ -86,21 +86,28 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
     }
 
     let additional_cold_cost = gas_params.cold_account_additional_cost();
+    // TIP-1175: a priced code load is a second step, after the account access, and is skipped
+    // when it can't be paid for. A delegation designator is part of the account, so a delegating
+    // account pays only for its account.
+    let additional_code_cost = gas_params.cold_code_additional_cost();
+    let priced_code = additional_code_cost != 0;
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account = host.load_account(&to, true, skip_cold_load)?;
+    let mut account = host.load_account(&to, !priced_code, skip_cold_load)?;
 
-    let additional_code_cost = gas_params.cold_code_additional_cost();
     let mut cost = 0;
     if account.is_cold {
         cost += additional_cold_cost;
     }
-    // TIP-1175: a cold bytecode load is charged on top of the account access. A delegation
-    // designator is part of the account, so a delegating target pays only for its account.
-    if account.is_code_cold {
-        cost += additional_code_cost;
+    if priced_code {
+        let skip_cold_load = remaining_gas < cost.saturating_add(additional_code_cost);
+        let load = host.load_code(&to, skip_cold_load)?;
+        if load.is_cold {
+            cost += additional_code_cost;
+        }
+        account.code = load.code;
     }
-    let mut code = account.code;
+    let mut code = core::mem::take(&mut account.code);
     let mut code_address = to;
     if features.contains(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
@@ -110,14 +117,20 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
             return Err(InstrStop::OutOfGas.into());
         }
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
-        let delegated_account = host.load_account(&delegated_address, true, skip_cold_load)?;
+        let delegated_account =
+            host.load_account(&delegated_address, !priced_code, skip_cold_load)?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
-        if delegated_account.is_code_cold {
-            cost += additional_code_cost;
-        }
         code = delegated_account.code;
+        if priced_code {
+            let skip_cold_load = remaining_gas < cost.saturating_add(additional_code_cost);
+            let load = host.load_code(&delegated_address, skip_cold_load)?;
+            if load.is_cold {
+                cost += additional_code_cost;
+            }
+            code = load.code;
+        }
         code_address = delegated_address;
     }
     let mut new_account_state_gas = 0;

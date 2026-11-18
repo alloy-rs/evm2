@@ -2,7 +2,7 @@ use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
     BaseEvmTypes, DatabaseError, EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, CodeLoad, SLoad, SStore, SelfDestructResult},
     utils::address_to_word,
 };
 use alloc::borrow::Cow;
@@ -147,6 +147,16 @@ pub trait Host<T: EvmTypesHost> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError>;
+
+    /// Loads an account's bytecode as a step after [`Self::load_account`] (Tempo TIP-1175).
+    ///
+    /// Call it once the account access is charged. When the code load is priced
+    /// ([`GasParams::cold_code_additional_cost`](crate::version::GasParams::cold_code_additional_cost)
+    /// is non-zero), [`CodeLoad::is_cold`] says whether to charge it, and with `skip_cold_load` a
+    /// cold load halts with out of gas instead, without warming the code. When the price is zero
+    /// this only loads the code.
+    fn load_code(&mut self, address: &Address, skip_cold_load: bool)
+    -> Result<CodeLoad, HostError>;
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError>;

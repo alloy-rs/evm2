@@ -4,7 +4,7 @@ use super::{
     AccountChanges, DbResult, DynDatabase, JournalEntry, StateInner, StorageHandle, StorageOverlay,
     storage_pool::StoragePool,
 };
-use crate::{EvmFeatures, bytecode::Bytecode, interpreter::Word};
+use crate::{EvmFeatures, LoadError, bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
 use bitflags::bitflags;
 use derive_where::derive_where;
@@ -598,9 +598,38 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// exactly when this returns `true`, and a later load in the transaction is free.
     #[inline]
     pub fn load_code_and_warm(&mut self) -> DbResult<(Bytecode, bool)> {
+        self.load_code_with_skip(false).map_err(|error| match error {
+            LoadError::Database(error) => error,
+            LoadError::ColdLoadSkipped => unreachable!("cold-load skipping is disabled"),
+        })
+    }
+
+    /// Like [`Self::load_code_and_warm`], but with `skip_cold_load` a cold load returns
+    /// [`LoadError::ColdLoadSkipped`] instead, without warming the code, so a caller that can't
+    /// pay for it halts before the bytecode is used.
+    ///
+    /// Accounts without code, warm code and EIP-7702 delegation designators are never skipped,
+    /// since they cost nothing extra. Telling a designator apart needs the code, so when the code
+    /// is not already in memory it is read from the database before the skip is decided.
+    #[inline]
+    pub fn load_code_with_skip(
+        &mut self,
+        skip_cold_load: bool,
+    ) -> Result<(Bytecode, bool), LoadError> {
+        let has_code =
+            self.tracked.present.as_ref().is_some_and(|account| !account.is_empty_code_hash());
+        if !has_code || self.is_code_warm() {
+            return Ok((self.load_code()?, false));
+        }
         let code = self.load_code()?;
-        let is_cold = !code.is_empty() && !code.is_eip7702() && self.warm_code();
-        Ok((code, is_cold))
+        if code.is_empty() || code.is_eip7702() {
+            return Ok((code, false));
+        }
+        if skip_cold_load {
+            return Err(LoadError::ColdLoadSkipped);
+        }
+        self.warm_code();
+        Ok((code, true))
     }
 
     /// Sets the account balance, touching the account and recording a revert snapshot.

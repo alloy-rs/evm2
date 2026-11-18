@@ -612,22 +612,37 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     if tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
                         return Ok(halted(host));
                     }
+                    let cold_code_additional =
+                        host.version().gas_params.cold_code_additional_cost();
+                    let priced_code = cold_code_additional != 0;
                     let skip_cold_load = tx_gas.remaining() < cold_additional;
-                    let load =
-                        match Host::load_account(host, &delegated_address, true, skip_cold_load) {
+                    let load = match Host::load_account(
+                        host,
+                        &delegated_address,
+                        !priced_code,
+                        skip_cold_load,
+                    ) {
+                        Ok(load) => load,
+                        Err(HostError::Halt(_)) => return Ok(halted(host)),
+                        Err(HostError::Execution(error)) => return Err(error.into()),
+                    };
+                    if load.is_cold && tx_gas.spend(cold_additional).is_err() {
+                        return Ok(halted(host));
+                    }
+                    code = load.code;
+                    // TIP-1175: the target's code is a second step, skipped when unaffordable.
+                    if priced_code {
+                        let skip_cold_load = tx_gas.remaining() < cold_code_additional;
+                        let load = match Host::load_code(host, &delegated_address, skip_cold_load) {
                             Ok(load) => load,
                             Err(HostError::Halt(_)) => return Ok(halted(host)),
                             Err(HostError::Execution(error)) => return Err(error.into()),
                         };
-                    if load.is_cold && tx_gas.spend(cold_additional).is_err() {
-                        return Ok(halted(host));
+                        if load.is_cold && tx_gas.spend(cold_code_additional).is_err() {
+                            return Ok(halted(host));
+                        }
+                        code = load.code;
                     }
-                    let cold_code_additional =
-                        host.version().gas_params.cold_code_additional_cost();
-                    if load.is_code_cold && tx_gas.spend(cold_code_additional).is_err() {
-                        return Ok(halted(host));
-                    }
-                    code = load.code;
                 } else {
                     // The delegation target is resolved for free here, so its bytecode is warmed
                     // for free with it (TIP-1175).

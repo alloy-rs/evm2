@@ -57,17 +57,27 @@ pub(crate) fn load_account<T: EvmTypesHost>(
     load_code: bool,
 ) -> Result<AccountLoad, BuiltinError> {
     let cold_load_gas = ecx.gas_params().cold_account_additional_cost();
+    let cold_code_gas = ecx.gas_params().cold_code_additional_cost();
+    // TIP-1175: a priced code load is a second step, after the account access is paid for.
+    let priced_code = load_code && cold_code_gas != 0;
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-    let account = ecx
+    let mut account = ecx
         .host()
-        .load_account(address, load_code, skip_cold_load)
+        .load_account(address, load_code && !priced_code, skip_cold_load)
         .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
     if account.is_cold {
         ecx.gas.spend(cold_load_gas)?;
     }
-    // TIP-1175: the bytecode is charged as a second step, only when its load was cold.
-    if account.is_code_cold {
-        ecx.gas.spend(ecx.gas_params().cold_code_additional_cost())?;
+    if priced_code {
+        let skip_cold_load = ecx.gas.remaining() < cold_code_gas;
+        let load = ecx
+            .host()
+            .load_code(address, skip_cold_load)
+            .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+        if load.is_cold {
+            ecx.gas.spend(cold_code_gas)?;
+        }
+        account.code = load.code;
     }
     Ok(account)
 }
