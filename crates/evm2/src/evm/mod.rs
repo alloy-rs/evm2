@@ -1328,20 +1328,32 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[inline]
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let evm_version = self
-            .tx_version_selector
-            .and_then(|select| select(self.spec_id, self.execution_config.version(), tx.inner()))
-            .map(|version| self.replace_version(version));
+        let evm_version = self.enter_tx_version(tx);
         let guard = self.enter_execution();
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
-        if let Some(version) = evm_version {
-            self.replace_version(version);
-        }
+        self.exit_tx_version(evm_version);
         if result.is_err() {
             self.state.clear_transaction_state();
         }
         result
+    }
+
+    /// Switches to the version the [`TxVersionSelector`] selects for `tx`, if any, and returns the
+    /// EVM's own version for [`Self::exit_tx_version`].
+    #[inline]
+    fn enter_tx_version(&mut self, tx: &Recovered<T::Tx>) -> Option<crate::Version> {
+        self.tx_version_selector
+            .and_then(|select| select(self.spec_id, self.execution_config.version(), tx.inner()))
+            .map(|version| self.replace_version(version))
+    }
+
+    /// Restores the EVM's own version after [`Self::enter_tx_version`].
+    #[inline]
+    fn exit_tx_version(&mut self, evm_version: Option<crate::Version>) {
+        if let Some(version) = evm_version {
+            self.replace_version(version);
+        }
     }
 
     /// Replaces the execution config's version, keeping the active features, and returns the
@@ -1364,8 +1376,9 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// Before dispatching each transaction, the EVM asks `selector` for the transaction's version
     /// and runs the transaction with it, restoring its own version afterwards. This prices
     /// transactions of one block differently, such as by the lane they run in, without rebuilding
-    /// the EVM, and applies to every caller of [`Self::transact`] and
-    /// [`Self::transact_with_inspector`]. System calls run with the EVM's own version.
+    /// the EVM, and applies to every caller of [`Self::transact`],
+    /// [`Self::transact_with_inspector`] and [`Self::validate_tx`], so validation charges the
+    /// same intrinsic gas execution does. System calls run with the EVM's own version.
     ///
     /// # Panics
     ///
@@ -1394,10 +1407,12 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     ///
     /// Uses the active validation rules; callers must configure any pool-specific relaxations.
     pub fn validate_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<()> {
+        let evm_version = self.enter_tx_version(tx);
         let result = self
             .registry
             .try_get_by_type(tx.ty())
             .and_then(|handler| handler.validate(tx.as_recovered_ref(), self));
+        self.exit_tx_version(evm_version);
         self.state.clear_transaction_state();
         result
     }
@@ -3671,6 +3686,7 @@ mod tests {
 
     #[test]
     fn dispatches_transaction_with_selected_version() {
+        static VALIDATED_CAP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
         fn handle_test_tx_version(
             req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
         ) -> HandlerResult<TxResult> {
@@ -3695,7 +3711,14 @@ mod tests {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             TxEnvelope::as_legacy,
-            handler(|_| Ok(()), |req, ()| handle_test_tx_version(req)),
+            handler(
+                |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
+                    let cap = req.host.version().tx_gas_limit_cap;
+                    VALIDATED_CAP.store(cap, core::sync::atomic::Ordering::Relaxed);
+                    Ok(())
+                },
+                |req, ()| handle_test_tx_version(req),
+            ),
         );
         let mut version = crate::Version::new(SpecId::OSAKA);
         version.tx_gas_limit_cap = 42;
@@ -3715,6 +3738,14 @@ mod tests {
         assert_eq!(gas_used(&mut evm, 7), Ok(7));
         assert_eq!(evm.version().tx_gas_limit_cap, 42, "the EVM's version is restored");
         assert_eq!(gas_used(&mut evm, 41), Ok(42));
+
+        let validated_cap = |evm: &mut Evm<'_, BaseEvmTypes>, nonce| {
+            evm.validate_tx(&test_tx(nonce)).unwrap();
+            VALIDATED_CAP.load(core::sync::atomic::Ordering::Relaxed)
+        };
+        assert_eq!(validated_cap(&mut evm, 7), 7, "validation uses the selected version");
+        assert_eq!(evm.version().tx_gas_limit_cap, 42, "the EVM's version is restored");
+        assert_eq!(validated_cap(&mut evm, 41), 42);
     }
 
     #[test]
