@@ -1803,7 +1803,7 @@ mod tip1175_cooling_tests {
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &address,
-            AccountInfo::default().with_code(Bytecode::new_legacy(vec![0x00].into())),
+            AccountInfo::default().with_code(Bytecode::new_legacy(alloc::vec![0x00].into())),
         );
         database
     }
