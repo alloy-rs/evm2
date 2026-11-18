@@ -178,6 +178,11 @@ bitflags! {
         /// The present overlay account's creation discarded its old storage, so unloaded slots
         /// read as zero.
         const DISCARDS_STORAGE = 1 << 5;
+        /// Explicit cooling ([`State::set_account_warm`](super::State::set_account_warm) with
+        /// `false` or [`State::cool_loaded`](super::State::cool_loaded)) cooled the account's
+        /// bytecode, so code installed earlier in the transaction no longer counts as warm
+        /// (Tempo TIP-1175).
+        const CODE_COOLED = 1 << 6;
     }
 }
 
@@ -446,8 +451,10 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.tracked.flags.contains(AccountFlags::CODE_WARM)
             || self.inner.prewarm_set.is_warm(&self.address)
             // Code installed in this transaction is warm whatever path installed it, including a
-            // direct `get_or_insert().set_code` that bypasses [`Self::set_code`].
-            || self.tracked.changed_code().is_some()
+            // direct `get_or_insert().set_code` that bypasses [`Self::set_code`], until explicit
+            // cooling cools it.
+            || (self.tracked.changed_code().is_some()
+                && !self.tracked.flags.contains(AccountFlags::CODE_COOLED))
     }
 
     /// Returns whether the account has been marked self-destructed in the current transaction.

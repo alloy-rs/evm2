@@ -967,7 +967,8 @@ fn tip1175_code_deployed_in_tx_is_warm(#[values(false, true)] reverted_first: bo
     push(&mut code, 0);
     code.push(op::MSTORE);
     if reverted_first {
-        // A CREATE2 that reverts (initcode = REVERT) leaves nothing warm behind.
+        // A CREATE2 whose initcode reverts installs nothing. Rollback of installed code is
+        // covered by the state tests (`rollback_cools_installed_code`).
         push(&mut code, Word::from_be_slice(&hex!("60006000fd")));
         push(&mut code, 0x40);
         code.push(op::MSTORE);
@@ -990,9 +991,10 @@ fn tip1175_code_deployed_in_tx_is_warm(#[values(false, true)] reverted_first: bo
 #[case::eip2780_charges_target(SpecId::AMSTERDAM, 1)]
 #[case::free_resolution_warms_target(SpecId::PRAGUE, 0)]
 fn tip1175_top_level_delegation(#[case] spec: SpecId, #[case] expected: u64) {
-    // The transaction target delegates to CONTRACT; the target then loads CONTRACT's code again,
-    // which is warm either way.
+    // The transaction target delegates to CONTRACT, whose code then loads its own code with
+    // EXTCODESIZE: free either way, since resolving the delegation warmed it.
     let mut accounts = code_accounts();
+    accounts[0].1 = legacy_bytecode(program(&[(op::EXTCODESIZE, CONTRACT)]));
     accounts.push((Address::with_last_byte(0xe0), Bytecode::new_eip7702(CONTRACT)));
     let gas = |cost| code_load_gas(spec, cost, &[], &accounts, &[]);
     assert_eq!(gas(CODE_COST) - gas(0), expected * u64::from(CODE_COST));
