@@ -248,6 +248,9 @@ pub struct Evm<'a, T: EvmTypesHost> {
     /// This is passed to the inspector call and create hooks as the parent frame.
     #[derive_where(skip)]
     current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
+    /// The number of frames suspended below a transaction dispatched from inside a running one.
+    #[derive_where(skip)]
+    suspended_frames: u32,
     /// The number of frames this EVM has entered, which numbers the frame it enters next.
     #[derive_where(skip)]
     frames_entered: u64,
@@ -387,6 +390,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_runner: None,
             runner_supported: false,
             current_frame: None,
+            suspended_frames: 0,
             frames_entered: 0,
             frame_checkpoint: None,
             enclosing_refund: 0,
@@ -1125,7 +1129,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_initial_call_depth(&mut self, depth: u16) {
         assert!(
-            self.current_frame.is_none(),
+            self.current_frame.is_none() && self.suspended_frames == 0,
             "initial call depth cannot be modified while a frame is running"
         );
         assert!(
@@ -1271,6 +1275,7 @@ impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
             self.evm.enclosing_refund = refund;
         }
         if let Some(frame) = self.frame_on_exit {
+            self.evm.suspended_frames -= u32::from(frame.is_some());
             self.evm.current_frame = frame;
         }
     }
@@ -1355,6 +1360,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
         let nested = self.running;
         let outer_refund = self.enclosing_refund;
         let outer_frame = self.current_frame.take();
+        self.suspended_frames += u32::from(nested && outer_frame.is_some());
         self.enclosing_refund = 0;
         let mut guard = self.enter_execution();
         guard.refund_on_exit = Some(if nested { outer_refund } else { 0 });
@@ -5209,6 +5215,54 @@ mod tests {
         let _ = evm.call_tx(&test_tx(0));
 
         assert_eq!(evm.tx_refunded(0), 5);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn nested_transaction_cannot_change_the_initial_call_depth_below_a_frame() {
+        struct NestingInspector;
+
+        impl Inspector<BaseEvmTypes> for NestingInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let host = interp.host();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = host.call_tx(&test_tx(1));
+                }));
+                assert!(result.is_err());
+            }
+        }
+
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    if req.tx.nonce == 1 {
+                        req.host.set_initial_call_depth(1);
+                        return Ok(TxResultExt::default());
+                    }
+                    let mut message = MessageExt {
+                        code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+                        ..MessageExt::default()
+                    };
+                    Host::execute_message(req.host, &mut message)?;
+                    Ok(TxResultExt::default())
+                },
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(NestingInspector);
+
+        let _ = evm.call_tx(&test_tx(0)).unwrap();
+
+        assert_eq!(evm.initial_call_depth(), 0);
     }
 
     #[cfg(feature = "std")]
