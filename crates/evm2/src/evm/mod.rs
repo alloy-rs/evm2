@@ -3882,6 +3882,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn restores_gas_params_when_transaction_unwinds() {
         static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
         let mut evm = selector_evm(&VALIDATED);
