@@ -460,7 +460,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     const fn enter_execution(&mut self) -> ExecutionGuard<'_, 'a, T> {
         let was_running = self.running;
         self.running = true;
-        ExecutionGuard { evm: self, was_running, refund_on_exit: None }
+        ExecutionGuard { evm: self, was_running, refund_on_exit: None, frame_on_exit: None }
     }
 
     /// Returns the transaction handler registry.
@@ -1259,6 +1259,8 @@ struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
     /// The value of the enclosing refund counter to restore when the guard ends, also by
     /// unwinding.
     refund_on_exit: Option<i64>,
+    /// The frame to make current again when the guard ends, also by unwinding.
+    frame_on_exit: Option<Option<NonNull<Interpreter<'static, 'static, T>>>>,
 }
 
 impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
@@ -1267,6 +1269,9 @@ impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
         self.evm.running = self.was_running;
         if let Some(refund) = self.refund_on_exit {
             self.evm.enclosing_refund = refund;
+        }
+        if let Some(frame) = self.frame_on_exit {
+            self.evm.current_frame = frame;
         }
     }
 }
@@ -1346,13 +1351,14 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         // A transaction dispatched from inside a running one, such as from an inspector hook,
-        // leaves the refund of the outer transaction as it found it.
-        let outer_refund = self.running.then_some(self.enclosing_refund);
-        if outer_refund.is_none() {
-            self.enclosing_refund = 0;
-        }
+        // starts with its own refund counter and no enclosing frame, and gives both back.
+        let nested = self.running;
+        let outer_refund = self.enclosing_refund;
+        let outer_frame = self.current_frame.take();
+        self.enclosing_refund = 0;
         let mut guard = self.enter_execution();
-        guard.refund_on_exit = Some(outer_refund.unwrap_or(0));
+        guard.refund_on_exit = Some(if nested { outer_refund } else { 0 });
+        guard.frame_on_exit = nested.then_some(outer_frame);
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
         if result.is_err() {
