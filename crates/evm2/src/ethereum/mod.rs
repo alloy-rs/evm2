@@ -1295,13 +1295,11 @@ mod tests {
     }
 
     #[test]
-    fn balance_top_up_keeps_balance_minus_effective_fee() {
+    fn balance_top_up_stops_at_effective_fee_plus_value() {
         let caller = Address::with_last_byte(0xaa);
         let mut database = InMemoryDB::default();
-        database.insert_account_info(
-            &caller,
-            AccountInfo::default().with_balance(U256::from(1_000_000)),
-        );
+        database
+            .insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(100_000)));
         let mut version = Version::new(SpecId::CANCUN);
         version.features.remove(EvmFeatures::BALANCE_CHECK);
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
@@ -1312,7 +1310,8 @@ mod tests {
             database,
             Precompiles::base(SpecId::CANCUN),
         );
-        // The effective fee is 21_000 * 10, far below the 21_000 * 100 maximum.
+        // The effective fee is 21_000 * 10, far below the 21_000 * 100 maximum. The sender is
+        // topped up to that fee plus the value, and ends with nothing after paying both.
         let tx = Recovered::new_unchecked(
             TxEnvelope::Eip1559(TxEip1559 {
                 chain_id: evm.version().chain_id,
@@ -1326,10 +1325,7 @@ mod tests {
         );
 
         assert!(evm.transact(&tx).unwrap().commit().is_success());
-        assert_eq!(
-            evm.read_account_info(&caller).unwrap().unwrap().balance,
-            U256::from(1_000_000 - 210_000 - 5)
-        );
+        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::ZERO);
     }
 
     #[test]
