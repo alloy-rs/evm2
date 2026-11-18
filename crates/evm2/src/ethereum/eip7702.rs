@@ -109,7 +109,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     prepared: PreparedTx,
 ) -> HandlerResult<TxResult<T>> {
     let TxRequest { envelope, tx, host, _non_exhaustive } = req;
-    let mut scope = PreExecutionRefundScope(host);
+    let scope = PreExecutionRefundScope(host);
     execute_prepared_inner::<T, H>(
         TxRequest { envelope, tx, host: &mut *scope.0, _non_exhaustive },
         prepared,
