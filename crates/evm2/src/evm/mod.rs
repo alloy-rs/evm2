@@ -2132,10 +2132,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
 
         if contract != target {
-            let transferred = self.state.transfer(contract, target, &balance)?;
-            if transferred {
-                self.log_eip7708_transfer(contract, target, &balance);
+            if !self.state.transfer(contract, target, &balance)? {
+                // The beneficiary's balance would overflow, so it saturates.
+                self.state.account(contract)?.set_balance(Word::ZERO);
+                self.state.account(target)?.set_balance(Word::MAX);
             }
+            self.log_eip7708_transfer(contract, target, &balance);
         } else if should_destroy && !balance.is_zero() && !self.feature(EvmFeatures::EIP8246) {
             // Pre-EIP-8246: SELFDESTRUCT to self burns the contract's balance. EIP-8246 removes
             // this burn, leaving the balance untouched; finalization resets the account
