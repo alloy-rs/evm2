@@ -59,9 +59,13 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     validate_execution_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    let upfront = max_gas_cost.saturating_add(tx.value);
-    let sender_nonce =
-        validate_sender_and_bump_nonce(req.host, caller, tx.nonce, upfront, upfront)?;
+    let sender_nonce = validate_sender_and_bump_nonce(
+        req.host,
+        caller,
+        tx.nonce,
+        max_gas_cost.saturating_add(tx.value),
+        max_gas_cost.saturating_add(tx.value),
+    )?;
 
     warm_base_accounts(req.host, tx.to);
 

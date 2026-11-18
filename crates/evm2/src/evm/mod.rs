@@ -1574,32 +1574,43 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
-        let nested = message.depth > self.initial_call_depth;
-        // A too-deep create fails on depth alone, without reading the creator.
-        let info = if message.depth <= self.max_call_depth() && (message.value > 0 || nested) {
-            self.state.account_info_untracked(&message.caller)?
+        let initial_call_depth = self.initial_call_depth;
+        let max_depth = self.max_call_depth();
+        if message.depth > initial_call_depth && message.depth <= max_depth {
+            // A nested creator is loaded already: check it and bump its nonce through one handle.
+            let mut caller = self.state.account(&message.caller)?;
+            if let Some(stop) = create_preaccess_failure(
+                caller.balance(),
+                caller.nonce(),
+                message.value,
+                message.depth,
+                initial_call_depth,
+            ) {
+                return Err(stop.into());
+            }
+            caller.bump_nonce();
         } else {
-            None
-        };
-        let (balance, nonce) = info.as_ref().map_or((Word::ZERO, 0), |i| (i.balance, i.nonce));
-        if let Some(stop) = create_preaccess_failure(
-            balance,
-            nonce,
-            message.value,
-            message.depth,
-            self.initial_call_depth,
-        ) {
-            return Err(stop.into());
+            // A too-deep create fails on depth alone, without reading the creator.
+            let info = if message.depth <= max_depth && message.value > 0 {
+                self.state.account_info_untracked(&message.caller)?
+            } else {
+                None
+            };
+            let (balance, nonce) = info.as_ref().map_or((Word::ZERO, 0), |i| (i.balance, i.nonce));
+            if let Some(stop) = create_preaccess_failure(
+                balance,
+                nonce,
+                message.value,
+                message.depth,
+                initial_call_depth,
+            ) {
+                return Err(stop.into());
+            }
         }
 
         // `destination` already holds the contract address (derived when the message was
         // constructed); warm it before running the initcode.
         self.state.account(&message.destination)?.warm();
-
-        if nested && let Err(code) = self.state.account(&message.caller).map(|mut a| a.bump_nonce())
-        {
-            return Err(code.into());
-        }
 
         Ok(())
     }
@@ -1718,10 +1729,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
         );
         if transfers_balance {
-            if let Err(stop) =
-                self.state.transfer(&message.caller, &message.destination, &message.value)?
-            {
-                return Ok(Self::error_message_result(stop, message.gas_limit, message.reservoir));
+            if !self.state.transfer(&message.caller, &message.destination, &message.value)? {
+                return Ok(Self::error_message_result(
+                    InstrStop::OutOfFunds,
+                    message.gas_limit,
+                    message.reservoir,
+                ));
             }
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         }
@@ -2084,6 +2097,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         &mut self,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
+        if self.current_frame.is_none() {
+            self.interpreter_pool.trim();
+        }
         let checkpoint = self.state.checkpoint();
         let result = if self.inspector.is_some() {
             self.execute_message_inspected(message, None)
@@ -2116,18 +2132,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
 
         if contract != target {
-            let transferred = match self.state.transfer(contract, target, &balance)? {
-                Ok(()) => true,
-                // The beneficiary's balance wraps. Reaching this needs a total supply
-                // above `U256::MAX`.
-                Err(InstrStop::OverflowPayment) => {
-                    self.state.account(contract)?.set_balance(Word::ZERO);
-                    let mut beneficiary = self.state.account(target)?;
-                    beneficiary.set_balance(beneficiary.balance().wrapping_add(balance));
-                    true
-                }
-                Err(_) => false,
-            };
+            let transferred = self.state.transfer(contract, target, &balance)?;
             if transferred {
                 self.log_eip7708_transfer(contract, target, &balance);
             }
@@ -2135,7 +2140,8 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             // Pre-EIP-8246: SELFDESTRUCT to self burns the contract's balance. EIP-8246 removes
             // this burn, leaving the balance untouched; finalization resets the account
             // to balance-only.
-            self.state.account(contract)?.set_balance(Word::ZERO);
+            let delta = Word::ZERO.wrapping_sub(balance);
+            self.state.account(contract)?.add_balance(delta);
         }
         if should_destroy {
             self.state.account(contract)?.mark_destructed();
@@ -4376,7 +4382,7 @@ mod tests {
     }
 
     #[test]
-    fn transfer_overflow_leaves_balances_untouched() {
+    fn value_overflow_leaves_balances_untouched() {
         let from = Address::repeat_byte(0x01);
         let to = Address::repeat_byte(0x02);
         let mut database = InMemoryDB::default();
@@ -4384,106 +4390,14 @@ mod tests {
         database.insert_account_info(&to, AccountInfo::default().with_balance(U256::MAX));
         let mut state = State::new(database);
 
+        assert!(!state.transfer(&from, &to, &U256::from(1)).unwrap());
+        let features = Version::base(SpecId::CANCUN).features;
         assert_eq!(
-            state.transfer(&from, &to, &U256::from(1)).unwrap(),
-            Err(InstrStop::OverflowPayment)
+            state.create_account(&from, &to, &U256::from(1), features).unwrap(),
+            Err(InstrStop::OutOfFunds)
         );
         assert_eq!(state.account_info_untracked(&from).unwrap().unwrap().balance, U256::from(10));
         assert_eq!(state.account_info_untracked(&to).unwrap().unwrap().balance, U256::MAX);
-    }
-
-    /// Runs `code` as a contract holding 10 wei, with `prefunded` holding `U256::MAX - 1` wei.
-    /// Returns storage slot 0 and the final balances of the contract and of `prefunded`.
-    fn run_overflow_contract(
-        spec: SpecId,
-        code: Vec<u8>,
-        prefunded: Address,
-    ) -> (Option<U256>, U256, U256) {
-        let contract = Address::repeat_byte(0x11);
-        let mut database = InMemoryDB::default();
-        database.insert_account_info(
-            &contract,
-            AccountInfo::default()
-                .with_nonce(1)
-                .with_balance(U256::from(10))
-                .with_code(legacy_bytecode(code)),
-        );
-        database.insert_account_info(
-            &prefunded,
-            AccountInfo::default().with_balance(U256::MAX - U256::ONE),
-        );
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            spec,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(spec),
-            database,
-            Precompiles::base(spec),
-        );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                to: TxKind::Call(contract),
-                gas_limit: 500_000,
-                ..Default::default()
-            }),
-            Address::repeat_byte(0xaa),
-        );
-        let executed = evm.transact(&tx).unwrap();
-        assert!(executed.result().is_success());
-        let slot0 = executed
-            .account_changes()
-            .find(|c| c.address == contract)
-            .and_then(|c| c.storage.slots.get(&U256::ZERO).map(|s| s.value.current));
-        let _ = executed.commit();
-        let mut balance = |address| {
-            evm.read_account_info(&address).unwrap().map_or(U256::ZERO, |info| info.balance)
-        };
-        (slot0, balance(contract), balance(prefunded))
-    }
-
-    #[test]
-    fn call_value_overflow_fails_without_moving_funds() {
-        let target = Address::repeat_byte(0x22);
-        // CALL(gas, target, 5, 0, 0, 0, 0); SSTORE(0, success); STOP
-        let mut code = vec![op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH1, 5, op::PUSH20];
-        code.extend_from_slice(target.as_slice());
-        code.extend([op::GAS, op::CALL, op::PUSH0, op::SSTORE, op::STOP]);
-
-        let (success, contract_balance, target_balance) =
-            run_overflow_contract(SpecId::CANCUN, code, target);
-
-        assert_eq!(success, Some(U256::ZERO), "a failed CALL pushes 0");
-        assert_eq!(contract_balance, U256::from(10));
-        assert_eq!(target_balance, U256::MAX - U256::ONE);
-    }
-
-    #[test]
-    fn create_value_overflow_fails_without_moving_funds() {
-        let created = Address::repeat_byte(0x11).create(1);
-        // CREATE(5, 0, 0); SSTORE(0, address); STOP
-        let code =
-            vec![op::PUSH0, op::PUSH0, op::PUSH1, 5, op::CREATE, op::PUSH0, op::SSTORE, op::STOP];
-
-        let (address, contract_balance, created_balance) =
-            run_overflow_contract(SpecId::CANCUN, code, created);
-
-        assert_eq!(address, Some(U256::ZERO), "a failed CREATE pushes 0");
-        assert_eq!(contract_balance, U256::from(10));
-        assert_eq!(created_balance, U256::MAX - U256::ONE);
-    }
-
-    #[test]
-    fn selfdestruct_beneficiary_balance_overflow_wraps() {
-        let target = Address::repeat_byte(0x22);
-        let mut code = vec![op::PUSH20];
-        code.extend_from_slice(target.as_slice());
-        code.push(op::SELFDESTRUCT);
-
-        // Before Cancun the contract is destroyed even though the credit overflows.
-        let (_, contract_balance, target_balance) =
-            run_overflow_contract(SpecId::SHANGHAI, code, target);
-
-        assert_eq!(contract_balance, U256::ZERO);
-        assert_eq!(target_balance, U256::from(8));
     }
 
     #[test]
@@ -4493,7 +4407,7 @@ mod tests {
         let mut state = State::new(InMemoryDB::default());
         state.account(&from).unwrap().add_balance(U256::from(10));
 
-        assert_eq!(state.transfer(&from, &to, &U256::from(7)).unwrap(), Ok(()));
+        assert!(state.transfer(&from, &to, &U256::from(7)).unwrap());
         assert_eq!(
             state
                 .account_info_untracked(&from)

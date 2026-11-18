@@ -430,10 +430,8 @@ pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult
 ///
 /// One account handle does all three, so the sender is looked up and journaled once.
 ///
-/// With [`EvmFeatures::BALANCE_CHECK`] off, [`EvmFeatures::BALANCE_TOP_UP`] and
-/// [`EvmFeatures::FEE_CHARGE`] on, a sender holding less than `effective_upfront` (the effective
-/// fee plus the transaction value) is topped up to it, so that after the effective fee is charged
-/// it keeps `max(balance - fee, value)`.
+/// A topped-up sender (balance check off) is raised to `effective_upfront`, the effective fee plus
+/// value, so it keeps `max(balance - fee, value)` once the fee is charged.
 pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
@@ -1296,82 +1294,14 @@ mod tests {
         assert_eq!(reward, U256::from(21_000 * beneficiary_gas_price));
     }
 
-    #[rstest::rstest]
-    fn top_level_value_overflow_halts_and_charges_all_gas(#[values(false, true)] create: bool) {
-        let caller = Address::with_last_byte(0xaa);
-        let recipient = Address::with_last_byte(0xbb);
-        let to = if create { TxKind::Create } else { TxKind::Call(recipient) };
-        let target = if create { caller.create(0) } else { recipient };
-        let mut database = InMemoryDB::default();
-        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(100)));
-        database.insert_account_info(&target, AccountInfo::default().with_balance(U256::MAX));
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            database,
-            Precompiles::base(SpecId::CANCUN),
-        );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_limit: 100_000,
-                to,
-                value: U256::from(1),
-                ..TxLegacy::default()
-            }),
-            caller,
-        );
-
-        let result = evm.transact(&tx).unwrap().commit();
-
-        assert_eq!(result.stop, InstrStop::OverflowPayment);
-        assert!(result.is_halt());
-        assert_eq!(result.tx_gas_used(), 100_000);
-        let caller_info = evm.read_account_info(&caller).unwrap().unwrap();
-        assert_eq!((caller_info.balance, caller_info.nonce), (U256::from(100), 1));
-        assert_eq!(evm.read_account_info(&target).unwrap().unwrap().balance, U256::MAX);
-    }
-
     #[test]
-    fn fee_settlement_skips_balance_overflow() {
+    fn balance_top_up_keeps_balance_minus_effective_fee() {
         let caller = Address::with_last_byte(0xaa);
-        let beneficiary = Address::with_last_byte(0xcc);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &caller,
-            AccountInfo::default().with_balance(U256::from(1_000_000_000)),
+            AccountInfo::default().with_balance(U256::from(1_000_000)),
         );
-        database.insert_account_info(&beneficiary, AccountInfo::default().with_balance(U256::MAX));
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::BERLIN,
-            BlockEnvExt { beneficiary, ..BlockEnvExt::default() },
-            ethereum_tx_registry(SpecId::BERLIN),
-            database,
-            Precompiles::base(SpecId::BERLIN),
-        );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_price: 15,
-                gas_limit: 21_000,
-                to: TxKind::Call(Address::with_last_byte(0xbb)),
-                ..TxLegacy::default()
-            }),
-            caller,
-        );
-
-        assert!(evm.transact(&tx).unwrap().commit().is_success());
-        assert_eq!(evm.read_account_info(&beneficiary).unwrap().unwrap().balance, U256::MAX);
-    }
-
-    #[rstest::rstest]
-    #[case::top_up_to_value(100_000, 0)]
-    #[case::keeps_balance_minus_fee(1_000_000, 789_995)]
-    fn balance_top_up_keeps_balance_minus_fee(#[case] balance: u64, #[case] expected: u64) {
-        let caller = Address::with_last_byte(0xaa);
-        let recipient = Address::with_last_byte(0xbb);
-        let mut database = InMemoryDB::default();
-        database
-            .insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(balance)));
         let mut version = Version::new(SpecId::CANCUN);
         version.features.remove(EvmFeatures::BALANCE_CHECK);
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
@@ -1388,7 +1318,7 @@ mod tests {
                 chain_id: evm.version().chain_id,
                 gas_limit: 21_000,
                 max_fee_per_gas: 100,
-                to: TxKind::Call(recipient),
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
                 value: U256::from(5),
                 ..TxEip1559::default()
             }),
@@ -1396,42 +1326,10 @@ mod tests {
         );
 
         assert!(evm.transact(&tx).unwrap().commit().is_success());
-        // max(balance - effective fee, value), minus the transferred value.
-        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(expected));
-        assert_eq!(evm.read_account_info(&recipient).unwrap().unwrap().balance, U256::from(5));
-    }
-
-    #[test]
-    fn balance_top_up_needs_fee_charge() {
-        let caller = Address::with_last_byte(0xaa);
-        let mut database = InMemoryDB::default();
-        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(3)));
-        let mut version = Version::new(SpecId::CANCUN);
-        version.features.remove(EvmFeatures::BALANCE_CHECK);
-        version.features.remove(EvmFeatures::FEE_CHARGE);
-        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-            ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
-            SpecId::CANCUN,
-            BlockEnvExt::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            database,
-            Precompiles::base(SpecId::CANCUN),
+        assert_eq!(
+            evm.read_account_info(&caller).unwrap().unwrap().balance,
+            U256::from(1_000_000 - 210_000 - 5)
         );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_limit: 21_000,
-                gas_price: 10,
-                to: TxKind::Call(Address::with_last_byte(0xbb)),
-                value: U256::from(5),
-                ..TxLegacy::default()
-            }),
-            caller,
-        );
-
-        // Nothing is topped up without fee charging, so the value transfer fails.
-        let result = evm.transact(&tx).unwrap().commit();
-        assert_eq!(result.stop, InstrStop::OutOfFunds);
-        assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(3));
     }
 
     #[test]

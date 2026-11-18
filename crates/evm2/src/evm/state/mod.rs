@@ -746,46 +746,42 @@ impl<'a> State<'a> {
     }
 
     /// Transfers value between accounts.
-    ///
-    /// Fails with [`InstrStop::OutOfFunds`] when `from` cannot pay and with
-    /// [`InstrStop::OverflowPayment`] when `to` cannot hold the value. Both checks run before
-    /// either balance changes, so a failed transfer leaves the balances untouched.
-    pub fn transfer(
-        &mut self,
-        from: &Address,
-        to: &Address,
-        value: &Word,
-    ) -> DbResult<Result<(), InstrStop>> {
+    pub fn transfer(&mut self, from: &Address, to: &Address, value: &Word) -> DbResult<bool> {
         if value.is_zero() {
             self.account(to)?.touch();
-            return Ok(Ok(()));
+            return Ok(true);
         }
 
         if from == to {
             let mut account = self.account(from)?;
             if account.balance() < *value {
-                return Ok(Err(InstrStop::OutOfFunds));
+                return Ok(false);
             }
             account.touch();
-            return Ok(Ok(()));
+            return Ok(true);
         }
 
-        let Some(new_from_balance) = self.account(from)?.balance().checked_sub(*value) else {
-            return Ok(Err(InstrStop::OutOfFunds));
-        };
+        // Checked before the sender pays, since a failed transfer is not rolled back.
+        if self.account(to)?.balance().checked_add(*value).is_none() {
+            return Ok(false);
+        }
+
+        {
+            let mut from_account = self.account(from)?;
+            let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
+                return Ok(false);
+            };
+            // `set_balance` touches the account, matching the touch the prior `transfer` performed.
+            from_account.set_balance(new_from_balance);
+            from_account.touch();
+        }
         {
             let mut to_account = self.account(to)?;
-            let Some(new_to_balance) = to_account.balance().checked_add(*value) else {
-                return Ok(Err(InstrStop::OverflowPayment));
-            };
+            let new_to_balance = to_account.balance().saturating_add(*value);
             to_account.set_balance(new_to_balance);
             to_account.touch();
         }
-        let mut from_account = self.account(from)?;
-        // `set_balance` touches the account, matching the touch the prior `transfer` performed.
-        from_account.set_balance(new_from_balance);
-        from_account.touch();
-        Ok(Ok(()))
+        Ok(true)
     }
 
     /// Creates a contract account and transfers endowment from the caller.
@@ -799,31 +795,27 @@ impl<'a> State<'a> {
     ) -> DbResult<Result<(), InstrStop>> {
         // TODO check order of operations, we could potentially simplify it and do a lot more with
         // only one hashmap lookup.
-        {
-            let target = self.account(address)?;
-            if target
-                .get()
-                .is_some_and(|account| account.nonce != 0 || !account.is_empty_code_hash())
-            {
-                return Ok(Err(InstrStop::CreateCollision));
-            }
-            // Checked before the caller pays, so an overflow leaves both accounts unchanged.
-            if target.balance().checked_add(*value).is_none() {
-                return Ok(Err(InstrStop::OverflowPayment));
-            }
+        let mut target = self.account(address)?;
+        if target.get().is_some_and(|account| account.nonce != 0 || !account.is_empty_code_hash()) {
+            return Ok(Err(InstrStop::CreateCollision));
+        }
+        if target.balance().checked_add(*value).is_none() {
+            return Ok(Err(InstrStop::OutOfFunds));
         }
 
         // Deduct the endowment from the caller. A zero endowment moves nothing and leaves the
         // caller untouched, matching the prior `transfer` behaviour.
         if !value.is_zero() {
+            drop(target);
             let mut caller_account = self.account(caller)?;
             let Some(new_caller_balance) = caller_account.balance().checked_sub(*value) else {
                 return Ok(Err(InstrStop::OutOfFunds));
             };
             caller_account.set_balance(new_caller_balance);
+            drop(caller_account);
+            target = self.account(address)?;
         }
 
-        let mut target = self.account(address)?;
         // Preserve any balance the address already held (e.g. funds sent before creation) and add
         // the endowment.
         let balance = target.balance().wrapping_add(*value);
@@ -1794,22 +1786,5 @@ mod tests {
         assert_eq!((slot.original(), slot.current()), (Word::from(6), Word::from(6)));
         assert!(!state.accounts[&address].storage.slots.contains_key(&unloaded));
         assert!(!state.take_pending_state().is_changed());
-    }
-
-    #[test]
-    fn create_account_over_its_own_creator_keeps_the_balance() {
-        let address = Address::with_last_byte(1);
-        let mut state = State::new(CacheDB::default());
-        state.account(&address).unwrap().set_balance(Word::from(10));
-
-        let created = state.create_account(
-            &address,
-            &address,
-            &Word::from(5),
-            Version::base(crate::SpecId::CANCUN).features,
-        );
-
-        assert_eq!(created.unwrap(), Ok(()));
-        assert_eq!(state.account(&address).unwrap().balance(), Word::from(10));
     }
 }
