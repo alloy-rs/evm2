@@ -1350,10 +1350,15 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[inline]
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        assert!(!self.running, "transactions cannot be executed during EVM execution");
+        // A transaction dispatched from inside a running one, such as from an inspector hook,
+        // starts with its own refund counter and no enclosing frame, and gives both back.
+        let nested = self.running;
+        let outer_refund = self.enclosing_refund;
+        let outer_frame = self.current_frame.take();
         self.enclosing_refund = 0;
         let mut guard = self.enter_execution();
-        guard.refund_on_exit = Some(0);
+        guard.refund_on_exit = Some(if nested { outer_refund } else { 0 });
+        guard.frame_on_exit = nested.then_some(outer_frame);
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
         if result.is_err() {
@@ -5196,12 +5201,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "transactions cannot be executed during EVM execution")]
-    fn nested_transaction_dispatch_panics() {
+    fn nested_dispatch_keeps_the_outer_pre_execution_refund() {
         let mut evm = scoped_inspector_evm();
         evm.running = true;
+        evm.set_pre_execution_refund(5);
 
         let _ = evm.call_tx(&test_tx(0));
+
+        assert_eq!(evm.tx_refunded(0), 5);
     }
 
     #[cfg(feature = "std")]
