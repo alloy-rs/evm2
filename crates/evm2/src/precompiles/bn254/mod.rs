@@ -2,7 +2,7 @@
 
 use crate::{
     interpreter::GasTracker,
-    precompiles::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
+    precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     utils::{bool_to_bytes32, right_pad},
 };
 use alloc::vec::Vec;
@@ -34,11 +34,8 @@ pub(crate) trait Bn254Ops {
     type G2;
     type Scalar;
 
-    /// Prepares the backend for use. Called before every operation.
     #[inline]
-    fn init() -> Result<(), PrecompileError> {
-        Ok(())
-    }
+    fn init() {}
 
     fn read_g1(input: &[u8]) -> Result<Self::G1, PrecompileHalt>;
     fn encode_g1(point: Self::G1) -> [u8; G1_LEN];
@@ -53,7 +50,7 @@ pub(crate) trait Bn254Ops {
 
 /// Performs point addition on two G1 points using the selected backend.
 #[inline]
-pub(crate) fn g1_point_add(p1_bytes: &[u8], p2_bytes: &[u8]) -> Result<[u8; 64], PrecompileError> {
+pub(crate) fn g1_point_add(p1_bytes: &[u8], p2_bytes: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
     g1_point_add_with::<Ops>(p1_bytes, p2_bytes)
 }
 
@@ -62,13 +59,13 @@ pub(crate) fn g1_point_add(p1_bytes: &[u8], p2_bytes: &[u8]) -> Result<[u8; 64],
 pub(crate) fn g1_point_mul(
     point_bytes: &[u8],
     fr_bytes: &[u8],
-) -> Result<[u8; 64], PrecompileError> {
+) -> Result<[u8; 64], PrecompileHalt> {
     g1_point_mul_with::<Ops>(point_bytes, fr_bytes)
 }
 
 /// Performs a pairing check on a list of G1 and G2 point pairs using the selected backend.
 #[inline]
-pub(crate) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileError> {
+pub(crate) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
     pairing_check_with::<Ops>(pairs)
 }
 
@@ -76,8 +73,8 @@ pub(crate) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, Precompile
 fn g1_point_add_with<O: Bn254Ops>(
     p1_bytes: &[u8],
     p2_bytes: &[u8],
-) -> Result<[u8; 64], PrecompileError> {
-    O::init()?;
+) -> Result<[u8; 64], PrecompileHalt> {
+    O::init();
     let p1 = O::read_g1(p1_bytes)?;
     let p2 = O::read_g1(p2_bytes)?;
     Ok(O::encode_g1(O::g1_add(p1, p2)))
@@ -87,16 +84,16 @@ fn g1_point_add_with<O: Bn254Ops>(
 fn g1_point_mul_with<O: Bn254Ops>(
     point_bytes: &[u8],
     fr_bytes: &[u8],
-) -> Result<[u8; 64], PrecompileError> {
-    O::init()?;
+) -> Result<[u8; 64], PrecompileHalt> {
+    O::init();
     let p = O::read_g1(point_bytes)?;
     let fr = O::read_scalar(fr_bytes);
     Ok(O::encode_g1(O::g1_mul(p, fr)))
 }
 
 #[inline]
-fn pairing_check_with<O: Bn254Ops>(pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileError> {
-    O::init()?;
+fn pairing_check_with<O: Bn254Ops>(pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
+    O::init();
     let mut g1_points = Vec::with_capacity(pairs.len());
     let mut g2_points = Vec::with_capacity(pairs.len());
 

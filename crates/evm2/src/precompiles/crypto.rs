@@ -1,7 +1,7 @@
 use crate::{
     once_lock::OnceLock,
     precompiles::{
-        PrecompileError, PrecompileHalt,
+        PrecompileHalt,
         bls12_381::{G1Point, G1PointScalar, G2Point, G2PointScalar},
     },
 };
@@ -31,19 +31,19 @@ pub trait Crypto: Send + Sync + Debug {
 
     /// BN254 elliptic curve addition.
     #[inline]
-    fn bn254_g1_add(&self, p1: &[u8], p2: &[u8]) -> Result<[u8; 64], PrecompileError> {
+    fn bn254_g1_add(&self, p1: &[u8], p2: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
         crate::precompiles::bn254::g1_point_add(p1, p2)
     }
 
     /// BN254 elliptic curve scalar multiplication.
     #[inline]
-    fn bn254_g1_mul(&self, point: &[u8], scalar: &[u8]) -> Result<[u8; 64], PrecompileError> {
+    fn bn254_g1_mul(&self, point: &[u8], scalar: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
         crate::precompiles::bn254::g1_point_mul(point, scalar)
     }
 
     /// BN254 pairing check.
     #[inline]
-    fn bn254_pairing_check(&self, pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileError> {
+    fn bn254_pairing_check(&self, pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
         crate::precompiles::bn254::pairing_check(pairs)
     }
 

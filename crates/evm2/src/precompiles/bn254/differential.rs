@@ -11,7 +11,7 @@ use super::{
     Bn254Ops, FQ_LEN, G1_LEN, G2_LEN, SCALAR_LEN, arkworks::ArkworksOps, g1_point_add_with,
     g1_point_mul_with, pairing_check_with,
 };
-use crate::precompiles::{PrecompileError, PrecompileHalt};
+use crate::precompiles::PrecompileHalt;
 use alloc::vec::Vec;
 use alloy_primitives::{U256, hex};
 use ark_bn254::{Fq, Fq2, Fr, G1Affine, G2Affine};
@@ -56,9 +56,9 @@ fn sanity<O: Bn254Ops>() {
     let g2 = enc_g2(G2Affine::generator());
     let two = U256::from(2).to_be_bytes::<SCALAR_LEN>();
 
-    let doubled = halt(g1_point_add_with::<O>(&g1, &g1)).unwrap();
-    assert_eq!(halt(g1_point_mul_with::<O>(&g1, &two)).unwrap(), doubled);
-    assert_eq!(halt(g1_point_add_with::<O>(&g1, &neg_g1)).unwrap(), [0; G1_LEN]);
+    let doubled = g1_point_add_with::<O>(&g1, &g1).unwrap();
+    assert_eq!(g1_point_mul_with::<O>(&g1, &two).unwrap(), doubled);
+    assert_eq!(g1_point_add_with::<O>(&g1, &neg_g1).unwrap(), [0; G1_LEN]);
 
     assert_eq!(pairing::<O>(&[(g1, g2), (neg_g1, g2)]), Ok(true));
     assert_eq!(pairing::<O>(&[(g1, g2), (g1, g2)]), Ok(false));
@@ -81,8 +81,8 @@ fn g1_ops_match<O: Bn254Ops>(rng: &mut StdRng) {
             _ => random_g1_input(rng),
         };
         assert_eq!(
-            halt(g1_point_add_with::<O>(&a, &b)),
-            halt(g1_point_add_with::<ArkworksOps>(&a, &b)),
+            g1_point_add_with::<O>(&a, &b),
+            g1_point_add_with::<ArkworksOps>(&a, &b),
             "add({}, {})",
             hex::encode(a),
             hex::encode(b)
@@ -90,8 +90,8 @@ fn g1_ops_match<O: Bn254Ops>(rng: &mut StdRng) {
 
         let scalar = random_scalar(rng);
         assert_eq!(
-            halt(g1_point_mul_with::<O>(&a, &scalar)),
-            halt(g1_point_mul_with::<ArkworksOps>(&a, &scalar)),
+            g1_point_mul_with::<O>(&a, &scalar),
+            g1_point_mul_with::<ArkworksOps>(&a, &scalar),
             "mul({}, {})",
             hex::encode(a),
             hex::encode(scalar)
@@ -175,17 +175,9 @@ fn g2_subgroup_matches<O: Bn254Ops>(rng: &mut StdRng) {
     }
 }
 
-fn halt<T>(result: Result<T, PrecompileError>) -> Output<T> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(PrecompileError::Halt(halt)) => Err(halt),
-        Err(err) => panic!("unexpected error: {err}"),
-    }
-}
-
 fn pairing<O: Bn254Ops>(pairs: &[([u8; G1_LEN], [u8; G2_LEN])]) -> Output<bool> {
     let pairs = pairs.iter().map(|(g1, g2)| (&g1[..], &g2[..])).collect::<Vec<_>>();
-    halt(pairing_check_with::<O>(&pairs))
+    pairing_check_with::<O>(&pairs)
 }
 
 fn enc_fq(x: Fq) -> [u8; FQ_LEN] {
