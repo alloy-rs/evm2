@@ -460,7 +460,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     const fn enter_execution(&mut self) -> ExecutionGuard<'_, 'a, T> {
         let was_running = self.running;
         self.running = true;
-        ExecutionGuard { evm: self, was_running }
+        ExecutionGuard { evm: self, was_running, ends_transaction: false }
     }
 
     /// Returns the transaction handler registry.
@@ -1256,12 +1256,17 @@ impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
 struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
     evm: &'guard mut Evm<'evm, T>,
     was_running: bool,
+    /// Whether leaving the guard, also by unwinding, ends a transaction and its refund counter.
+    ends_transaction: bool,
 }
 
 impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     #[inline]
     fn drop(&mut self) {
         self.evm.running = self.was_running;
+        if self.ends_transaction {
+            self.evm.enclosing_refund = 0;
+        }
     }
 }
 
@@ -1340,10 +1345,10 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         self.enclosing_refund = 0;
-        let guard = self.enter_execution();
+        let mut guard = self.enter_execution();
+        guard.ends_transaction = true;
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
-        self.enclosing_refund = 0;
         if result.is_err() {
             self.state.clear_transaction_state();
         }
@@ -5180,6 +5185,36 @@ mod tests {
         let previous = evm.clear_inspector_as::<CallCounter>().unwrap();
         assert_eq!(previous.calls, 1);
         assert_eq!(panicking.calls, 1);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn panicking_handler_does_not_leak_its_pre_execution_refund() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| -> HandlerResult<TxResult> {
+                    req.host.set_pre_execution_refund(7);
+                    panic!("handler panic");
+                },
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.call_tx(&test_tx(0));
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(evm.tx_refunded(0), 0);
     }
 
     #[cfg(feature = "std")]
