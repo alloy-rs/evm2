@@ -1911,14 +1911,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
         // Messages sent from the initialize hook must see the refunds of every frame below them.
-        let enclosing_refund = guard.evm.enclosing_refund;
-        guard.refund_on_exit = Some(enclosing_refund);
-        if guard.evm.active_inspector().is_some()
-            && let Some(parent) = prev_frame
-        {
-            // SAFETY: The parent frame is suspended on this call stack while this frame runs.
-            guard.evm.enclosing_refund =
-                enclosing_refund.saturating_add(unsafe { parent.as_ref() }.gas().refunded());
+        if guard.evm.active_inspector().is_some() {
+            let enclosing_refund = guard.evm.enclosing_refund;
+            guard.refund_on_exit = Some(enclosing_refund);
+            if let Some(parent) = prev_frame {
+                // SAFETY: The parent frame is suspended on this call stack while this frame runs.
+                guard.evm.enclosing_refund =
+                    enclosing_refund.saturating_add(unsafe { parent.as_ref() }.gas().refunded());
+            }
         }
         guard.evm.inspect_initialize_interp(interp_ref);
         let inspector = guard.evm.active_inspector().map(|inspector| {
