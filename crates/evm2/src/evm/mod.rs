@@ -460,7 +460,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     const fn enter_execution(&mut self) -> ExecutionGuard<'_, 'a, T> {
         let was_running = self.running;
         self.running = true;
-        ExecutionGuard { evm: self, was_running, ends_transaction: false }
+        ExecutionGuard { evm: self, was_running, refund_on_exit: None }
     }
 
     /// Returns the transaction handler registry.
@@ -1256,16 +1256,17 @@ impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
 struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
     evm: &'guard mut Evm<'evm, T>,
     was_running: bool,
-    /// Whether leaving the guard, also by unwinding, ends a transaction and its refund counter.
-    ends_transaction: bool,
+    /// The value of the enclosing refund counter to restore when the guard ends, also by
+    /// unwinding.
+    refund_on_exit: Option<i64>,
 }
 
 impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     #[inline]
     fn drop(&mut self) {
         self.evm.running = self.was_running;
-        if self.ends_transaction {
-            self.evm.enclosing_refund = 0;
+        if let Some(refund) = self.refund_on_exit {
+            self.evm.enclosing_refund = refund;
         }
     }
 }
@@ -1344,9 +1345,14 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[inline]
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        self.enclosing_refund = 0;
+        // A transaction dispatched from inside a running one, such as from an inspector hook,
+        // leaves the refund of the outer transaction as it found it.
+        let outer_refund = self.running.then_some(self.enclosing_refund);
+        if outer_refund.is_none() {
+            self.enclosing_refund = 0;
+        }
         let mut guard = self.enter_execution();
-        guard.ends_transaction = true;
+        guard.refund_on_exit = Some(outer_refund.unwrap_or(0));
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
         if result.is_err() {
@@ -1885,7 +1891,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         &mut self,
         message: &'frame Message<T>,
     ) -> Result<InstrStop, ExecutionError> {
-        let guard = self.enter_execution();
+        let mut guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
         if let Some((range, frame)) = message.input.borrowed_range() {
@@ -1906,6 +1912,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
         // Messages sent from the initialize hook must see the refunds of every frame below them.
         let enclosing_refund = guard.evm.enclosing_refund;
+        guard.refund_on_exit = Some(enclosing_refund);
         if guard.evm.active_inspector().is_some()
             && let Some(parent) = prev_frame
         {
@@ -1930,7 +1937,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             interp_ref.run(guard.evm)
         };
-        guard.evm.enclosing_refund = enclosing_refund;
         guard.evm.current_frame = prev_frame;
         guard.evm.interpreter_pool.push(interp);
         stop
@@ -5185,6 +5191,17 @@ mod tests {
         let previous = evm.clear_inspector_as::<CallCounter>().unwrap();
         assert_eq!(previous.calls, 1);
         assert_eq!(panicking.calls, 1);
+    }
+
+    #[test]
+    fn nested_dispatch_keeps_the_outer_pre_execution_refund() {
+        let mut evm = scoped_inspector_evm();
+        evm.running = true;
+        evm.set_pre_execution_refund(5);
+
+        let _ = evm.call_tx(&test_tx(0));
+
+        assert_eq!(evm.tx_refunded(0), 5);
     }
 
     #[cfg(feature = "std")]
