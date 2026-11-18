@@ -530,7 +530,7 @@ mod tests {
         fn load_code(
             &mut self,
             _address: &Address,
-            _skip_cold_load: bool,
+            _gas_limit: u64,
         ) -> Result<crate::evm::CodeLoad, crate::HostError> {
             unimplemented!()
         }

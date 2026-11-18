@@ -155,7 +155,7 @@ impl Host<TestTypes> for TestHost {
     fn load_code(
         &mut self,
         _address: &Address,
-        _skip_cold_load: bool,
+        _gas_limit: u64,
     ) -> Result<crate::evm::CodeLoad, crate::HostError> {
         Ok(crate::evm::CodeLoad {
             code: Bytecode::new_legacy(self.code.clone()),

@@ -601,35 +601,47 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// returns `true`, and a later load in the transaction is free.
     #[inline]
     pub fn load_code_and_warm(&mut self) -> DbResult<(Bytecode, bool)> {
-        self.load_code_with_skip(false).map_err(|error| match error {
-            LoadError::Database(error) => error,
-            LoadError::ColdLoadSkipped => unreachable!("cold-load skipping is disabled"),
-        })
+        let is_cold = self.has_cold_code();
+        let code = self.load_code()?;
+        if is_cold {
+            self.warm_code();
+        }
+        Ok((code, is_cold))
     }
 
-    /// Like [`Self::load_code_and_warm`], but with `skip_cold_load` a cold load returns
-    /// [`LoadError::ColdLoadSkipped`] instead, without reading the code from the database or
-    /// warming it, so a caller that can't pay for it halts first.
+    /// Like [`Self::load_code_and_warm`], but a cold load whose price is more than `gas_limit`
+    /// returns [`LoadError::ColdLoadSkipped`] instead, without warming the code, so a caller that
+    /// can't pay for it halts with the code still cold.
     ///
-    /// Whether the load is cold is known from the account's code hash and code warmth alone, so
-    /// the skip is decided before the code is read. Accounts without code and warm code are never
-    /// skipped.
+    /// The price is [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost) for
+    /// the loaded code. When `gas_limit` is below even the cheaper of the two code prices the load
+    /// is skipped before the code is read from the database. Accounts without code and warm code
+    /// are never skipped.
     #[inline]
-    pub fn load_code_with_skip(
+    pub fn load_code_within(
         &mut self,
-        skip_cold_load: bool,
+        gas_limit: u64,
+        gas_params: &crate::version::GasParams,
     ) -> Result<(Bytecode, bool), LoadError> {
-        let has_code =
-            self.tracked.present.as_ref().is_some_and(|account| !account.is_empty_code_hash());
-        if !has_code || self.is_code_warm() {
+        if !self.has_cold_code() {
             return Ok((self.load_code()?, false));
         }
-        if skip_cold_load {
+        if gas_limit < gas_params.min_cold_code_cost() {
             return Err(LoadError::ColdLoadSkipped);
         }
         let code = self.load_code()?;
+        if gas_limit < gas_params.cold_code_cost(&code) {
+            return Err(LoadError::ColdLoadSkipped);
+        }
         self.warm_code();
         Ok((code, true))
+    }
+
+    /// Returns whether the account has code, a delegation designator included, that is not warm.
+    #[inline]
+    fn has_cold_code(&self) -> bool {
+        self.tracked.present.as_ref().is_some_and(|account| !account.is_empty_code_hash())
+            && !self.is_code_warm()
     }
 
     /// Sets the account balance, touching the account and recording a revert snapshot.

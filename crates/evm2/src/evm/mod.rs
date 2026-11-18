@@ -2014,15 +2014,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         })
     }
 
-    fn load_code(
-        &mut self,
-        address: &Address,
-        skip_cold_load: bool,
-    ) -> Result<CodeLoad, HostError> {
-        let track_code = self.execution_config.version().gas_params.prices_code_load();
+    fn load_code(&mut self, address: &Address, gas_limit: u64) -> Result<CodeLoad, HostError> {
+        let gas_params = &self.execution_config.version().gas_params;
+        let track_code = gas_params.prices_code_load();
         let mut account = self.state.account(address)?;
         let (code, is_cold) = if track_code {
-            account.load_code_with_skip(skip_cold_load)?
+            account.load_code_within(gas_limit, gas_params)?
         } else {
             (account.load_code()?, false)
         };

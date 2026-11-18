@@ -630,9 +630,8 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     code = load.code;
                     // TIP-1175: the target's code is a second step, skipped when unaffordable.
                     if priced_code {
-                        let skip_cold_load =
-                            tx_gas.remaining() < host.version().gas_params.min_cold_code_cost();
-                        let load = match Host::load_code(host, &delegated_address, skip_cold_load) {
+                        let gas_limit = tx_gas.remaining();
+                        let load = match Host::load_code(host, &delegated_address, gas_limit) {
                             Ok(load) => load,
                             Err(HostError::Halt(_)) => return Ok(halted(host)),
                             Err(HostError::Execution(error)) => return Err(error.into()),

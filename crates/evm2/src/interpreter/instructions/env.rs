@@ -26,11 +26,11 @@ fn load_account<T: EvmTypesHost>(
         cx.gas.spend(cold_load_gas)?;
     }
     if priced_code {
-        let skip_cold_load = cx.gas.remaining() < cx.state.gas_params().min_cold_code_cost();
+        let gas_limit = cx.gas.remaining();
         let load = cx
             .state
             .host()
-            .load_code(&account_address, skip_cold_load)
+            .load_code(&account_address, gas_limit)
             .map_err(|error| cx.state.fail(error))?;
         if load.is_cold {
             cx.gas.spend(cx.state.gas_params().cold_code_cost(&load.code))?;

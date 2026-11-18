@@ -153,11 +153,11 @@ pub trait Host<T: EvmTypesHost> {
     /// Call it once the account access is charged. When code loads are priced
     /// ([`GasParams::prices_code_load`](crate::version::GasParams::prices_code_load)),
     /// [`CodeLoad::is_cold`] says whether to charge
-    /// [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost), and with
-    /// `skip_cold_load` a cold load halts with out of gas instead, without reading or warming the
-    /// code. Otherwise this only loads the code.
-    fn load_code(&mut self, address: &Address, skip_cold_load: bool)
-    -> Result<CodeLoad, HostError>;
+    /// [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost). `gas_limit` is
+    /// the gas the caller has left for that charge: a cold load whose price exceeds it halts with
+    /// out of gas instead, leaving the code cold, and is skipped before the code is read when even
+    /// the cheaper code price exceeds it. Otherwise this only loads the code.
+    fn load_code(&mut self, address: &Address, gas_limit: u64) -> Result<CodeLoad, HostError>;
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError>;

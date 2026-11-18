@@ -68,10 +68,10 @@ pub(crate) fn load_account<T: EvmTypesHost>(
         ecx.gas.spend(cold_load_gas)?;
     }
     if priced_code {
-        let skip_cold_load = ecx.gas.remaining() < ecx.gas_params().min_cold_code_cost();
+        let gas_limit = ecx.gas.remaining();
         let load = ecx
             .host()
-            .load_code(address, skip_cold_load)
+            .load_code(address, gas_limit)
             .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
         if load.is_cold {
             ecx.gas.spend(ecx.gas_params().cold_code_cost(&load.code))?;
