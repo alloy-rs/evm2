@@ -3647,8 +3647,8 @@ mod tests {
 
     /// An EVM with [`schedule`] installed, whose handler reports the cold account cost it runs
     /// with as gas spent and its validation the cold account cost through `validated`. The handler
-    /// panics for nonce 9, and for nonce 11 reports the cold account cost of a system call and of a
-    /// nested transaction as `system * 1_000_000 + nested`.
+    /// panics for nonce 9, and for nonce 11 reports the cold account cost of a nested transaction
+    /// as `installed * 1_000_000 + nested`.
     fn schedule_evm(
         validated: &'static core::sync::atomic::AtomicU64,
     ) -> Evm<'static, BaseEvmTypes> {
@@ -3665,14 +3665,13 @@ mod tests {
                     assert_ne!(req.tx.nonce, 9, "handler unwinds");
                     let total_gas_spent = if req.tx.nonce == 11 {
                         let installed = cold_account_cost(req.host);
-                        let system = req.host.with_own_gas_params(|evm| cold_account_cost(evm));
                         let nested = test_tx(41);
                         let nested = {
                             let guard = req.host.tx_gas_guard(nested.inner());
                             cold_account_cost(guard.evm)
                         };
                         assert_eq!(cold_account_cost(req.host), installed);
-                        system * 1_000_000 + nested
+                        installed * 1_000_000 + nested
                     } else {
                         cold_account_cost(req.host)
                     };
@@ -3720,9 +3719,8 @@ mod tests {
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
         assert_eq!(validated(&mut evm, 41), own);
 
-        // System calls inside a selected transaction run with the EVM's own gas parameters, and
-        // nested transactions keep the schedule's.
-        assert_eq!(gas_used(&mut evm, 11), Ok(own * 1_000_000 + alternate));
+        // Nested transactions inside a selected transaction keep the schedule's gas parameters.
+        assert_eq!(gas_used(&mut evm, 11), Ok(alternate * 1_000_000 + alternate));
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
 
         evm.set_tx_gas_schedule(None);
@@ -3778,12 +3776,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "schedule max refund quotient must be non-zero"]
+    #[should_panic = "schedule MemoryQuadraticReduction must be non-zero"]
     fn rejects_invalid_scheduled_gas_params() {
         static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
         let mut evm = schedule_evm(&VALIDATED);
         let mut schedule = schedule(&evm);
-        schedule.gas_params[GasId::MaxRefundQuotient] = 0;
+        schedule.gas_params[GasId::MemoryQuadraticReduction] = 0;
         evm.set_tx_gas_schedule(Some(schedule));
     }
 

@@ -143,14 +143,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// This is the handler-level counterpart to [`Self::system_call`]. It allows a transaction
     /// registry handler to execute system-call semantics and return the outcome to the outer
     /// transaction lifecycle for finalization.
-    ///
-    /// It runs with the EVM's own gas parameters, also from a handler of a transaction that runs
-    /// with alternate ones (see [`Evm::set_tx_gas_schedule`]).
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
-        self.with_own_gas_params(|evm| evm.execute_own_system_call(tx))
-    }
-
-    fn execute_own_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
         let SystemTx { caller, system_contract_address, data, gas_limit, .. } = tx;
         self.state.prewarm(&system_contract_address);
         self.tx_env = TxEnvExt {

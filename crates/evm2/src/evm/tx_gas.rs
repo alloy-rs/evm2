@@ -81,23 +81,27 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// The schedule's table is precomputed for the EVM's current gas parameters. Changing the
     /// execution config keeps the schedule while the new config has the same gas parameters, such
     /// as at a segment boundary within one spec, and removes it otherwise: install it again for the
-    /// new config. Changing the interpreter runner keeps it. System calls, including
-    /// [`Self::execute_system_call`] from a handler, run with the EVM's own gas parameters. A
-    /// transaction a handler dispatches while a selected transaction runs keeps the schedule's gas
-    /// parameters.
+    /// new config. Changing the interpreter runner keeps it. Everything a selected transaction's
+    /// handler runs, including [`Self::execute_system_call`] and nested transactions, uses the
+    /// schedule's gas parameters, so one transaction is always metered with one table. System calls
+    /// outside a transaction run with the EVM's own.
     ///
     /// # Panics
     ///
     /// Panics if called during execution, or if the schedule's gas parameters have a zero
-    /// [`GasId::MaxRefundQuotient`].
+    /// [`GasId::MaxRefundQuotient`], [`GasId::MemoryQuadraticReduction`] or
+    /// [`GasId::CallStipendReduction`], which the interpreter divides by.
     pub fn set_tx_gas_schedule(&mut self, schedule: Option<TxGasSchedule<T>>) {
         self.assert_execution_config_mutable();
         self.set_tx_gas_swapped(false);
         self.tx_gas = schedule.map(|schedule| {
-            assert!(
-                schedule.gas_params[GasId::MaxRefundQuotient] != 0,
-                "schedule max refund quotient must be non-zero"
-            );
+            for id in [
+                GasId::MaxRefundQuotient,
+                GasId::MemoryQuadraticReduction,
+                GasId::CallStipendReduction,
+            ] {
+                assert!(schedule.gas_params[id] != 0, "schedule {id:?} must be non-zero");
+            }
             TxGasState {
                 select: schedule.select,
                 base: self.execution_config.version.gas_params,
@@ -143,20 +147,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             _ => None,
         };
         TxGasGuard { evm: self, restore }
-    }
-
-    /// Runs `f` with the EVM's own gas parameters, swapping the schedule's back in afterwards.
-    #[inline]
-    pub(crate) fn with_own_gas_params<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        let restore = match &self.tx_gas {
-            Some(state) if state.swapped => {
-                self.toggle_tx_gas();
-                Some(true)
-            }
-            _ => None,
-        };
-        let guard = TxGasGuard { evm: self, restore };
-        f(guard.evm)
     }
 
     /// Installs the schedule's table when `swapped`, else the EVM's own.
