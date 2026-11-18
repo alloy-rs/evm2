@@ -638,8 +638,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.set_block(block);
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
+        // The schedule's table was precomputed for the replaced config.
+        self.tx_gas = None;
         self.refresh_runner_support();
-        self.derive_tx_gas();
     }
 
     #[inline]
@@ -654,9 +655,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
         // Refresh before the old registry and precompiles drop, so an unwinding destructor
-        // cannot leave a stale verdict.
+        // cannot leave a stale verdict. The schedule's table was precomputed for the replaced
+        // config.
+        self.tx_gas = None;
         self.refresh_runner_support();
-        self.derive_tx_gas();
         self.registry = registry;
         self.precompiles = precompiles;
     }
@@ -3626,21 +3628,11 @@ mod tests {
         assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
-    /// Cold account cost of the alternate gas parameters in [`schedule_evm`].
+    /// Cold account cost of the schedule's gas parameters in [`schedule_evm`].
     const ALTERNATE_COLD_ACCOUNT_COST: u32 = 7;
 
     fn cold_account_cost(evm: &Evm<'_, BaseEvmTypes>) -> u64 {
         u64::from(evm.version().gas_params[GasId::ColdAccountAdditionalCost])
-    }
-
-    /// Changes only the cold account cost.
-    fn derive_alternate(
-        _spec_id: SpecId,
-        own: &crate::version::GasParams,
-    ) -> Option<crate::version::GasParams> {
-        let mut alternate = *own;
-        alternate[GasId::ColdAccountAdditionalCost] = ALTERNATE_COLD_ACCOUNT_COST;
-        Some(alternate)
     }
 
     /// Selects nonces 7, 9 and 11.
@@ -3648,10 +3640,14 @@ mod tests {
         matches!(alloy_consensus::Transaction::nonce(tx), 7 | 9 | 11)
     }
 
-    const SCHEDULE: TxGasSchedule<BaseEvmTypes> =
-        TxGasSchedule { derive: derive_alternate, select: select_alternate };
+    /// A schedule that changes only the cold account cost of `evm`'s gas parameters.
+    fn schedule(evm: &Evm<'_, BaseEvmTypes>) -> TxGasSchedule<BaseEvmTypes> {
+        let mut gas_params = evm.version().gas_params;
+        gas_params[GasId::ColdAccountAdditionalCost] = ALTERNATE_COLD_ACCOUNT_COST;
+        TxGasSchedule { select: select_alternate, gas_params }
+    }
 
-    /// An EVM with [`SCHEDULE`] installed, whose handler reports the cold account cost it runs
+    /// An EVM with [`schedule`] installed, whose handler reports the cold account cost it runs
     /// with as gas spent and its validation the cold account cost through `validated`. The handler
     /// panics for nonce 9, and for nonce 11 reports the cold account cost of a system call and of a
     /// nested transaction as `system * 1_000_000 + nested`.
@@ -3696,7 +3692,8 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.set_tx_gas_schedule(Some(SCHEDULE));
+        let schedule = schedule(&evm);
+        evm.set_tx_gas_schedule(Some(schedule));
         evm
     }
 
@@ -3705,18 +3702,14 @@ mod tests {
     }
 
     #[test]
-    fn dispatches_transaction_with_alternate_gas_params() {
+    fn dispatches_transaction_with_scheduled_gas_params() {
         static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
         let mut evm = schedule_evm(&VALIDATED);
         let own = cold_account_cost(&evm);
-        assert_ne!(own, u64::from(ALTERNATE_COLD_ACCOUNT_COST));
-        assert_eq!(
-            evm.tx_gas.as_ref().unwrap().swapped_entries(),
-            1,
-            "only the changed entry is swapped per transaction"
-        );
+        let alternate = u64::from(ALTERNATE_COLD_ACCOUNT_COST);
+        assert_ne!(own, alternate);
 
-        assert_eq!(gas_used(&mut evm, 7), Ok(u64::from(ALTERNATE_COLD_ACCOUNT_COST)));
+        assert_eq!(gas_used(&mut evm, 7), Ok(alternate));
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
         assert_eq!(evm.version().tx_gas_limit_cap, 42, "the rest of the version is kept");
         assert_eq!(gas_used(&mut evm, 41), Ok(own));
@@ -3725,13 +3718,13 @@ mod tests {
             evm.validate_tx(&test_tx(nonce)).unwrap();
             VALIDATED.load(core::sync::atomic::Ordering::Relaxed)
         };
-        assert_eq!(validated(&mut evm, 7), u64::from(ALTERNATE_COLD_ACCOUNT_COST));
+        assert_eq!(validated(&mut evm, 7), alternate);
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
         assert_eq!(validated(&mut evm, 41), own);
 
-        // System calls and nested transactions inside an alternate transaction run with the
-        // EVM's own gas parameters.
-        assert_eq!(gas_used(&mut evm, 11), Ok(own * 1_000_000 + own));
+        // System calls inside a selected transaction run with the EVM's own gas parameters, and
+        // nested transactions keep the schedule's.
+        assert_eq!(gas_used(&mut evm, 11), Ok(own * 1_000_000 + alternate));
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
 
         evm.set_tx_gas_schedule(None);
@@ -3739,22 +3732,9 @@ mod tests {
     }
 
     #[test]
-    fn derives_alternate_gas_params_again_when_config_changes() {
+    fn changing_execution_config_removes_schedule() {
         static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-        fn derive_half(
-            _: SpecId,
-            own: &crate::version::GasParams,
-        ) -> Option<crate::version::GasParams> {
-            let mut alternate = *own;
-            alternate[GasId::ColdAccountAdditionalCost] /= 2;
-            Some(alternate)
-        }
         let mut evm = schedule_evm(&VALIDATED);
-        evm.set_tx_gas_schedule(Some(TxGasSchedule {
-            derive: derive_half,
-            select: select_alternate,
-        }));
-
         let mut version = crate::Version::new(SpecId::OSAKA);
         version.gas_params[GasId::ColdAccountAdditionalCost] = 1_000;
         let block = *evm.block();
@@ -3762,7 +3742,12 @@ mod tests {
             block,
             ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
         );
-        assert_eq!(gas_used(&mut evm, 7), Ok(500), "derived from the new config");
+        assert!(evm.tx_gas.is_none());
+        assert_eq!(gas_used(&mut evm, 7), Ok(1_000), "the stale schedule no longer applies");
+
+        let schedule = schedule(&evm);
+        evm.set_tx_gas_schedule(Some(schedule));
+        assert_eq!(gas_used(&mut evm, 7), Ok(u64::from(ALTERNATE_COLD_ACCOUNT_COST)));
         assert_eq!(gas_used(&mut evm, 41), Ok(1_000));
     }
 
@@ -3782,22 +3767,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "alternate max refund quotient must be non-zero"]
-    fn rejects_invalid_alternate_gas_params() {
-        fn derive_invalid(
-            _: SpecId,
-            own: &crate::version::GasParams,
-        ) -> Option<crate::version::GasParams> {
-            let mut alternate = *own;
-            alternate[GasId::MaxRefundQuotient] = 0;
-            Some(alternate)
-        }
+    #[should_panic = "schedule max refund quotient must be non-zero"]
+    fn rejects_invalid_scheduled_gas_params() {
         static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
         let mut evm = schedule_evm(&VALIDATED);
-        evm.set_tx_gas_schedule(Some(TxGasSchedule {
-            derive: derive_invalid,
-            select: select_alternate,
-        }));
+        let mut schedule = schedule(&evm);
+        schedule.gas_params[GasId::MaxRefundQuotient] = 0;
+        evm.set_tx_gas_schedule(Some(schedule));
     }
 
     #[test]
@@ -3812,10 +3788,8 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.set_tx_gas_schedule(Some(TxGasSchedule {
-            derive: derive_alternate,
-            select: select_never,
-        }));
+        let gas_params = evm.version().gas_params;
+        evm.set_tx_gas_schedule(Some(TxGasSchedule { select: select_never, gas_params }));
         assert!(evm.validate_tx(&test_tx(0)).is_err());
         assert!(evm.transact(&test_tx(0)).is_err());
     }
