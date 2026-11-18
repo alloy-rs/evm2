@@ -1920,6 +1920,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         if guard.evm.active_inspector().is_some() {
             let enclosing_refund = guard.evm.enclosing_refund;
             guard.refund_on_exit = Some(enclosing_refund);
+            guard.frame_on_exit = Some(prev_frame);
             if let Some(parent) = prev_frame {
                 // SAFETY: The parent frame is suspended on this call stack while this frame runs.
                 guard.evm.enclosing_refund =
@@ -5238,6 +5239,51 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(evm.tx_refunded(0), 0);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn caught_panic_in_a_hook_message_does_not_leave_a_dangling_frame() {
+        #[derive(Default)]
+        struct CatchNestedInit {
+            inits: usize,
+        }
+
+        impl Inspector<BaseEvmTypes> for CatchNestedInit {
+            fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                self.inits += 1;
+                if self.inits == 1 {
+                    panic!("initialize panicked");
+                }
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 0 {
+                    let mut child = MessageExt {
+                        code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+                        depth: message.depth + 1,
+                        ..MessageExt::default()
+                    };
+                    let host = interp.host();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let _ = Host::execute_message(host, &mut child);
+                    }));
+                }
+                None
+            }
+        }
+
+        let mut evm = scoped_inspector_evm();
+        evm.set_inspector(CatchNestedInit::default());
+
+        let result = evm.call_tx(&test_tx(0));
+
+        assert!(result.is_ok());
+        assert!(evm.current_frame.is_none());
     }
 
     #[cfg(feature = "std")]
