@@ -109,12 +109,20 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     prepared: PreparedTx,
 ) -> HandlerResult<TxResult<T>> {
     let TxRequest { envelope, tx, host, _non_exhaustive } = req;
-    let result = execute_prepared_inner::<T, H>(
-        TxRequest { envelope, tx, host: &mut *host, _non_exhaustive },
+    let mut scope = PreExecutionRefundScope(host);
+    execute_prepared_inner::<T, H>(
+        TxRequest { envelope, tx, host: &mut *scope.0, _non_exhaustive },
         prepared,
-    );
-    host.set_pre_execution_refund(0);
-    result
+    )
+}
+
+/// Ends the pre-execution refund of the host when it goes out of scope, also by unwinding.
+struct PreExecutionRefundScope<'a, 'host, T: EvmTypes>(&'a mut Evm<'host, T>);
+
+impl<T: EvmTypes> Drop for PreExecutionRefundScope<'_, '_, T> {
+    fn drop(&mut self) {
+        self.0.set_pre_execution_refund(0);
+    }
 }
 
 fn execute_prepared_inner<T: EvmTypes, H: TxHandlerHooks<T>>(
