@@ -1001,7 +1001,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// [`Inspector::initialize_interp`] still sees the value of the frame below.
     #[inline]
     pub const fn tx_refunded(&self, frame_refunded: i64) -> i64 {
-        self.enclosing_refund + frame_refunded
+        self.enclosing_refund.saturating_add(frame_refunded)
     }
 
     /// Records a refund granted before the first frame runs, for [`Self::tx_refunded`].
@@ -1911,7 +1911,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             let enclosing_refund = guard.evm.enclosing_refund;
             if let Some(parent) = prev_frame {
                 // SAFETY: The parent frame is suspended on this call stack while this frame runs.
-                guard.evm.enclosing_refund += unsafe { parent.as_ref() }.gas().refunded();
+                guard.evm.enclosing_refund = guard
+                    .evm
+                    .enclosing_refund
+                    .saturating_add(unsafe { parent.as_ref() }.gas().refunded());
             }
             let stop = interp_ref.run_inspect(guard.evm, inspector);
             guard.evm.enclosing_refund = enclosing_refund;
@@ -2614,6 +2617,14 @@ mod tests {
             assert_eq!(result.stop, InstrStop::PrecompileOOG);
             assert_eq!(result.gas.remaining(), 0);
         }
+    }
+
+    #[test]
+    fn tx_refunded_saturates() {
+        let mut evm = lifecycle_evm();
+        evm.set_pre_execution_refund(1);
+        assert_eq!(evm.tx_refunded(i64::MAX), i64::MAX);
+        assert_eq!(evm.tx_refunded(-3), -2);
     }
 
     fn lifecycle_evm() -> Evm<'static, BaseEvmTypes> {

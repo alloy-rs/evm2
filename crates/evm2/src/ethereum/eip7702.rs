@@ -101,7 +101,23 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
 }
 
 /// Executes and settles a prepared EIP-7702 transaction.
+///
+/// The pre-execution refund the handler records for inspectors ends with this call, whether it
+/// succeeds or fails.
 pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
+    req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
+    prepared: PreparedTx,
+) -> HandlerResult<TxResult<T>> {
+    let TxRequest { envelope, tx, host, _non_exhaustive } = req;
+    let result = execute_prepared_inner::<T, H>(
+        TxRequest { envelope, tx, host: &mut *host, _non_exhaustive },
+        prepared,
+    );
+    host.set_pre_execution_refund(0);
+    result
+}
+
+fn execute_prepared_inner<T: EvmTypes, H: TxHandlerHooks<T>>(
     req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
     prepared: PreparedTx,
 ) -> HandlerResult<TxResult<T>> {
