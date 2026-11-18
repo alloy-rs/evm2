@@ -456,6 +456,11 @@ impl<'a> State<'a> {
     pub fn set_account_warm(&mut self, address: &Address, warm: bool) {
         if let Some(account) = self.accounts.get_mut(address) {
             account.flags.set(AccountFlags::WARM, warm);
+            // Cooling an account cools its bytecode too (TIP-1175); warming it does not warm the
+            // bytecode, which is paid for separately.
+            if !warm {
+                account.flags.remove(AccountFlags::CODE_WARM);
+            }
         }
     }
 
@@ -468,7 +473,7 @@ impl<'a> State<'a> {
     /// remain effectively warm.
     pub fn cool_loaded(&mut self) {
         for account in self.accounts.values_mut() {
-            account.flags.remove(AccountFlags::WARM);
+            account.flags.remove(AccountFlags::WARM | AccountFlags::CODE_WARM);
             for slot in account.storage.slots.values_mut() {
                 slot.is_warm = false;
             }
@@ -1783,5 +1788,54 @@ mod tests {
         assert_eq!((slot.original(), slot.current()), (Word::from(6), Word::from(6)));
         assert!(!state.accounts[&address].storage.slots.contains_key(&unloaded));
         assert!(!state.take_pending_state().is_changed());
+    }
+}
+
+#[cfg(test)]
+mod tip1175_cooling_tests {
+    use super::*;
+    use crate::{
+        bytecode::Bytecode,
+        evm::{db::InMemoryDB, state::AccountInfo},
+    };
+
+    fn database(address: Address) -> InMemoryDB {
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &address,
+            AccountInfo::default().with_code(Bytecode::new_legacy(vec![0x00].into())),
+        );
+        database
+    }
+
+    fn warm_code(state: &mut State<'_>, address: Address) {
+        let mut account = state.account(&address).unwrap();
+        account.warm();
+        assert!(account.load_code_and_warm().unwrap().1);
+        assert!(account.is_code_warm());
+    }
+
+    #[test]
+    fn set_account_warm_false_cools_code() {
+        let address = Address::with_last_byte(42);
+        let mut state = State::new(database(address));
+        warm_code(&mut state, address);
+        state.set_account_warm(&address, true);
+        assert!(state.account(&address).unwrap().is_code_warm());
+        state.set_account_warm(&address, false);
+        let mut account = state.account(&address).unwrap();
+        assert!(!account.is_code_warm());
+        assert!(account.load_code_and_warm().unwrap().1);
+    }
+
+    #[test]
+    fn cool_loaded_cools_code() {
+        let address = Address::with_last_byte(42);
+        let mut state = State::new(database(address));
+        warm_code(&mut state, address);
+        state.cool_loaded();
+        let mut account = state.account(&address).unwrap();
+        assert!(!account.is_code_warm());
+        assert!(account.load_code_and_warm().unwrap().1);
     }
 }
