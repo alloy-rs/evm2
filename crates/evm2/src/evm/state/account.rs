@@ -438,13 +438,16 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Returns whether the account's bytecode is warm for Tempo TIP-1175 gas accounting.
     ///
-    /// Bytecode is warm once it was loaded, or deployed, in this transaction, and for every
-    /// address in the transaction's base warm set (precompiles, coinbase, EIP-2930 access list).
-    /// Account warmth alone does not make bytecode warm.
+    /// Bytecode is warm once it was loaded, or installed by any path, in this transaction, and for
+    /// every address in the transaction's base warm set (precompiles, coinbase, EIP-2930 access
+    /// list). Account warmth alone does not make bytecode warm.
     #[inline]
     pub fn is_code_warm(&self) -> bool {
         self.tracked.flags.contains(AccountFlags::CODE_WARM)
             || self.inner.prewarm_set.is_warm(&self.address)
+            // Code installed in this transaction is warm whatever path installed it, including a
+            // direct `get_or_insert().set_code` that bypasses [`Self::set_code`].
+            || self.tracked.changed_code().is_some()
     }
 
     /// Returns whether the account has been marked self-destructed in the current transaction.
