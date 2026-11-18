@@ -89,6 +89,8 @@ pub(crate) const SX_TRANSLATE_AFTER: u32 = 8;
 struct SxCode {
     variant: evm2_sx::Variant,
     code: alloc::boxed::Box<[u8]>,
+    /// The record of the translation, made on first use or kept from loading one.
+    record: OnceLock<alloc::boxed::Box<[u8]>>,
 }
 
 /// The kind of bytecode.
@@ -413,7 +415,7 @@ impl Bytecode {
         let sx = inner.sx.get_or_init(|| {
             let jumps = self.jump_table().as_slice();
             let code = evm2_sx::translate(&inner.bytecode, inner.original_len, matcher, jumps);
-            SxCode { variant: matcher.variant(), code }
+            SxCode { variant: matcher.variant(), code, record: OnceLock::new() }
         });
         (sx.variant == matcher.variant()).then_some(&sx.code)
     }
@@ -422,10 +424,13 @@ impl Bytecode {
     /// [`Self::set_sx_record`] instead of translating again; `None` until it is translated, as
     /// [`ExecutionConfig::analyze`](crate::evm::config::ExecutionConfig::analyze) does.
     #[cfg(feature = "sx")]
-    pub fn sx_record(&self) -> Option<alloc::vec::Vec<u8>> {
+    pub fn sx_record(&self) -> Option<&[u8]> {
         let inner = self.inner();
         let sx = inner.sx.get()?;
-        Some(evm2_sx::record::encode(sx.variant, &inner.bytecode, inner.original_len, &sx.code))
+        Some(sx.record.get_or_init(|| {
+            evm2_sx::record::encode(sx.variant, &inner.bytecode, inner.original_len, &sx.code)
+                .into_boxed_slice()
+        }))
     }
 
     /// Loads a translation from a record made by [`Self::sx_record`] for this code, unless the code
@@ -445,7 +450,10 @@ impl Bytecode {
         else {
             return false;
         };
-        inner.sx.set(SxCode { variant, code }).is_ok()
+        // Keep the record: storing the code again then needs no encoding.
+        let cell = OnceLock::new();
+        cell.get_or_init(|| alloc::boxed::Box::<[u8]>::from(record));
+        inner.sx.set(SxCode { variant, code, record: cell }).is_ok()
     }
 
     /// Calculates or returns cached hash of the bytecode.

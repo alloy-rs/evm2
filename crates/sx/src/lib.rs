@@ -938,17 +938,32 @@ pub mod record {
         out.extend_from_slice(&(len as u32).to_le_bytes());
         out.extend_from_slice(&[0; 12]);
         let (mut count, mut last) = (0u32, 0usize);
-        for pc in 0..len {
+        let mut emit = |out: &mut Vec<u8>, pc: usize| {
+            let mut delta = pc - last;
+            while delta >= 0x80 {
+                out.push(delta as u8 | 0x80);
+                delta >>= 7;
+            }
+            out.push(delta as u8);
+            out.push(translated[pc]);
+            last = pc;
+            count += 1;
+        };
+        // Changes are sparse: compare eight bytes at a time and visit only the bytes that differ.
+        let mut pc = 0;
+        while pc + 8 <= len {
+            let word = |s: &[u8]| u64::from_le_bytes(s[pc..pc + 8].try_into().unwrap());
+            let mut diff = word(code) ^ word(translated);
+            while diff != 0 {
+                let byte = diff.trailing_zeros() as usize / 8;
+                emit(&mut out, pc + byte);
+                diff &= !(0xFF << (8 * byte));
+            }
+            pc += 8;
+        }
+        for pc in pc..len {
             if translated[pc] != code[pc] {
-                let mut delta = pc - last;
-                while delta >= 0x80 {
-                    out.push(delta as u8 | 0x80);
-                    delta >>= 7;
-                }
-                out.push(delta as u8);
-                out.push(translated[pc]);
-                last = pc;
-                count += 1;
+                emit(&mut out, pc);
             }
         }
         out[22..26].copy_from_slice(&count.to_le_bytes());
@@ -1731,6 +1746,32 @@ mod tests {
         assert!(check(&[PUSH2, POP, POP, 0x00], 1, &[POP, POP]));
         // POP POP inside DUP2 POP POP ... after a match that covers it.
         assert!(check(&[POP, POP, POP, POP, 0x00], 1, &[POP, POP]));
+    }
+
+    #[test]
+    fn records_list_every_changed_byte() {
+        // Changes at every distance from word boundaries and gaps that need two LEB128 bytes.
+        let len = 1000;
+        let code: Vec<u8> = (0..len).map(|i| (i * 7 % 251) as u8).collect();
+        let mut translated = code.clone();
+        let changed = [0, 1, 7, 8, 9, 15, 16, 200, 999];
+        for &pc in &changed {
+            translated[pc] ^= 0x5A;
+        }
+        let rec = record::encode(Variant::default(), &code, len, &translated);
+        let mut expected = Vec::new();
+        let mut last = 0;
+        for &pc in &changed {
+            let mut delta = pc - last;
+            while delta >= 0x80 {
+                expected.push(delta as u8 | 0x80);
+                delta >>= 7;
+            }
+            expected.extend([delta as u8, translated[pc]]);
+            last = pc;
+        }
+        assert_eq!(&rec[34..], &expected[..]);
+        assert_eq!(u32::from_le_bytes(rec[22..26].try_into().unwrap()), changed.len() as u32);
     }
 
     #[test]
