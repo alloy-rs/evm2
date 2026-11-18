@@ -125,3 +125,55 @@ fn step_refund_counter_drops_reverted_child() {
     assert_eq!(refunds(0), [0, 0, 0, 0, 0, 0, 0, 0]);
     assert_eq!(refunds(1), [0, 0, 0, 4800, 4800, 4800]);
 }
+
+#[test]
+fn initialize_interp_reads_the_transaction_wide_refund_counter() {
+    #[derive(Default)]
+    struct RefundAtInit(Vec<i64>);
+
+    impl Inspector<BaseEvmTypes> for RefundAtInit {
+        fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            let frame_refunded = interp.gas().refunded();
+            self.0.push(interp.host().tx_refunded(frame_refunded));
+        }
+    }
+
+    let caller = address!("1000000000000000000000000000000000000001");
+    let parent = address!("2000000000000000000000000000000000000002");
+    let child = address!("3000000000000000000000000000000000000003");
+
+    // The parent clears slot 0, which refunds 4800, and calls an empty-effect child.
+    let mut parent_code = vec![op::PUSH1, 0, op::PUSH1, 0, op::SSTORE];
+    parent_code.extend([op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH20]);
+    parent_code.extend(child.as_slice());
+    parent_code.extend([op::GAS, op::DELEGATECALL, op::STOP]);
+
+    let mut db = InMemoryDB::default();
+    db.insert_account_info(
+        &parent,
+        AccountInfo { code: Some(Bytecode::new_raw(parent_code.into())), ..Default::default() },
+    );
+    db.insert_account_storage(&parent, &U256::ZERO, &U256::ONE);
+    db.insert_account_info(
+        &child,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(Bytes::from_static(&[op::STOP]))),
+            ..Default::default()
+        },
+    );
+    let mut inspector = RefundAtInit::default();
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet_with_inspector(&mut inspector);
+    evm.inspect_tx(TxEnv {
+        caller,
+        gas_limit: 1_000_000,
+        kind: TransactTo::Call(parent),
+        ..Default::default()
+    })
+    .unwrap();
+
+    drop(evm);
+    assert_eq!(inspector.0, [0, 4800]);
+}

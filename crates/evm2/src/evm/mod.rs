@@ -997,8 +997,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// starts at zero and its counter can be negative. The transaction-wide counter adds the
     /// counters of the frames below the running one and the refunds granted before execution, such
     /// as the pre-Amsterdam EIP-7702 authorization refund. It is maintained only while an
-    /// inspector is installed, and inspector hooks read it from the running frame's start on:
-    /// [`Inspector::initialize_interp`] still sees the value of the frame below.
+    /// inspector is installed, and every hook of a frame, [`Inspector::initialize_interp`]
+    /// included, reads it with that frame's counter.
     #[inline]
     pub const fn tx_refunded(&self, frame_refunded: i64) -> i64 {
         self.enclosing_refund.saturating_add(frame_refunded)
@@ -1899,6 +1899,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
+        // Messages sent from the initialize hook must see the refunds of every frame below them.
+        let enclosing_refund = guard.evm.enclosing_refund;
+        if guard.evm.active_inspector().is_some()
+            && let Some(parent) = prev_frame
+        {
+            // SAFETY: The parent frame is suspended on this call stack while this frame runs.
+            guard.evm.enclosing_refund =
+                enclosing_refund.saturating_add(unsafe { parent.as_ref() }.gas().refunded());
+        }
         guard.evm.inspect_initialize_interp(interp_ref);
         let inspector = guard.evm.active_inspector().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
@@ -1908,17 +1917,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let runner =
             guard.evm.interpreter_runner.as_ref().filter(|_| guard.evm.runner_supported).cloned();
         let stop = if let Some(inspector) = inspector {
-            let enclosing_refund = guard.evm.enclosing_refund;
-            if let Some(parent) = prev_frame {
-                // SAFETY: The parent frame is suspended on this call stack while this frame runs.
-                guard.evm.enclosing_refund = guard
-                    .evm
-                    .enclosing_refund
-                    .saturating_add(unsafe { parent.as_ref() }.gas().refunded());
-            }
-            let stop = interp_ref.run_inspect(guard.evm, inspector);
-            guard.evm.enclosing_refund = enclosing_refund;
-            stop
+            interp_ref.run_inspect(guard.evm, inspector)
         } else if let Some(runner) = runner
             && let Some(stop) = runner.run(interp_ref, guard.evm)
         {
@@ -1926,6 +1925,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             interp_ref.run(guard.evm)
         };
+        guard.evm.enclosing_refund = enclosing_refund;
         guard.evm.current_frame = prev_frame;
         guard.evm.interpreter_pool.push(interp);
         stop
