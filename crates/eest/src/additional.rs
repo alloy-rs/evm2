@@ -44,7 +44,11 @@ fn run_file(path: PathBuf) -> Result<(), Failed> {
         Some(FixtureKind::Blockchain) => execute_str(
             &path,
             &input,
-            BlockchainConfig { compare_state_root: true, ..Default::default() },
+            BlockchainConfig {
+                compare_state_root: true,
+                compare_receipt_root: true,
+                ..Default::default()
+            },
             &NameFilter::default(),
             &mut NoopHook,
         )

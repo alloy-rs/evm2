@@ -1,8 +1,6 @@
 use super::{
     Bytecode, Inst, InstData, InstFlags,
     asm::{TokenKind, Tokenizer},
-    bitvec_as_bytes,
-    passes::block_analysis::Block,
 };
 use alloy_primitives::hex;
 use evm2::interpreter::{op, opcode::OpCode};
@@ -10,11 +8,6 @@ use oxc_index::{IndexVec, index_vec};
 use std::{borrow::Cow, fmt, fmt::Write, io::IsTerminal};
 
 impl Bytecode<'_> {
-    /// Resolves a jump target instruction to its CFG block index.
-    fn target_block(&self, target: Inst) -> Option<Block> {
-        self.cfg.inst_to_block.get(target).copied().flatten()
-    }
-
     /// Collects formatted lines and builds the inst-to-line map stored in `self.inst_lines`.
     pub(super) fn collect_lines(&self) -> Vec<(String, String)> {
         let mut lines: Vec<(String, String)> = Vec::new();
@@ -143,7 +136,7 @@ impl Bytecode<'_> {
                 if flags.contains(InstFlags::NOOP) {
                     comment.push_str(" noop");
                 }
-                if flags.contains(InstFlags::DEAD_CODE) {
+                if data.is_dead_code() {
                     comment.push_str(" dead");
                 }
                 if flags.contains(InstFlags::DISABLED) {
@@ -288,7 +281,7 @@ impl fmt::Debug for Bytecode<'_> {
         f.debug_struct("Bytecode")
             .field("code", &hex::encode(&*self.code))
             .field("insts", &self.insts)
-            .field("jumpdests", &hex::encode(bitvec_as_bytes(&self.jumpdests)))
+            .field("jumpdests", &hex::encode(self.jumpdests.as_slice()))
             .field("spec_id", &self.spec_id)
             .field("has_dynamic_jumps", &self.has_dynamic_jumps)
             .finish()

@@ -38,6 +38,9 @@ serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 # "wincode"
 wincode = { workspace = true, optional = true }
 
+# "block"
+alloy-hardforks = { workspace = true, optional = true }
+
 # "async"
 corosensei = { workspace = true, optional = true }
 
@@ -148,6 +151,9 @@ std = [
 
 async = ["std", "dep:corosensei"]
 
+# Block execution: `evm2::block`.
+block = ["dep:alloy-hardforks"]
+
 wincode = ["dep:wincode"]
 
 serde = [
@@ -155,6 +161,7 @@ serde = [
     "alloy-consensus/serde",
     "alloy-eip7928/serde",
     "alloy-eips/serde",
+    "alloy-hardforks?/serde",
     "alloy-primitives/serde",
     "ark-serialize/serde",
     "bitflags/serde",

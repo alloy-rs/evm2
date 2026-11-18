@@ -46,7 +46,7 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     let sig = input.last_chunk().unwrap();
 
     let res = crate::precompiles::crypto().secp256k1_ecrecover(sig, recid, msg).ok();
-    let out = res.map(|o| o.to_vec().into()).unwrap_or_default();
+    let out = res.map(|o| o.into()).unwrap_or_default();
     Ok(PrecompileOutput::new(out))
 }
 

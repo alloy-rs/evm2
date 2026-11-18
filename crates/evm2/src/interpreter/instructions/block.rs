@@ -2,7 +2,7 @@ use crate::{
     EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
     interpreter::{Host, Word},
-    utils::{WordExt, address_to_word, b256_to_word},
+    utils::WordExt,
 };
 use evm2_macros::instruction;
 
@@ -12,7 +12,7 @@ pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
-            b256_to_word(cx.state.host().block_hash(number).map_err(|error| cx.state.fail(error))?)
+            cx.state.host().block_hash(number).map_err(|error| cx.state.fail(error))?.into()
         }
     } else {
         Word::ZERO
@@ -22,7 +22,7 @@ pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
 
 #[instruction]
 pub fn coinbase(cx: _) -> out {
-    out.write(address_to_word(&cx.state.host().block_env().beneficiary));
+    out.write(cx.state.host().block_env().beneficiary.into_word().into());
 }
 
 #[instruction]
@@ -90,18 +90,14 @@ pub fn slotnum(cx: _) -> Result<out> {
 mod tests {
     use crate::{
         SpecId,
-        env::{BlockEnv, BlockEnvExt, TxEnvExt},
+        env::{BlockEnvExt, TxEnvExt},
         interpreter::{InstrStop, MessageExt, Word, op},
-        test_utils::{RunConfig, TestHost, TestTypes, push, run},
+        test_utils::{RunConfig, TestHost, push, run, test_host},
         utils::{address_to_word, b256_to_word},
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256};
     use core::assert_matches;
-
-    fn test_host(block: BlockEnv<TestTypes>) -> TestHost {
-        TestHost { block, ..TestHost::default() }
-    }
 
     #[test]
     fn blockhash_opcode() {
@@ -139,7 +135,7 @@ mod tests {
 
     #[test]
     fn coinbase_opcode() {
-        let beneficiary = Address::from([0x44; 20]);
+        let beneficiary = Address::repeat_byte(0x44);
         let mut host = test_host(BlockEnvExt { beneficiary, ..BlockEnvExt::default() });
         let interp = run(RunConfig::new([op::COINBASE, op::STOP]).host(&mut host));
         assert_matches!(interp.err, InstrStop::Stop);
@@ -168,7 +164,7 @@ mod tests {
         let randao = B256::with_last_byte(0x55);
         let mut host = test_host(BlockEnvExt {
             difficulty: Word::from(14),
-            prevrandao: b256_to_word(randao),
+            prevrandao: randao.into(),
             ..BlockEnvExt::default()
         });
         let interp =
@@ -194,18 +190,18 @@ mod tests {
     #[test]
     fn chainid_opcode() {
         let mut host = TestHost::default();
-        let tx_env = TxEnvExt { chain_id: Word::from(1), ..TxEnvExt::default() };
+        let tx_env = TxEnvExt { chain_id: Word::ONE, ..TxEnvExt::default() };
         let interp = run(RunConfig::new([op::CHAINID, op::STOP])
             .host(&mut host)
             .tx_env(tx_env)
             .spec(SpecId::ISTANBUL));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
     }
 
     #[test]
     fn selfbalance_opcode() {
-        let address = Address::from([0x66; 20]);
+        let address = Address::repeat_byte(0x66);
         let mut host = TestHost::default();
         let message = MessageExt { destination: address, gas_limit: 10_000, ..Default::default() };
         let interp =
@@ -227,8 +223,7 @@ mod tests {
     fn blobhash_opcode() {
         let hash = B256::with_last_byte(0x42);
         let mut host = TestHost::default();
-        let tx_env =
-            TxEnvExt { blob_hashes: Vec::from([b256_to_word(hash)]), ..TxEnvExt::default() };
+        let tx_env = TxEnvExt { blob_hashes: Vec::from([hash.into()]), ..TxEnvExt::default() };
 
         let interp = run(RunConfig::new([op::PUSH0, op::BLOBHASH, op::STOP])
             .host(&mut host)

@@ -19,7 +19,7 @@ pub struct TestError {
 impl TestError {
     /// Creates an error for an unknown test name.
     pub(crate) fn unknown(path: impl Into<PathBuf>, kind: TestErrorKind) -> Self {
-        Self { path: path.into().display().to_string(), name: "Unknown".to_string(), kind }
+        Self::case(path, "Unknown", kind)
     }
 
     /// Creates an error for a named test case.
@@ -90,9 +90,6 @@ pub(crate) enum TestErrorKind {
     /// EVM execution unexpectedly succeeded.
     #[error("execution succeeded, but expected exception: {0}")]
     UnexpectedSuccess(String),
-    /// A system call failed.
-    #[error("system call failed: {0}")]
-    SystemCall(&'static str),
     /// Block gas used in the header does not match the executed transactions.
     #[error("block gas used mismatch: header {expected}, computed {actual}")]
     BlockGasUsedMismatch {

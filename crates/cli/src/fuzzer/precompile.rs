@@ -10,9 +10,7 @@ pub(crate) struct PrecompileTarget {
 
 impl PrecompileTarget {
     pub(crate) fn address(self) -> Address {
-        let mut bytes = [0; 20];
-        bytes[18..].copy_from_slice(&self.number.to_be_bytes());
-        Address::new(bytes)
+        Address::left_padding_from(&self.number.to_be_bytes())
     }
 
     pub(crate) const fn feature(self) -> FuzzFeatures {

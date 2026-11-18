@@ -1,3 +1,4 @@
+use crate::fixture::workspace_path;
 use criterion::{BatchSize, BenchmarkGroup, measurement::WallTime};
 use evm2_cli::{
     evm_bench::BenchCase,
@@ -5,11 +6,7 @@ use evm2_cli::{
 };
 use evm2_eest::BlockchainTestNoopHook;
 use revm::database::InMemoryDB;
-use std::{
-    borrow::Cow,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{borrow::Cow, sync::Arc};
 
 /// revm counterpart of `mainnet::PreparedBench`.
 #[derive(Clone)]
@@ -62,8 +59,4 @@ impl PreparedBench {
             );
         });
     }
-}
-
-fn workspace_path(path: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
 }

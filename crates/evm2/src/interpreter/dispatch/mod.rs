@@ -42,7 +42,7 @@ const fn inc_pc(pc: &mut Pc, op: u8) {
 }
 
 #[inline(always)]
-const fn instruction_len(op: u8) -> usize {
+pub(crate) const fn instruction_len(op: u8) -> usize {
     match op {
         op::JUMP | op::JUMPI => 0, // Set inside.
         op::PUSH1..=op::PUSH32 => (op - op::PUSH1 + 2) as usize,
@@ -217,7 +217,14 @@ const fn instruction_changed<T: EvmTypesHost>(
 }
 
 trait InspectMode<T: EvmTypesHost> {
+    /// Whether the dispatch calls the inspector's step hooks: from the handlers on the tail-call
+    /// backend, and from the loop on the others, where a hook must not run while a handler holds
+    /// the stack borrow.
     const INSPECT: bool;
+
+    /// Whether the inspector steps every opcode, so the dispatch loop need not look at the set.
+    #[cfg(not(tco))]
+    const ALL_STEPS: bool = false;
 
     fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
 
@@ -236,10 +243,14 @@ impl<T: EvmTypesHost> InspectMode<T> for NoInspector {
     fn step_end(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
 }
 
-struct DynInspector;
+/// Mode of the inspect table's handlers. `ALL` is the loop mode of an inspector that steps every
+/// opcode.
+struct DynInspector<const ALL: bool = false>;
 
-impl<T: EvmTypesHost> InspectMode<T> for DynInspector {
+impl<T: EvmTypesHost, const ALL: bool> InspectMode<T> for DynInspector<ALL> {
     const INSPECT: bool = true;
+    #[cfg(not(tco))]
+    const ALL_STEPS: bool = ALL;
 
     #[inline(always)]
     fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {

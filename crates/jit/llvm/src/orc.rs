@@ -16,8 +16,8 @@
 use crate::wrap::{Context, LLVMString, Module, TargetMachine};
 use llvm_sys::{
     core::{
-        LLVMContextCreate, LLVMCreateMemoryBufferWithMemoryRangeCopy,
-        LLVMModuleCreateWithNameInContext,
+        LLVMContextCreate, LLVMCreateMemoryBufferWithMemoryRangeCopy, LLVMDisposeMemoryBuffer,
+        LLVMGetBufferSize, LLVMGetBufferStart, LLVMModuleCreateWithNameInContext,
     },
     error::*,
     orc2::{lljit::*, *},
@@ -293,7 +293,7 @@ impl SymbolFlags {
 
     /// Set the `Exported` flag.
     pub const fn set_exported(&mut self) {
-        self.generic |= LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsExported as u8;
+        self.set_generic(LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsExported);
     }
 
     /// Set the `Exported` flag.
@@ -309,7 +309,7 @@ impl SymbolFlags {
 
     /// Set the `Weak` flag.
     pub const fn set_weak(&mut self) {
-        self.generic |= LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsWeak as u8;
+        self.set_generic(LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsWeak);
     }
 
     /// Set the `Weak` flag.
@@ -325,7 +325,7 @@ impl SymbolFlags {
 
     /// Set the `Callable` flag.
     pub const fn set_callable(&mut self) {
-        self.generic |= LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsCallable as u8;
+        self.set_generic(LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsCallable);
     }
 
     /// Set the `Callable` flag.
@@ -341,9 +341,9 @@ impl SymbolFlags {
 
     /// Set the `MaterializationSideEffectsOnly` flag.
     pub const fn set_materialization_side_effects_only(&mut self) {
-        self.generic |=
-            LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsMaterializationSideEffectsOnly
-                as u8;
+        self.set_generic(
+            LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsMaterializationSideEffectsOnly,
+        );
     }
 
     /// Set the `MaterializationSideEffectsOnly` flag.
@@ -1340,7 +1340,7 @@ impl LLJIT {
 
     /// Creates a new ORC JIT, auto-detecting the host target.
     pub fn new() -> Result<Self, LLVMString> {
-        LLJITBuilder::new().build()
+        Self::builder().build()
     }
 
     /// Wraps a raw pointer.
@@ -1570,10 +1570,6 @@ impl ObjectTransformLayerRef {
     /// Returning `Err` aborts materialization.
     pub fn set_transform(&self, f: ObjTransformFn) {
         extern "C" fn shim(ctx: *mut c_void, obj_in_out: *mut LLVMMemoryBufferRef) -> LLVMErrorRef {
-            use llvm_sys::core::{
-                LLVMCreateMemoryBufferWithMemoryRangeCopy, LLVMDisposeMemoryBuffer,
-                LLVMGetBufferSize, LLVMGetBufferStart,
-            };
             let f: ObjTransformFn = unsafe { mem::transmute(ctx) };
             let buf = unsafe { *obj_in_out };
             let data = unsafe {
@@ -1801,11 +1797,10 @@ mod tests {
         core::LLVMGetModuleContext,
         target_machine::{LLVMCodeGenOptLevel, LLVMCodeModel, LLVMRelocMode},
     };
+    use std::mem::ManuallyDrop;
 
     #[test]
     fn e2e_with_tsc() {
-        use mem::ManuallyDrop;
-
         Target::initialize_native().unwrap();
         let triple = TargetMachine::get_default_triple();
         let cpu = TargetMachine::get_host_cpu_name();
@@ -1829,7 +1824,7 @@ mod tests {
             )
             .unwrap();
 
-        let jit = LLJITBuilder::new().build().unwrap();
+        let jit = LLJIT::new().unwrap();
 
         // Build module.
         let m = cx.create_module("test");
@@ -1895,8 +1890,6 @@ mod tests {
 
     #[test]
     fn lookup_in_custom_jd() {
-        use mem::ManuallyDrop;
-
         Target::initialize_native().unwrap();
         let triple = TargetMachine::get_default_triple();
         let cpu = TargetMachine::get_host_cpu_name();
@@ -1920,7 +1913,7 @@ mod tests {
             )
             .unwrap();
 
-        let jit = LLJITBuilder::new().build().unwrap();
+        let jit = LLJIT::new().unwrap();
 
         // Create two custom JITDylibs with functions returning different values.
         let jd_a = jit.get_execution_session().create_bare_jit_dylib(c"test_a");
@@ -1940,8 +1933,7 @@ mod tests {
             bcx.build_return(Some(cx.i64_type().const_int(value, false)));
             m.verify().unwrap();
 
-            let tsm = ThreadSafeModule::create_in_context(m, &tscx);
-            jit.add_module_with_dylib(tsm, unsafe {
+            jit.add_module_with_dylib(tscx.create_module(m), unsafe {
                 JITDylibRef::from_inner_unchecked(jd.as_inner())
             })
             .unwrap();

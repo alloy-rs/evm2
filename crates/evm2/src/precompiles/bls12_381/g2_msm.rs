@@ -84,14 +84,14 @@ mod test {
 
         let scalars = [
             U256::ZERO,
-            U256::from(1),
+            U256::ONE,
             U256::from(2),
-            r - U256::from(1),
+            r - U256::ONE,
             r,
-            r + U256::from(1),
+            r + U256::ONE,
             r * U256::from(2),
-            r * U256::from(2) + U256::from(1),
-            U256::from(1) << 255,
+            r * U256::from(2) + U256::ONE,
+            U256::ONE << 255,
             U256::MAX,
         ];
         for scalar in scalars {
@@ -111,21 +111,15 @@ mod test {
                 (&non_subgroup, PrecompileHalt::Bls12381G2NotInSubgroup),
             ] {
                 assert_eq!(msm(&[(bad, scalar)]), Err(Some(err.clone())));
-                assert_eq!(msm(&[(&point, U256::from(1)), (bad, scalar)]), Err(Some(err.clone())));
-                assert_eq!(msm(&[(&point, scalar), (bad, U256::from(1))]), Err(Some(err)));
+                assert_eq!(msm(&[(&point, U256::ONE), (bad, scalar)]), Err(Some(err.clone())));
+                assert_eq!(msm(&[(&point, scalar), (bad, U256::ONE)]), Err(Some(err)));
             }
         }
 
-        assert_eq!(msm(&[(&point, U256::from(1))]), Ok(point.to_vec()));
+        assert_eq!(msm(&[(&point, U256::ONE)]), Ok(point.to_vec()));
         assert_eq!(msm(&[(&point, r), (&point, r * U256::from(2))]), Ok(infinity.to_vec()));
-        assert_eq!(
-            msm(&[(&point, r - U256::from(1)), (&point, U256::from(1))]),
-            Ok(infinity.to_vec())
-        );
-        assert_eq!(
-            msm(&[(&point, r - U256::from(1)), (&point, U256::from(2))]),
-            Ok(point.to_vec())
-        );
+        assert_eq!(msm(&[(&point, r - U256::ONE), (&point, U256::ONE)]), Ok(infinity.to_vec()));
+        assert_eq!(msm(&[(&point, r - U256::ONE), (&point, U256::from(2))]), Ok(point.to_vec()));
 
         // Many pairs with scalars just below `r` (bit 254 set) sum to `-n(n+1)/2 * P`.
         let pairs = (0..64u64).map(|i| (&point, r - U256::from(1 + i))).collect::<Vec<_>>();

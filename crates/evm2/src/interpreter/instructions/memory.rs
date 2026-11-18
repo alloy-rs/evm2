@@ -85,7 +85,7 @@ mod tests {
         assert_eq!(interp.stack(), [Word::from(64)]);
         assert_eq!(interp.memory(38, 2), [0xfe, 0xed]);
 
-        let interp = run_stack([Word::MAX, Word::from(0)], op::MSTORE);
+        let interp = run_stack([Word::MAX, Word::ZERO], op::MSTORE);
         assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 
@@ -146,7 +146,7 @@ mod tests {
         assert_eq!(interp.memory(4, 1), [0xab]);
         assert_eq!(interp.stack()[0] >> 248, Word::from(0xab));
 
-        let interp = run_stack([Word::MAX, Word::from(0)], op::MSTORE8);
+        let interp = run_stack([Word::MAX, Word::ZERO], op::MSTORE8);
         assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 
@@ -188,7 +188,7 @@ mod tests {
 
         let mut code = Vec::new();
         push(&mut code, 0);
-        push(&mut code, Word::from(1));
+        push(&mut code, Word::ONE);
         push(&mut code, 0);
         code.push(op::MCOPY);
         code.push(op::MSIZE);
@@ -197,10 +197,10 @@ mod tests {
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [0]);
 
-        let interp = run_stack([Word::MAX, Word::MAX, Word::from(0)], op::MCOPY);
+        let interp = run_stack([Word::MAX, Word::MAX, Word::ZERO], op::MCOPY);
         assert_matches!(interp.err, InstrStop::Stop);
 
-        let interp = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::MCOPY);
+        let interp = run_stack([Word::MAX, Word::ZERO, Word::ONE], op::MCOPY);
         assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 

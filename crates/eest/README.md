@@ -52,7 +52,7 @@ state and blockchain fixture:
 cargo st
 ```
 
-This is equivalent to:
+This runs the whole workspace with all features; to run only the EEST harness:
 
 ```sh
 cargo nextest run -p evm2-eest --all-features --test eest --ignore-default-filter
@@ -111,8 +111,9 @@ cargo nextest run -p evm2-eest --test eest --ignore-default-filter blockchain_te
 
 This runs every downloaded blockchain-test root: `eest/blockchain_tests`,
 plus `main/develop/blockchain_tests` when the `main` suite has been downloaded.
-Transition forks are skipped. Blocks with a `blockAccessList` build the block
-access list and check it against the fixture, including the header hash.
+Supported transition forks switch at block 5 or timestamp 15000. Blocks with a
+`blockAccessList` build the block access list and check it against the fixture,
+including the header hash.
 
 ## Filtering
 

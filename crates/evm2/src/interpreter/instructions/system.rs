@@ -1,26 +1,20 @@
 //! System opcode implementations.
 
+use super::require_non_staticcall;
 use crate::{
-    EvmFeatures, EvmTypesHost,
+    EvmFeatures, EvmTypesHost, HostError,
     bytecode::Bytecode,
     interpreter::{
-        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, MessageResult,
-        Result, StackMut, Word, derive_create_destination,
+        Gas, GasTracker, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind,
+        MessageResult, MessageResultExt, Result, StackMut, Word, create_preaccess_failure,
+        derive_create_destination, op,
     },
     utils::WordExt,
-    version::GasId,
+    version::{GasId, GasParams},
 };
 use alloy_primitives::{Address, B256, Bytes};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
-
-#[inline]
-const fn require_non_staticcall<T: EvmTypesHost>(state: &InterpreterState<'_, '_, T>) -> Result {
-    if state.is_static() {
-        return Err(InstrStop::StateChangeDuringStaticCall);
-    }
-    Ok(())
-}
 
 #[inline]
 const fn should_charge_new_account_gas(
@@ -71,23 +65,30 @@ fn memory_range_bytes<T: EvmTypesHost>(
     Ok(Bytes::copy_from_slice(state.memory().slice(range.start, range.len())))
 }
 
-fn load_acc_and_calc_gas<T: EvmTypesHost>(
-    gas: &mut Gas,
-    state: &mut InterpreterState<'_, '_, T>,
+/// Charges a call opcode's value transfer, account access (the EIP-7702 delegate's included) and
+/// new account, and takes the gas it forwards, at most all but one 64th of what is left.
+///
+/// Returns the forwarded gas limit, the EIP-8037 new-account state gas charged, and the code and
+/// code address to run.
+#[allow(clippy::too_many_arguments)]
+fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
+    gas: &mut GasTracker,
+    host: &mut H,
+    gas_params: &GasParams,
+    features: EvmFeatures,
     to: Address,
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, u64, Bytecode, Address)> {
+) -> core::result::Result<(u64, u64, Bytecode, Address), HostError> {
     if transfers_value {
-        gas.spend(state.gas_params().get(GasId::TransferValueCost))?;
+        gas.spend(gas_params.get(GasId::TransferValueCost))?;
     }
 
-    let additional_cold_cost = state.gas_params().cold_account_additional_cost();
+    let additional_cold_cost = gas_params.cold_account_additional_cost();
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account =
-        state.host().load_account(&to, true, skip_cold_load).map_err(|error| state.fail(error))?;
+    let account = host.load_account(&to, true, skip_cold_load)?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -95,53 +96,73 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     }
     let mut code = account.code;
     let mut code_address = to;
-    if state.feature(EvmFeatures::EIP7702)
+    if features.contains(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
-        cost += state.gas_params().get(GasId::WarmStorageReadCost);
+        cost += gas_params.get(GasId::WarmStorageReadCost);
         if cost > remaining_gas {
-            return Err(InstrStop::OutOfGas);
+            return Err(InstrStop::OutOfGas.into());
         }
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
-        let delegated_account = state
-            .host()
-            .load_account(&delegated_address, true, skip_cold_load)
-            .map_err(|error| state.fail(error))?;
+        let delegated_account = host.load_account(&delegated_address, true, skip_cold_load)?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let features = state.version().features;
     let mut new_account_state_gas = 0;
     if create_empty_account
-        && (!features.contains(EvmFeatures::EIP161) || transfers_value)
-        && account.is_empty_for_new_account_gas
+        && should_charge_new_account_gas(
+            features.contains(EvmFeatures::EIP161),
+            transfers_value,
+            account.is_empty_for_new_account_gas,
+        )
     {
-        cost += state.gas_params().get(GasId::NewAccountCost);
+        cost += gas_params.get(GasId::NewAccountCost);
         // EIP-8037: value transfer to a new account also charges state gas from
         // the reservoir. Charged before the 63/64 child gas split below.
         if features.contains(EvmFeatures::EIP8037) && transfers_value {
-            new_account_state_gas = state.gas_params().new_account_state_gas();
+            new_account_state_gas = gas_params.new_account_state_gas();
         }
     }
     gas.spend(cost)?;
     gas.spend_state(new_account_state_gas)?;
 
-    let mut gas_limit = if state.feature(EvmFeatures::EIP150) {
-        min(state.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)
+    let mut gas_limit = if features.contains(EvmFeatures::EIP150) {
+        min(gas_params.call_stipend_reduction(gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
     };
     gas.spend(gas_limit)?;
-    state.finish_step_charge(gas);
 
     if transfers_value {
-        gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend));
+        gas_limit = gas_limit.saturating_add(gas_params.get(GasId::CallStipend));
     }
 
     Ok((gas_limit, new_account_state_gas, code, code_address))
+}
+
+/// Merges a returned child into its caller's gas, as the call opcodes do after
+/// [`load_acc_and_calc_gas`].
+#[inline]
+const fn merge_call_gas<E>(
+    gas: &mut GasTracker,
+    result: &MessageResultExt<E>,
+    new_account_state_gas: u64,
+) -> Result {
+    if result.stop.is_fatal() {
+        return Err(result.stop);
+    }
+    gas.merge_child_gas(result.gas, result.stop);
+    // EIP-8037: a value-bearing CALL that creates the target charges NEW_ACCOUNT state
+    // gas upfront on this frame. If the call does not succeed (depth/balance failure,
+    // child revert or halt) the target is not created, so refund the upfront charge to
+    // the reservoir (execution-specs `credit_state_gas_refund`), mirroring CREATE.
+    if new_account_state_gas != 0 && !result.is_success() {
+        gas.refill_reservoir(new_account_state_gas);
+    }
+    Ok(())
 }
 
 #[inline(never)]
@@ -167,7 +188,7 @@ fn prepare_call<T: EvmTypesHost>(
         return Err(InstrStop::CallNotAllowedInsideStatic);
     }
 
-    let local_gas_limit = u64::try_from(local_gas_limit).unwrap_or(u64::MAX);
+    let local_gas_limit = local_gas_limit.saturating_to::<u64>();
     let (input_range, prepared_return_memory_range) = get_memory_input_and_out_ranges(
         gas,
         state,
@@ -176,16 +197,23 @@ fn prepare_call<T: EvmTypesHost>(
         return_offset,
         return_len,
     )?;
+    // SAFETY: The host does not change the execution config while the interpreter runs, so the gas
+    // parameters stay valid across the account loads.
+    let gas_params = unsafe { state.gas_params_detached() };
+    let features = state.version().features;
     let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address) =
         load_acc_and_calc_gas(
-            gas,
-            state,
+            gas.tracker_mut(),
+            state.host(),
+            gas_params,
+            features,
             to,
             has_transfer,
             kind == MessageKind::Call,
             local_gas_limit,
-        )?;
-    let input = memory_range_bytes(state, input_range)?;
+        )
+        .map_err(|error| state.fail(error))?;
+    let input = state.0.call_input(input_range.start, input_range.len());
 
     let current = state.message();
     let (destination, caller, call_value, code_address) = match kind {
@@ -221,6 +249,31 @@ fn prepare_call<T: EvmTypesHost>(
     Ok(new_account_state_gas)
 }
 
+#[instruction(no_stack_preamble, hooked)]
+pub fn call(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, MessageKind::Call)
+}
+
+#[instruction(no_stack_preamble, hooked)]
+pub fn callcode(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, MessageKind::CallCode)
+}
+
+#[instruction(no_stack_preamble, hooked)]
+pub fn delegatecall(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, MessageKind::DelegateCall)
+}
+
+#[instruction(no_stack_preamble, hooked)]
+pub fn staticcall(cx: _) -> Result {
+    call_inner(stack, cx.gas, cx.state, MessageKind::StaticCall)
+}
+
+#[instruction(no_stack_preamble, hooked)]
+pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
+    create_inner(stack, cx.gas, cx.state, IS_CREATE2)
+}
+
 #[inline(never)]
 fn call_inner<T: EvmTypesHost>(
     stack: StackMut<'_>,
@@ -235,8 +288,9 @@ fn call_inner<T: EvmTypesHost>(
 ///
 /// This is the body of [`call`], [`callcode`], [`delegatecall`] and [`staticcall`], for custom
 /// call instructions that need extra behavior. Use it from an
-/// `#[instruction(no_stack_preamble, dynamic_gas)]` function with `stack`, `cx.gas` and
-/// `cx.state`.
+/// `#[instruction(no_stack_preamble, hooked)]` function with `stack`, `cx.gas` and
+/// `cx.state`. The instruction must be `hooked`, so that the hooks and the host see its pc, opcode,
+/// stack and gas.
 ///
 /// `before` runs after every charge the opcode makes, the EIP-8037 new-account state gas
 /// included, and after the forwarded gas is taken from `gas`, right before the child message
@@ -248,8 +302,7 @@ fn call_inner<T: EvmTypesHost>(
 /// It may charge or credit `gas` or fail the instruction. A fatal child result returns before
 /// `after` runs.
 ///
-/// An `Err` from either hook stops the instruction with that error. Gas the hooks charge is not
-/// part of the step cost reported to inspectors.
+/// An `Err` from either hook stops the instruction with that error.
 #[inline]
 pub fn call_with<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
@@ -272,17 +325,7 @@ pub fn call_with<T: EvmTypesHost>(
 
     let mut result =
         state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
-    if result.stop.is_fatal() {
-        return Err(result.stop);
-    }
-    gas.merge_child_gas(result.gas, result.stop);
-    // EIP-8037: a value-bearing CALL that creates the target charges NEW_ACCOUNT state
-    // gas upfront on this frame. If the call does not succeed (depth/balance failure,
-    // child revert or halt) the target is not created, so refund the upfront charge to
-    // the reservoir (execution-specs `credit_state_gas_refund`), mirroring CREATE.
-    if new_account_state_gas != 0 && !result.stop.is_success() {
-        gas.refill_reservoir(new_account_state_gas);
-    }
+    merge_call_gas(gas.tracker_mut(), &result, new_account_state_gas)?;
     after(gas, state, &message, &result)?;
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
@@ -290,32 +333,52 @@ pub fn call_with<T: EvmTypesHost>(
         state.memory().set_unchecked(return_memory_range.start, output);
     }
     state.swap_return_data(&mut result.output);
-    stack.push_u64(result.stop.is_success() as u64)
+    stack.push_u64(result.is_success() as u64)?;
+    // A stop a hook set.
+    state.result()
 }
 
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn call(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::Call)
-}
+/// The body of [`Host::execute_call`].
+pub(crate) fn execute_call<T: EvmTypesHost, H: Host<T> + ?Sized>(
+    host: &mut H,
+    gas: &mut GasTracker,
+    message: &mut Message<T>,
+) -> core::result::Result<MessageResult<T>, HostError> {
+    let kind = message.kind;
+    let opcode = match kind {
+        MessageKind::Call => op::CALL,
+        MessageKind::CallCode => op::CALLCODE,
+        MessageKind::DelegateCall => op::DELEGATECALL,
+        MessageKind::StaticCall => op::STATICCALL,
+        _ => panic!("{kind:?} is not a call kind"),
+    };
+    let config = host.execution_config();
+    let version = *config.version();
+    gas.spend(config.opcode_config().static_gas(opcode).into())?;
 
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn callcode(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::CallCode)
-}
+    let transfers_value =
+        matches!(kind, MessageKind::Call | MessageKind::CallCode) && !message.value.is_zero();
+    if message.caller_is_static && kind == MessageKind::Call && transfers_value {
+        return Err(InstrStop::CallNotAllowedInsideStatic.into());
+    }
+    let (gas_limit, new_account_state_gas, code, code_address) = load_acc_and_calc_gas(
+        gas,
+        host,
+        &version.gas_params,
+        version.features,
+        message.call_target,
+        transfers_value,
+        kind == MessageKind::Call,
+        message.gas_limit,
+    )?;
+    message.gas_limit = gas_limit;
+    message.reservoir = gas.reservoir();
+    message.code = code;
+    message.code_address = code_address;
 
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn delegatecall(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::DelegateCall)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn staticcall(cx: _) -> Result {
-    call_inner(stack, cx.gas, cx.state, MessageKind::StaticCall)
-}
-
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
-    create_inner(stack, cx.gas, cx.state, IS_CREATE2)
+    let result = host.execute_message(message)?;
+    merge_call_gas(gas, &result, new_account_state_gas)?;
+    Ok(result)
 }
 
 #[inline(never)]
@@ -382,7 +445,7 @@ pub fn create_with<T: EvmTypesHost>(
     let current = state.message();
     let caller = current.destination;
     let depth = current.depth.saturating_add(1);
-    let salt = salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default();
+    let salt = salt.map(B256::from).unwrap_or_default();
 
     // Derive the created contract address once. CREATE needs the creator's (pre-bump) nonce; the
     // caller is the currently-executing contract, already warm and in the access list, so this read
@@ -411,9 +474,14 @@ pub fn create_with<T: EvmTypesHost>(
     if state.feature(EvmFeatures::EIP8037) {
         // `caller_info` is always `Some` when EIP-8037 is enabled.
         if let Some(caller_info) = caller_info.as_ref()
-            && (caller_info.balance < value
-                || caller_info.nonce == u64::MAX
-                || depth > state.version().max_call_depth())
+            && create_preaccess_failure(
+                caller_info.balance,
+                caller_info.nonce,
+                value,
+                depth,
+                state.host().initial_call_depth(),
+            )
+            .is_some()
         {
             state.clear_return_data();
             stack.push_u64(0)?;
@@ -432,8 +500,6 @@ pub fn create_with<T: EvmTypesHost>(
             charged_create_state_gas = true;
         }
     }
-    // The state gas charged above spills into regular gas but stays out of the step cost.
-    state.finish_step_charge(gas);
     let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
@@ -450,7 +516,7 @@ pub fn create_with<T: EvmTypesHost>(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(input.clone()),
-        input,
+        input: input.into(),
         value,
         code_address: destination,
         // CREATE is rejected in a static context (see `require_non_staticcall`).
@@ -472,18 +538,20 @@ pub fn create_with<T: EvmTypesHost>(
     // `created_address == None` — depth, out-of-funds, nonce overflow), no new account leaf is
     // created, so refund the charge to the reservoir via `refill_reservoir` (matching 0→x→0 storage
     // restoration). A successful deployment keeps the charge; an alive target was never charged.
-    let create_failed = result.created_address.is_none() || !result.stop.is_success();
+    let create_failed = result.created_address.is_none() || !result.is_success();
     if charged_create_state_gas && create_failed {
         gas.refill_reservoir(state.gas_params().create_state_gas());
     }
     after(gas, state, &message, &result)?;
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
-    if result.stop == InstrStop::Revert {
+    if result.stop.is_revert() {
         state.swap_return_data(&mut result.output);
     } else {
         state.clear_return_data();
     }
-    stack.push(result.created_address_for_parent())
+    stack.push(result.created_address_for_parent())?;
+    // A stop a hook set.
+    state.result()
 }
 
 #[instruction(dynamic_gas)]
@@ -520,11 +588,16 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig, EvmConfig, ExecutionConfig, ExecutionError, SpecId,
+        BaseEvmConfig, BaseEvmTypes, Evm, EvmConfig, ExecutionConfig, ExecutionError, Precompiles,
+        SpecId,
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
-        interpreter::{Interpreter, MessageResultExt, op},
+        env::BlockEnvExt,
+        evm::{AccountInfo, InMemoryDB},
+        interpreter::Interpreter,
+        registry::TxRegistry,
         test_utils::{
-            RunConfig, TestHost, TestInterpreter, TestTypes, legacy_bytecode, push, push_all, run,
+            RunConfig, TestHost, TestInterpreter, TestTypes, create_code, legacy_bytecode, push,
+            push_all, return_top_word, run,
         },
         utils::address_to_word,
         version::OpcodeConfig,
@@ -534,19 +607,19 @@ mod tests {
 
     #[test]
     fn call_opcode() {
-        let target = Address::from([0x22; 20]);
-        let caller = Address::from([0x11; 20]);
+        let target = Address::repeat_byte(0x22);
+        let caller = Address::repeat_byte(0x11);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                address_to_word(&target),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -558,7 +631,7 @@ mod tests {
             ..Default::default()
         }));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Call);
         assert_eq!(host.calls[0].destination, target);
@@ -567,22 +640,10 @@ mod tests {
 
     #[test]
     fn call_propagates_fatal_child_result() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let error = ExecutionError::Fatal("child call failed".into());
         let mut host = TestHost { execute_error: Some(error.clone()), ..Default::default() };
-        let mut code = Vec::new();
-        push_all(
-            &mut code,
-            [
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                address_to_word(&target),
-                Word::from(1000),
-            ],
-        );
+        let mut code = crate::test_utils::call_code(target);
         code.extend([op::CALL, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host));
@@ -594,18 +655,18 @@ mod tests {
 
     #[test]
     fn call_propagates_static_flag() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
                 Word::ZERO,
-                address_to_word(&target),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -620,7 +681,7 @@ mod tests {
 
     #[test]
     fn call_too_deep_charges_dynamic_gas() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut host = TestHost { is_cold: true, is_empty: true, ..Default::default() };
         let mut code = Vec::new();
         push_all(
@@ -630,8 +691,8 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                Word::from(1),
-                address_to_word(&target),
+                Word::ONE,
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -683,7 +744,7 @@ mod tests {
 
     #[test]
     fn call_too_deep_charges_pre_spurious_empty_account() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut host = TestHost { exists: false, is_empty: true, ..Default::default() };
         let mut code = Vec::new();
         push_all(
@@ -694,7 +755,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::ZERO,
             ],
         );
@@ -713,7 +774,7 @@ mod tests {
 
     #[test]
     fn call_too_deep_skips_pre_spurious_touched_empty_account_cost() {
-        let target = Address::from([0x22; 20]);
+        let target = Address::repeat_byte(0x22);
         let mut host =
             TestHost { exists: false, is_empty: true, is_touched: true, ..Default::default() };
         let mut code = Vec::new();
@@ -725,7 +786,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(&target),
+                target.into_word().into(),
                 Word::ZERO,
             ],
         );
@@ -744,18 +805,18 @@ mod tests {
 
     #[test]
     fn callcode_propagates_static_flag_and_allows_apparent_value() {
-        let code_address = Address::from([0x33; 20]);
+        let code_address = Address::repeat_byte(0x33);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
                 Word::from(7),
-                address_to_word(&code_address),
+                code_address.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -771,19 +832,19 @@ mod tests {
 
     #[test]
     fn callcode_opcode() {
-        let code_address = Address::from([0x33; 20]);
-        let destination = Address::from([0x11; 20]);
+        let code_address = Address::repeat_byte(0x33);
+        let destination = Address::repeat_byte(0x11);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
                 Word::from(7),
-                address_to_word(&code_address),
+                code_address.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -794,7 +855,7 @@ mod tests {
             .message(MessageExt { destination, ..Default::default() })
             .gas_limit(20_000));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
         assert_eq!(host.calls[0].kind, MessageKind::CallCode);
         assert_eq!(host.calls[0].destination, destination);
         assert_eq!(host.calls[0].code_address, code_address);
@@ -803,18 +864,18 @@ mod tests {
 
     #[test]
     fn delegatecall_opcode() {
-        let code_address = Address::from([0x44; 20]);
-        let caller = Address::from([0x55; 20]);
+        let code_address = Address::repeat_byte(0x44);
+        let caller = Address::repeat_byte(0x55);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                address_to_word(&code_address),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                code_address.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -827,7 +888,7 @@ mod tests {
             ..Default::default()
         }));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
         assert_eq!(host.calls[0].kind, MessageKind::DelegateCall);
         assert_eq!(host.calls[0].caller, caller);
         assert_eq!(host.calls[0].value, Word::from(9));
@@ -854,17 +915,17 @@ mod tests {
 
     #[test]
     fn staticcall_opcode() {
-        let target = Address::from([0x66; 20]);
+        let target = Address::repeat_byte(0x66);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(
             &mut code,
             [
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                Word::from(0),
-                address_to_word(&target),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                target.into_word().into(),
                 Word::from(1000),
             ],
         );
@@ -872,7 +933,7 @@ mod tests {
 
         let interp = run(RunConfig::new(code).host(&mut host));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
         assert_eq!(host.calls[0].kind, MessageKind::StaticCall);
         assert!(host.call_static_flags[0]);
 
@@ -897,7 +958,7 @@ mod tests {
 
     #[test]
     fn create_opcode() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let mut host = TestHost {
             execute_result: MessageResultExt {
                 stop: InstrStop::Return,
@@ -907,7 +968,7 @@ mod tests {
             ..Default::default()
         };
         let mut code = Vec::new();
-        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
         code.extend([op::CREATE, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
@@ -921,8 +982,7 @@ mod tests {
     fn create_propagates_fatal_child_result() {
         let error = ExecutionError::Fatal("child create failed".into());
         let mut host = TestHost { execute_error: Some(error.clone()), ..Default::default() };
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         code.extend([op::CREATE, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
@@ -934,7 +994,7 @@ mod tests {
 
     #[test]
     fn create_clears_return_data_on_success() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let mut host = TestHost {
             execute_result: MessageResultExt {
                 stop: InstrStop::Return,
@@ -945,12 +1005,12 @@ mod tests {
             ..Default::default()
         };
         let mut code = Vec::new();
-        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [address_to_word(&created), Word::ZERO]);
+        assert_eq!(interp.stack(), [created.into_word().into(), Word::ZERO]);
     }
 
     #[test]
@@ -964,7 +1024,7 @@ mod tests {
             ..Default::default()
         };
         let mut code = Vec::new();
-        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
@@ -975,8 +1035,7 @@ mod tests {
     #[test]
     fn create_too_deep_charges_create_gas() {
         let mut host = TestHost::default();
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         code.extend([op::CREATE, op::STOP]);
 
         let interp = run(RunConfig::new(code)
@@ -994,10 +1053,9 @@ mod tests {
     fn create_too_deep_clears_return_data_and_skips_destination_read_eip8037() {
         // EIP-8037: a create failing the depth pre-check must not access the destination —
         // the read would leak the address into the EIP-7928 block access list.
-        let caller = Address::from([0x11; 20]);
+        let caller = Address::repeat_byte(0x11);
         let mut host = TestHost { exists: false, ..Default::default() };
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interp = run(RunConfig::new(code)
@@ -1030,7 +1088,7 @@ mod tests {
 
     #[test]
     fn create2_opcode() {
-        let created = Address::from([0x88; 20]);
+        let created = Address::repeat_byte(0x88);
         let mut host = TestHost {
             execute_result: MessageResultExt {
                 stop: InstrStop::Return,
@@ -1040,7 +1098,7 @@ mod tests {
             ..Default::default()
         };
         let mut code = Vec::new();
-        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0), Word::from(0)]);
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO, Word::ZERO]);
         code.extend([op::CREATE2, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
@@ -1065,8 +1123,8 @@ mod tests {
 
     #[test]
     fn selfdestruct_opcode() {
-        let contract = Address::from([0x11; 20]);
-        let target = Address::from([0x99; 20]);
+        let contract = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x99);
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push(&mut code, address_to_word(&target));
@@ -1088,7 +1146,7 @@ mod tests {
 
     // Keeps `KEPT_GAS` of the forwarded gas in the caller and charges `AFTER_FEE` after a
     // successful child; a failed child fails the instruction.
-    #[instruction(no_stack_preamble, dynamic_gas)]
+    #[instruction(no_stack_preamble, hooked)]
     fn hooked_call(cx: _) -> Result {
         call_with(
             stack,
@@ -1101,12 +1159,12 @@ mod tests {
                 Ok(())
             },
             |gas, _, _, result| {
-                if result.stop.is_success() { gas.spend(AFTER_FEE) } else { Err(InstrStop::Revert) }
+                if result.is_success() { gas.spend(AFTER_FEE) } else { Err(InstrStop::Revert) }
             },
         )
     }
 
-    #[instruction(no_stack_preamble, dynamic_gas)]
+    #[instruction(no_stack_preamble, hooked)]
     fn hooked_create(cx: _) -> Result {
         create_with(
             stack,
@@ -1165,7 +1223,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::from(value),
-                address_to_word(&Address::from([0x22; 20])),
+                Address::repeat_byte(0x22).into_word().into(),
                 Word::from(5_000),
             ],
         );
@@ -1185,7 +1243,7 @@ mod tests {
 
         assert_matches!(base.err, InstrStop::Stop);
         assert_matches!(hooked.err, InstrStop::Stop);
-        assert_eq!(hooked.stack(), [Word::from(1)]);
+        assert_eq!(hooked.stack(), [Word::ONE]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].gas_limit, base_host.calls[0].gas_limit - KEPT_GAS);
         assert_eq!(hooked.gas_remaining(), base.gas_remaining() + KEPT_GAS - AFTER_FEE);
@@ -1227,14 +1285,13 @@ mod tests {
 
     #[test]
     fn create_with_hooks_adjust_child_and_caller_gas() {
-        let created = Address::from([0x77; 20]);
+        let created = Address::repeat_byte(0x77);
         let execute_result = MessageResultExt {
             stop: InstrStop::Return,
             created_address: Some(created),
             ..MessageResultExt::default()
         };
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         let mut base_code = code.clone();
         base_code.extend([op::CREATE, op::STOP]);
         code.extend([HOOKED_CREATE, op::STOP]);
@@ -1257,8 +1314,7 @@ mod tests {
 
     #[test]
     fn create_with_skips_hooks_when_creation_is_refused_before_forward() {
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        let mut code = create_code();
         let mut base_code = code.clone();
         base_code.extend([op::CREATE, op::STOP]);
         code.extend([HOOKED_CREATE, op::STOP]);
@@ -1274,5 +1330,144 @@ mod tests {
         assert_eq!(hooked.stack(), [Word::ZERO]);
         assert!(host.calls.is_empty());
         assert_eq!(hooked.gas_remaining(), base.gas_remaining());
+    }
+
+    /// The opcode [`host_call`] is installed at.
+    const HOST_CALL: u8 = 0xb0;
+
+    /// `CALL` made through [`Host::execute_call`], without memory input or output.
+    #[instruction(no_stack_preamble, hooked, EvmTypes = BaseEvmTypes)]
+    fn host_call(cx: _) -> Result {
+        let [gas_limit, to, value, _, _, _, _] = stack.popn::<7>()?;
+        let to = to.to_address();
+        let current = cx.state.message();
+        let mut message = MessageExt {
+            kind: MessageKind::Call,
+            depth: current.depth + 1,
+            gas_limit: gas_limit.saturating_to(),
+            destination: to,
+            call_target: to,
+            caller: current.destination,
+            value,
+            caller_is_static: cx.state.is_static(),
+            ..Default::default()
+        };
+        let result = cx
+            .state
+            .host()
+            .execute_call(cx.gas.tracker_mut(), &mut message)
+            .map_err(|error| cx.state.fail(error))?;
+        stack.push_u64(result.is_success() as u64)
+    }
+
+    /// The base config with [`host_call`] installed at [`HOST_CALL`], which charges its own static
+    /// gas.
+    struct HostCallConfig;
+
+    impl EvmConfig<BaseEvmTypes> for HostCallConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config =
+                OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<host_call>(HOST_CALL, 0);
+            config
+        };
+    }
+
+    /// Runs a frame with `gas_limit` that calls `target` with `value` and `call_gas` through
+    /// `opcode`, and returns its success word.
+    fn run_call<C: EvmConfig<BaseEvmTypes>>(
+        opcode: u8,
+        database: InMemoryDB,
+        target: Address,
+        value: u64,
+        call_gas: Word,
+        gas_limit: u64,
+    ) -> MessageResult<BaseEvmTypes> {
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::ZERO; 4]);
+        push_all(&mut code, [Word::from(value), address_to_word(&target), call_gas]);
+        code.push(opcode);
+        return_top_word(&mut code);
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_config::<C>(),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let mut message =
+            MessageExt { gas_limit, code: legacy_bytecode(code), ..Default::default() };
+        Host::execute_message(&mut evm, &mut message).unwrap()
+    }
+
+    #[test]
+    fn host_execute_call_charges_as_call_opcode() {
+        let (callee, reverting, delegator) =
+            (Address::repeat_byte(0xc0), Address::repeat_byte(0xc1), Address::repeat_byte(0xde));
+        let empty = Address::repeat_byte(0xe0);
+        let database = || {
+            let mut database = InMemoryDB::default();
+            // The calling frame's own account pays for value transfers.
+            database.insert_account_info(
+                &Address::ZERO,
+                AccountInfo { balance: Word::from(1_000_000), ..Default::default() },
+            );
+            database.insert_account_info(
+                &callee,
+                AccountInfo::default().with_code(legacy_bytecode([
+                    op::PUSH0,
+                    op::PUSH0,
+                    op::RETURN,
+                ])),
+            );
+            database.insert_account_info(
+                &reverting,
+                AccountInfo::default().with_code(legacy_bytecode([
+                    op::PUSH0,
+                    op::PUSH0,
+                    op::REVERT,
+                ])),
+            );
+            database.insert_account_info(
+                &delegator,
+                AccountInfo::default().with_code(Bytecode::new_eip7702(callee)),
+            );
+            database
+        };
+
+        for (target, value, call_gas, gas_limit) in [
+            (callee, 0, Word::from(10_000), 100_000),
+            // All but one 64th of what is left.
+            (callee, 0, Word::MAX, 100_000),
+            (reverting, 0, Word::from(10_000), 100_000),
+            (delegator, 0, Word::from(10_000), 100_000),
+            (callee, 1, Word::from(10_000), 100_000),
+            // A value transfer to a new account.
+            (empty, 1, Word::from(10_000), 100_000),
+            // Out of gas for the cold account access.
+            (callee, 0, Word::from(10_000), 2_000),
+            // Out of gas for the delegate's access.
+            (delegator, 0, Word::from(10_000), 2_700),
+        ] {
+            let expected = run_call::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>(
+                op::CALL,
+                database(),
+                target,
+                value,
+                call_gas,
+                gas_limit,
+            );
+            let result = run_call::<HostCallConfig>(
+                HOST_CALL,
+                database(),
+                target,
+                value,
+                call_gas,
+                gas_limit,
+            );
+            assert_eq!(result, expected, "{target} {value} {call_gas} {gas_limit}");
+        }
     }
 }

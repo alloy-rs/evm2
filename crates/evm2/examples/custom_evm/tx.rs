@@ -71,7 +71,7 @@ pub fn execute_code(
     let mut result = req.host.execute_message(&mut message)?;
     result.ext = CustomMessageResultExt { handled_custom_message: true };
     Ok(evm2::TxResult::<CustomTypes> {
-        status: result.stop.is_success(),
+        status: result.is_success(),
         total_gas_spent: req.tx.gas_limit - result.gas.remaining(),
         stop: result.stop,
         output: result.output,

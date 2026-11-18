@@ -201,7 +201,7 @@ impl CaptureBuilder {
                             withdrawal_balance,
                         },
                     )?;
-                    if balance.is_zero() && withdrawal_balance != U256::ZERO {
+                    if balance.is_zero() && !withdrawal_balance.is_zero() {
                         return Ok(());
                     }
                     let state = self.account_state(address);

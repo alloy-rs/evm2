@@ -52,7 +52,7 @@ impl<T: EvmTypesHost> Inspector<T> for StorageInspector {
             && let Some([slot]) = interp.stack().peekn()
         {
             let address = interp.message().destination;
-            let slot = B256::from(slot.to_be_bytes());
+            let slot = B256::from(slot);
 
             let slot_access_count =
                 self.accessed_slots.entry(address).or_default().entry(slot).or_default();

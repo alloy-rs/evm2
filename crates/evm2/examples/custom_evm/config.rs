@@ -102,7 +102,7 @@ impl<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> EvmConfig<CustomTypes>
 }
 
 pub const fn custom_version(base_spec_id: SpecId) -> Version {
-    let mut version = *Version::base(base_spec_id);
+    let mut version = Version::new(base_spec_id);
     opcode::install_gas_params(&mut version.gas_params);
     version
 }

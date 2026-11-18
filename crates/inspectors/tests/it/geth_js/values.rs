@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn trace_tx(code: &str, db: CacheDB<EmptyDB>, tx: TxEnv) -> serde_json::Value {
+fn trace_tx(code: &str, db: InMemoryDB, tx: TxEnv) -> serde_json::Value {
     let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
     let mut evm = Context::mainnet()
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
@@ -13,8 +13,8 @@ fn trace_tx(code: &str, db: CacheDB<EmptyDB>, tx: TxEnv) -> serde_json::Value {
     js_result(inspector, &res, ctx)
 }
 
-fn funded_db() -> CacheDB<EmptyDB> {
-    let mut db = CacheDB::new(EmptyDB::default());
+fn funded_db() -> InMemoryDB {
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &Address::ZERO,
         AccountInfo { balance: U256::from(1e18), ..Default::default() },

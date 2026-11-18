@@ -4,14 +4,15 @@ mod errors;
 mod values;
 
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ResultAndState, SpecId, TestDbExt,
-    TransactTo, TxEnv, deploy_contract,
+    AccountInfo, Bytecode, Context, ResultAndState, SpecId, TestDbExt, TransactTo, TxEnv,
+    deploy_contract,
 };
-use alloy_primitives::{Address, U256, address, hex, map::HashMap};
+use alloy_primitives::{Address, U256, address, bytes, hex, map::HashMap};
 use alloy_rpc_types_trace::geth::{
     GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
     mux::MuxConfig,
 };
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::tracing::{
     DebugInspector, MuxInspector,
     js::{JsInspector, JsInspectorInterrupt},
@@ -41,10 +42,8 @@ fn test_geth_jstracer_bigint_compatibility() {
         }
     }"#;
     let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
-    let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
-        .build_mainnet()
-        .with_inspector(insp);
+    let mut evm =
+        Context::mainnet().with_db(InMemoryDB::default()).build_mainnet().with_inspector(insp);
     let res = evm
         .inspect_tx(TxEnv {
             caller: Address::ZERO,
@@ -85,7 +84,7 @@ fn test_geth_jstracer_revert() {
     let deployer = Address::ZERO;
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
         .build_mainnet();
 
@@ -105,7 +104,7 @@ fn test_geth_jstracer_revert() {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
-            data: hex!("c2985578").into(), // call foo
+            data: bytes!("c2985578"), // call foo
             nonce: 1,
             ..Default::default()
         })
@@ -126,7 +125,7 @@ fn test_geth_jstracer_revert() {
             caller: deployer,
             gas_limit: 1000000,
             kind: TransactTo::Call(addr),
-            data: hex!("febb0f7e").into(), // call bar
+            data: bytes!("febb0f7e"), // call bar
             nonce: 1,
             ..Default::default()
         })
@@ -173,7 +172,7 @@ fn test_geth_jstracer_proxy_contract() {
     let deployer = address!("f077b491b355e64048ce21e3a6fc4751eeea77fa");
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
         .build_mainnet();
 
@@ -190,9 +189,8 @@ fn test_geth_jstracer_proxy_contract() {
     evm.ctx().db_mut().load_account(deployer).info.balance = U256::from(1_000_000);
 
     // Set input data for ProxyFactory.transfer(address)
-    let mut input_data = hex!("1a695230").to_vec(); // keccak256("transfer(address)")[:4]
-    input_data.extend_from_slice(&[0u8; 12]); // Pad with zeros
-    input_data.extend_from_slice(token_addr.as_slice());
+    // keccak256("transfer(address)")[:4], zero padding, then the address.
+    let input_data = [&hex!("1a695230")[..], &[0u8; 12][..], token_addr.as_slice()].concat();
     println!("token {token_addr:?} proxy: {proxy_addr:?}");
 
     let code = r#"
@@ -238,7 +236,7 @@ fn test_geth_jstracer_proxy_contract() {
 #[test]
 fn test_geth_jstracer_records_call_step_before_nested_execution() {
     let child = address!("0000000000000000000000000000000000001234");
-    let parent = address!("0000000000000000000000000000000000000022");
+    let parent = Address::with_last_byte(0x22);
 
     let child_code =
         Bytecode::new_legacy([0x60, 1, 0x60, 0x40, 0x52, 0x60, 1, 0x60, 1, 0x01, 0x00].into());
@@ -250,17 +248,16 @@ fn test_geth_jstracer_records_call_step_before_nested_execution() {
         .into(),
     );
 
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(
-                &child,
-                AccountInfo { code: Some(child_code), ..Default::default() },
-            );
-            db.insert_account_info(
-                &parent,
-                AccountInfo { code: Some(parent_code), ..Default::default() },
-            );
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(
+            &child,
+            AccountInfo { code: Some(child_code), ..Default::default() },
+        );
+        db.insert_account_info(
+            &parent,
+            AccountInfo { code: Some(parent_code), ..Default::default() },
+        );
+    });
 
     let code = r#"
 {
@@ -331,18 +328,17 @@ fn test_geth_jstracer_call_step_cost_and_depth() {
         "5f5f5f5f600161111161fffff15000"
     );
 
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            for (address, code) in [
-                (leaf, &leaf_code[..]),
-                (mid, &mid_code[..]),
-                (reverter, &reverter_code[..]),
-                (main, &main_code[..]),
-            ] {
-                let code = Some(Bytecode::new_legacy(code.to_vec().into()));
-                db.insert_account_info(&address, AccountInfo { code, ..Default::default() });
-            }
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        for (address, code) in [
+            (leaf, &leaf_code[..]),
+            (mid, &mid_code[..]),
+            (reverter, &reverter_code[..]),
+            (main, &main_code[..]),
+        ] {
+            let code = Some(Bytecode::new_legacy(code.to_vec().into()));
+            db.insert_account_info(&address, AccountInfo { code, ..Default::default() });
+        }
+    });
 
     let code = r#"
 {
@@ -437,20 +433,19 @@ fn test_geth_debug_inspector_jstracer() {
     let caller = address!("1000000000000000000000000000000000000002");
     let coinbase = address!("1000000000000000000000000000000000000003");
 
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(
-                &caller,
-                AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
-            );
-            db.insert_account_info(
-                &account,
-                AccountInfo {
-                    code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
-                    ..Default::default()
-                },
-            );
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+        );
+        db.insert_account_info(
+            &account,
+            AccountInfo {
+                code: Some(Bytecode::new_legacy(bytes!("6001600100"))),
+                ..Default::default()
+            },
+        );
+    });
     let context = context
         .modify_block_chained(|block| {
             block.number = U256::from(42);
@@ -518,27 +513,23 @@ fn test_geth_jstracer_get_code_does_not_load_the_account() {
     let observed = address!("1000000000000000000000000000000000000002");
     let caller = address!("1000000000000000000000000000000000000003");
 
-    let context =
-        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
-            db.insert_account_info(
-                &caller,
-                AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
-            );
-            db.insert_account_info(
-                &target,
-                AccountInfo {
-                    code: Some(Bytecode::new_legacy(hex!("00").into())),
-                    ..Default::default()
-                },
-            );
-            db.insert_account_info(
-                &observed,
-                AccountInfo {
-                    code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
-                    ..Default::default()
-                },
-            );
-        });
+    let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+        db.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+        );
+        db.insert_account_info(
+            &target,
+            AccountInfo { code: Some(Bytecode::new_legacy(bytes!("00"))), ..Default::default() },
+        );
+        db.insert_account_info(
+            &observed,
+            AccountInfo {
+                code: Some(Bytecode::new_legacy(bytes!("6001600100"))),
+                ..Default::default()
+            },
+        );
+    });
     let context = context.modify_tx_chained(|tx| {
         tx.gas_limit = 1_000_000;
         tx.gas_price = 1;
@@ -579,11 +570,11 @@ fn test_geth_jstracer_get_code_does_not_load_the_account() {
 fn mux_runs_a_js_tracer_next_to_a_built_in_tracer() {
     let code = "{ steps: 0, step: function() { this.steps++; }, fault: function() {}, \
                 result: function() { return this.steps; } }";
-    let contract = address!("0000000000000000000000000000000000000042");
-    let mut db = CacheDB::new(EmptyDB::default());
+    let contract = Address::with_last_byte(0x42);
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &contract,
-        AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f00").into())),
+        AccountInfo::default().with_code(Bytecode::new_raw(bytes!("5f5f00"))),
     );
     let js_key = GethDebugTracerType::JsTracer(code.to_string());
     let call_key = GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer);
@@ -606,13 +597,13 @@ fn mux_runs_a_js_tracer_next_to_a_built_in_tracer() {
 
     let GethTrace::JS(steps) = &frame.0[&js_key] else { panic!("expected a JS result") };
     assert_eq!(steps.as_u64(), Some(3));
-    assert!(matches!(frame.0[&call_key], GethTrace::CallTracer(_)));
+    assert!(frame.0[&call_key].is_call());
 }
 
 #[test]
 fn mux_interrupts_its_js_tracers() {
     let code = "{ fault: function() {}, result: function() { return 1; } }";
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.insert_account_info(&Address::ZERO, AccountInfo::default());
     let config =
         MuxConfig(HashMap::from_iter([(GethDebugTracerType::JsTracer(code.into()), None)]));

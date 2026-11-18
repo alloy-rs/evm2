@@ -1100,11 +1100,12 @@ mod default_attrs {
 
     pub(crate) fn for_fn() -> impl Iterator<Item = Attribute> {
         [
-            Attribute::WillReturn,      // Always returns.
-            Attribute::NoSync,          // No thread synchronization.
-            Attribute::NativeTargetCpu, // Optimization.
-            Attribute::NonLazyBind,     // Skip PLT indirection.
-            Attribute::UWTable,         // Unwind tables for profilers/debuggers.
+            Attribute::WillReturn,        // Always returns.
+            Attribute::NoSync,            // No thread synchronization.
+            Attribute::NativeTargetCpu,   // Optimization.
+            Attribute::NonLazyBind,       // Skip PLT indirection.
+            Attribute::UWTable,           // Unwind tables for profilers/debuggers.
+            Attribute::InlineStackProbes, // Overflow faults on the guard page, as in Rust code.
         ]
         .into_iter()
     }

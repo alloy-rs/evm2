@@ -1,16 +1,20 @@
 //! Recording inputs is optional and does not affect execution.
 
-use crate::utils::{AccountInfo, Bytecode, CacheDB, EmptyDB, SpecId, TransactTo, TxEnv};
-use alloy_primitives::{Address, Bytes, U256, hex};
+use crate::utils::{AccountInfo, Bytecode, SpecId, TransactTo, TxEnv};
+use alloy_primitives::{Address, Bytes, U256, bytes, hex};
+use alloy_rpc_types_trace::parity::TraceType;
 use evm2::{
-    BaseEvmTypes, Evm, ExecutionConfig, Inspector, Precompiles, Version,
-    constants::CALL_DEPTH_LIMIT, ethereum::ethereum_tx_registry, interpreter::opcode::op,
+    BaseEvmTypes, Evm, Inspector, Precompiles, constants::CALL_DEPTH_LIMIT,
+    ethereum::ethereum_tx_registry, evm::InMemoryDB, interpreter::opcode::op,
 };
 use evm2_inspectors::{
     access_list::AccessListInspector,
     opcode::OpcodeGasInspector,
     otterscan::InternalOperationsInspector,
-    tracing::{TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig},
+    tracing::{
+        TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig,
+        types::{CallTrace, CallTraceStepExtra},
+    },
     transfer::TransferInspector,
 };
 
@@ -41,7 +45,7 @@ fn inspect_with_limits(
     limits: TraceLimits,
 ) -> (TracingInspector, bool) {
     let target = Address::with_last_byte(0x42);
-    let mut db = CacheDB::<EmptyDB>::default();
+    let mut db = InMemoryDB::default();
     for (address, code) in [(target, code), (Address::with_last_byte(0x43), &hex!("00")[..])] {
         db.insert_account_info(
             &address,
@@ -173,39 +177,129 @@ fn byte_budget_stops_retaining_later_child_inputs() {
     assert!(nodes[2].trace.data.is_empty());
 }
 
+/// Returns the bytes the budget charges for recording one step without stack snapshots.
+fn step_record_bytes(config: TracingInspectorConfig) -> usize {
+    let (inspector, completed) =
+        inspect_with_limits(&hex!("00"), Bytes::new(), config, TraceLimits::default());
+    assert!(completed);
+    assert_eq!(inspector.traces().nodes()[0].trace.steps.len(), 1);
+    inspector.recorded_bytes()
+}
+
 #[test]
 fn byte_budget_counts_memory_snapshots() {
-    // MSTORE expands memory to 32 bytes, so the next step takes a 32-byte snapshot.
+    // MSTORE expands memory to 32 bytes, so the STOP step takes a 32-byte snapshot.
     let code = hex!("60015f5200");
     let config = TracingInspectorConfig::none().steps().memory_snapshots();
+    let step = step_record_bytes(config);
     let (inspector, completed) = inspect_with_limits(
         &code,
         Bytes::new(),
         config,
-        TraceLimits::default().set_max_recorded_bytes(Some(31)),
+        TraceLimits::default().set_max_recorded_bytes(Some(4 * step + 31)),
     );
     assert!(completed);
     assert!(inspector.limit_exceeded());
-    assert_eq!(inspector.recorded_bytes(), 0);
+    assert_eq!(inspector.recorded_bytes(), 4 * step);
 }
 
 #[test]
 fn byte_budget_covers_immediates_and_memory_deltas() {
     let code = hex!("60015f5200");
-    for (config, limit) in [
-        (TracingInspectorConfig::none().steps().set_immediate_bytes(true), 0),
-        (TracingInspectorConfig::none().steps().set_step_deltas(true), 31),
+    // The PUSH1 immediate is charged after the first step, the MSTORE delta after the third. The
+    // PUSH1 step record also boxes its immediate.
+    for (config, steps, boxed, extra) in [
+        (
+            TracingInspectorConfig::none().steps().record_immediate_bytes(),
+            1,
+            size_of::<CallTraceStepExtra>(),
+            0,
+        ),
+        (TracingInspectorConfig::none().steps().set_step_deltas(true), 3, 0, 31),
     ] {
+        let step = step_record_bytes(config);
         let (inspector, completed) = inspect_with_limits(
             &code,
             Bytes::new(),
             config,
-            TraceLimits::default().set_max_recorded_bytes(Some(limit)),
+            TraceLimits::default().set_max_recorded_bytes(Some(steps * step + boxed + extra)),
         );
         assert!(completed);
         assert!(inspector.limit_exceeded());
-        assert_eq!(inspector.recorded_bytes(), 0);
+        assert_eq!(inspector.recorded_bytes(), steps * step + boxed);
     }
+}
+
+#[test]
+fn byte_budget_counts_steps_and_stack_snapshots() {
+    let code = hex!("60015f5200");
+    for config in [
+        TracingInspectorConfig::none().steps(),
+        TracingInspectorConfig::none().steps().stack_snapshots(),
+    ] {
+        let (unlimited, completed) =
+            inspect_with_limits(&code, Bytes::new(), config, TraceLimits::default());
+        assert!(completed);
+        assert!(!unlimited.limit_exceeded());
+        assert!(unlimited.recorded_bytes() > 0);
+
+        let (inspector, completed) = inspect_with_limits(
+            &code,
+            Bytes::new(),
+            config,
+            TraceLimits::default().set_max_recorded_bytes(Some(unlimited.recorded_bytes() - 1)),
+        );
+        assert!(completed);
+        assert!(inspector.limit_exceeded());
+        assert_eq!(inspector.traces().nodes()[0].trace.steps.len(), 3);
+    }
+    // Full stack snapshots of the same steps cost more than the steps alone.
+    let plain = step_record_bytes(TracingInspectorConfig::none().steps());
+    let (with_stack, _) = inspect_with_limits(
+        &code,
+        Bytes::new(),
+        TracingInspectorConfig::none().steps().stack_snapshots(),
+        TraceLimits::default(),
+    );
+    assert_eq!(with_stack.recorded_bytes(), 4 * plain + (1 + 2) * 32);
+}
+
+/// `JUMPDEST PUSH0 JUMP` loops until it runs out of gas without touching memory, so only the
+/// step records bound a parity `vmTrace` of it.
+#[test]
+fn byte_budget_bounds_vm_trace_of_a_loop() {
+    let code = hex!("5b5f56");
+    let config =
+        TracingInspectorConfig::from_parity_config(&[TraceType::VmTrace].into_iter().collect());
+    let (unlimited, _) = inspect_with_limits(&code, Bytes::new(), config, TraceLimits::default());
+    let unlimited_steps = unlimited.traces().nodes()[0].trace.steps.len();
+    assert!(unlimited_steps > 100_000);
+
+    let limit = 64 * 1024;
+    let (skipped, _) = inspect_with_limits(
+        &code,
+        Bytes::new(),
+        config,
+        TraceLimits::default().set_max_recorded_bytes(Some(limit)),
+    );
+    assert!(skipped.limit_exceeded());
+    assert!(skipped.recorded_bytes() <= limit);
+    let steps = skipped.traces().nodes()[0].trace.steps.len();
+    assert!(steps > 0 && steps < unlimited_steps / 100);
+    let vm_trace = skipped.into_parity_builder().vm_trace();
+    assert_eq!(vm_trace.ops.len(), steps);
+
+    let (halted, completed) = inspect_with_limits(
+        &code,
+        Bytes::new(),
+        config,
+        TraceLimits::default()
+            .set_max_recorded_bytes(Some(limit))
+            .set_behavior(TraceLimitBehavior::Halt),
+    );
+    assert!(!completed);
+    assert!(halted.limit_exceeded());
+    assert_eq!(halted.traces().nodes()[0].trace.steps.len(), steps);
 }
 
 #[test]
@@ -213,7 +307,7 @@ fn byte_budget_can_halt_from_a_step() {
     let (inspector, completed) = inspect_with_limits(
         &hex!("600100"),
         Bytes::new(),
-        TracingInspectorConfig::none().steps().set_immediate_bytes(true),
+        TracingInspectorConfig::none().steps().record_immediate_bytes(),
         TraceLimits::default()
             .set_max_recorded_bytes(Some(0))
             .set_behavior(TraceLimitBehavior::Halt),
@@ -224,13 +318,16 @@ fn byte_budget_can_halt_from_a_step() {
 
 #[test]
 fn byte_budget_halt_before_sload_records_no_storage_access() {
-    // The memory snapshot of the SLOAD step exceeds the budget, which halts before the SLOAD runs.
+    // The memory snapshot of the SLOAD step, the fifth step, exceeds the budget, which halts
+    // before the SLOAD runs.
+    let config = TracingInspectorConfig::none().steps().memory_snapshots().set_state_diffs(true);
+    let step = step_record_bytes(config);
     let (inspector, completed) = inspect_with_limits(
         &hex!("600060015f525400"),
         Bytes::new(),
-        TracingInspectorConfig::none().steps().memory_snapshots().set_state_diffs(true),
+        config,
         TraceLimits::default()
-            .set_max_recorded_bytes(Some(31))
+            .set_max_recorded_bytes(Some(5 * step + 31))
             .set_behavior(TraceLimitBehavior::Halt),
     );
     assert!(!completed);
@@ -241,13 +338,16 @@ fn byte_budget_halt_before_sload_records_no_storage_access() {
 
 #[test]
 fn byte_budget_halt_before_sstore_reports_no_store_delta() {
-    // The memory snapshot of the SSTORE step exceeds the budget, which halts before it runs.
+    // The MSTORE delta takes 32 bytes, so the memory snapshot of the SSTORE step, the sixth
+    // step, exceeds the budget, which halts before it runs.
+    let config = TracingInspectorConfig::none().steps().memory_snapshots().set_step_deltas(true);
+    let step = step_record_bytes(config);
     let (inspector, completed) = inspect_with_limits(
         &hex!("6001600060015f525500"),
         Bytes::new(),
-        TracingInspectorConfig::none().steps().memory_snapshots().set_step_deltas(true),
+        config,
         TraceLimits::default()
-            .set_max_recorded_bytes(Some(32))
+            .set_max_recorded_bytes(Some(6 * step + 32))
             .set_behavior(TraceLimitBehavior::Halt),
     );
     assert!(!completed);
@@ -257,24 +357,24 @@ fn byte_budget_halt_before_sstore_reports_no_store_delta() {
 }
 
 #[test]
-fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
+fn nested_roots_match_revm_inspectors() {
     let caller = Address::repeat_byte(0xaa);
     let child = Address::with_last_byte(0x43);
     // Send 1 wei to a child that executes STOP.
-    let code = Bytes::from_static(&hex!("5f5f5f5f600160435af100"));
+    let code = bytes!("5f5f5f5f600160435af100");
     for initial_call_depth in [0, 7, u16::MAX - CALL_DEPTH_LIMIT - 1] {
         for kind in [TransactTo::Call(Address::with_last_byte(0x42)), TransactTo::Create] {
-            let target = kind.to().copied().unwrap_or_else(|| caller.create(0));
+            let target = kind.into_to().unwrap_or_else(|| caller.create(0));
             let data = if kind.is_create() { code.clone() } else { Bytes::from_static(&[1, 2]) };
             let run = |inspector: &mut dyn Inspector<BaseEvmTypes>| {
-                let mut db = CacheDB::<EmptyDB>::default();
+                let mut db = InMemoryDB::default();
                 db.insert_account_info(
                     &caller,
                     AccountInfo::default().with_balance(U256::from(100)),
                 );
                 db.insert_account_info(
                     &child,
-                    AccountInfo::default().with_code(Bytecode::new_raw(hex!("00").into())),
+                    AccountInfo::default().with_code(Bytecode::new_raw(bytes!("00"))),
                 );
                 if !kind.is_create() {
                     db.insert_account_info(
@@ -282,16 +382,14 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
                         AccountInfo::default().with_code(Bytecode::new_raw(code.clone())),
                     );
                 }
-                let mut version = Version::new(SpecId::CANCUN);
-                version.initial_call_depth = initial_call_depth;
-                let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-                    ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
+                let mut evm = Evm::<BaseEvmTypes>::new(
                     SpecId::CANCUN,
                     Default::default(),
                     ethereum_tx_registry(SpecId::CANCUN),
                     db,
                     Precompiles::base(SpecId::CANCUN),
                 );
+                evm.set_initial_call_depth(initial_call_depth);
                 evm.set_inspector(inspector);
                 let tx = TxEnv {
                     caller,
@@ -301,7 +399,7 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
                     data: data.clone(),
                     ..Default::default()
                 };
-                assert!(evm.transact(&tx.envelope()).unwrap().result().status);
+                assert!(evm.transact(&tx.envelope()).unwrap().result().is_success());
             };
             let mut tracer = TracingInspector::new(
                 TracingInspectorConfig::default_geth().set_record_inputs(true),
@@ -309,35 +407,54 @@ fn nested_roots_preserve_trace_depth_and_top_level_inspector_semantics() {
             .with_limits(TraceLimits::default().set_max_recorded_bytes(Some(0)));
             run(&mut tracer);
             let nodes = tracer.traces().nodes();
-            assert_eq!(nodes.len(), 2);
-            assert_eq!(nodes[0].parent, None);
-            assert_eq!(nodes[0].trace.depth, usize::from(initial_call_depth));
-            assert_eq!(nodes[0].trace.data, data);
-            assert_eq!(nodes[0].children, [1]);
-            assert_eq!(nodes[1].parent, Some(0));
-            assert_eq!(nodes[1].trace.depth, usize::from(initial_call_depth) + 1);
+            // Like revm-inspectors, a top-level call above depth zero hangs under an empty root.
+            let root = usize::from(initial_call_depth > 0);
+            assert_eq!(nodes.len(), 2 + root);
+            if root == 1 {
+                assert_eq!(nodes[0].trace, CallTrace::default());
+                assert_eq!(nodes[0].children, [1]);
+            }
+            assert_eq!(nodes[root].parent, root.checked_sub(1));
+            assert_eq!(nodes[root].trace.depth, initial_call_depth);
+            assert_eq!(nodes[root].trace.data, data);
+            assert_eq!(nodes[root].children, [root + 1]);
+            assert_eq!(nodes[root + 1].parent, Some(root));
+            assert_eq!(nodes[root + 1].trace.depth, initial_call_depth + 1);
+            // A zero budget records no steps, so the struct logs come from an unlimited run.
+            let mut tracer = TracingInspector::new(TracingInspectorConfig::default_geth());
+            run(&mut tracer);
             let geth = tracer.geth_builder().geth_traces(0, Bytes::new(), Default::default());
-            assert_eq!(geth.struct_logs[0].depth, u64::from(initial_call_depth) + 1);
-            assert!(
-                geth.struct_logs.iter().any(|log| log.depth == u64::from(initial_call_depth) + 2)
-            );
+            if root == 1 {
+                // As with revm-inspectors, struct logs only follow the root's own steps.
+                assert!(geth.struct_logs.is_empty());
+            } else {
+                assert_eq!(geth.struct_logs[0].depth, u64::from(initial_call_depth) + 1);
+                assert!(
+                    geth.struct_logs
+                        .iter()
+                        .any(|log| log.depth == u64::from(initial_call_depth) + 2)
+                );
+            }
 
+            // Like revm-inspectors, only a call at depth zero counts as top-level.
             let mut access = AccessListInspector::default();
             run(&mut access);
-            assert!(access.excluded().contains(&caller));
-            assert!(access.excluded().contains(&target));
+            assert_eq!(access.excluded().contains(&caller), root == 0);
+            assert_eq!(access.excluded().contains(&target), root == 0);
             assert!(access.touched_slots().contains_key(&child));
             let mut operations = InternalOperationsInspector::default();
             run(&mut operations);
-            assert_eq!(operations.operations().len(), 1);
-            assert_eq!(operations.operations()[0].from, target);
-            assert_eq!(operations.operations()[0].to, child);
+            let operations = &operations.operations()[root..];
+            assert_eq!(operations.len(), 1);
+            assert_eq!(operations[0].from, target);
+            assert_eq!(operations[0].to, child);
             let mut transfers = TransferInspector::internal_only();
             run(&mut transfers);
-            assert_eq!(transfers.transfers().len(), 1);
-            assert_eq!(transfers.transfers()[0].from, target);
-            assert_eq!(transfers.transfers()[0].to, child);
-            let mut opcodes = OpcodeGasInspector::default();
+            let transfers = &transfers.transfers()[root..];
+            assert_eq!(transfers.len(), 1);
+            assert_eq!(transfers[0].from, target);
+            assert_eq!(transfers[0].to, child);
+            let mut opcodes = OpcodeGasInspector::new();
             run(&mut opcodes);
             assert!(
                 opcodes

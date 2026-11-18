@@ -12,7 +12,7 @@ use evm2::{
     AccountInfo, EvmTypesHost,
     env::BlockEnv,
     evm::{DbResult, DynDatabase},
-    interpreter::InstrStop,
+    interpreter::{InstrStop, Result},
 };
 
 /// Converts a non successful [`InstrStop`] to an error message.
@@ -187,6 +187,19 @@ pub(crate) fn transaction_info<T: EvmTypesHost>(
     }
 }
 
+/// Returns the gas cost of a step that stopped with `result`.
+///
+/// A step that ran out of gas costs the whole `gas_remaining` it started with, except the
+/// reentrancy sentry, which rejects SSTORE before charging any gas and costs 0. Any other step
+/// costs what it `charged`.
+pub(crate) const fn step_cost(result: Result, gas_remaining: u64, charged: u64) -> u64 {
+    match result {
+        Err(InstrStop::ReentrancySentryOOG) => 0,
+        Err(stop) if stop.is_out_of_gas() => gas_remaining,
+        _ => charged,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,7 +292,7 @@ mod tests {
             "0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000214661696c656420746f2076657269667920424950333232207369676e617475726500000000000000000000000000000000000000000000000000000000000000"
         );
         let reason = maybe_revert_reason(&err[..]).unwrap();
-        assert_eq!(reason, "Failed to verify BIP322 signature".to_string());
+        assert_eq!(reason, "Failed to verify BIP322 signature");
     }
 
     #[test]

@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn dumps_accounts_and_non_zero_storage() {
         let mut db = InMemoryDB::default();
-        let address = Address::from([0x11; 20]);
+        let address = Address::repeat_byte(0x11);
         let mut info = AccountInfo::default().with_code(parse_bytecode(Bytes::new()));
         info.balance = U256::from(1_000u64);
         info.nonce = 7;
@@ -75,7 +75,7 @@ mod tests {
             &mut db,
             address,
             info,
-            [(U256::from(1u64), U256::from(42u64)), (U256::from(2u64), U256::ZERO)],
+            [(U256::ONE, U256::from(42u64)), (U256::from(2u64), U256::ZERO)],
         );
 
         let mut buf = Vec::new();

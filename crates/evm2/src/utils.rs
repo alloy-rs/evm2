@@ -2,7 +2,7 @@
 
 use crate::interpreter::{InstrStop, Result, Word};
 use alloc::{borrow::Cow, vec};
-use alloy_primitives::{Address, B256, Bytes, b256};
+use alloy_primitives::{Address, B256, Bytes};
 use core::hint::cold_path;
 
 /// Returns the number of EVM words needed for `len` bytes.
@@ -14,7 +14,7 @@ pub const fn num_words(len: usize) -> usize {
 /// Converts an address to an EVM word.
 #[inline]
 pub fn address_to_word(address: &Address) -> Word {
-    Word::from_be_slice(address.as_slice())
+    address.into_word().into()
 }
 
 /// Converts a 256-bit hash to an EVM word.
@@ -27,7 +27,7 @@ pub const fn b256_to_word(value: B256) -> Word {
 ///
 /// This trait is sealed and only implemented for [`Word`].
 pub trait WordExt: sealed::Sealed {
-    /// Writes `value` with a single 32-byte store.
+    /// Writes `value` with one 32-byte store, or two 16-byte stores without AVX.
     ///
     /// With `*self = value`, LLVM writes a word held in general-purpose registers as four 8-byte
     /// stores. The next instruction often reads the word back with one 32-byte load, for example
@@ -39,17 +39,20 @@ pub trait WordExt: sealed::Sealed {
     /// copied from memory already move with one 32-byte load and store, so plain assignment is
     /// better for them; this method would route them through general-purpose registers.
     ///
-    /// Without AVX this is the same as `*self = value`.
+    /// Without AVX on x86_64 this is two 16-byte stores, which a pair of 16-byte loads can still
+    /// forward from. On other targets it is the same as `*self = value`.
     fn write(&mut self, value: Word);
 
-    /// Writes `value`, zero-extended to a word, with a single 32-byte store.
+    /// Writes `value`, zero-extended to a word, with one 32-byte store, or two 16-byte stores
+    /// without AVX.
     ///
     /// With `*self = Word::from(value)`, LLVM stores the value and the three zero limbs separately,
     /// so a later 32-byte load of the word waits for those stores to reach the cache, as described
     /// in [`write`](Self::write). Use this for results that fit in a `u64`, such as comparison
     /// flags, sizes and offsets.
     ///
-    /// Without AVX this is the same as `*self = Word::from(value)`.
+    /// Without AVX on x86_64 this is two 16-byte stores. On other targets it is the same as
+    /// `*self = Word::from(value)`.
     fn write_u64(&mut self, value: u64);
 
     /// Converts the word to an address, keeping its low 20 bytes.
@@ -132,6 +135,14 @@ pub(crate) unsafe fn write_word(dst: *mut Word, value: Word) {
                 options(nostack, preserves_flags),
             );
         },
+        // LLVM splits the word store into 8- and 16-byte stores, which the 16-byte loads that read
+        // it back cannot forward from, so store two 16-byte halves.
+        all(target_arch = "x86_64", not(miri)) => unsafe {
+            use core::arch::x86_64::{__m128i, _mm_set_epi64x, _mm_storeu_si128};
+            let [l0, l1, l2, l3] = value.into_limbs().map(|l| l as i64);
+            _mm_storeu_si128(dst.cast(), _mm_set_epi64x(l1, l0));
+            _mm_storeu_si128(dst.cast::<__m128i>().add(1), _mm_set_epi64x(l3, l2));
+        },
         _ => unsafe { dst.write(value) },
     }
 }
@@ -157,6 +168,15 @@ pub(crate) unsafe fn write_u64(dst: *mut Word, value: u64) {
                 tmp = out(ymm_reg) _tmp,
                 options(nostack, preserves_flags),
             );
+        },
+        // LLVM splits the word store into 8- and 16-byte stores, which the 16-byte loads that read
+        // it back cannot forward from, so store two 16-byte halves.
+        all(target_arch = "x86_64", not(miri)) => unsafe {
+            use core::arch::x86_64::{
+                __m128i, _mm_cvtsi64_si128, _mm_setzero_si128, _mm_storeu_si128,
+            };
+            _mm_storeu_si128(dst.cast(), _mm_cvtsi64_si128(value as i64));
+            _mm_storeu_si128(dst.cast::<__m128i>().add(1), _mm_setzero_si128());
         },
         _ => unsafe { dst.write(Word::from(value)) },
     }
@@ -259,7 +279,7 @@ pub fn left_pad_vec_be(data: &[u8], len: usize) -> Cow<'_, [u8]> {
 /// This is optimized to not allocate at runtime by using 2 static arrays.
 #[inline]
 pub const fn bool_to_bytes32(value: bool) -> Bytes {
-    Bytes::from_static(&bool_to_b256(value).0)
+    Bytes::from_static(bool_to_b256(value).as_slice())
 }
 
 /// Converts a boolean to a left-padded [`B256`] value.
@@ -267,10 +287,8 @@ pub const fn bool_to_bytes32(value: bool) -> Bytes {
 /// This is optimized to not allocate at runtime by using 2 static arrays.
 #[inline]
 const fn bool_to_b256(value: bool) -> &'static B256 {
-    const TRUE: &B256 =
-        &b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
-    const FALSE: &B256 =
-        &b256!("0x0000000000000000000000000000000000000000000000000000000000000000");
+    const TRUE: &B256 = &B256::with_last_byte(1);
+    const FALSE: &B256 = &B256::ZERO;
     if value { TRUE } else { FALSE }
 }
 

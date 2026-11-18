@@ -1,4 +1,4 @@
-use crate::utils::{WordExt, b256_to_word};
+use crate::utils::WordExt;
 use alloy_primitives::{KECCAK256_EMPTY, keccak256 as keccak256_hash};
 use evm2_macros::instruction;
 
@@ -13,7 +13,7 @@ pub fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
         cx.state.resize_memory(cx.gas, offset, len)?;
         keccak256_hash(cx.state.memory().slice(offset, len))
     };
-    *out = b256_to_word(hash);
+    *out = hash.into();
 }
 
 #[cfg(test)]
@@ -42,7 +42,7 @@ mod tests {
         push(&mut code, Word::from(0x80));
         push(&mut code, 0);
         code.push(op::MSTORE8);
-        push(&mut code, Word::from(1));
+        push(&mut code, Word::ONE);
         push(&mut code, 0);
         code.push(op::KECCAK256);
         code.push(op::STOP);
@@ -50,11 +50,11 @@ mod tests {
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [b256_to_word(keccak256([0x80]))]);
 
-        let interp = run_stack([Word::MAX, Word::from(0)], op::KECCAK256);
+        let interp = run_stack([Word::MAX, Word::ZERO], op::KECCAK256);
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [b256_to_word(keccak256([]))]);
 
-        let interp = run_stack([Word::MAX, Word::from(1)], op::KECCAK256);
+        let interp = run_stack([Word::MAX, Word::ONE], op::KECCAK256);
         assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 }

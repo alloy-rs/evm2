@@ -10,7 +10,7 @@ use alloy_primitives::{Address, B256, U256, address, hex, map::HashMap};
 use anstyle::{AnsiColor, Color, Style};
 use colorchoice::ColorChoice;
 use evm2::interpreter::InstrStop;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 
 const CHEATCODE_ADDRESS: Address = address!("7109709ECfa91a80626fF3989D68f67F5b1DD12D");
 
@@ -369,12 +369,12 @@ impl<W: Write> TraceWriter<W> {
         let node = &nodes[node_idx];
         let step = &node.trace.steps[step_idx];
 
-        let Some(decoded) = &step.decoded else {
+        let Some(decoded) = step.decoded() else {
             // We only write explicitly decoded steps to avoid bloating the output.
             return Ok(item_idx + 1);
         };
 
-        match &**decoded {
+        match decoded {
             DecodedTraceStep::InternalCall(call, end_idx) => {
                 let gas_used =
                     step.gas_remaining.saturating_sub(node.trace.steps[*end_idx].gas_remaining);
@@ -554,7 +554,6 @@ impl<W: Write> TraceWriter<W> {
 }
 
 fn use_colors(choice: ColorChoice) -> bool {
-    use io::IsTerminal;
     match choice {
         ColorChoice::Auto => io::stdout().is_terminal(),
         ColorChoice::AlwaysAnsi | ColorChoice::Always => true,
