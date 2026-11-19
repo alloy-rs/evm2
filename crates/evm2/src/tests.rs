@@ -1226,8 +1226,9 @@ fn tip1175_load_flags_affordable() {
 }
 
 /// Builds an EIP-2780 host whose transaction target delegates to `CONTRACT`, prepares the
-/// top-level frame with `gas`, and returns the gas spent and whether `CONTRACT`'s code is warm.
-fn tip1175_top_level_delegation_run(gas: u64) -> (u64, bool) {
+/// top-level frame with `gas`, and returns the gas spent, whether the frame ran out of gas
+/// before executing, and whether `CONTRACT`'s code is warm.
+fn tip1175_top_level_delegation_run(gas: u64) -> (u64, bool, bool) {
     let spec = SpecId::AMSTERDAM;
     let caller = Address::with_last_byte(0xca);
     let entry = Address::with_last_byte(0xe0);
@@ -1256,7 +1257,7 @@ fn tip1175_top_level_delegation_run(gas: u64) -> (u64, bool) {
     evm.state.prewarm(&caller);
     evm.state.prewarm(&entry);
     let mut tracker = GasTracker::new(gas);
-    let _ = prepare_initial_frame(
+    let frame = prepare_initial_frame(
         &mut evm,
         caller,
         0,
@@ -1267,17 +1268,19 @@ fn tip1175_top_level_delegation_run(gas: u64) -> (u64, bool) {
     )
     .unwrap();
     let warm = evm.state.account(&CONTRACT).unwrap().is_code_warm();
-    (gas - tracker.remaining(), warm)
+    (gas - tracker.remaining(), frame.runtime_oog, warm)
 }
 
 #[test]
 fn tip1175_top_level_delegation_unaffordable_code_stays_cold() {
     // With enough gas the target's code is charged at the contract price and warmed.
-    let (spent, warm) = tip1175_top_level_delegation_run(1_000_000);
+    let (spent, halted, warm) = tip1175_top_level_delegation_run(1_000_000);
+    assert!(!halted);
     assert!(warm);
     // Leave enough for the cheaper (designator) price but not the contract price at the code
     // step: the frame halts and the code must stay cold.
     let budget = spent - u64::from(CODE_COST) + u64::from(DELEGATION_COST) + 1;
-    let (_, warm) = tip1175_top_level_delegation_run(budget);
+    let (_, halted, warm) = tip1175_top_level_delegation_run(budget);
+    assert!(halted, "the short budget must halt the frame before it runs");
     assert!(!warm);
 }
