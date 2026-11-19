@@ -1,6 +1,6 @@
 use crate::{
     EvmTypesHost,
-    evm::AccountLoad,
+    evm::{AccountLoad, LoadFlags},
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{WordExt, read_word_padded},
     version::GasParams,
@@ -12,31 +12,13 @@ fn load_account<T: EvmTypesHost>(
     addr: Word,
     load_code: bool,
 ) -> Result<AccountLoad> {
-    let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
-    // TIP-1175: a priced code load is a second step, after the account access is paid for.
-    let priced_code = load_code && cx.state.gas_params().prices_code_load();
-    let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let account_address = addr.to_address();
-    let mut account = cx
+    let flags = LoadFlags::affordable(cx.gas.remaining(), cx.state.gas_params(), load_code);
+    let account = cx
         .state
         .host()
-        .load_account(&account_address, load_code && !priced_code, skip_cold_load)
+        .load_account(&addr.to_address(), flags)
         .map_err(|error| cx.state.fail(error))?;
-    if account.is_cold {
-        cx.gas.spend(cold_load_gas)?;
-    }
-    if priced_code {
-        let gas_limit = cx.gas.remaining();
-        let load = cx
-            .state
-            .host()
-            .load_code(&account_address, gas_limit)
-            .map_err(|error| cx.state.fail(error))?;
-        if load.is_cold {
-            cx.gas.spend(cx.state.gas_params().cold_code_cost(&load.code))?;
-        }
-        account.code = load.code;
-    }
+    cx.gas.spend(account.cold_cost(cx.state.gas_params()))?;
     Ok(account)
 }
 

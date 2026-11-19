@@ -67,10 +67,14 @@ pub enum JournalEntry {
         /// Previous transient storage value.
         previous: Option<Word>,
     },
-    /// Account bytecode was warmed by Tempo TIP-1175 code load tracking.
-    CodeWarmed {
+    /// An account load warmed the account (EIP-2929) or its bytecode (Tempo TIP-1175), or both,
+    /// without otherwise changing it. Rollback clears exactly `flags`.
+    AccountWarmed {
         /// Account address.
         address: Address,
+        /// The warmth flags this load set: [`AccountFlags::WARM`], [`AccountFlags::CODE_WARM`]
+        /// or both.
+        flags: AccountFlags,
     },
     /// Storage slot was warmed by EIP-2929 access tracking.
     StorageWarmed {

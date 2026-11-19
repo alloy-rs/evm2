@@ -2,7 +2,7 @@ use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
     BaseEvmTypes, DatabaseError, EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, CodeLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, LoadFlags, SLoad, SStore, SelfDestructResult},
     utils::address_to_word,
 };
 use alloc::borrow::Cow;
@@ -140,24 +140,16 @@ pub trait Host<T: EvmTypesHost> {
     /// `u16::MAX - CALL_DEPTH_LIMIT - 1` so the deepest message stays representable.
     fn initial_call_depth(&self) -> u16;
 
-    /// Loads account information.
+    /// Loads account information, and its bytecode with [`LoadFlags::CODE`], as `flags` says.
+    ///
+    /// Halts with out of gas, warming nothing, when the account or its code is cold and `flags`
+    /// says the caller's gas can't pay for that outcome. Otherwise warms what it loaded; the
+    /// caller then charges [`AccountLoad::cold_cost`].
     fn load_account(
         &mut self,
         address: &Address,
-        load_code: bool,
-        skip_cold_load: bool,
+        flags: LoadFlags,
     ) -> Result<AccountLoad, HostError>;
-
-    /// Loads an account's bytecode as a step after [`Self::load_account`] (Tempo TIP-1175).
-    ///
-    /// Call it once the account access is charged. When code loads are priced
-    /// ([`GasParams::prices_code_load`](crate::version::GasParams::prices_code_load)),
-    /// [`CodeLoad::is_cold`] says whether to charge
-    /// [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost). `gas_limit` is
-    /// the gas the caller has left for that charge: a cold load whose price exceeds it halts with
-    /// out of gas instead, leaving the code cold, and is skipped before the code is read when even
-    /// the cheaper code price exceeds it. Otherwise this only loads the code.
-    fn load_code(&mut self, address: &Address, gas_limit: u64) -> Result<CodeLoad, HostError>;
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError>;

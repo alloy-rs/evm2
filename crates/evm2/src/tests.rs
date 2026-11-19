@@ -7,7 +7,7 @@ use crate::{
         eip7702::{AuthRefunds, Eip7702Authorization, RuntimeAuthCharges, apply_auth_list},
         ethereum_tx_registry, prepare_initial_frame,
     },
-    evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
+    evm::{AccountInfo, InMemoryDB, LoadFlags, SYSTEM_ADDRESS},
     interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
     test_utils::{legacy_bytecode, push, push_address, push_all, return_top_word},
@@ -1018,19 +1018,34 @@ fn tip1175_host() -> TestEvm {
     )
 }
 
+/// Loads and warms `address` without its code, as `BALANCE` would with gas to spare.
+fn warm_account(evm: &mut TestEvm, address: &Address) {
+    Host::load_account(evm, address, LoadFlags::NO_GAS_CHECK).unwrap();
+}
+
+/// Loads `address` with its code, with `gas` left for the cold surcharges.
+fn load_code(
+    evm: &mut TestEvm,
+    address: &Address,
+    gas: u64,
+) -> Result<crate::evm::AccountLoad, crate::HostError> {
+    let gas_params = Host::execution_config(evm).version().gas_params;
+    Host::load_account(evm, address, LoadFlags::affordable(gas, &gas_params, true))
+}
+
 #[test]
 fn tip1175_skipped_cold_code_load_halts_without_warming() {
     let mut evm = tip1175_host();
-    Host::load_account(&mut evm, &CONTRACT, false, false).unwrap();
+    warm_account(&mut evm, &CONTRACT);
     assert!(matches!(
-        Host::load_code(&mut evm, &CONTRACT, 0),
+        load_code(&mut evm, &CONTRACT, 0),
         Err(crate::HostError::Halt(InstrStop::OutOfGas))
     ));
     assert!(!evm.state.account(&CONTRACT).unwrap().is_code_warm());
     // Paying for it afterwards still sees a cold load, then a warm one.
-    assert!(Host::load_code(&mut evm, &CONTRACT, u64::MAX).unwrap().is_cold);
-    let warm = Host::load_code(&mut evm, &CONTRACT, 0).unwrap();
-    assert!(!warm.is_cold);
+    assert!(load_code(&mut evm, &CONTRACT, u64::MAX).unwrap().is_code_cold);
+    let warm = load_code(&mut evm, &CONTRACT, 0).unwrap();
+    assert!(!warm.is_code_cold);
     assert_eq!(warm.code.original_bytes().as_ref(), &[op::STOP]);
 }
 
@@ -1040,13 +1055,13 @@ fn tip1175_skipped_cold_code_load_halts_without_warming() {
 fn tip1175_free_code_load_is_never_skipped(#[case] address: Address) {
     let mut evm = tip1175_host();
     evm.warm_precompiles();
-    Host::load_account(&mut evm, &address, false, false).unwrap();
-    assert!(!Host::load_code(&mut evm, &address, 0).unwrap().is_cold);
+    warm_account(&mut evm, &address);
+    assert!(!load_code(&mut evm, &address, 0).unwrap().is_code_cold);
 }
 
 #[test]
 fn tip1175_code_load_not_skipped_when_unpriced() {
-    // On Ethereum the code price is zero, so `load_code` never skips or tracks warmth.
+    // On Ethereum the code price is zero, so a code load never skips or tracks warmth.
     let mut evm = TestEvm::new(
         SpecId::PRAGUE,
         BlockEnvExt::default(),
@@ -1061,9 +1076,9 @@ fn tip1175_code_load_not_skipped_when_unpriced() {
         },
         Precompiles::base(SpecId::PRAGUE),
     );
-    Host::load_account(&mut evm, &CONTRACT, false, false).unwrap();
-    let load = Host::load_code(&mut evm, &CONTRACT, 0).unwrap();
-    assert!(!load.is_cold);
+    warm_account(&mut evm, &CONTRACT);
+    let load = load_code(&mut evm, &CONTRACT, 0).unwrap();
+    assert!(!load.is_code_cold);
     assert!(!evm.state.account(&CONTRACT).unwrap().is_code_warm());
 }
 
@@ -1116,14 +1131,14 @@ fn tip1175_delegation_designator_pricing(#[case] steps: &[(u8, Address)], #[case
 #[test]
 fn tip1175_skipped_designator_load_halts_without_warming() {
     let mut evm = tip1175_host();
-    Host::load_account(&mut evm, &DELEGATING, false, false).unwrap();
+    warm_account(&mut evm, &DELEGATING);
     assert!(matches!(
-        Host::load_code(&mut evm, &DELEGATING, 0),
+        load_code(&mut evm, &DELEGATING, 0),
         Err(crate::HostError::Halt(InstrStop::OutOfGas))
     ));
     assert!(!evm.state.account(&DELEGATING).unwrap().is_code_warm());
-    let load = Host::load_code(&mut evm, &DELEGATING, u64::MAX).unwrap();
-    assert!(load.is_cold);
+    let load = load_code(&mut evm, &DELEGATING, u64::MAX).unwrap();
+    assert!(load.is_code_cold);
     assert!(load.code.is_eip7702());
 }
 
@@ -1134,14 +1149,71 @@ fn tip1175_skipped_designator_load_halts_without_warming() {
 #[case::exact_price(CODE_COST, false)]
 fn tip1175_code_load_checks_the_exact_price(#[case] gas_limit: u32, #[case] skipped: bool) {
     let mut evm = tip1175_host();
-    Host::load_account(&mut evm, &CONTRACT, false, false).unwrap();
-    let load = Host::load_code(&mut evm, &CONTRACT, u64::from(gas_limit));
+    warm_account(&mut evm, &CONTRACT);
+    let load = load_code(&mut evm, &CONTRACT, u64::from(gas_limit));
     if skipped {
         assert!(matches!(load, Err(crate::HostError::Halt(InstrStop::OutOfGas))));
     } else {
-        assert!(load.unwrap().is_cold);
+        assert!(load.unwrap().is_code_cold);
     }
     assert_eq!(evm.state.account(&CONTRACT).unwrap().is_code_warm(), !skipped);
+}
+
+#[rstest::rstest]
+// A cold account with cold code needs both prices: with only the account's, the load halts and
+// leaves both the account and its code cold.
+#[case::account_and_code(2_500 + CODE_COST, true)]
+#[case::account_only(2_500 + CODE_COST - 1, false)]
+#[case::nothing(2_499, false)]
+fn tip1175_cold_account_and_code_load(#[case] gas: u32, #[case] loaded: bool) {
+    let mut evm = tip1175_host();
+    let load = load_code(&mut evm, &CONTRACT, u64::from(gas));
+    if loaded {
+        let load = load.unwrap();
+        assert!(load.is_cold && load.is_code_cold);
+        assert_eq!(
+            load.cold_cost(&Host::execution_config(&evm).version().gas_params),
+            u64::from(gas)
+        );
+    } else {
+        assert!(matches!(load, Err(crate::HostError::Halt(InstrStop::OutOfGas))));
+    }
+    let account = evm.state.account(&CONTRACT).unwrap();
+    assert_eq!(account.is_warm(), loaded);
+    assert_eq!(account.is_code_warm(), loaded);
+}
+
+#[test]
+fn tip1175_account_and_code_warmth_roll_back_together() {
+    let mut evm = tip1175_host();
+    let checkpoint = evm.state.checkpoint();
+    load_code(&mut evm, &CONTRACT, u64::MAX).unwrap();
+    evm.state.rollback(checkpoint, crate::EvmFeatures::empty());
+    let account = evm.state.account(&CONTRACT).unwrap();
+    assert!(!account.is_warm());
+    assert!(!account.is_code_warm());
+    drop(account);
+    // Still loaded, so the block access list keeps the read.
+    assert!(evm.state.loaded_accounts().any(|(address, _)| *address == CONTRACT));
+}
+
+#[test]
+fn tip1175_load_flags_affordable() {
+    let mut gas_params = Version::new(SpecId::PRAGUE).gas_params;
+    gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
+    gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
+    let flags = |gas| LoadFlags::affordable(gas, &gas_params, true);
+    assert_eq!(flags(0), LoadFlags::CODE);
+    assert_eq!(flags(u64::from(DELEGATION_COST)), LoadFlags::CODE | LoadFlags::COLD_DELEGATION);
+    assert_eq!(
+        flags(2_500),
+        LoadFlags::CODE
+            | LoadFlags::COLD_ACCOUNT
+            | LoadFlags::COLD_CODE
+            | LoadFlags::COLD_DELEGATION
+    );
+    assert_eq!(flags(2_500 + u64::from(CODE_COST)), LoadFlags::CODE | LoadFlags::NO_GAS_CHECK);
+    assert!(!LoadFlags::affordable(u64::MAX, &gas_params, false).contains(LoadFlags::CODE));
 }
 
 /// Builds an EIP-2780 host whose transaction target delegates to `CONTRACT`, prepares the

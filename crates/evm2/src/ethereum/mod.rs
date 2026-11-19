@@ -608,40 +608,23 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     // cold premium after the load. The load is skipped when the cold premium is
                     // unaffordable, keeping a cold, unafforded target out of the block access
                     // list.
-                    let cold_additional = host.version().gas_params.cold_account_additional_cost();
                     if tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
                         return Ok(halted(host));
                     }
-                    let priced_code = host.version().gas_params.prices_code_load();
-                    let skip_cold_load = tx_gas.remaining() < cold_additional;
-                    let load = match Host::load_account(
-                        host,
-                        &delegated_address,
-                        !priced_code,
-                        skip_cold_load,
-                    ) {
+                    // The target's cold account and, under TIP-1175, its cold bytecode must both
+                    // fit in the gas left, or the load halts with nothing warmed.
+                    let gas_params = host.version().gas_params;
+                    let flags =
+                        crate::evm::LoadFlags::affordable(tx_gas.remaining(), &gas_params, true);
+                    let load = match Host::load_account(host, &delegated_address, flags) {
                         Ok(load) => load,
                         Err(HostError::Halt(_)) => return Ok(halted(host)),
                         Err(HostError::Execution(error)) => return Err(error.into()),
                     };
-                    if load.is_cold && tx_gas.spend(cold_additional).is_err() {
+                    if tx_gas.spend(load.cold_cost(&gas_params)).is_err() {
                         return Ok(halted(host));
                     }
                     code = load.code;
-                    // TIP-1175: the target's code is a second step, skipped when unaffordable.
-                    if priced_code {
-                        let gas_limit = tx_gas.remaining();
-                        let load = match Host::load_code(host, &delegated_address, gas_limit) {
-                            Ok(load) => load,
-                            Err(HostError::Halt(_)) => return Ok(halted(host)),
-                            Err(HostError::Execution(error)) => return Err(error.into()),
-                        };
-                        let cost = host.version().gas_params.cold_code_cost(&load.code);
-                        if load.is_cold && tx_gas.spend(cost).is_err() {
-                            return Ok(halted(host));
-                        }
-                        code = load.code;
-                    }
                 } else {
                     // The delegation target is resolved for free here, so its bytecode is warmed
                     // for free with it (TIP-1175).

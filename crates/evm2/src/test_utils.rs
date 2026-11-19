@@ -121,10 +121,10 @@ impl Host<TestTypes> for TestHost {
     fn load_account(
         &mut self,
         address: &Address,
-        load_code: bool,
-        skip_cold_load: bool,
+        flags: crate::evm::LoadFlags,
     ) -> Result<AccountLoad, crate::HostError> {
-        if skip_cold_load && self.is_cold {
+        let load_code = flags.contains(crate::evm::LoadFlags::CODE);
+        if !flags.contains(crate::evm::LoadFlags::COLD_ACCOUNT) && self.is_cold {
             return Err(InstrStop::OutOfGas.into());
         }
         self.account_loads.push(*address);
@@ -148,18 +148,8 @@ impl Host<TestTypes> for TestHost {
                 !self.exists && !self.is_touched
             },
             is_cold: self.is_cold,
+            is_code_cold: false,
             _non_exhaustive: (),
-        })
-    }
-
-    fn load_code(
-        &mut self,
-        _address: &Address,
-        _gas_limit: u64,
-    ) -> Result<crate::evm::CodeLoad, crate::HostError> {
-        Ok(crate::evm::CodeLoad {
-            code: Bytecode::new_legacy(self.code.clone()),
-            ..Default::default()
         })
     }
 

@@ -521,17 +521,8 @@ mod tests {
         fn load_account(
             &mut self,
             _address: &Address,
-            _load_code: bool,
-            _skip_cold_load: bool,
+            _flags: crate::evm::LoadFlags,
         ) -> Result<AccountLoad, crate::HostError> {
-            unimplemented!()
-        }
-
-        fn load_code(
-            &mut self,
-            _address: &Address,
-            _gas_limit: u64,
-        ) -> Result<crate::evm::CodeLoad, crate::HostError> {
             unimplemented!()
         }
 

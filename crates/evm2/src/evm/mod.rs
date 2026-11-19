@@ -1984,24 +1984,37 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     fn load_account(
         &mut self,
         address: &Address,
-        load_code: bool,
-        skip_cold_load: bool,
+        flags: LoadFlags,
     ) -> Result<AccountLoad, HostError> {
-        let mut account = match self.state.account_with_skip(address, skip_cold_load) {
+        let load_code = flags.contains(LoadFlags::CODE);
+        let price_code = load_code && self.execution_config.version().gas_params.prices_code_load();
+        // Every check runs before anything is warmed, so a load the caller can't pay for leaves
+        // the account and its code cold. A cold account it can't pay for is not read at all.
+        let skip_cold_account = !flags.contains(LoadFlags::COLD_ACCOUNT);
+        let mut account = match self.state.account_with_skip(address, skip_cold_account) {
             Ok(account) => account,
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
             Err(code) => return Err(code.into()),
         };
-        let is_cold = account.warm();
+        let is_cold = !account.is_warm();
+        let is_code_cold = price_code && account.has_cold_code();
+        if is_code_cold && !flags.intersects(LoadFlags::cold_code_any(is_cold)) {
+            // Not even the cheaper code price fits: halt before reading the code.
+            return Err(InstrStop::OutOfGas.into());
+        }
+        let code = if load_code { account.load_code()? } else { Bytecode::default() };
+        if is_code_cold && !flags.contains(LoadFlags::cold_code(is_cold, code.is_eip7702())) {
+            return Err(InstrStop::OutOfGas.into());
+        }
+        let mut warm = AccountFlags::WARM;
+        warm.set(AccountFlags::CODE_WARM, is_code_cold);
+        account.warm_with(warm);
 
         let is_empty_for_new_account_gas = account.is_empty_for_new_account_gas(self.features);
         let (balance, nonce, code_hash, is_empty) = match account.get() {
             Some(info) => (info.balance, info.nonce, info.code_hash, info.is_empty()),
             None => (Word::ZERO, 0, B256::ZERO, true),
         };
-
-        // load code. Not priced here: a priced (TIP-1175) code load goes through `load_code`.
-        let code = if load_code { account.load_code()? } else { Bytecode::default() };
         Ok(AccountLoad {
             balance,
             nonce,
@@ -2010,20 +2023,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             is_empty,
             is_empty_for_new_account_gas,
             is_cold,
+            is_code_cold,
             _non_exhaustive: (),
         })
-    }
-
-    fn load_code(&mut self, address: &Address, gas_limit: u64) -> Result<CodeLoad, HostError> {
-        let gas_params = &self.execution_config.version().gas_params;
-        let track_code = gas_params.prices_code_load();
-        let mut account = self.state.account(address)?;
-        let (code, is_cold) = if track_code {
-            account.load_code_within(gas_limit, gas_params)?
-        } else {
-            (account.load_code()?, false)
-        };
-        Ok(CodeLoad { code, is_cold, _non_exhaustive: () })
     }
 
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError> {
@@ -2187,23 +2189,117 @@ pub struct AccountLoad {
     pub is_empty_for_new_account_gas: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
+    /// Whether the bytecode load was cold and must pay
+    /// [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost) for `code`
+    /// (Tempo TIP-1175). Only set when [`LoadFlags::CODE`] was requested and code loads are
+    /// priced.
+    pub is_code_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
-/// Result of a [`Host::load_code`] operation (Tempo TIP-1175).
-#[derive(Clone, Debug, Default)]
-pub struct CodeLoad {
-    /// Account bytecode, empty for an account without code.
-    pub code: Bytecode,
-    /// Whether the load was cold and must pay
-    /// [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost) for `code`.
+impl AccountLoad {
+    /// Returns the cold surcharges this load must pay: the cold account access and the cold
+    /// bytecode load.
+    #[inline]
+    pub fn cold_cost(&self, gas_params: &crate::version::GasParams) -> u64 {
+        let mut cost = 0;
+        if self.is_cold {
+            cost += gas_params.cold_account_additional_cost();
+        }
+        if self.is_code_cold {
+            cost += gas_params.cold_code_cost(&self.code);
+        }
+        cost
+    }
+}
+
+bitflags::bitflags! {
+    /// How [`Host::load_account`] loads an account: whether it loads the bytecode, and which cold
+    /// outcomes the caller's remaining gas can pay for.
     ///
-    /// Only set when code loads are priced and the account has code, an EIP-7702 delegation
-    /// designator included, that was not yet warm.
-    pub is_cold: bool,
-    #[doc(hidden)] // Not public API. Please use an existing constructor.
-    pub _non_exhaustive: (),
+    /// The host halts with out of gas, before warming anything, when the account or its code
+    /// turns out to be cold and the matching `COLD_*` flag is unset. A cold account the caller
+    /// can't pay for is not read from the database at all. Build the flags from the gas left with
+    /// [`Self::affordable`], or use [`Self::NO_GAS_CHECK`] when the load is not gated on gas.
+    ///
+    /// Code is part of the account, so a warm code load costs nothing beyond the account access
+    /// and code is never loaded without its account. New cold outcomes get their own bit.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+    pub struct LoadFlags: u8 {
+        /// Load and return the account's bytecode.
+        const CODE = 1 << 0;
+        /// The gas covers a cold account access.
+        const COLD_ACCOUNT = 1 << 1;
+        /// The gas covers a cold bytecode load of a warm account.
+        const COLD_CODE = 1 << 2;
+        /// The gas covers a cold account access plus a cold bytecode load.
+        const COLD_ACCOUNT_AND_CODE = 1 << 3;
+        /// The gas covers a cold EIP-7702 delegation designator load of a warm account.
+        const COLD_DELEGATION = 1 << 4;
+        /// The gas covers a cold account access plus a cold delegation designator load.
+        const COLD_ACCOUNT_AND_DELEGATION = 1 << 5;
+        /// Every cold outcome is covered: the load is not gated on gas.
+        const NO_GAS_CHECK = Self::COLD_ACCOUNT.bits()
+            | Self::COLD_CODE.bits()
+            | Self::COLD_ACCOUNT_AND_CODE.bits()
+            | Self::COLD_DELEGATION.bits()
+            | Self::COLD_ACCOUNT_AND_DELEGATION.bits();
+    }
+}
+
+impl LoadFlags {
+    /// Returns the flags for a load with `gas_left` to pay its cold surcharges, loading the
+    /// bytecode when `load_code` is set.
+    #[inline]
+    pub const fn affordable(
+        gas_left: u64,
+        gas_params: &crate::version::GasParams,
+        load_code: bool,
+    ) -> Self {
+        let account = gas_params.cold_account_additional_cost();
+        let code = gas_params.cold_code_additional_cost();
+        let delegation = gas_params.cold_delegation_code_additional_cost();
+        let mut bits = 0;
+        if load_code {
+            bits |= Self::CODE.bits();
+        }
+        if gas_left >= account {
+            bits |= Self::COLD_ACCOUNT.bits();
+        }
+        if gas_left >= code {
+            bits |= Self::COLD_CODE.bits();
+        }
+        if gas_left >= account.saturating_add(code) {
+            bits |= Self::COLD_ACCOUNT_AND_CODE.bits();
+        }
+        if gas_left >= delegation {
+            bits |= Self::COLD_DELEGATION.bits();
+        }
+        if gas_left >= account.saturating_add(delegation) {
+            bits |= Self::COLD_ACCOUNT_AND_DELEGATION.bits();
+        }
+        Self::from_bits_retain(bits)
+    }
+
+    /// Returns the flag a cold bytecode load needs: with or without a cold account, for contract
+    /// code or a delegation designator.
+    #[inline]
+    pub const fn cold_code(account_cold: bool, delegation: bool) -> Self {
+        match (account_cold, delegation) {
+            (false, false) => Self::COLD_CODE,
+            (false, true) => Self::COLD_DELEGATION,
+            (true, false) => Self::COLD_ACCOUNT_AND_CODE,
+            (true, true) => Self::COLD_ACCOUNT_AND_DELEGATION,
+        }
+    }
+
+    /// Returns the flags of which at least one is needed for a cold bytecode load before the code
+    /// is read, when it is not yet known whether it is a delegation designator.
+    #[inline]
+    pub const fn cold_code_any(account_cold: bool) -> Self {
+        Self::cold_code(account_cold, false).union(Self::cold_code(account_cold, true))
+    }
 }
 
 /// Result of an `SLOAD` host operation.
@@ -2695,7 +2791,7 @@ mod tests {
         );
         let address = LIFECYCLE_ACCOUNT;
         assert!(matches!(
-            Host::load_account(&mut evm, &address, true, true),
+            Host::load_account(&mut evm, &address, LoadFlags::CODE),
             Err(HostError::Halt(InstrStop::OutOfGas))
         ));
         let stats = evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts();

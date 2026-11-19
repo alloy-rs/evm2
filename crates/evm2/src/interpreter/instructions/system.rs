@@ -4,6 +4,7 @@ use super::require_non_staticcall;
 use crate::{
     EvmFeatures, EvmTypesHost, HostError,
     bytecode::Bytecode,
+    evm::LoadFlags,
     interpreter::{
         Gas, GasTracker, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind,
         MessageResult, MessageResultExt, Result, StackMut, Word, create_preaccess_failure,
@@ -85,27 +86,13 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
         gas.spend(gas_params.get(GasId::TransferValueCost))?;
     }
 
-    let additional_cold_cost = gas_params.cold_account_additional_cost();
-    // TIP-1175: a priced code load is a second step, after the account access, and is skipped
-    // when it can't be paid for. A delegating account's designator is a code load at its own
-    // price, and the delegation target then pays its account access and its bytecode.
-    let priced_code = gas_params.prices_code_load();
+    // TIP-1175: the target's bytecode is loaded with it and priced on its own; a delegating
+    // account's designator is a code load at its own price, and the delegation target then pays
+    // its account access and its bytecode.
     let remaining_gas = gas.remaining();
-    let skip_cold_load = remaining_gas < additional_cold_cost;
-    let mut account = host.load_account(&to, !priced_code, skip_cold_load)?;
-
-    let mut cost = 0;
-    if account.is_cold {
-        cost += additional_cold_cost;
-    }
-    if priced_code {
-        let gas_limit = remaining_gas.saturating_sub(cost);
-        let load = host.load_code(&to, gas_limit)?;
-        if load.is_cold {
-            cost += gas_params.cold_code_cost(&load.code);
-        }
-        account.code = load.code;
-    }
+    let mut account =
+        host.load_account(&to, LoadFlags::affordable(remaining_gas, gas_params, true))?;
+    let mut cost = account.cold_cost(gas_params);
     let mut code = core::mem::take(&mut account.code);
     let mut code_address = to;
     if features.contains(EvmFeatures::EIP7702)
@@ -115,21 +102,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
         if cost > remaining_gas {
             return Err(InstrStop::OutOfGas.into());
         }
-        let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
-        let delegated_account =
-            host.load_account(&delegated_address, !priced_code, skip_cold_load)?;
-        if delegated_account.is_cold {
-            cost += additional_cold_cost;
-        }
+        let flags = LoadFlags::affordable(remaining_gas - cost, gas_params, true);
+        let delegated_account = host.load_account(&delegated_address, flags)?;
+        cost += delegated_account.cold_cost(gas_params);
         code = delegated_account.code;
-        if priced_code {
-            let gas_limit = remaining_gas.saturating_sub(cost);
-            let load = host.load_code(&delegated_address, gas_limit)?;
-            if load.is_cold {
-                cost += gas_params.cold_code_cost(&load.code);
-            }
-            code = load.code;
-        }
         code_address = delegated_address;
     }
     let mut new_account_state_gas = 0;
@@ -475,7 +451,12 @@ pub fn create_with<T: EvmTypesHost>(
     let caller_info = if is_create2 && !state.feature(EvmFeatures::EIP8037) {
         None
     } else {
-        Some(state.host().load_account(&caller, false, false).map_err(|error| state.fail(error))?)
+        Some(
+            state
+                .host()
+                .load_account(&caller, LoadFlags::NO_GAS_CHECK)
+                .map_err(|error| state.fail(error))?,
+        )
     };
     let destination = derive_create_destination(
         kind,
@@ -513,7 +494,7 @@ pub fn create_with<T: EvmTypesHost>(
         // failures return above before the destination is accessed.
         if state
             .host()
-            .load_account(&destination, false, false)
+            .load_account(&destination, LoadFlags::NO_GAS_CHECK)
             .map_err(|error| state.fail(error))?
             .is_empty_for_new_account_gas
         {

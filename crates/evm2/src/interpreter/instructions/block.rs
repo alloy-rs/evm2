@@ -60,7 +60,7 @@ pub fn selfbalance(cx: _) -> Result<out> {
     *out = cx
         .state
         .host()
-        .load_account(destination, false, false)
+        .load_account(destination, crate::evm::LoadFlags::NO_GAS_CHECK)
         .map_err(|error| cx.state.fail(error))?
         .balance;
 }

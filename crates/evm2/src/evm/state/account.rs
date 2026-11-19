@@ -4,7 +4,7 @@ use super::{
     AccountChanges, DbResult, DynDatabase, JournalEntry, StateInner, StorageHandle, StorageOverlay,
     storage_pool::StoragePool,
 };
-use crate::{EvmFeatures, LoadError, bytecode::Bytecode, interpreter::Word};
+use crate::{EvmFeatures, bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
 use bitflags::bitflags;
 use derive_where::derive_where;
@@ -556,36 +556,45 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.touch();
     }
 
-    /// Marks the account warm for EIP-2929 gas accounting, recording a revert snapshot when this
-    /// access transitions it from cold to warm.
+    /// Marks the account warm for EIP-2929 gas accounting.
     ///
     /// Returns `true` if the account was cold before this call. Accounts already warm through the
     /// base warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        if self.is_warm() {
-            return false;
-        }
-        self.record_change();
-        self.tracked.flags.insert(AccountFlags::WARM);
-        true
+        !self.warm_with(AccountFlags::WARM).is_empty()
     }
 
     /// Marks the account's bytecode warm for Tempo TIP-1175 gas accounting.
     ///
-    /// Returns `true` if the bytecode was cold before this call. The change is journaled: when
-    /// this handle already recorded an account snapshot, that snapshot restores the flag on
-    /// rollback; otherwise a [`JournalEntry::CodeWarmed`] is recorded.
+    /// Returns `true` if the bytecode was cold before this call.
     #[inline]
     pub fn warm_code(&mut self) -> bool {
-        if self.is_code_warm() {
-            return false;
+        !self.warm_with(AccountFlags::CODE_WARM).is_empty()
+    }
+
+    /// Sets the warmth flags in `flags` ([`AccountFlags::WARM`], [`AccountFlags::CODE_WARM`]) that
+    /// are not already in effect, and returns the ones it set.
+    ///
+    /// The flags it sets are journaled together: when this handle already recorded an account
+    /// snapshot, that snapshot restores them on rollback; otherwise one
+    /// [`JournalEntry::AccountWarmed`] records exactly the flags set.
+    #[inline]
+    pub fn warm_with(&mut self, flags: AccountFlags) -> AccountFlags {
+        let mut cold = AccountFlags::empty();
+        cold.set(AccountFlags::WARM, !self.is_warm());
+        cold.set(AccountFlags::CODE_WARM, !self.is_code_warm());
+        let set = flags & cold;
+        if set.is_empty() {
+            return set;
         }
         if self.snapshot.is_none() {
-            self.inner.journal.push(JournalEntry::CodeWarmed { address: self.address });
+            self.inner
+                .journal
+                .push(JournalEntry::AccountWarmed { address: self.address, flags: set });
         }
-        self.tracked.flags.insert(AccountFlags::CODE_WARM);
-        true
+        self.tracked.flags.insert(set);
+        set
     }
 
     /// Loads the account's bytecode as a step separate from the account load, and warms it for
@@ -606,37 +615,9 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         Ok((code, is_cold))
     }
 
-    /// Like [`Self::load_code_and_warm`], but a cold load whose price is more than `gas_limit`
-    /// returns [`LoadError::ColdLoadSkipped`] instead, without warming the code, so a caller that
-    /// can't pay for it halts with the code still cold.
-    ///
-    /// The price is [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost) for
-    /// the loaded code. When `gas_limit` is below even the cheaper of the two code prices the load
-    /// is skipped before the code is read from the database. Accounts without code and warm code
-    /// are never skipped.
-    #[inline]
-    pub fn load_code_within(
-        &mut self,
-        gas_limit: u64,
-        gas_params: &crate::version::GasParams,
-    ) -> Result<(Bytecode, bool), LoadError> {
-        if !self.has_cold_code() {
-            return Ok((self.load_code()?, false));
-        }
-        if gas_limit < gas_params.min_cold_code_cost() {
-            return Err(LoadError::ColdLoadSkipped);
-        }
-        let code = self.load_code()?;
-        if gas_limit < gas_params.cold_code_cost(&code) {
-            return Err(LoadError::ColdLoadSkipped);
-        }
-        self.warm_code();
-        Ok((code, true))
-    }
-
     /// Returns whether the account has code, a delegation designator included, that is not warm.
     #[inline]
-    fn has_cold_code(&self) -> bool {
+    pub(crate) fn has_cold_code(&self) -> bool {
         self.tracked.present.as_ref().is_some_and(|account| !account.is_empty_code_hash())
             && !self.is_code_warm()
     }

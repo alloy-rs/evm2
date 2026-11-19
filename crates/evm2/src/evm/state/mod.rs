@@ -904,9 +904,9 @@ impl<'a> State<'a> {
                         entry.flags = (previous_flags - kept) | (entry.flags & kept);
                     }
                 }
-                JournalEntry::CodeWarmed { address } => {
+                JournalEntry::AccountWarmed { address, flags } => {
                     if let Some(entry) = self.accounts.get_mut(&address) {
-                        entry.flags.remove(AccountFlags::CODE_WARM);
+                        entry.flags.remove(flags);
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
