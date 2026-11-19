@@ -152,12 +152,6 @@ impl Host<TestTypes> for TestHost {
         })
     }
 
-    fn checkpoint_state(&mut self) -> crate::evm::StateCheckpoint {
-        crate::evm::StateCheckpoint::new(0, 0)
-    }
-
-    fn rollback_state(&mut self, _checkpoint: crate::evm::StateCheckpoint) {}
-
     fn load_code(
         &mut self,
         _address: &Address,

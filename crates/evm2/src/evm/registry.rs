@@ -527,14 +527,6 @@ mod tests {
             unimplemented!()
         }
 
-        fn checkpoint_state(&mut self) -> crate::evm::StateCheckpoint {
-            unimplemented!()
-        }
-
-        fn rollback_state(&mut self, _checkpoint: crate::evm::StateCheckpoint) {
-            unimplemented!()
-        }
-
         fn load_code(
             &mut self,
             _address: &Address,
