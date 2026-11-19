@@ -44,6 +44,8 @@ pub(super) struct TxGasState<T: EvmTypesHost> {
     /// The table that is not installed: the schedule's while the EVM's own is installed, and the
     /// EVM's own while the schedule's is.
     other: GasParams,
+    /// The interpreter runner's verdict for [`Self::other`].
+    other_runner_supported: bool,
     /// Whether the schedule's table is installed.
     swapped: bool,
 }
@@ -104,9 +106,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 select: schedule.select,
                 base: self.execution_config.version.gas_params,
                 other: schedule.gas_params,
+                other_runner_supported: false,
                 swapped: false,
             }
         });
+        self.refresh_tx_gas_runner_support();
     }
 
     /// Removes the schedule unless the newly installed execution config has the gas parameters it
@@ -117,6 +121,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }) {
             self.tx_gas = None;
         }
+    }
+
+    /// Records the interpreter runner's verdict for the table that is not installed.
+    pub(super) fn refresh_tx_gas_runner_support(&mut self) {
+        if self.tx_gas.is_none() {
+            return;
+        }
+        self.toggle_tx_gas();
+        self.runner_supported = self
+            .interpreter_runner
+            .as_ref()
+            .is_some_and(|runner| runner.supports(&self.execution_config));
+        self.toggle_tx_gas();
     }
 
     /// Swaps in the schedule's table if it selects `tx`, returning a guard that swaps back.
@@ -140,12 +157,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
     }
 
-    /// Swaps the installed table with the other one and asks the interpreter runner about it.
+    /// Swaps the installed table and its runner verdict with the other one.
     #[inline]
-    fn toggle_tx_gas(&mut self) {
+    const fn toggle_tx_gas(&mut self) {
         let Some(state) = &mut self.tx_gas else { return };
         core::mem::swap(&mut self.execution_config.version.gas_params, &mut state.other);
+        core::mem::swap(&mut self.runner_supported, &mut state.other_runner_supported);
         state.swapped = !state.swapped;
-        self.refresh_runner_support();
     }
 }
