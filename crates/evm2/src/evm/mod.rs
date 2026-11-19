@@ -455,7 +455,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .interpreter_runner
             .as_ref()
             .is_some_and(|runner| runner.supports(&self.execution_config));
-        self.refresh_tx_gas_runner_support();
     }
 
     #[inline]
