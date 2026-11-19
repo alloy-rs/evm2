@@ -1189,12 +1189,12 @@ fn tip1175_account_and_code_warmth_roll_back_together() {
     let checkpoint = evm.state.checkpoint();
     load_code(&mut evm, &CONTRACT, u64::MAX).unwrap();
     evm.state.rollback(checkpoint, crate::EvmFeatures::empty());
+    // Check before anything reloads it: `State::account` would insert a fresh entry. The
+    // rollback must keep the read in the overlay, so the block access list still records it.
+    assert!(evm.state.loaded_accounts().any(|(address, _)| *address == CONTRACT));
     let account = evm.state.account(&CONTRACT).unwrap();
     assert!(!account.is_warm());
     assert!(!account.is_code_warm());
-    drop(account);
-    // Still loaded, so the block access list keeps the read.
-    assert!(evm.state.loaded_accounts().any(|(address, _)| *address == CONTRACT));
 }
 
 #[test]
