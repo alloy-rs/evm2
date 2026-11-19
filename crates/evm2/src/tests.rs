@@ -1127,21 +1127,6 @@ fn tip1175_skipped_designator_load_halts_without_warming() {
     assert!(load.code.is_eip7702());
 }
 
-#[test]
-fn tip1175_code_installed_through_get_or_insert_is_warm() {
-    let mut evm = tip1175_host();
-    let address = Address::with_last_byte(0x77);
-    let mut account = evm.state.account(&address).unwrap();
-    assert!(!account.is_code_warm());
-    account.get_or_insert().set_code(legacy_bytecode(vec![op::STOP]));
-    assert!(account.is_code_warm());
-    drop(account);
-    Host::load_account(&mut evm, &address, false, false).unwrap();
-    let load = Host::load_code(&mut evm, &address, 0).unwrap();
-    assert!(!load.is_cold);
-    assert_eq!(load.code.original_bytes().as_ref(), &[op::STOP]);
-}
-
 #[rstest::rstest]
 // Gas between the cheaper (designator) and the real (contract) price: the load is refused at the
 // real price and leaves the code cold.

@@ -178,11 +178,6 @@ bitflags! {
         /// The present overlay account's creation discarded its old storage, so unloaded slots
         /// read as zero.
         const DISCARDS_STORAGE = 1 << 5;
-        /// Explicit cooling ([`State::set_account_warm`](super::State::set_account_warm) with
-        /// `false` or [`State::cool_loaded`](super::State::cool_loaded)) cooled the account's
-        /// bytecode, so code installed earlier in the transaction no longer counts as warm
-        /// (Tempo TIP-1175).
-        const CODE_COOLED = 1 << 6;
     }
 }
 
@@ -443,18 +438,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Returns whether the account's bytecode is warm for Tempo TIP-1175 gas accounting.
     ///
-    /// Bytecode is warm once it was loaded, or installed by any path, in this transaction, and for
-    /// every address in the transaction's base warm set (precompiles, coinbase, EIP-2930 access
-    /// list). Account warmth alone does not make bytecode warm.
+    /// Bytecode is warm once it was loaded and paid for, or installed with [`Self::set_code`], in
+    /// this transaction, and for every address in the transaction's base warm set (precompiles,
+    /// coinbase, EIP-2930 access list). Account warmth alone does not make bytecode warm.
     #[inline]
     pub fn is_code_warm(&self) -> bool {
         self.tracked.flags.contains(AccountFlags::CODE_WARM)
             || self.inner.prewarm_set.is_warm(&self.address)
-            // Code installed in this transaction is warm whatever path installed it, including a
-            // direct `get_or_insert().set_code` that bypasses [`Self::set_code`], until explicit
-            // cooling cools it.
-            || (self.tracked.changed_code().is_some()
-                && !self.tracked.flags.contains(AccountFlags::CODE_COOLED))
     }
 
     /// Returns whether the account has been marked self-destructed in the current transaction.
@@ -767,6 +757,9 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Records a revert snapshot and returns the live account, materializing an empty one when it
     /// is currently absent.
+    ///
+    /// Code written through the returned [`AccountInfo`] is not marked warm for Tempo TIP-1175
+    /// gas accounting; install code with [`Self::set_code`] to have it count as warm.
     #[inline]
     pub fn get_or_insert(&mut self) -> &mut AccountInfo {
         self.present_mut()

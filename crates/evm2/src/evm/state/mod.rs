@@ -460,7 +460,6 @@ impl<'a> State<'a> {
             // bytecode, which is paid for separately.
             if !warm {
                 account.flags.remove(AccountFlags::CODE_WARM);
-                account.flags.insert(AccountFlags::CODE_COOLED);
             }
         }
     }
@@ -475,7 +474,6 @@ impl<'a> State<'a> {
     pub fn cool_loaded(&mut self) {
         for account in self.accounts.values_mut() {
             account.flags.remove(AccountFlags::WARM | AccountFlags::CODE_WARM);
-            account.flags.insert(AccountFlags::CODE_COOLED);
             for slot in account.storage.slots.values_mut() {
                 slot.is_warm = false;
             }
@@ -1831,20 +1829,13 @@ mod tip1175_cooling_tests {
     }
 
     #[rstest::rstest]
-    fn cooling_cools_installed_code(
-        #[values(false, true)] through_get_or_insert: bool,
-        #[values(false, true)] cool_all: bool,
-    ) {
+    fn cooling_cools_installed_code(#[values(false, true)] cool_all: bool) {
         let address = Address::with_last_byte(43);
         let mut state = State::new(InMemoryDB::default());
         let mut account = state.account(&address).unwrap();
         account.warm();
         let code = Bytecode::new_legacy(alloc::vec![0x00].into());
-        if through_get_or_insert {
-            account.get_or_insert().set_code(code);
-        } else {
-            account.set_code(code.hash_slow(), code);
-        }
+        account.set_code(code.hash_slow(), code);
         assert!(account.is_code_warm());
         drop(account);
         if cool_all {
@@ -1858,19 +1849,15 @@ mod tip1175_cooling_tests {
         assert!(account.is_code_warm());
     }
 
-    #[rstest::rstest]
-    fn rollback_cools_installed_code(#[values(false, true)] through_get_or_insert: bool) {
+    #[test]
+    fn rollback_cools_installed_code() {
         let address = Address::with_last_byte(44);
         let mut state = State::new(InMemoryDB::default());
         state.account(&address).unwrap().warm();
         let checkpoint = state.checkpoint();
         let mut account = state.account(&address).unwrap();
         let code = Bytecode::new_legacy(alloc::vec![0x00].into());
-        if through_get_or_insert {
-            account.get_or_insert().set_code(code);
-        } else {
-            account.set_code(code.hash_slow(), code);
-        }
+        account.set_code(code.hash_slow(), code);
         assert!(account.is_code_warm());
         drop(account);
         state.rollback(checkpoint, crate::EvmFeatures::empty());
