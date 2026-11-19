@@ -48,13 +48,24 @@ pub(super) struct TxGasState<T: EvmTypesHost> {
     other_runner_supported: bool,
     /// Whether the schedule's table is installed.
     swapped: bool,
+    /// Whether a transaction is being validated or executed, so a transaction dispatched inside it
+    /// keeps its table.
+    in_tx: bool,
+}
+
+impl<T: EvmTypesHost> TxGasState<T> {
+    /// Clears the cached runner verdict for the table that is not installed.
+    #[inline]
+    pub(super) const fn clear_runner_verdict(&mut self) {
+        self.other_runner_supported = false;
+    }
 }
 
 /// Puts back the table installed before a swap when dropped, including on unwind.
 pub(super) struct TxGasGuard<'guard, 'evm, T: EvmTypes> {
     pub(super) evm: &'guard mut Evm<'evm, T>,
-    /// Whether the schedule's table was installed before the swap, or `None` when nothing was
-    /// swapped.
+    /// Whether this guard opened the outermost transaction, and whether it swapped in the
+    /// schedule's table; `None` for a transaction nested in another or with no schedule.
     restore: Option<bool>,
 }
 
@@ -62,7 +73,12 @@ impl<T: EvmTypes> Drop for TxGasGuard<'_, '_, T> {
     #[inline]
     fn drop(&mut self) {
         if let Some(swapped) = self.restore {
-            self.evm.set_tx_gas_swapped(swapped);
+            if swapped {
+                self.evm.set_tx_gas_swapped(false);
+            }
+            if let Some(state) = &mut self.evm.tx_gas {
+                state.in_tx = false;
+            }
         }
     }
 }
@@ -113,6 +129,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 other: schedule.gas_params,
                 other_runner_supported: false,
                 swapped: false,
+                in_tx: false,
             }
         });
         self.refresh_tx_gas_runner_support();
@@ -175,12 +192,17 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Swaps in the schedule's table if it selects `tx`, returning a guard that swaps back.
     #[inline]
     pub(super) fn tx_gas_guard(&mut self, tx: &T::Tx) -> TxGasGuard<'_, 'a, T> {
-        let restore = match &self.tx_gas {
-            // A transaction dispatched while another runs keeps the parent's table, so one
-            // transaction's pending writes are never repriced mid-flight.
-            Some(state) if !self.running && !state.swapped && (state.select)(tx) => {
-                self.toggle_tx_gas();
-                Some(false)
+        // A transaction dispatched while another is validated or executed keeps the outer
+        // transaction's table, so one transaction's pending writes are never repriced mid-flight
+        // and validation and execution agree.
+        let restore = match &mut self.tx_gas {
+            Some(state) if !state.in_tx => {
+                state.in_tx = true;
+                let swap = (state.select)(tx);
+                if swap {
+                    self.toggle_tx_gas();
+                }
+                Some(swap)
             }
             _ => None,
         };

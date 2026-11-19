@@ -453,9 +453,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn refresh_runner_support(&mut self) {
-        // Cleared first, so a panicking probe falls back to the interpreter instead of keeping an
-        // earlier runner's verdict.
+        // Both verdicts are cleared before either probe, so a panicking probe falls back to the
+        // interpreter instead of keeping an earlier runner's or config's verdict.
         self.runner_supported = false;
+        if let Some(state) = &mut self.tx_gas {
+            state.clear_runner_verdict();
+        }
         self.runner_supported = self
             .interpreter_runner
             .as_ref()
@@ -3808,6 +3811,91 @@ mod tests {
         fn supports(&self, _config: &ExecutionConfig<BaseEvmTypes>) -> bool {
             true
         }
+    }
+
+    #[test]
+    fn nested_selected_transaction_keeps_outer_table_during_validation() {
+        static NESTED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
+                    if req.tx.nonce == 13 {
+                        // An unselected parent validates a selected child.
+                        let child = test_tx(7);
+                        let guard = req.host.tx_gas_guard(child.inner());
+                        NESTED.store(
+                            cold_account_cost(guard.evm),
+                            core::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    Ok(())
+                },
+                |_, ()| Ok(TxResultExt::default()),
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let schedule = schedule(&evm);
+        evm.set_tx_gas_schedule(Some(schedule));
+        let own = cold_account_cost(&evm);
+
+        evm.validate_tx(&test_tx(13)).unwrap();
+        assert_eq!(
+            NESTED.load(core::sync::atomic::Ordering::Relaxed),
+            own,
+            "the child keeps the parent's table, as under transact"
+        );
+        assert_eq!(cold_account_cost(&evm), own);
+        // A later top-level selected transaction still gets the schedule's table.
+        let selected = test_tx(7);
+        let guard = evm.tx_gas_guard(selected.inner());
+        assert_eq!(cold_account_cost(guard.evm), u64::from(ALTERNATE_COLD_ACCOUNT_COST));
+    }
+
+    /// A runner that approves only configs with the schedule's cold account cost, and panics on
+    /// any other.
+    #[derive(Debug)]
+    struct PanickingOwnProbeRunner;
+
+    impl InterpreterRunner<BaseEvmTypes> for PanickingOwnProbeRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            None
+        }
+
+        fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            assert_eq!(
+                config.version().gas_params[GasId::ColdAccountAdditionalCost],
+                ALTERNATE_COLD_ACCOUNT_COST,
+                "runner panics on the EVM's own table"
+            );
+            true
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn own_table_probe_unwind_clears_schedule_verdict() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        evm.set_interpreter_runner(ApproveAllRunner);
+        assert_eq!(evm.tx_gas_other_runner_supported(), Some(true));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            evm.set_interpreter_runner(PanickingOwnProbeRunner);
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(evm.tx_gas_other_runner_supported(), Some(false));
     }
 
     #[test]
