@@ -442,11 +442,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn assert_interpreter_runner_mutable(&self) {
         assert!(!self.running, "interpreter runner cannot be modified during EVM execution");
+        self.assert_tx_gas_not_swapped();
     }
 
     #[inline]
     fn assert_execution_config_mutable(&self) {
         assert!(!self.running, "execution config cannot be modified during EVM execution");
+        self.assert_tx_gas_not_swapped();
     }
 
     #[inline]
@@ -3795,6 +3797,46 @@ mod tests {
         }));
         assert!(unwound.is_err());
         assert_eq!(cold_account_cost(&evm), own, "the live table never held the schedule's");
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn validation_cannot_replace_config_while_schedule_installed() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
+                    // Replace the config with a copy of the live one, which holds the schedule's
+                    // table.
+                    let version = *req.host.version();
+                    let block = *req.host.block();
+                    req.host.set_block_and_execution_config_within_spec(
+                        block,
+                        ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+                    );
+                    Ok(())
+                },
+                |_, ()| Ok(TxResultExt::default()),
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let schedule = schedule(&evm);
+        evm.set_tx_gas_schedule(Some(schedule));
+        let own = cold_account_cost(&evm);
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.validate_tx(&test_tx(7));
+        }));
+        assert!(unwound.is_err(), "replacing the config during selected validation panics");
+        assert_eq!(cold_account_cost(&evm), own, "the EVM's own table is restored");
+        assert!(evm.tx_gas_schedule_installed(), "the schedule stays installed");
     }
 
     #[test]

@@ -86,11 +86,16 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// schedule's gas parameters, so one transaction is always metered with one table. System calls
     /// outside a transaction run with the EVM's own.
     ///
+    /// Replacing the execution config, the interpreter runner or the schedule panics while a
+    /// selected transaction runs, including from its validation, so the EVM's own table always
+    /// comes back.
+    ///
     /// # Panics
     ///
-    /// Panics if called during execution, or if the schedule's gas parameters have a zero
-    /// [`GasId::MaxRefundQuotient`], [`GasId::MemoryQuadraticReduction`] or
-    /// [`GasId::CallStipendReduction`], which the interpreter divides by.
+    /// Panics if called during execution or while a selected transaction is validated, or if the
+    /// schedule's gas parameters have a zero [`GasId::MaxRefundQuotient`],
+    /// [`GasId::MemoryQuadraticReduction`] or [`GasId::CallStipendReduction`], which the
+    /// interpreter divides by.
     pub fn set_tx_gas_schedule(&mut self, schedule: Option<TxGasSchedule<T>>) {
         self.assert_execution_config_mutable();
         self.set_tx_gas_swapped(false);
@@ -116,11 +121,23 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Removes the schedule unless the newly installed execution config has the gas parameters it
     /// was installed for.
     pub(super) fn retain_tx_gas_for_config(&mut self) {
-        if self.tx_gas.as_ref().is_some_and(|state| {
-            state.swapped || state.base != self.execution_config.version.gas_params
-        }) {
+        if self
+            .tx_gas
+            .as_ref()
+            .is_some_and(|state| state.base != self.execution_config.version.gas_params)
+        {
             self.tx_gas = None;
         }
+    }
+
+    /// Panics while a selected transaction runs with the schedule's table, including during its
+    /// validation, so the EVM's own table can always be restored.
+    #[inline]
+    pub(super) fn assert_tx_gas_not_swapped(&self) {
+        assert!(
+            !self.tx_gas.as_ref().is_some_and(|state| state.swapped),
+            "execution config cannot be modified while a transaction runs with the gas schedule"
+        );
     }
 
     /// Records the interpreter runner's verdict for the table that is not installed.
@@ -137,6 +154,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         if let Some(state) = &mut self.tx_gas {
             state.other_runner_supported = supported;
         }
+    }
+
+    /// Returns whether a schedule is installed.
+    #[cfg(test)]
+    pub(super) const fn tx_gas_schedule_installed(&self) -> bool {
+        self.tx_gas.is_some()
     }
 
     /// Swaps in the schedule's table if it selects `tx`, returning a guard that swaps back.
