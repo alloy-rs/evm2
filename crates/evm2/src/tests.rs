@@ -1001,11 +1001,16 @@ fn tip1175_top_level_delegation(#[case] spec: SpecId, #[case] expected: u64) {
 }
 
 fn tip1175_host() -> TestEvm {
+    tip1175_host_with(&[])
+}
+
+/// [`tip1175_host`] with `extra` accounts added to the database.
+fn tip1175_host_with(extra: &[(Address, Bytecode)]) -> TestEvm {
     let mut version = Version::new(SpecId::PRAGUE);
     version.gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
     version.gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
     let mut database = InMemoryDB::default();
-    for (address, code) in code_accounts() {
+    for (address, code) in code_accounts().into_iter().chain(extra.iter().cloned()) {
         database.insert_account_info(&address, AccountInfo::default().with_code(code));
     }
     TestEvm::new_with_execution_config(
@@ -1053,7 +1058,9 @@ fn tip1175_skipped_cold_code_load_halts_without_warming() {
 #[case::without_code(EOA)]
 #[case::precompile(Address::with_last_byte(2))]
 fn tip1175_free_code_load_is_never_skipped(#[case] address: Address) {
-    let mut evm = tip1175_host();
+    // Give the precompile real code, so only the prewarm set keeps its code load free.
+    let mut evm =
+        tip1175_host_with(&[(Address::with_last_byte(2), legacy_bytecode(vec![op::STOP]))]);
     evm.warm_precompiles();
     warm_account(&mut evm, &address);
     assert!(!load_code(&mut evm, &address, 0).unwrap().is_code_cold);
@@ -1083,14 +1090,15 @@ fn tip1175_code_load_not_skipped_when_unpriced() {
 }
 
 #[rstest::rstest]
-// EXTCODESIZE: PUSH20 (3) + warm access (100) + cold account (2500) + code (CODE_COST).
-#[case::extcodesize_affordable(op::EXTCODESIZE, 3 + 2_600 + 1_000 + 2, true)]
-#[case::extcodesize_short_by_one(op::EXTCODESIZE, 3 + 2_600 + 1_000 - 1, false)]
-fn tip1175_code_load_gas_boundary(#[case] opcode: u8, #[case] gas: u64, #[case] success: bool) {
+// PUSH20 (3) + EXTCODESIZE: warm access (100) + cold account (2500) + code (CODE_COST). The
+// program ends right after it, so the gas must cover exactly the opcode and nothing else.
+#[case::extcodesize_exact(3 + 2_600 + 1_000, true)]
+#[case::extcodesize_short_by_one(3 + 2_600 + 1_000 - 1, false)]
+fn tip1175_code_load_gas_boundary(#[case] gas: u64, #[case] success: bool) {
     let mut evm = tip1175_host();
     let mut code = Vec::new();
-    ext_op(&mut code, opcode, &CONTRACT);
-    code.push(op::STOP);
+    push_address(&mut code, &CONTRACT);
+    code.extend([op::EXTCODESIZE, op::STOP]);
     let mut message = MessageExt {
         destination: Address::with_last_byte(0xe0),
         code_address: Address::with_last_byte(0xe0),
@@ -1100,6 +1108,11 @@ fn tip1175_code_load_gas_boundary(#[case] opcode: u8, #[case] gas: u64, #[case] 
     };
     let result = Host::execute_message(&mut evm, &mut message).unwrap();
     assert_eq!(result.is_success(), success, "{:?}", result.stop);
+    // The host refuses a load it can't pay for before charging, so an exact boundary alone
+    // doesn't prove the charge: a successful run must also spend every unit of gas.
+    if success {
+        assert_eq!(result.gas.spent(), gas);
+    }
     assert_eq!(evm.state.account(&CONTRACT).unwrap().is_code_warm(), success);
 }
 
