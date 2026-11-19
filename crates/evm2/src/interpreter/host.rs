@@ -2,7 +2,7 @@ use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
     BaseEvmTypes, DatabaseError, EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, LoadFlags, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, AccountLoadFlags, SLoad, SStore, SelfDestructResult},
     utils::address_to_word,
 };
 use alloc::borrow::Cow;
@@ -140,7 +140,8 @@ pub trait Host<T: EvmTypesHost> {
     /// `u16::MAX - CALL_DEPTH_LIMIT - 1` so the deepest message stays representable.
     fn initial_call_depth(&self) -> u16;
 
-    /// Loads account information, and its bytecode with [`LoadFlags::CODE`], as `flags` says.
+    /// Loads account information, and its bytecode with [`AccountLoadFlags::CODE`], as `flags`
+    /// says.
     ///
     /// Halts with out of gas, warming nothing, when the account or its code is cold and `flags`
     /// says the caller's gas can't pay for that outcome. Otherwise warms what it loaded; the
@@ -148,7 +149,7 @@ pub trait Host<T: EvmTypesHost> {
     fn load_account(
         &mut self,
         address: &Address,
-        flags: LoadFlags,
+        flags: AccountLoadFlags,
     ) -> Result<AccountLoad, HostError>;
 
     /// Returns a historical block hash.

@@ -4,7 +4,7 @@ use super::require_non_staticcall;
 use crate::{
     EvmFeatures, EvmTypesHost, HostError,
     bytecode::Bytecode,
-    evm::LoadFlags,
+    evm::AccountLoadFlags,
     interpreter::{
         Gas, GasTracker, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind,
         MessageResult, MessageResultExt, Result, StackMut, Word, create_preaccess_failure,
@@ -91,7 +91,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
     // its account access and its bytecode.
     let remaining_gas = gas.remaining();
     let mut account =
-        host.load_account(&to, LoadFlags::affordable(remaining_gas, gas_params, true))?;
+        host.load_account(&to, AccountLoadFlags::affordable(remaining_gas, gas_params, true))?;
     let mut cost = account.cold_cost(gas_params);
     let mut code = core::mem::take(&mut account.code);
     let mut code_address = to;
@@ -104,7 +104,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
         }
         let delegated_account = host.load_account(
             &delegated_address,
-            LoadFlags::affordable(remaining_gas - cost, gas_params, true),
+            AccountLoadFlags::affordable(remaining_gas - cost, gas_params, true),
         )?;
         cost += delegated_account.cold_cost(gas_params);
         code = delegated_account.code;
@@ -456,7 +456,7 @@ pub fn create_with<T: EvmTypesHost>(
         Some(
             state
                 .host()
-                .load_account(&caller, LoadFlags::NO_GAS_CHECK)
+                .load_account(&caller, AccountLoadFlags::NO_GAS_CHECK)
                 .map_err(|error| state.fail(error))?,
         )
     };
@@ -496,7 +496,7 @@ pub fn create_with<T: EvmTypesHost>(
         // failures return above before the destination is accessed.
         if state
             .host()
-            .load_account(&destination, LoadFlags::NO_GAS_CHECK)
+            .load_account(&destination, AccountLoadFlags::NO_GAS_CHECK)
             .map_err(|error| state.fail(error))?
             .is_empty_for_new_account_gas
         {

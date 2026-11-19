@@ -1984,13 +1984,13 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     fn load_account(
         &mut self,
         address: &Address,
-        flags: LoadFlags,
+        flags: AccountLoadFlags,
     ) -> Result<AccountLoad, HostError> {
-        let load_code = flags.contains(LoadFlags::CODE);
+        let load_code = flags.contains(AccountLoadFlags::CODE);
         let price_code = load_code && self.execution_config.version().gas_params.prices_code_load();
         // Every check runs before anything is warmed, so a load the caller can't pay for leaves
         // the account and its code cold. A cold account it can't pay for is not read at all.
-        let skip_cold_account = !flags.contains(LoadFlags::COLD_ACCOUNT);
+        let skip_cold_account = !flags.contains(AccountLoadFlags::COLD_ACCOUNT);
         let mut account = match self.state.account_with_skip(address, skip_cold_account) {
             Ok(account) => account,
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
@@ -1998,12 +1998,13 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
         let is_cold = !account.is_warm();
         let is_code_cold = price_code && account.has_cold_code();
-        if is_code_cold && !flags.intersects(LoadFlags::cold_code_any(is_cold)) {
+        if is_code_cold && !flags.intersects(AccountLoadFlags::cold_code_any(is_cold)) {
             // Not even the cheaper code price fits: halt before reading the code.
             return Err(InstrStop::OutOfGas.into());
         }
         let code = if load_code { account.load_code()? } else { Bytecode::default() };
-        if is_code_cold && !flags.contains(LoadFlags::cold_code(is_cold, code.is_eip7702())) {
+        if is_code_cold && !flags.contains(AccountLoadFlags::cold_code(is_cold, code.is_eip7702()))
+        {
             return Err(InstrStop::OutOfGas.into());
         }
         let mut warm = AccountFlags::WARM;
@@ -2191,7 +2192,7 @@ pub struct AccountLoad {
     pub is_cold: bool,
     /// Whether the bytecode load was cold and must pay
     /// [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost) for `code`
-    /// (Tempo TIP-1175). Only set when [`LoadFlags::CODE`] was requested and code loads are
+    /// (Tempo TIP-1175). Only set when [`AccountLoadFlags::CODE`] was requested and code loads are
     /// priced.
     pub is_code_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -2226,7 +2227,7 @@ bitflags::bitflags! {
     /// Code is part of the account, so a warm code load costs nothing beyond the account access
     /// and code is never loaded without its account. New cold outcomes get their own bit.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-    pub struct LoadFlags: u8 {
+    pub struct AccountLoadFlags: u8 {
         /// Load and return the account's bytecode.
         const CODE = 1 << 0;
         /// The gas covers a cold account access.
@@ -2248,7 +2249,7 @@ bitflags::bitflags! {
     }
 }
 
-impl LoadFlags {
+impl AccountLoadFlags {
     /// Returns the flags for a load with `gas_left` to pay its cold surcharges, loading the
     /// bytecode when `load_code` is set.
     #[inline]
@@ -2791,7 +2792,7 @@ mod tests {
         );
         let address = LIFECYCLE_ACCOUNT;
         assert!(matches!(
-            Host::load_account(&mut evm, &address, LoadFlags::CODE),
+            Host::load_account(&mut evm, &address, AccountLoadFlags::CODE),
             Err(HostError::Halt(InstrStop::OutOfGas))
         ));
         let stats = evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts();

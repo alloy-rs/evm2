@@ -18,7 +18,7 @@ use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
     evm::{
-        AccountInfo, LoadFlags,
+        AccountInfo, AccountLoadFlags,
         handler::{DefaultTxHandlerHooks, GasSettlement},
     },
     interpreter::{
@@ -617,7 +617,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     let load = match Host::load_account(
                         host,
                         &delegated_address,
-                        LoadFlags::affordable(tx_gas.remaining(), &gas_params, true),
+                        AccountLoadFlags::affordable(tx_gas.remaining(), &gas_params, true),
                     ) {
                         Ok(load) => load,
                         Err(HostError::Halt(_)) => return Ok(halted(host)),

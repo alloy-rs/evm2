@@ -1,6 +1,6 @@
 use crate::{
     EvmTypesHost,
-    evm::{AccountLoad, LoadFlags},
+    evm::{AccountLoad, AccountLoadFlags},
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{WordExt, read_word_padded},
     version::GasParams,
@@ -13,7 +13,7 @@ fn load_account<T: EvmTypesHost>(
     load_code: bool,
 ) -> Result<AccountLoad> {
     // Built first: computing it inside the call would borrow `cx.state` while `host()` holds it.
-    let flags = LoadFlags::affordable(cx.gas.remaining(), cx.state.gas_params(), load_code);
+    let flags = AccountLoadFlags::affordable(cx.gas.remaining(), cx.state.gas_params(), load_code);
     let account = cx
         .state
         .host()

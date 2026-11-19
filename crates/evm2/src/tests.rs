@@ -7,7 +7,7 @@ use crate::{
         eip7702::{AuthRefunds, Eip7702Authorization, RuntimeAuthCharges, apply_auth_list},
         ethereum_tx_registry, prepare_initial_frame,
     },
-    evm::{AccountInfo, InMemoryDB, LoadFlags, SYSTEM_ADDRESS},
+    evm::{AccountInfo, AccountLoadFlags, InMemoryDB, SYSTEM_ADDRESS},
     interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
     test_utils::{legacy_bytecode, push, push_address, push_all, return_top_word},
@@ -1020,7 +1020,7 @@ fn tip1175_host() -> TestEvm {
 
 /// Loads and warms `address` without its code, as `BALANCE` would with gas to spare.
 fn warm_account(evm: &mut TestEvm, address: &Address) {
-    Host::load_account(evm, address, LoadFlags::NO_GAS_CHECK).unwrap();
+    Host::load_account(evm, address, AccountLoadFlags::NO_GAS_CHECK).unwrap();
 }
 
 /// Loads `address` with its code, with `gas` left for the cold surcharges.
@@ -1030,7 +1030,7 @@ fn load_code(
     gas: u64,
 ) -> Result<crate::evm::AccountLoad, crate::HostError> {
     let gas_params = Host::execution_config(evm).version().gas_params;
-    Host::load_account(evm, address, LoadFlags::affordable(gas, &gas_params, true))
+    Host::load_account(evm, address, AccountLoadFlags::affordable(gas, &gas_params, true))
 }
 
 #[test]
@@ -1202,18 +1202,27 @@ fn tip1175_load_flags_affordable() {
     let mut gas_params = Version::new(SpecId::PRAGUE).gas_params;
     gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
     gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
-    let flags = |gas| LoadFlags::affordable(gas, &gas_params, true);
-    assert_eq!(flags(0), LoadFlags::CODE);
-    assert_eq!(flags(u64::from(DELEGATION_COST)), LoadFlags::CODE | LoadFlags::COLD_DELEGATION);
+    let flags = |gas| AccountLoadFlags::affordable(gas, &gas_params, true);
+    assert_eq!(flags(0), AccountLoadFlags::CODE);
+    assert_eq!(
+        flags(u64::from(DELEGATION_COST)),
+        AccountLoadFlags::CODE | AccountLoadFlags::COLD_DELEGATION
+    );
     assert_eq!(
         flags(2_500),
-        LoadFlags::CODE
-            | LoadFlags::COLD_ACCOUNT
-            | LoadFlags::COLD_CODE
-            | LoadFlags::COLD_DELEGATION
+        AccountLoadFlags::CODE
+            | AccountLoadFlags::COLD_ACCOUNT
+            | AccountLoadFlags::COLD_CODE
+            | AccountLoadFlags::COLD_DELEGATION
     );
-    assert_eq!(flags(2_500 + u64::from(CODE_COST)), LoadFlags::CODE | LoadFlags::NO_GAS_CHECK);
-    assert!(!LoadFlags::affordable(u64::MAX, &gas_params, false).contains(LoadFlags::CODE));
+    assert_eq!(
+        flags(2_500 + u64::from(CODE_COST)),
+        AccountLoadFlags::CODE | AccountLoadFlags::NO_GAS_CHECK
+    );
+    assert!(
+        !AccountLoadFlags::affordable(u64::MAX, &gas_params, false)
+            .contains(AccountLoadFlags::CODE)
+    );
 }
 
 /// Builds an EIP-2780 host whose transaction target delegates to `CONTRACT`, prepares the

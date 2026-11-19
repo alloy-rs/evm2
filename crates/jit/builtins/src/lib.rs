@@ -18,7 +18,7 @@ use evm2::{
     BaseEvmTypes, EvmTypesHost,
     bytecode::Bytecode,
     constants::BLOCK_HASH_HISTORY,
-    evm::LoadFlags,
+    evm::AccountLoadFlags,
     interpreter::{
         Host, MessageExt, MessageKind, Word, create_preaccess_failure, derive_create_destination,
         i256,
@@ -375,7 +375,7 @@ pub unsafe fn __revmc_builtin_self_balance<T: EvmTypesHost>(
     let destination = ecx.message().destination;
     let balance = ecx
         .host()
-        .load_account(&destination, LoadFlags::NO_GAS_CHECK)
+        .load_account(&destination, AccountLoadFlags::NO_GAS_CHECK)
         .map_err(|stop| ecx.interpreter_mut().fail(stop))?
         .balance;
     *slot = balance.into();
@@ -667,7 +667,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     } else {
         Some(
             ecx.host()
-                .load_account(&caller, LoadFlags::NO_GAS_CHECK)
+                .load_account(&caller, AccountLoadFlags::NO_GAS_CHECK)
                 .map_err(|error| ecx.interpreter_mut().fail(error))?,
         )
     };
@@ -705,7 +705,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         // failures return above before the destination is accessed.
         if ecx
             .host()
-            .load_account(&destination, LoadFlags::NO_GAS_CHECK)
+            .load_account(&destination, AccountLoadFlags::NO_GAS_CHECK)
             .map_err(|error| ecx.interpreter_mut().fail(error))?
             .is_empty_for_new_account_gas
         {
@@ -900,7 +900,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let remaining_gas = ecx.gas.remaining();
     let mut account = ecx
         .host()
-        .load_account(&to, LoadFlags::affordable(remaining_gas, &version.gas_params, true))
+        .load_account(&to, AccountLoadFlags::affordable(remaining_gas, &version.gas_params, true))
         .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
     let mut cost = account.cold_cost(&version.gas_params);
     let mut new_account_state_gas = 0;
@@ -917,7 +917,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
             .host()
             .load_account(
                 &delegated_address,
-                LoadFlags::affordable(remaining_gas - cost, &version.gas_params, true),
+                AccountLoadFlags::affordable(remaining_gas - cost, &version.gas_params, true),
             )
             .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
         cost += delegated_account.cold_cost(&version.gas_params);
