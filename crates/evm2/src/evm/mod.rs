@@ -3652,8 +3652,8 @@ mod tests {
 
     /// An EVM with [`schedule`] installed, whose handler reports the cold account cost it runs
     /// with as gas spent and its validation the cold account cost through `validated`. The handler
-    /// panics for nonce 9, and for nonce 11 reports the cold account cost of a nested transaction
-    /// as `installed * 1_000_000 + nested`.
+    /// panics for nonce 9, and for nonces 11 (selected) and 13 (not selected) reports the cold
+    /// account cost of a nested transaction of the other kind as `installed * 1_000_000 + nested`.
     fn schedule_evm(
         validated: &'static core::sync::atomic::AtomicU64,
     ) -> Evm<'static, BaseEvmTypes> {
@@ -3668,9 +3668,9 @@ mod tests {
                 },
                 |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
                     assert_ne!(req.tx.nonce, 9, "handler unwinds");
-                    let total_gas_spent = if req.tx.nonce == 11 {
+                    let total_gas_spent = if matches!(req.tx.nonce, 11 | 13) {
                         let installed = cold_account_cost(req.host);
-                        let nested = test_tx(41);
+                        let nested = test_tx(if req.tx.nonce == 11 { 41 } else { 7 });
                         let nested = {
                             let guard = req.host.tx_gas_guard(nested.inner());
                             cold_account_cost(guard.evm)
@@ -3724,8 +3724,12 @@ mod tests {
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
         assert_eq!(validated(&mut evm, 41), own);
 
-        // Nested transactions inside a selected transaction keep the schedule's gas parameters.
+        // Nested transactions keep the outer transaction's table: an unselected child of a
+        // selected parent runs with the schedule's, and a selected child of an unselected parent
+        // with the EVM's own.
         assert_eq!(gas_used(&mut evm, 11), Ok(alternate * 1_000_000 + alternate));
+        assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
+        assert_eq!(gas_used(&mut evm, 13), Ok(own * 1_000_000 + own));
         assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
 
         evm.set_tx_gas_schedule(None);

@@ -81,10 +81,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// The schedule's table is precomputed for the EVM's current gas parameters. Changing the
     /// execution config keeps the schedule while the new config has the same gas parameters, such
     /// as at a segment boundary within one spec, and removes it otherwise: install it again for the
-    /// new config. Changing the interpreter runner keeps it. Everything a selected transaction's
-    /// handler runs, including [`Self::execute_system_call`] and nested transactions, uses the
-    /// schedule's gas parameters, so one transaction is always metered with one table. System calls
-    /// outside a transaction run with the EVM's own.
+    /// new config. Changing the interpreter runner keeps it. Everything a transaction's handler
+    /// runs, including [`Self::execute_system_call`] and nested transactions, uses the table the
+    /// outer transaction runs with, so one transaction is always metered with one table. System
+    /// calls outside a transaction run with the EVM's own.
     ///
     /// Replacing the execution config, the interpreter runner or the schedule panics while a
     /// selected transaction runs, including from its validation, so the EVM's own table always
@@ -176,7 +176,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub(super) fn tx_gas_guard(&mut self, tx: &T::Tx) -> TxGasGuard<'_, 'a, T> {
         let restore = match &self.tx_gas {
-            Some(state) if !state.swapped && (state.select)(tx) => {
+            // A transaction dispatched while another runs keeps the parent's table, so one
+            // transaction's pending writes are never repriced mid-flight.
+            Some(state) if !self.running && !state.swapped && (state.select)(tx) => {
                 self.toggle_tx_gas();
                 Some(false)
             }
