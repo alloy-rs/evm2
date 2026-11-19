@@ -197,8 +197,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // and validation and execution agree.
         let restore = match &mut self.tx_gas {
             Some(state) if !state.in_tx => {
-                state.in_tx = true;
+                // Selected before marking the transaction in progress, so a panicking selector
+                // leaves the schedule usable.
                 let swap = (state.select)(tx);
+                state.in_tx = true;
                 if swap {
                     self.toggle_tx_gas();
                 }

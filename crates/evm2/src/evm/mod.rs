@@ -3973,6 +3973,26 @@ mod tests {
 
     #[test]
     #[cfg(feature = "std")]
+    fn selector_unwind_keeps_schedule_usable() {
+        fn select_panicking(tx: &TxEnvelope) -> bool {
+            let nonce = alloy_consensus::Transaction::nonce(tx);
+            assert_ne!(nonce, 5, "selector unwinds");
+            nonce == 7
+        }
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        let gas_params = schedule(&evm).gas_params;
+        evm.set_tx_gas_schedule(Some(TxGasSchedule { select: select_panicking, gas_params }));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact(&test_tx(5));
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(gas_used(&mut evm, 7), Ok(u64::from(ALTERNATE_COLD_ACCOUNT_COST)));
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
     fn restores_gas_params_when_transaction_unwinds() {
         static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
         let mut evm = schedule_evm(&VALIDATED);
