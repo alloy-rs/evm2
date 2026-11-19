@@ -3760,6 +3760,43 @@ mod tests {
         assert_eq!(gas_used(&mut evm, 41), Ok(1_000));
     }
 
+    /// A runner that panics when asked about a gas table with the schedule's cold account cost.
+    #[derive(Debug)]
+    struct PanickingProbeRunner;
+
+    impl InterpreterRunner<BaseEvmTypes> for PanickingProbeRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            None
+        }
+
+        fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            assert_ne!(
+                config.version().gas_params[GasId::ColdAccountAdditionalCost],
+                ALTERNATE_COLD_ACCOUNT_COST,
+                "runner panics on the schedule's table"
+            );
+            true
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn runner_probe_unwind_keeps_own_gas_params() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        let own = cold_account_cost(&evm);
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            evm.set_interpreter_runner(PanickingProbeRunner);
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(cold_account_cost(&evm), own, "the live table never held the schedule's");
+    }
+
     #[test]
     #[cfg(feature = "std")]
     fn restores_gas_params_when_transaction_unwinds() {

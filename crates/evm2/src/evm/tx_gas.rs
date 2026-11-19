@@ -124,16 +124,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Records the interpreter runner's verdict for the table that is not installed.
+    ///
+    /// Probes a copy of the execution config, so the live gas table never changes here and a
+    /// panicking runner cannot leave the schedule's table installed.
     pub(super) fn refresh_tx_gas_runner_support(&mut self) {
-        if self.tx_gas.is_none() {
-            return;
+        let Some(state) = &self.tx_gas else { return };
+        let supported = self.interpreter_runner.as_ref().is_some_and(|runner| {
+            let mut config = self.execution_config.clone();
+            config.version.gas_params = state.other;
+            runner.supports(&config)
+        });
+        if let Some(state) = &mut self.tx_gas {
+            state.other_runner_supported = supported;
         }
-        self.toggle_tx_gas();
-        self.runner_supported = self
-            .interpreter_runner
-            .as_ref()
-            .is_some_and(|runner| runner.supports(&self.execution_config));
-        self.toggle_tx_gas();
     }
 
     /// Swaps in the schedule's table if it selects `tx`, returning a guard that swaps back.
