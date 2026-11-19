@@ -31,13 +31,13 @@ fn minimize_accounts(backends: &mut [&mut dyn EvmBackend; 2], case: &mut EvmCase
 
 fn minimize_storage(backends: &mut [&mut dyn EvmBackend; 2], case: &mut EvmCase) {
     for account_index in 0..case.accounts.len() {
-        while let Some(key) = case.accounts[account_index].storage.keys().min().copied() {
+        let mut keys = case.accounts[account_index].storage.keys().copied().collect::<Vec<_>>();
+        keys.sort_unstable();
+        for key in keys {
             let mut candidate = case.clone();
             candidate.accounts[account_index].storage.shift_remove(&key);
             if differs(backends, &candidate) {
                 *case = candidate;
-            } else {
-                break;
             }
         }
     }
@@ -82,5 +82,53 @@ fn minimize_target_code(backends: &mut [&mut dyn EvmBackend; 2], case: &mut EvmC
         } else {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fuzzer::{
+        case::CaseAccount,
+        normalize::{FuzzError, Outcome},
+    };
+    use alloy_primitives::U256;
+
+    struct SlotBackend {
+        mismatch_on_required_slot: bool,
+    }
+
+    impl EvmBackend for SlotBackend {
+        fn name(&self) -> &'static str {
+            "slot"
+        }
+
+        fn run(&mut self, case: &EvmCase) -> Outcome {
+            if self.mismatch_on_required_slot
+                && case.accounts[0].storage.contains_key(&U256::from(1))
+            {
+                Outcome::error(FuzzError::IntrinsicGasTooLow)
+            } else {
+                Outcome::error(FuzzError::EmptyTransactionSequence)
+            }
+        }
+    }
+
+    #[test]
+    fn storage_minimization_continues_after_required_slot() {
+        let mut account = CaseAccount::default();
+        account.storage.insert(U256::from(2), U256::from(20));
+        account.storage.insert(U256::from(1), U256::from(10));
+        let mut case = EvmCase { accounts: vec![account], ..Default::default() };
+        let mut baseline = SlotBackend { mismatch_on_required_slot: false };
+        let mut conditional = SlotBackend { mismatch_on_required_slot: true };
+        let mut backends: [&mut dyn EvmBackend; 2] = [&mut baseline, &mut conditional];
+
+        assert!(differs(&mut backends, &case));
+        minimize_storage(&mut backends, &mut case);
+
+        assert_eq!(case.accounts[0].storage.len(), 1);
+        assert!(case.accounts[0].storage.contains_key(&U256::from(1)));
+        assert!(differs(&mut backends, &case));
     }
 }
