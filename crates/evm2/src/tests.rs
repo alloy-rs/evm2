@@ -8,7 +8,7 @@ use crate::{
         ethereum_tx_registry, prepare_initial_frame,
     },
     evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
-    interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
+    interpreter::{GasTracker, Host, InstrStop, MessageExt, MessageKind, Word, op},
     registry::TxRegistry,
     test_utils::{legacy_bytecode, push, push_address, push_all, return_top_word},
     version::GasId,
@@ -1214,4 +1214,48 @@ fn tip1175_top_level_delegation_unaffordable_code_stays_cold() {
     let budget = spent - u64::from(CODE_COST) + u64::from(DELEGATION_COST) + 1;
     let (_, warm) = tip1175_top_level_delegation_run(budget);
     assert!(!warm);
+}
+
+#[rstest::rstest]
+// Gas covers CALL's static cost and the cold account and code loads, but not the delegation
+// target behind DELEGATING, so setup halts after warming DELEGATING and its designator.
+#[case::delegation_target_unaffordable(DELEGATING, 100 + 2_500 + DELEGATION_COST as u64 + 100)]
+// Gas covers the cold account but not CONTRACT's code price.
+#[case::code_unaffordable(CONTRACT, 100 + 2_500 + 1)]
+fn tip1175_halted_call_setup_leaves_nothing_warm(#[case] to: Address, #[case] gas_limit: u64) {
+    let mut evm = tip1175_host();
+    let mut gas = GasTracker::new(gas_limit);
+    let mut message = MessageExt {
+        kind: MessageKind::StaticCall,
+        destination: to,
+        call_target: to,
+        code_address: to,
+        caller: Address::with_last_byte(0xca),
+        gas_limit: 0,
+        ..Default::default()
+    };
+    let result = Host::execute_call(&mut evm, &mut gas, &mut message);
+    assert!(matches!(result, Err(crate::HostError::Halt(InstrStop::OutOfGas))), "{result:?}");
+    for address in [to, CONTRACT] {
+        let account = evm.state.account(&address).unwrap();
+        assert!(!account.is_warm(), "{address} account left warm");
+        assert!(!account.is_code_warm(), "{address} code left warm");
+    }
+}
+
+#[test]
+fn tip1175_halted_call_setup_keeps_loaded_accounts() {
+    // Rolling back warmth must not unload the account: the BAL records every account read.
+    let mut evm = tip1175_host();
+    let mut gas = GasTracker::new(100 + 2_500 + 1);
+    let mut message = MessageExt {
+        kind: MessageKind::StaticCall,
+        destination: CONTRACT,
+        call_target: CONTRACT,
+        code_address: CONTRACT,
+        caller: Address::with_last_byte(0xca),
+        ..Default::default()
+    };
+    assert!(Host::execute_call(&mut evm, &mut gas, &mut message).is_err());
+    assert!(evm.state.loaded_accounts().any(|(address, _)| *address == CONTRACT));
 }

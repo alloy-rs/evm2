@@ -2,7 +2,7 @@ use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
     BaseEvmTypes, DatabaseError, EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, CodeLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, CodeLoad, SLoad, SStore, SelfDestructResult, StateCheckpoint},
     utils::address_to_word,
 };
 use alloc::borrow::Cow;
@@ -158,6 +158,17 @@ pub trait Host<T: EvmTypesHost> {
     /// out of gas instead, leaving the code cold, and is skipped before the code is read when even
     /// the cheaper code price exceeds it. Otherwise this only loads the code.
     fn load_code(&mut self, address: &Address, gas_limit: u64) -> Result<CodeLoad, HostError>;
+
+    /// Returns a checkpoint of the journaled state, for [`Self::rollback_state`].
+    ///
+    /// Call setup takes one before loading the target accounts, so a call that can't pay its
+    /// whole cost leaves no account or code warmth behind.
+    fn checkpoint_state(&mut self) -> StateCheckpoint;
+
+    /// Reverts journaled state changes made after `checkpoint`: account and code warmth, values
+    /// and storage. Loaded accounts stay loaded, so an EIP-7928 Block Access List still records
+    /// every account that was read.
+    fn rollback_state(&mut self, checkpoint: StateCheckpoint);
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError>;

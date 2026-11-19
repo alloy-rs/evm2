@@ -84,7 +84,38 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
     if transfers_value {
         gas.spend(gas_params.get(GasId::TransferValueCost))?;
     }
+    // Strict gas: a call that halts before paying its whole cost leaves none of the warmth its
+    // account and code loads added. The loads stay recorded for the Block Access List.
+    let checkpoint = host.checkpoint_state();
+    let result = load_and_charge_call(
+        gas,
+        host,
+        gas_params,
+        features,
+        to,
+        transfers_value,
+        create_empty_account,
+        stack_gas_limit,
+    );
+    if matches!(result, Err(HostError::Halt(_))) {
+        host.rollback_state(checkpoint);
+    }
+    result
+}
 
+/// The account loads and charges of [`load_acc_and_calc_gas`], after the value transfer cost.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn load_and_charge_call<T: EvmTypesHost, H: Host<T> + ?Sized>(
+    gas: &mut GasTracker,
+    host: &mut H,
+    gas_params: &GasParams,
+    features: EvmFeatures,
+    to: Address,
+    transfers_value: bool,
+    create_empty_account: bool,
+    stack_gas_limit: u64,
+) -> core::result::Result<(u64, u64, Bytecode, Address), HostError> {
     let additional_cold_cost = gas_params.cold_account_additional_cost();
     // TIP-1175: a priced code load is a second step, after the account access, and is skipped
     // when it can't be paid for. A delegating account's designator is a code load at its own

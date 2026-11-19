@@ -894,7 +894,32 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     if transfers_value {
         ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost))?;
     }
+    // Strict gas: see the interpreter's `load_acc_and_calc_gas`.
+    let checkpoint = ecx.host().checkpoint_state();
+    let result = load_and_charge_call(
+        ecx,
+        &version,
+        to,
+        transfers_value,
+        create_empty_account,
+        stack_gas_limit,
+    );
+    if result.is_err() {
+        ecx.host().rollback_state(checkpoint);
+    }
+    result
+}
 
+/// The account loads and charges of [`load_acc_and_calc_gas`], after the value transfer cost.
+#[inline]
+fn load_and_charge_call<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    version: &evm2::version::Version,
+    to: Address,
+    transfers_value: bool,
+    create_empty_account: bool,
+    stack_gas_limit: u64,
+) -> Result<(u64, u64, Bytecode, Address), BuiltinError> {
     let additional_cold_cost = version.gas_params.cold_account_additional_cost();
     // TIP-1175: see the interpreter's `load_acc_and_calc_gas`.
     let priced_code = version.gas_params.prices_code_load();

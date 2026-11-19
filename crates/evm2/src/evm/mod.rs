@@ -2014,6 +2014,14 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         })
     }
 
+    fn checkpoint_state(&mut self) -> StateCheckpoint {
+        self.state.checkpoint()
+    }
+
+    fn rollback_state(&mut self, checkpoint: StateCheckpoint) {
+        self.state.rollback(checkpoint, self.features);
+    }
+
     fn load_code(&mut self, address: &Address, gas_limit: u64) -> Result<CodeLoad, HostError> {
         let gas_params = &self.execution_config.version().gas_params;
         let track_code = gas_params.prices_code_load();
