@@ -739,8 +739,10 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Records a revert snapshot and returns the live account, materializing an empty one when it
     /// is currently absent.
     ///
-    /// Code written through the returned [`AccountInfo`] is not marked warm for Tempo TIP-1175
-    /// gas accounting; install code with [`Self::set_code`] to have it count as warm.
+    /// Code written through the returned [`AccountInfo`] leaves code warmth for Tempo TIP-1175 gas
+    /// accounting as it was: new code is not marked warm, and warmth an earlier load paid for
+    /// stays, even if the bytes are replaced. Install code with [`Self::set_code`] to have it count
+    /// as warm.
     #[inline]
     pub fn get_or_insert(&mut self) -> &mut AccountInfo {
         self.present_mut()
