@@ -898,9 +898,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
 
     // TIP-1175: see the interpreter's `load_acc_and_calc_gas`.
     let remaining_gas = ecx.gas.remaining();
-    let flags = LoadFlags::affordable(remaining_gas, &version.gas_params, true);
-    let mut account =
-        ecx.host().load_account(&to, flags).map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+    let mut account = ecx
+        .host()
+        .load_account(&to, LoadFlags::affordable(remaining_gas, &version.gas_params, true))
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
     let mut cost = account.cold_cost(&version.gas_params);
     let mut new_account_state_gas = 0;
     let mut code = core::mem::take(&mut account.code);
@@ -912,10 +913,12 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         if cost > remaining_gas {
             return Err(InstrStop::OutOfGas.into());
         }
-        let flags = LoadFlags::affordable(remaining_gas - cost, &version.gas_params, true);
         let delegated_account = ecx
             .host()
-            .load_account(&delegated_address, flags)
+            .load_account(
+                &delegated_address,
+                LoadFlags::affordable(remaining_gas - cost, &version.gas_params, true),
+            )
             .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
         cost += delegated_account.cold_cost(&version.gas_params);
         code = delegated_account.code;

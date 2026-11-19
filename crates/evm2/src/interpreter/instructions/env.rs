@@ -12,6 +12,7 @@ fn load_account<T: EvmTypesHost>(
     addr: Word,
     load_code: bool,
 ) -> Result<AccountLoad> {
+    // Built first: computing it inside the call would borrow `cx.state` while `host()` holds it.
     let flags = LoadFlags::affordable(cx.gas.remaining(), cx.state.gas_params(), load_code);
     let account = cx
         .state

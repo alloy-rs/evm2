@@ -18,7 +18,7 @@ use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
     evm::{
-        AccountInfo,
+        AccountInfo, LoadFlags,
         handler::{DefaultTxHandlerHooks, GasSettlement},
     },
     interpreter::{
@@ -614,9 +614,11 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     // The target's cold account and, under TIP-1175, its cold bytecode must both
                     // fit in the gas left, or the load halts with nothing warmed.
                     let gas_params = host.version().gas_params;
-                    let flags =
-                        crate::evm::LoadFlags::affordable(tx_gas.remaining(), &gas_params, true);
-                    let load = match Host::load_account(host, &delegated_address, flags) {
+                    let load = match Host::load_account(
+                        host,
+                        &delegated_address,
+                        LoadFlags::affordable(tx_gas.remaining(), &gas_params, true),
+                    ) {
                         Ok(load) => load,
                         Err(HostError::Halt(_)) => return Ok(halted(host)),
                         Err(HostError::Execution(error)) => return Err(error.into()),

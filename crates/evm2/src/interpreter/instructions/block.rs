@@ -1,6 +1,7 @@
 use crate::{
     EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
+    evm::LoadFlags,
     interpreter::{Host, Word},
     utils::WordExt,
 };
@@ -60,7 +61,7 @@ pub fn selfbalance(cx: _) -> Result<out> {
     *out = cx
         .state
         .host()
-        .load_account(destination, crate::evm::LoadFlags::NO_GAS_CHECK)
+        .load_account(destination, LoadFlags::NO_GAS_CHECK)
         .map_err(|error| cx.state.fail(error))?
         .balance;
 }

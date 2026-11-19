@@ -102,8 +102,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
         if cost > remaining_gas {
             return Err(InstrStop::OutOfGas.into());
         }
-        let flags = LoadFlags::affordable(remaining_gas - cost, gas_params, true);
-        let delegated_account = host.load_account(&delegated_address, flags)?;
+        let delegated_account = host.load_account(
+            &delegated_address,
+            LoadFlags::affordable(remaining_gas - cost, gas_params, true),
+        )?;
         cost += delegated_account.cold_cost(gas_params);
         code = delegated_account.code;
         code_address = delegated_address;
