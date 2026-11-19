@@ -143,8 +143,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Records the interpreter runner's verdict for the table that is not installed.
     ///
     /// Probes a copy of the execution config, so the live gas table never changes here and a
-    /// panicking runner cannot leave the schedule's table installed.
+    /// panicking runner cannot leave the schedule's table installed. The verdict is cleared before
+    /// probing, so a panicking probe leaves the table unsupported instead of keeping an earlier
+    /// runner's verdict.
     pub(super) fn refresh_tx_gas_runner_support(&mut self) {
+        let Some(state) = &mut self.tx_gas else { return };
+        state.other_runner_supported = false;
         let Some(state) = &self.tx_gas else { return };
         let supported = self.interpreter_runner.as_ref().is_some_and(|runner| {
             let mut config = self.execution_config.clone();
@@ -154,6 +158,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         if let Some(state) = &mut self.tx_gas {
             state.other_runner_supported = supported;
         }
+    }
+
+    /// Returns the cached runner verdict for the table that is not installed.
+    #[cfg(test)]
+    pub(super) fn tx_gas_other_runner_supported(&self) -> Option<bool> {
+        self.tx_gas.as_ref().map(|state| state.other_runner_supported)
     }
 
     /// Returns whether a schedule is installed.

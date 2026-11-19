@@ -453,6 +453,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn refresh_runner_support(&mut self) {
+        // Cleared first, so a panicking probe falls back to the interpreter instead of keeping an
+        // earlier runner's verdict.
+        self.runner_supported = false;
         self.runner_supported = self
             .interpreter_runner
             .as_ref()
@@ -3783,6 +3786,43 @@ mod tests {
             );
             true
         }
+    }
+
+    /// A runner that supports every config.
+    #[derive(Debug)]
+    struct ApproveAllRunner;
+
+    impl InterpreterRunner<BaseEvmTypes> for ApproveAllRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            None
+        }
+
+        fn supports(&self, _config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn runner_probe_unwind_clears_previous_runner_verdict() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        evm.set_interpreter_runner(ApproveAllRunner);
+        assert_eq!(evm.tx_gas_other_runner_supported(), Some(true));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            evm.set_interpreter_runner(PanickingProbeRunner);
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(
+            evm.tx_gas_other_runner_supported(),
+            Some(false),
+            "the new runner never approved the schedule's table"
+        );
     }
 
     #[test]
