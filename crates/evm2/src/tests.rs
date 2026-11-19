@@ -7,7 +7,7 @@ use crate::{
         eip7702::{AuthRefunds, Eip7702Authorization, RuntimeAuthCharges, apply_auth_list},
         ethereum_tx_registry, prepare_initial_frame,
     },
-    evm::{AccountInfo, AccountLoadFlags, InMemoryDB, SYSTEM_ADDRESS},
+    evm::{AccountInfo, AccountLoadFlags, DbStats, InMemoryDB, SYSTEM_ADDRESS},
     interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
     test_utils::{legacy_bytecode, push, push_address, push_all, return_top_word},
@@ -1006,6 +1006,23 @@ fn tip1175_host() -> TestEvm {
 
 /// [`tip1175_host`] with `extra` accounts added to the database.
 fn tip1175_host_with(extra: &[(Address, Bytecode)]) -> TestEvm {
+    tip1175_host_from(extra, |database| database)
+}
+
+/// [`tip1175_host`] whose database counts its reads, for [`code_reads`].
+fn tip1175_counting_host() -> TestEvm {
+    tip1175_host_from(&[], DbStats::new)
+}
+
+/// Returns how many times `evm`'s counting database read bytecode.
+fn code_reads(evm: &TestEvm) -> u64 {
+    evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts().get_code_by_hash
+}
+
+fn tip1175_host_from<D: crate::evm::DynDatabase + 'static>(
+    extra: &[(Address, Bytecode)],
+    wrap: impl FnOnce(InMemoryDB) -> D,
+) -> TestEvm {
     let mut version = Version::new(SpecId::PRAGUE);
     version.gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
     version.gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
@@ -1018,7 +1035,7 @@ fn tip1175_host_with(extra: &[(Address, Bytecode)]) -> TestEvm {
         SpecId::PRAGUE,
         BlockEnvExt::default(),
         TxRegistry::new(),
-        database,
+        wrap(database),
         Precompiles::base(SpecId::PRAGUE),
     )
 }
@@ -1040,12 +1057,15 @@ fn load_code(
 
 #[test]
 fn tip1175_skipped_cold_code_load_halts_without_warming() {
-    let mut evm = tip1175_host();
+    let mut evm = tip1175_counting_host();
     warm_account(&mut evm, &CONTRACT);
+    let reads = code_reads(&evm);
     assert!(matches!(
         load_code(&mut evm, &CONTRACT, 0),
         Err(crate::HostError::Halt(InstrStop::OutOfGas))
     ));
+    // Not even the cheaper code price fits, so the code is never fetched.
+    assert_eq!(code_reads(&evm), reads);
     assert!(!evm.state.account(&CONTRACT).unwrap().is_code_warm());
     // Paying for it afterwards still sees a cold load, then a warm one.
     assert!(load_code(&mut evm, &CONTRACT, u64::MAX).unwrap().is_code_cold);
@@ -1143,12 +1163,14 @@ fn tip1175_delegation_designator_pricing(#[case] steps: &[(u8, Address)], #[case
 
 #[test]
 fn tip1175_skipped_designator_load_halts_without_warming() {
-    let mut evm = tip1175_host();
+    let mut evm = tip1175_counting_host();
     warm_account(&mut evm, &DELEGATING);
+    let reads = code_reads(&evm);
     assert!(matches!(
         load_code(&mut evm, &DELEGATING, 0),
         Err(crate::HostError::Halt(InstrStop::OutOfGas))
     ));
+    assert_eq!(code_reads(&evm), reads);
     assert!(!evm.state.account(&DELEGATING).unwrap().is_code_warm());
     let load = load_code(&mut evm, &DELEGATING, u64::MAX).unwrap();
     assert!(load.is_code_cold);
