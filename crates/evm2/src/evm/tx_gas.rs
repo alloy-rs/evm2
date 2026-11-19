@@ -102,9 +102,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// outer transaction runs with, so one transaction is always metered with one table. System
     /// calls outside a transaction run with the EVM's own.
     ///
-    /// Replacing the execution config, the interpreter runner or the schedule panics while a
-    /// selected transaction runs, including from its validation, so the EVM's own table always
-    /// comes back.
+    /// Replacing the execution config, the interpreter runner or the schedule panics while any
+    /// transaction is validated or executed, so the EVM's own table always comes back and nested
+    /// transactions keep the outer transaction's table.
     ///
     /// # Panics
     ///
@@ -147,12 +147,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
     }
 
-    /// Panics while a selected transaction runs with the schedule's table, including during its
-    /// validation, so the EVM's own table can always be restored.
+    /// Panics while a transaction is validated or executed with a schedule installed, so the EVM's
+    /// own table can always be restored and nested transactions keep the outer table.
     #[inline]
     pub(super) fn assert_tx_gas_not_swapped(&self) {
         assert!(
-            !self.tx_gas.as_ref().is_some_and(|state| state.swapped),
+            !self.tx_gas.as_ref().is_some_and(|state| state.in_tx || state.swapped),
             "execution config cannot be modified while a transaction runs with the gas schedule"
         );
     }

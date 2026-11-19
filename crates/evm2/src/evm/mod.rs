@@ -451,14 +451,20 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.assert_tx_gas_not_swapped();
     }
 
+    /// Clears the cached runner verdicts for both gas tables.
     #[inline]
-    fn refresh_runner_support(&mut self) {
-        // Both verdicts are cleared before either probe, so a panicking probe falls back to the
-        // interpreter instead of keeping an earlier runner's or config's verdict.
+    const fn clear_runner_verdicts(&mut self) {
         self.runner_supported = false;
         if let Some(state) = &mut self.tx_gas {
             state.clear_runner_verdict();
         }
+    }
+
+    #[inline]
+    fn refresh_runner_support(&mut self) {
+        // Both verdicts are cleared before either probe, so a panicking probe falls back to the
+        // interpreter instead of keeping an earlier runner's or config's verdict.
+        self.clear_runner_verdicts();
         self.runner_supported = self
             .interpreter_runner
             .as_ref()
@@ -1145,6 +1151,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_shared_interpreter_runner(&mut self, runner: Arc<dyn InterpreterRunner<T>>) {
         self.assert_interpreter_runner_mutable();
+        // Cleared before the old runner drops, so an unwinding destructor cannot leave its verdicts
+        // with the new runner.
+        self.clear_runner_verdicts();
         self.interpreter_runner = Some(runner);
         self.refresh_runner_support();
     }
@@ -1153,6 +1162,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn clear_interpreter_runner(&mut self) -> Option<Arc<dyn InterpreterRunner<T>>> {
         self.assert_interpreter_runner_mutable();
+        self.clear_runner_verdicts();
         let runner = self.interpreter_runner.take();
         self.refresh_runner_support();
         runner
@@ -3989,6 +3999,84 @@ mod tests {
         }));
         assert!(unwound.is_err());
         assert_eq!(gas_used(&mut evm, 7), Ok(u64::from(ALTERNATE_COLD_ACCOUNT_COST)));
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn unselected_validation_cannot_replace_schedule() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
+                    let schedule = schedule(req.host);
+                    req.host.set_tx_gas_schedule(Some(schedule));
+                    Ok(())
+                },
+                |_, ()| Ok(TxResultExt::default()),
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let schedule = schedule(&evm);
+        evm.set_tx_gas_schedule(Some(schedule));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.validate_tx(&test_tx(41));
+        }));
+        assert!(unwound.is_err(), "replacing the schedule during unselected validation panics");
+        let selected = test_tx(7);
+        let guard = evm.tx_gas_guard(selected.inner());
+        assert_eq!(cold_account_cost(guard.evm), u64::from(ALTERNATE_COLD_ACCOUNT_COST));
+    }
+
+    /// A runner whose destructor panics.
+    #[derive(Debug)]
+    #[cfg(feature = "std")]
+    struct PanickingDropRunner;
+
+    #[cfg(feature = "std")]
+    impl InterpreterRunner<BaseEvmTypes> for PanickingDropRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            None
+        }
+
+        fn supports(&self, _config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            true
+        }
+    }
+
+    #[cfg(feature = "std")]
+    impl Drop for PanickingDropRunner {
+        fn drop(&mut self) {
+            if !std::thread::panicking() {
+                panic!("runner destructor unwinds");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn runner_drop_unwind_clears_schedule_verdict() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        evm.set_interpreter_runner(PanickingDropRunner);
+        assert_eq!(evm.tx_gas_other_runner_supported(), Some(true));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            evm.set_interpreter_runner(PanickingOwnProbeRunner);
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(evm.tx_gas_other_runner_supported(), Some(false));
     }
 
     #[test]
