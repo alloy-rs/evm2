@@ -60,13 +60,10 @@ pub(crate) fn load_account<T: EvmTypesHost>(
     address: &Address,
     load_code: bool,
 ) -> Result<AccountLoad, BuiltinError> {
-    let account = ecx
-        .host()
-        .load_account(
-            address,
-            LoadFlags::affordable(ecx.gas.remaining(), ecx.gas_params(), load_code),
-        )
-        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+    // Built first: computing it inside the call would borrow `ecx` while `host()` holds it.
+    let flags = LoadFlags::affordable(ecx.gas.remaining(), ecx.gas_params(), load_code);
+    let account =
+        ecx.host().load_account(address, flags).map_err(|stop| ecx.interpreter_mut().fail(stop))?;
     ecx.gas.spend(account.cold_cost(ecx.gas_params()))?;
     Ok(account)
 }
