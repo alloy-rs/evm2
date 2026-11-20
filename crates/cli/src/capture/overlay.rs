@@ -122,6 +122,9 @@ impl Overlay {
     }
 
     pub(super) fn apply_withdrawal(&mut self, address: Address, amount: U256) {
+        if amount.is_zero() {
+            return;
+        }
         let account = self.accounts.entry(address).or_default();
         account.deleted = false;
         account.exists = true;
@@ -147,5 +150,45 @@ impl OverlayAccount {
             AccountField::Nonce => self.nonce,
             AccountField::Code => self.code,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn zero_withdrawal_does_not_create_account() {
+        let address = Address::repeat_byte(0x11);
+        let mut overlay = Overlay::default();
+
+        overlay.apply_withdrawal(address, U256::ZERO);
+
+        assert!(!overlay.account_exists(&address));
+        assert!(!overlay.accounts.contains_key(&address));
+    }
+
+    #[test]
+    fn zero_withdrawal_does_not_recreate_deleted_account() {
+        let address = Address::repeat_byte(0x11);
+        let mut overlay = Overlay::default();
+        overlay.apply_post(&json!({ address.to_string(): null }));
+
+        overlay.apply_withdrawal(address, U256::ZERO);
+
+        assert!(!overlay.account_exists(&address));
+        assert!(overlay.account_field(&address, AccountField::Balance));
+    }
+
+    #[test]
+    fn positive_withdrawal_creates_account() {
+        let address = Address::repeat_byte(0x11);
+        let mut overlay = Overlay::default();
+
+        overlay.apply_withdrawal(address, U256::from(7));
+
+        assert!(overlay.account_exists(&address));
+        assert_eq!(overlay.withdrawal_balance(&address), U256::from(7));
     }
 }
