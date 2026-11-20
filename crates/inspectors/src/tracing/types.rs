@@ -272,10 +272,10 @@ pub struct CallTraceNode {
     pub logs: Vec<CallLog>,
     /// Ordering of child calls and logs
     pub ordering: Vec<TraceMemberOrder>,
-    /// The address that ran the initcode when an inspector overrode the returned create address.
-    /// Otherwise the execution address is determined by the call kind.
+    /// The message destination when it differs from the execution address implied by the trace.
+    /// An inspector can redirect a message on entry or override the returned CREATE address.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-    pub initcode_address: Option<Address>,
+    pub execution_address_override: Option<Address>,
 }
 
 impl CallTraceNode {
@@ -283,7 +283,7 @@ impl CallTraceNode {
     ///
     /// See `Inspector::call` impl of [TracingInspector](crate::tracing::TracingInspector)
     pub const fn execution_address(&self) -> Address {
-        if let Some(address) = self.initcode_address {
+        if let Some(address) = self.execution_address_override {
             address
         } else if self.trace.kind.is_delegate() {
             self.trace.caller

@@ -415,7 +415,7 @@ impl TracingInspector {
     /// # Panics
     ///
     /// This expects an existing trace [Self::start_trace_on_call]
-    fn fill_trace_on_call_end<E>(&mut self, result: &MessageResultExt<E>) {
+    fn fill_trace_on_call_end<E>(&mut self, destination: Address, result: &MessageResultExt<E>) {
         let TraceStackEntry { trace_idx, log_count } = self.pop_trace();
         let node = &mut self.traces.arena[trace_idx];
         let trace = &mut node.trace;
@@ -432,12 +432,12 @@ impl TracingInspector {
 
         // The result is the frame's outcome as the parent sees it; another inspector may have
         // overridden it, so it wins over the address recorded when the create started.
-        if let Some(address) = result.created_address
-            && address != trace.address
-        {
-            // Its storage still belongs to the account where the initcode ran.
-            node.initcode_address = Some(trace.address);
+        if let Some(address) = result.created_address {
             trace.address = address;
+        }
+        // The exit hook sees the destination after every inspector's entry hook has run.
+        if node.execution_address() != destination {
+            node.execution_address_override = Some(destination);
         }
     }
 
@@ -833,10 +833,10 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn call_end(
         &mut self,
         _interp: &mut Interpreter<'_, '_, T>,
-        _message: &Message<T>,
+        message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        self.fill_trace_on_call_end(result);
+        self.fill_trace_on_call_end(message.destination, result);
     }
 
     fn create(
@@ -874,10 +874,10 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn create_end(
         &mut self,
         _interp: &mut Interpreter<'_, '_, T>,
-        _message: &Message<T>,
+        message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        self.fill_trace_on_call_end(result);
+        self.fill_trace_on_call_end(message.destination, result);
     }
 
     fn selfdestruct(

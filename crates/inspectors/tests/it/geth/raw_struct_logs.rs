@@ -553,6 +553,55 @@ fn storage_tracks_the_account_that_ran_the_initcode() {
     }
 }
 
+struct RedirectStorage(Address);
+
+impl Inspector<BaseEvmTypes> for RedirectStorage {
+    fn create(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &mut Message,
+    ) -> Option<MessageResult> {
+        message.destination = self.0;
+        None
+    }
+
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &mut Message,
+    ) -> Option<MessageResult> {
+        if message.destination == Address::with_last_byte(WRITER) {
+            message.destination = self.0;
+        }
+        None
+    }
+}
+
+#[test]
+fn redirected_create_and_call_share_the_destination_storage() {
+    let code = [create(op::CREATE), call(op::CALL, WRITER, ALL_GAS)].concat();
+    for mode in [StructLogMode::Raw, StructLogMode::Typed] {
+        let frame = trace_with_hooks(
+            &code,
+            0,
+            mode,
+            None,
+            (NoopInspector::default(), RedirectStorage(Address::with_last_byte(0xb2))),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let stores = logs_of(&frame, "SSTORE");
+        assert_eq!(stores.len(), 2);
+        assert_eq!(
+            stores[1]["storage"],
+            json!({
+                format!("{:#066x}", 7): format!("{:#066x}", 1),
+                format!("{:#066x}", 1): format!("{:#066x}", 2),
+            }),
+            "{mode:?}"
+        );
+    }
+}
+
 #[test]
 fn cloning_a_raw_debug_inspector_starts_a_new_recording() {
     let config = GethDefaultTracingOptions { disable_stack: Some(true), ..Default::default() };

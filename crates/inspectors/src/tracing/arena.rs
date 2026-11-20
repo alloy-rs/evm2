@@ -75,7 +75,7 @@ impl CallTraceArena {
             // The entry node, just update it.
             None if new_trace.depth == 0 => {
                 self.arena[0].trace = new_trace;
-                self.arena[0].initcode_address = None;
+                self.arena[0].execution_address_override = None;
                 return 0;
             }
             None => 0,
