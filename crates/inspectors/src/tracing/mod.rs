@@ -75,7 +75,9 @@ pub use mux::{Error as MuxError, MuxInspector};
 mod debug;
 pub use debug::{DebugInspector, DebugInspectorError, DebugTrace, StructLogMode};
 
+#[cfg(feature = "raw-struct-logs")]
 mod raw_struct_log;
+#[cfg(feature = "raw-struct-logs")]
 pub use raw_struct_log::{RawDefaultFrame, RawStructLogInspector};
 
 /// An inspector that collects call traces.
@@ -415,7 +417,8 @@ impl TracingInspector {
     /// This expects an existing trace [Self::start_trace_on_call]
     fn fill_trace_on_call_end<E>(&mut self, result: &MessageResultExt<E>) {
         let TraceStackEntry { trace_idx, log_count } = self.pop_trace();
-        let trace = &mut self.traces.arena[trace_idx].trace;
+        let node = &mut self.traces.arena[trace_idx];
+        let trace = &mut node.trace;
 
         trace.gas_used = result.gas.spent();
         trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
@@ -429,7 +432,11 @@ impl TracingInspector {
 
         // The result is the frame's outcome as the parent sees it; another inspector may have
         // overridden it, so it wins over the address recorded when the create started.
-        if let Some(address) = result.created_address {
+        if let Some(address) = result.created_address
+            && address != trace.address
+        {
+            // Its storage still belongs to the account where the initcode ran.
+            node.initcode_address = Some(trace.address);
             trace.address = address;
         }
     }
@@ -516,7 +523,7 @@ impl TracingInspector {
 
         // A step that halts on the budget never runs, so it records no access.
         let storage_change = if self.config.record_state_diff && !self.budget.halts() {
-            storage_change(interp, op.get())
+            storage_change(interp, op.get()).map(Box::new)
         } else {
             None
         };
@@ -942,7 +949,7 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
 fn storage_change<T: EvmTypes>(
     interp: &mut Interpreter<'_, '_, T>,
     op: u8,
-) -> Option<Box<StorageChange>> {
+) -> Option<StorageChange> {
     let (key, value, reason) = match (op, interp.stack().as_slice()) {
         (op::SLOAD, [.., key]) => (*key, None, StorageChangeReason::SLOAD),
         (op::SSTORE, [.., value, key]) => (*key, Some(*value), StorageChangeReason::SSTORE),
@@ -951,10 +958,10 @@ fn storage_change<T: EvmTypes>(
     let address = interp.message().destination;
     // A database error leaves the record empty: an opcode that reads the slot fails on it too.
     let current = interp.host().state_mut().storage_slot_untracked(&address, &key).ok()?;
-    Some(Box::new(match value {
+    Some(match value {
         Some(value) => StorageChange { key, value, had_value: Some(current), reason },
         None => StorageChange { key, value: current, had_value: None, reason },
-    }))
+    })
 }
 
 /// Returns the memory range whose contents after execution the opcode reports, derived from its

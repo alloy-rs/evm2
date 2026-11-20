@@ -1,16 +1,16 @@
 //! Geth struct logs written as JSON while the transaction executes.
 
-use crate::tracing::{TraceLimits, limits::TraceBudget, utils::step_cost};
+use crate::tracing::{
+    TraceLimits, config::geth_step_limit, limits::TraceBudget, storage_change, types::is_call_like,
+    utils::step_cost,
+};
 use alloc::{boxed::Box, collections::BTreeMap, format, string::String, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, U256, hex, map::AddressMap};
 use alloy_rpc_types_trace::geth::GethDefaultTracingOptions;
 use core::{mem, ops::Range};
 use evm2::{
     EvmFeatures, EvmTypes, Inspector, TxResultExt,
-    interpreter::{
-        InstrStop, Interpreter, Message, MessageResult,
-        opcode::{OpCode, op},
-    },
+    interpreter::{InstrStop, Interpreter, Message, MessageResult, opcode::OpCode},
 };
 use serde_json::value::RawValue;
 
@@ -31,8 +31,7 @@ use serde::ser::{Serialize, SerializeStruct, Serializer};
 /// A struct log is written once its gas cost is known: when the step ends, or when the message
 /// it started begins, so that the struct logs of that message follow it. What only the end of
 /// such a step tells, its state gas cost and its error, is inserted when the frame is taken.
-/// Under the `limit` option that state gas cost therefore counts once the message has returned,
-/// so the struct logs can end a few steps later than the typed ones.
+/// The final byte cutoff uses the completed sizes in execution order.
 ///
 /// The inspector can be reused for multiple transactions by calling [`Self::fuse`] after each.
 #[derive(Clone, Debug)]
@@ -50,6 +49,10 @@ pub struct RawStructLogInspector {
     /// The bytes of JSON of the struct logs written so far, without the array syntax, which geth
     /// counts against the `limit` option.
     json_len: u64,
+    /// Remaining step hooks under the geth capture limit, including hidden frames.
+    steps_left: Option<u64>,
+    /// The outermost message the typed builder cannot reach through a call opcode.
+    hidden_depth: Option<u16>,
     /// The running step, unless a message it started is running.
     step: StepState,
     /// The storage slot the running step accesses.
@@ -57,7 +60,7 @@ pub struct RawStructLogInspector {
     /// The fields of the running step that follow its error: the stack, the return data and the
     /// memory.
     tail: Tail,
-    /// The steps that started a message that has not returned, innermost last.
+    /// Visible call steps waiting for their step_end hook, innermost last.
     open_steps: Vec<OpenStep>,
     /// The fields of written struct logs that were only known later.
     patches: Patches,
@@ -83,6 +86,8 @@ impl RawStructLogInspector {
             logs: Vec::new(),
             capacity_hint: 0,
             json_len: 0,
+            hidden_depth: None,
+            steps_left: geth_step_limit(&opts).map(|n| n.get()),
             step: StepState::None,
             storage_access: None,
             tail: Tail::default(),
@@ -96,11 +101,17 @@ impl RawStructLogInspector {
 
     /// Sets the byte budget for the struct logs, and keeps it across [`Self::fuse`].
     ///
-    /// The budget counts the bytes of JSON of the struct logs, apart from the fields that are
-    /// inserted once a call returns. A struct log that would exceed it is left out, as is every
-    /// struct log after it.
+    /// The budget counts the JSON bytes of each complete struct log. The first log that would
+    /// exceed it and every following log are omitted.
     pub const fn set_limits(&mut self, limits: TraceLimits) {
         self.budget.limits = limits;
+    }
+
+    /// Creates an empty recorder with the same options and limits.
+    pub(super) fn fresh(&self) -> Self {
+        let mut fresh = Self::new(self.opts);
+        fresh.set_limits(self.budget.limits);
+        fresh
     }
 
     /// Returns whether struct logs were left out after reaching the byte budget.
@@ -115,6 +126,8 @@ impl RawStructLogInspector {
         let Self {
             logs,
             json_len,
+            hidden_depth,
+            steps_left,
             step,
             storage_access,
             tail,
@@ -124,15 +137,18 @@ impl RawStructLogInspector {
             failed,
             features,
             // kept
-            opts: _,
+            opts,
             capacity_hint: _,
             budget,
         } = self;
         logs.clear();
         *json_len = 0;
+        *hidden_depth = None;
+        *steps_left = geth_step_limit(opts).map(|n| n.get());
         *step = StepState::None;
         *storage_access = None;
         tail.clear();
+        tail.buf.clear();
         open_steps.clear();
         patches.clear();
         storage.clear();
@@ -147,7 +163,12 @@ impl RawStructLogInspector {
     /// Calling this again before the next transaction returns a frame without struct logs.
     pub fn take_frame<E>(&mut self, result: &TxResultExt<E>) -> RawDefaultFrame {
         let mut logs = mem::take(&mut self.logs);
-        self.patches.apply(&mut logs);
+        if !self.patches.entries.is_empty() {
+            self.patches.apply(&mut logs);
+            self.trim_patched_logs(&mut logs);
+        }
+        self.open_steps.clear();
+        self.json_len = 0;
         if logs.is_empty() {
             logs.push(b'[');
         }
@@ -172,6 +193,29 @@ impl RawStructLogInspector {
             gas_refund: eip8037.then(|| result.final_refunded()),
             return_value: result.output.clone(),
             struct_logs,
+        }
+    }
+
+    /// A completed parent can move the byte cutoff back into its already written children.
+    fn trim_patched_logs(&self, logs: &mut Vec<u8>) {
+        let mut bytes = self.json_len;
+        while !logs.is_empty() {
+            let over_budget =
+                self.budget.limits.max_recorded_bytes.is_some_and(|max| bytes > max as u64);
+            if !over_budget && self.opts.limit.is_none_or(|limit| bytes <= limit) {
+                break;
+            }
+            // Every log begins with this literal. Nested storage keys are hex strings, and
+            // quotes inside string values are escaped, so only a log separator can match.
+            const NEXT_LOG: &[u8] = b",{\"pc\":";
+            let start = logs.windows(NEXT_LOG.len()).rposition(|w| w == NEXT_LOG).unwrap_or(0);
+            bytes -= (logs.len() - start - 1) as u64;
+            // The geth limit includes the first log that crosses it; the recording budget
+            // excludes it.
+            if !over_budget && self.opts.limit.is_none_or(|limit| bytes <= limit) {
+                break;
+            }
+            logs.truncate(start);
         }
     }
 
@@ -216,15 +260,10 @@ impl RawStructLogInspector {
 
         let op = OpCode::new_or_unknown(interp.opcode());
         if self.opts.is_storage_enabled() {
-            let slot = match (op.get(), interp.stack().as_slice()) {
-                (op::SLOAD, [.., key]) => Some((*key, None)),
-                (op::SSTORE, [.., value, key]) => Some((*key, Some(*value))),
-                _ => None,
-            };
-            self.storage_access = slot.map(|(key, stored)| StorageAccess {
+            self.storage_access = storage_change(interp, op.get()).map(|change| StorageAccess {
                 address: interp.message().destination,
-                key,
-                stored,
+                key: change.key,
+                value: change.value,
             });
         }
 
@@ -234,6 +273,7 @@ impl RawStructLogInspector {
             op,
             gas: gas.remaining(),
             gas_before: gas.remaining_excluding_state_spill(),
+            message_cost: None,
             depth: u64::from(interp.message().depth) + 1,
             refund: gas.refunded() as u64,
             state_gas_spent: gas.state_gas_spent(),
@@ -255,40 +295,35 @@ impl RawStructLogInspector {
             StepState::Recording(step) => {
                 let charged =
                     step.gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill());
-                let cost = step_cost(result, step.gas, charged);
-                let state_gas_cost = step.state_gas_cost(state_gas_spent);
-                // An SLOAD leaves the value it loaded on top of the stack.
-                let loaded = match self.storage_access {
-                    Some(StorageAccess { stored: None, .. }) => {
-                        interp.stack().as_slice().last().copied()
-                    }
-                    _ => None,
+                let cost = match (step.message_cost, result) {
+                    (Some(cost), result) if result != Err(InstrStop::ReentrancySentryOOG) => cost,
+                    _ => step_cost(result, step.gas, charged),
                 };
-                self.write_log(&step, cost, state_gas_cost, result.err(), loaded);
+                self.write_log(&step, cost, step.state_gas_cost(state_gas_spent), result.err());
             }
             StepState::Skipped => {}
-            // The step started a message, which wrote its struct log.
             StepState::None => {
-                if let Some(OpenStep::Recorded { state_gas_at, error_at, step }) =
-                    self.open_steps.pop()
-                {
-                    if let Some(cost) = step.state_gas_cost(state_gas_spent) {
-                        self.json_len += self.patches.push(state_gas_at, |patch| {
-                            patch.extend_from_slice(STATE_GAS_COST_KEY);
-                            let mut number = ArrayBuf::<24>::new();
-                            number.i64(cost);
-                            patch.extend_from_slice(number.as_slice());
-                        }) as u64;
-                    }
-                    if let Some(error) =
-                        result.err().filter(|status| status.is_halt()).and_then(error_json)
-                    {
-                        self.json_len += self.patches.push(error_at, |patch| {
-                            patch.extend_from_slice(ERROR_KEY);
-                            patch.extend_from_slice(error.as_bytes());
-                        }) as u64;
-                    }
+                let Some(open) = self.open_steps.pop() else { return };
+                let state_cost = open.step.state_gas_cost(state_gas_spent);
+                let error = result.err().filter(|status| status.is_halt()).and_then(error_json);
+                if state_cost.is_none() && error.is_none() {
+                    return;
                 }
+                // The sentry rejects the instruction before charging it, even if a custom
+                // instruction started a message first.
+                let cost =
+                    if result == Err(InstrStop::ReentrancySentryOOG) { 0 } else { open.cost };
+                let added = self.patches.replace(open.fields, |patch| {
+                    let mut fields = ArrayBuf::<HEAD_CAPACITY>::new();
+                    open.step.write_cost_and_depth(&mut fields, cost, state_cost);
+                    patch.extend_from_slice(fields.as_slice());
+                    if let Some(error) = error {
+                        patch.extend_from_slice(ERROR_KEY);
+                        patch.extend_from_slice(error.as_bytes());
+                    }
+                });
+                self.json_len += added as u64;
+                self.budget.reserve(added);
             }
         }
     }
@@ -305,32 +340,50 @@ impl RawStructLogInspector {
         forwarded: u64,
     ) {
         self.features = interp.version().features;
+        if self.hidden_depth.is_some() {
+            return;
+        }
         if message.depth == 0 {
             self.failed = true;
+            return;
         }
-        match mem::take(&mut self.step) {
-            // The top-level message, or a further message of a step that started one.
-            StepState::None => {}
-            StepState::Skipped => self.open_steps.push(OpenStep::Skipped),
-            StepState::Recording(step) => {
-                let after =
-                    interp.gas().remaining_excluding_state_spill().saturating_add(forwarded);
-                let cost = step.gas_before.saturating_sub(after);
-                let open = match self.write_log(&step, cost, None, None, None) {
-                    Some((state_gas_at, error_at)) => {
-                        OpenStep::Recorded { state_gas_at, error_at, step }
-                    }
-                    None => OpenStep::Skipped,
-                };
-                self.open_steps.push(open);
+        if let StepState::Recording(step) = &mut self.step {
+            let after = interp.gas().remaining_excluding_state_spill().saturating_add(forwarded);
+            let cost = step.gas_before.saturating_sub(after);
+            if is_call_like(step.op) {
+                let step = *step;
+                if let Some(fields) = self.write_log(&step, cost, None, None) {
+                    self.open_steps.push(OpenStep { step, cost, fields });
+                    self.step = StepState::None;
+                    return;
+                }
+                self.step = StepState::Skipped;
+            } else {
+                step.message_cost.get_or_insert(cost);
             }
         }
+        // A parentless message above depth zero, a native precompile subcall, or a child of
+        // an ordinary opcode has no corresponding call step in the typed trace.
+        self.hidden_depth = Some(message.depth);
     }
 
-    /// Records the outcome of a message that ran at `depth`.
-    ///
-    /// Invoked on [`Inspector::call_end`] and [`Inspector::create_end`].
-    const fn end_message(&mut self, depth: u16, success: bool) {
+    /// Finalizes a frame, including a step that a composed inspector stopped before execution.
+    fn end_message<T: EvmTypes>(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        depth: u16,
+        success: bool,
+    ) {
+        if let Some(hidden) = self.hidden_depth {
+            if depth == hidden {
+                self.hidden_depth = None;
+            }
+            return;
+        }
+        if let StepState::Recording(step) = mem::take(&mut self.step) {
+            self.write_log(&step, 0, None, None);
+            self.budget.halt(interp, false);
+        }
         if depth == 0 {
             self.failed = !success;
         }
@@ -338,15 +391,14 @@ impl RawStructLogInspector {
 
     /// Appends the struct log of `step` to the struct logs, unless it exceeds the byte budget.
     ///
-    /// Returns the offsets in the struct logs at which its state gas cost and its error belong.
+    /// Returns the range containing the fields that may change after a child returns.
     fn write_log(
         &mut self,
         step: &RecordingStep,
         cost: u64,
         state_gas_cost: Option<i64>,
         status: Option<InstrStop>,
-        loaded: Option<U256>,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<Range<usize>> {
         // The separator from the previous struct log is not part of this one.
         let mut head = ArrayBuf::<HEAD_CAPACITY>::new();
         head.bytes(if self.logs.is_empty() { b"[" } else { b"," });
@@ -362,18 +414,8 @@ impl RawStructLogInspector {
         head.bytes(b"\",\"gas\":");
         head.u64(step.gas);
         head.bytes(b",\"gasCost\":");
-        head.u64(cost);
-        let state_gas_at = head.len;
-        if let Some(cost) = state_gas_cost {
-            head.bytes(STATE_GAS_COST_KEY);
-            head.i64(cost);
-        }
-        if let Some(reservoir) = step.state_gas_reservoir {
-            head.bytes(b",\"stateGasReservoir\":");
-            head.u64(reservoir);
-        }
-        head.bytes(b",\"depth\":");
-        head.u64(step.depth);
+        let cost_at = head.len;
+        step.write_cost_and_depth(&mut head, cost, state_gas_cost);
         let error_at = head.len;
 
         // Reverts are control flow, only exceptional halts are errors.
@@ -381,8 +423,7 @@ impl RawStructLogInspector {
         // geth snapshots the storage of the contract, with the slots of all its earlier SLOADs
         // and SSTOREs, unless the opcode fails before it runs.
         let storage = if error.is_none()
-            && let Some(StorageAccess { address, key, stored }) = self.storage_access.take()
-            && let Some(value) = stored.or(loaded)
+            && let Some(StorageAccess { address, key, value }) = self.storage_access.take()
         {
             let storage = self.storage.entry(address).or_default();
             storage.insert(key.into(), value.into());
@@ -443,7 +484,7 @@ impl RawStructLogInspector {
         debug_assert_eq!(self.logs.len() - start - 1, len);
 
         self.json_len += len as u64;
-        Some((start + state_gas_at, start + error_at))
+        Some(start + cost_at..start + error_at)
     }
 }
 
@@ -455,12 +496,27 @@ impl<T: EvmTypes> Inspector<T> for RawStructLogInspector {
 
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if let Some(left) = &mut self.steps_left {
+            if *left == 0 {
+                if self.hidden_depth.is_none() {
+                    self.step = StepState::Skipped;
+                }
+                return;
+            }
+            *left -= 1;
+        }
+        if self.hidden_depth.is_some() {
+            return;
+        }
         self.start_step(interp);
         self.budget.halt(interp, true);
     }
 
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if self.hidden_depth.is_some() {
+            return;
+        }
         self.end_step(interp);
         self.budget.halt(interp, true);
     }
@@ -477,11 +533,11 @@ impl<T: EvmTypes> Inspector<T> for RawStructLogInspector {
 
     fn call_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        self.end_message(message.depth, result.is_success());
+        self.end_message(interp, message.depth, result.is_success());
     }
 
     fn create(
@@ -496,11 +552,11 @@ impl<T: EvmTypes> Inspector<T> for RawStructLogInspector {
 
     fn create_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        self.end_message(message.depth, result.is_success());
+        self.end_message(interp, message.depth, result.is_success());
     }
 }
 
@@ -529,14 +585,16 @@ pub struct RawDefaultFrame {
 #[cfg(feature = "serde")]
 impl Serialize for RawDefaultFrame {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut frame = serializer.serialize_struct("RawDefaultFrame", 7)?;
-        frame.serialize_field("failed", &self.failed)?;
-        frame.serialize_field("gas", &self.gas)?;
-        for (key, gas) in [
+        let gas_fields = [
             ("executionGasUsed", self.execution_gas_used),
             ("stateGasUsed", self.state_gas_used),
             ("gasRefund", self.gas_refund),
-        ] {
+        ];
+        let count = 4 + gas_fields.iter().filter(|(_, gas)| gas.is_some()).count();
+        let mut frame = serializer.serialize_struct("RawDefaultFrame", count)?;
+        frame.serialize_field("failed", &self.failed)?;
+        frame.serialize_field("gas", &self.gas)?;
+        for (key, gas) in gas_fields {
             match gas {
                 Some(gas) => frame.serialize_field(key, &U64::from(gas))?,
                 None => frame.skip_field(key)?,
@@ -569,6 +627,8 @@ struct RecordingStep {
     gas: u64,
     /// The remaining gas plus spilled state gas.
     gas_before: u64,
+    /// The gas charged when this step started its first message.
+    message_cost: Option<u64>,
     depth: u64,
     refund: u64,
     state_gas_spent: i64,
@@ -585,21 +645,33 @@ impl RecordingStep {
         let cost = state_gas_spent.saturating_sub(self.state_gas_spent);
         if self.state_gas_reservoir.is_some() && cost != 0 { Some(cost) } else { None }
     }
+    fn write_cost_and_depth(
+        &self,
+        head: &mut ArrayBuf<HEAD_CAPACITY>,
+        cost: u64,
+        state_cost: Option<i64>,
+    ) {
+        head.u64(cost);
+        if let Some(cost) = state_cost {
+            head.bytes(STATE_GAS_COST_KEY);
+            head.i64(cost);
+        }
+        if let Some(reservoir) = self.state_gas_reservoir {
+            head.bytes(b",\"stateGasReservoir\":");
+            head.u64(reservoir);
+        }
+        head.bytes(b",\"depth\":");
+        head.u64(self.depth);
+    }
 }
 
 /// A step that started a message, until its `step_end` hook.
-#[derive(Clone, Copy, Debug)]
-enum OpenStep {
-    /// The step is not recorded.
-    Skipped,
-    /// The struct log of the step is written, apart from what only its end tells.
-    Recorded {
-        /// The offset in the struct logs at which the state gas cost belongs.
-        state_gas_at: usize,
-        /// The offset in the struct logs at which the error belongs.
-        error_at: usize,
-        step: RecordingStep,
-    },
+#[derive(Clone, Debug)]
+struct OpenStep {
+    step: RecordingStep,
+    cost: u64,
+    /// The provisional gas and depth fields in the output.
+    fields: Range<usize>,
 }
 
 /// The storage slot an `SLOAD` or `SSTORE` step accesses.
@@ -608,8 +680,8 @@ struct StorageAccess {
     /// The contract whose storage is accessed.
     address: Address,
     key: U256,
-    /// The value an `SSTORE` stores, `None` for an `SLOAD`.
-    stored: Option<U256>,
+    /// The value read or written by the step.
+    value: U256,
 }
 
 /// The fields of a struct log that are copied when its step starts: the stack, the return data
@@ -708,8 +780,8 @@ impl Tail {
 /// gas cost and the error of a step that started a message.
 #[derive(Clone, Debug, Default)]
 struct Patches {
-    /// The offset in the struct logs each patch belongs at, and its bytes in `bytes`.
-    entries: Vec<(usize, Range<usize>)>,
+    /// The range replaced in the struct logs and the range of its replacement in `bytes`.
+    entries: Vec<(Range<usize>, Range<usize>)>,
     bytes: Vec<u8>,
 }
 
@@ -719,12 +791,15 @@ impl Patches {
         self.bytes.clear();
     }
 
-    /// Adds the patch that `write` appends, to insert at `offset`, and returns its length.
-    fn push(&mut self, offset: usize, write: impl FnOnce(&mut Vec<u8>)) -> usize {
+    /// Replaces a range with its completed fields and returns the additional byte count.
+    fn replace(&mut self, fields: Range<usize>, write: impl FnOnce(&mut Vec<u8>)) -> usize {
         let start = self.bytes.len();
         write(&mut self.bytes);
-        self.entries.push((offset, start..self.bytes.len()));
-        self.bytes.len() - start
+        let replacement = start..self.bytes.len();
+        // Setting a sentry's cost to zero can remove digits, but its error field adds more.
+        let added = replacement.len() - fields.len();
+        self.entries.push((fields, replacement));
+        added
     }
 
     /// Inserts the patches into `logs` and clears them.
@@ -733,18 +808,19 @@ impl Patches {
     fn apply(&mut self, logs: &mut Vec<u8>) {
         // A step that started a message ends after the steps of the message, so the patches are
         // not in the order of their offsets.
-        self.entries.sort_unstable_by_key(|(offset, _)| *offset);
+        self.entries.sort_unstable_by_key(|(fields, _)| fields.start);
         let mut src_end = logs.len();
-        let mut dst_end = src_end + self.bytes.len();
+        let mut dst_end = src_end
+            + self.entries.iter().map(|(fields, patch)| patch.len() - fields.len()).sum::<usize>();
         logs.resize(dst_end, 0);
-        for (offset, patch) in self.entries.iter().rev() {
-            let moved = src_end - offset;
-            logs.copy_within(*offset..src_end, dst_end - moved);
+        for (fields, patch) in self.entries.iter().rev() {
+            let moved = src_end - fields.end;
+            logs.copy_within(fields.end..src_end, dst_end - moved);
             dst_end -= moved;
             let patch = &self.bytes[patch.clone()];
             dst_end -= patch.len();
             logs[dst_end..dst_end + patch.len()].copy_from_slice(patch);
-            src_end = *offset;
+            src_end = fields.start;
         }
         debug_assert_eq!(src_end, dst_end);
         self.clear();
@@ -922,7 +998,7 @@ mod tests {
         // Patches arrive innermost call first, which is not the order of their offsets.
         for (offset, patch) in [(7, "c"), (4, "bb"), (10, "d"), (0, "aaa")] {
             assert_eq!(
-                patches.push(offset, |bytes| bytes.extend_from_slice(patch.as_bytes())),
+                patches.replace(offset..offset, |bytes| bytes.extend_from_slice(patch.as_bytes())),
                 patch.len()
             );
         }
@@ -982,5 +1058,14 @@ mod tests {
             assert_eq!(tail.as_slice(), format!(",\"returnData\":{data}").as_bytes());
             assert_eq!(tail.len, Tail::return_data_len(&memory));
         }
+    }
+
+    #[test]
+    fn fuse_discards_initialized_tail_bytes() {
+        let mut inspector = RawStructLogInspector::new(Default::default());
+        inspector.tail.push_return_data(b"previous transaction");
+        inspector.fuse();
+        assert!(inspector.tail.buf.is_empty());
+        assert_eq!(inspector.tail.len, 0);
     }
 }

@@ -272,6 +272,10 @@ pub struct CallTraceNode {
     pub logs: Vec<CallLog>,
     /// Ordering of child calls and logs
     pub ordering: Vec<TraceMemberOrder>,
+    /// The address that ran the initcode when an inspector overrode the returned create address.
+    /// Otherwise the execution address is determined by the call kind.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub initcode_address: Option<Address>,
 }
 
 impl CallTraceNode {
@@ -279,7 +283,13 @@ impl CallTraceNode {
     ///
     /// See `Inspector::call` impl of [TracingInspector](crate::tracing::TracingInspector)
     pub const fn execution_address(&self) -> Address {
-        if self.trace.kind.is_delegate() { self.trace.caller } else { self.trace.address }
+        if let Some(address) = self.initcode_address {
+            address
+        } else if self.trace.kind.is_delegate() {
+            self.trace.caller
+        } else {
+            self.trace.address
+        }
     }
 
     /// Iterates over steps in execution order, pairing each step with the child it called.
@@ -739,10 +749,7 @@ impl CallTraceStep {
     /// CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE, CREATE2
     #[inline]
     pub(crate) const fn is_call_like_op(&self) -> bool {
-        matches!(
-            self.op.get(),
-            op::CALL | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CALLCODE | op::CREATE2
-        )
+        is_call_like(self.op)
     }
 
     // Reverts are control flow; only exceptional halts populate a step error.
@@ -764,6 +771,14 @@ impl CallTraceStep {
     pub fn decoded_mut(&mut self) -> &mut DecodedTraceStep {
         self.decoded.get_or_insert_with(|| Box::new(DecodedTraceStep::Line(String::new())))
     }
+}
+
+/// Whether the geth struct logger follows a child message started by this opcode.
+pub(super) const fn is_call_like(op: OpCode) -> bool {
+    matches!(
+        op.get(),
+        op::CALL | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CALLCODE | op::CREATE2
+    )
 }
 
 /// The deltas a [`CallTraceStep`] produced, as reported by parity's `vmTrace`.

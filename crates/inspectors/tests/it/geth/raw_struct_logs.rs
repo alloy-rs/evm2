@@ -1,7 +1,12 @@
 //! The default struct logger writing its struct logs as JSON, compared with the typed struct logs.
 
 use super::*;
-use evm2_inspectors::tracing::{DebugInspectorError, DebugTrace, StructLogMode};
+use evm2::{
+    evm::precompile::PrecompileOutput,
+    interpreter::{GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, MessageResult},
+    precompiles::{Precompile, PrecompileId},
+};
+use evm2_inspectors::tracing::{DebugInspectorError, DebugTrace, RawDefaultFrame, StructLogMode};
 
 const CALLER: Address = address!("1000000000000000000000000000000000000001");
 const CONTRACT: Address = address!("1000000000000000000000000000000000000002");
@@ -268,9 +273,7 @@ fn raw_struct_logs_match_typed_struct_logs_with_state_gas() {
     ]
     .concat();
     let tx = TxEnv { gas_limit: 16_000_000, ..call_contract() };
-    // A call's state gas cost is only known once it returns, so the struct logs of the two modes
-    // can end at different steps under a limit.
-    let trace = assert_modes_match(&db_with(code), SpecId::AMSTERDAM, &tx, false);
+    let trace = assert_modes_match(&db_with(code), SpecId::AMSTERDAM, &tx, true);
     assert_eq!(trace["failed"], false);
     for field in ["executionGasUsed", "stateGasUsed", "gasRefund"] {
         assert!(trace.get(field).is_some(), "{field}");
@@ -335,8 +338,8 @@ fn raw_struct_logs_are_reset_by_fuse() {
 #[test]
 fn raw_struct_logs_stop_at_the_byte_budget() {
     let db = db_with(busy_code());
-    let tx = call_contract();
-    let run = |limits: Option<TraceLimits>| {
+    let tx = TxEnv { gas_limit: 16_000_000, ..call_contract() };
+    let run = |spec, limits: Option<TraceLimits>| {
         let opts = GethDebugTracingOptions::default();
         let mut inspector =
             DebugInspector::new_with_struct_log_mode(opts, StructLogMode::Raw).unwrap();
@@ -345,7 +348,7 @@ fn raw_struct_logs_stop_at_the_byte_budget() {
         }
         let mut evm = Context::mainnet()
             .with_db(db.clone())
-            .modify_cfg_chained(|cfg| cfg.spec = SpecId::OSAKA)
+            .modify_cfg_chained(|cfg| cfg.spec = spec)
             .build_mainnet_with_inspector(inspector);
         let result = evm.inspect_tx(tx.clone()).ok()?;
         let (_, inspector) = evm.ctx_inspector();
@@ -356,17 +359,248 @@ fn raw_struct_logs_stop_at_the_byte_budget() {
         let logs =
             serde_json::from_str::<Vec<Box<serde_json::value::RawValue>>>(frame.struct_logs.get())
                 .unwrap();
-        let len = logs.iter().map(|log| log.get().len()).sum::<usize>();
-        Some((logs.len(), len, inspector.limit_exceeded()))
+        let logs = logs.iter().map(|log| log.get().to_owned()).collect::<Vec<_>>();
+        Some((logs, inspector.limit_exceeded()))
     };
 
-    let (count, len, exceeded) = run(None).unwrap();
-    assert!(!exceeded);
-    let limits = |bytes| TraceLimits::default().set_max_recorded_bytes(Some(bytes));
-    assert_eq!(run(Some(limits(len))), Some((count, len, false)));
-    for budget in [0, 48, 1000, len / 2, len - 1] {
-        let (limited_count, limited_len, exceeded) = run(Some(limits(budget))).unwrap();
-        assert!(limited_count < count && limited_len <= budget && exceeded, "{budget}");
-        assert_eq!(run(Some(limits(budget).set_behavior(TraceLimitBehavior::Halt))), None);
+    for spec in [SpecId::OSAKA, SpecId::AMSTERDAM] {
+        let (full, exceeded) = run(spec, None).unwrap();
+        assert!(!exceeded);
+        let len = full.iter().map(String::len).sum::<usize>();
+        let limits = |bytes| TraceLimits::default().set_max_recorded_bytes(Some(bytes));
+        assert_eq!(run(spec, Some(limits(len))).unwrap(), (full.clone(), false));
+        for budget in [0, 48, 1000, len / 2, len - 1] {
+            let (limited, exceeded) = run(spec, Some(limits(budget))).unwrap();
+            assert!(exceeded);
+            let mut remaining = budget;
+            let count = full
+                .iter()
+                .take_while(|log| {
+                    if let Some(left) = remaining.checked_sub(log.len()) {
+                        remaining = left;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .count();
+            assert_eq!(limited, full[..count], "{spec:?}, {budget}");
+            assert_eq!(
+                run(spec, Some(limits(budget).set_behavior(TraceLimitBehavior::Halt))),
+                None
+            );
+        }
     }
+}
+
+/// Runs a raw or typed tracer composed with another inspector.
+fn trace_with_hooks(
+    code: &[u8],
+    depth: u16,
+    mode: StructLogMode,
+    limit: Option<u64>,
+    hooks: impl Inspector<BaseEvmTypes>,
+    precompiles: Precompiles,
+) -> Value {
+    let spec = SpecId::OSAKA;
+    let mut inspector = DebugInspector::new_with_struct_log_mode(
+        GethDebugTracingOptions {
+            config: GethDefaultTracingOptions { limit, ..Default::default() },
+            ..Default::default()
+        },
+        mode,
+    )
+    .unwrap();
+    let mut db = db_with(code.to_vec());
+    let block = Default::default();
+    let tx = call_contract().envelope();
+    let mut evm =
+        Evm::<BaseEvmTypes>::new(spec, block, ethereum_tx_registry(spec), db.clone(), precompiles);
+    evm.set_initial_call_depth(depth);
+    evm.set_inspector((hooks, &mut inspector));
+    let result = evm.transact(&tx).unwrap().detach();
+    drop(evm);
+    let trace = inspector.get_trace(None, &tx, &block, &result, &mut db).unwrap();
+    serde_json::to_value(trace).unwrap()
+}
+
+struct StopOnPush;
+
+impl Inspector<BaseEvmTypes> for StopOnPush {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        if interp.opcode() == op::PUSH0 {
+            interp.set_stop(InstrStop::Stop);
+        }
+    }
+}
+
+#[test]
+fn raw_struct_logs_follow_only_visible_frames_and_keep_stopped_steps() {
+    let native = 0x42;
+    let code = [call(op::CALL, native, SOME_GAS), vec![op::PUSH0, op::INVALID]].concat();
+    let run = |depth, mode, limit| {
+        let mut precompiles = Precompiles::base(SpecId::OSAKA);
+        precompiles.as_map_mut().insert(Precompile::new(
+            Address::with_last_byte(native),
+            PrecompileId::custom("SUBCALL"),
+            |host: &mut Evm<'_, BaseEvmTypes>, parent: &Message, _gas: &mut GasTracker| {
+                let target = Address::with_last_byte(RETURNER);
+                let mut child = MessageExt {
+                    kind: MessageKind::StaticCall,
+                    depth: parent.depth + 1,
+                    caller: parent.destination,
+                    destination: target,
+                    call_target: target,
+                    code_address: target,
+                    code: host.load_account(&target, true, false)?.code,
+                    gas_limit: parent.gas_limit,
+                    ..Default::default()
+                };
+                let result = host.execute_message(&mut child)?;
+                assert!(result.is_success());
+                Ok(PrecompileOutput::new(result.output))
+            },
+        ));
+        trace_with_hooks(&code, depth, mode, limit, StopOnPush, precompiles)
+    };
+    for depth in [0, 7] {
+        let raw = run(depth, StructLogMode::Raw, None);
+        assert_eq!(raw, run(depth, StructLogMode::Typed, None));
+        let logs = raw["structLogs"].as_array().unwrap();
+        if depth == 0 {
+            assert!(logs.iter().all(|log| log["depth"] == 1));
+            assert_eq!(logs.last().unwrap()["op"], "PUSH0");
+            assert_eq!(logs.last().unwrap()["gasCost"], 0);
+        } else {
+            assert!(logs.is_empty());
+        }
+    }
+    // Hidden child steps still count toward the typed inspector's capture limit.
+    for limit in (450..1200).step_by(17) {
+        assert_eq!(
+            run(0, StructLogMode::Raw, Some(limit)),
+            run(0, StructLogMode::Typed, Some(limit)),
+            "{limit}"
+        );
+    }
+}
+
+#[test]
+fn raw_frame_serializes_its_actual_field_count() {
+    for mask in 0..8 {
+        let frame = RawDefaultFrame {
+            failed: false,
+            gas: 21_000,
+            execution_gas_used: (mask & 1 != 0).then_some(0),
+            state_gas_used: (mask & 2 != 0).then_some(0),
+            gas_refund: (mask & 4 != 0).then_some(0),
+            return_value: Bytes::new(),
+            struct_logs: serde_json::value::RawValue::from_string("[]".into()).unwrap(),
+        };
+        let bytes = rmp_serde::to_vec_named(&frame).unwrap();
+        rmp_serde::from_slice::<serde::de::IgnoredAny>(&bytes).unwrap();
+    }
+}
+
+struct OverrideCreatedAddress;
+
+impl Inspector<BaseEvmTypes> for OverrideCreatedAddress {
+    fn create_end(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        _message: &Message,
+        result: &mut MessageResult,
+    ) {
+        result.created_address = Some(CONTRACT);
+    }
+}
+
+#[test]
+fn storage_tracks_the_account_that_ran_the_initcode() {
+    let code =
+        [hex!("6002600155").to_vec(), create(op::CREATE), hex!("60015400").to_vec()].concat();
+    for mode in [StructLogMode::Typed, StructLogMode::Raw] {
+        let frame = trace_with_hooks(
+            &code,
+            0,
+            mode,
+            None,
+            OverrideCreatedAddress,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let stores = logs_of(&frame, "SSTORE");
+        assert_eq!(stores[1]["depth"], 2);
+        let slot = |key, value| json!({format!("{:#066x}", key): format!("{:#066x}", value)});
+        assert_eq!(stores[1]["storage"], slot(7, 1));
+        assert_eq!(logs_of(&frame, "SLOAD")[0]["storage"], slot(1, 2));
+    }
+}
+
+#[test]
+fn cloning_a_raw_debug_inspector_starts_a_new_recording() {
+    let config = GethDefaultTracingOptions { disable_stack: Some(true), ..Default::default() };
+    let opts = GethDebugTracingOptions { config, ..Default::default() };
+    let limit = TraceLimits::default().set_max_recorded_bytes(Some(128));
+    let raw = DebugInspector::new_with_struct_log_mode(opts, StructLogMode::Raw)
+        .unwrap()
+        .with_limits(limit);
+    let ctx = Context::mainnet().with_db(db_with(busy_code()));
+    let mut first = ctx.clone().build_mainnet_with_inspector(raw);
+    let tx = call_contract();
+    let first_res = first.inspect_tx(tx.clone()).unwrap();
+    let mut second = ctx.build_mainnet_with_inspector(first.inspector().try_clone().unwrap());
+    let second_res = second.inspect_tx(tx).unwrap();
+    let frame = |inspector: &mut DebugInspector, result: &evm2::TxResult| {
+        let DebugInspector::RawDefault(raw) = inspector else { unreachable!() };
+        assert!(raw.limit_exceeded());
+        raw.take_frame(result)
+    };
+    let expected = frame(first.inspector(), &first_res.tx_result.result);
+    assert_ne!(expected.struct_logs.get(), "[]");
+    assert_eq!(
+        frame(second.inspector(), &second_res.tx_result.result).struct_logs.get(),
+        expected.struct_logs.get()
+    );
+}
+
+#[derive(Default)]
+struct SentryAfterCall {
+    child_returned: bool,
+}
+
+impl Inspector<BaseEvmTypes> for SentryAfterCall {
+    fn call_end(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &Message,
+        _result: &mut MessageResult,
+    ) {
+        self.child_returned = message.depth == 1;
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        if core::mem::take(&mut self.child_returned) {
+            interp.set_stop(InstrStop::ReentrancySentryOOG);
+        }
+    }
+}
+
+#[test]
+fn call_stopped_after_its_child_has_zero_sentry_cost() {
+    let code = call(op::CALL, RETURNER, SOME_GAS);
+    let run = |mode| {
+        trace_with_hooks(
+            &code,
+            0,
+            mode,
+            None,
+            SentryAfterCall::default(),
+            Precompiles::base(SpecId::OSAKA),
+        )
+    };
+    let raw = run(StructLogMode::Raw);
+    assert_eq!(raw, run(StructLogMode::Typed));
+    let call = logs_of(&raw, "CALL")[0];
+    assert_eq!(call["gasCost"], 0);
+    assert_eq!(call["error"], "Some(ReentrancySentryOOG)");
 }
