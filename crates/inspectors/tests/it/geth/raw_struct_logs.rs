@@ -1,6 +1,7 @@
 //! The default struct logger writing its struct logs as JSON, compared with the typed struct logs.
 
 use super::*;
+use alloy_primitives::Log;
 use evm2::{
     NoopInspector,
     evm::precompile::PrecompileOutput,
@@ -340,7 +341,7 @@ fn raw_struct_logs_are_reset_by_fuse() {
 fn raw_struct_logs_stop_at_the_byte_budget() {
     let db = db_with(busy_code());
     let tx = TxEnv { gas_limit: 16_000_000, ..call_contract() };
-    let run = |spec, limit, limits: Option<TraceLimits>| {
+    let run_roots = |spec, limit, limits: Option<TraceLimits>, roots: &[Address]| {
         let opts = GethDebugTracingOptions {
             config: GethDefaultTracingOptions { limit, ..Default::default() },
             ..Default::default()
@@ -354,12 +355,16 @@ fn raw_struct_logs_stop_at_the_byte_budget() {
             .with_db(db.clone())
             .modify_cfg_chained(|cfg| cfg.spec = spec)
             .build_mainnet_with_inspector(inspector);
-        let result = evm.inspect_tx(tx.clone()).ok()?;
+        let mut result = None;
+        for &address in roots {
+            result =
+                Some(evm.inspect_tx(TxEnv { kind: TxKind::Call(address), ..tx.clone() }).ok()?);
+        }
         let (_, inspector) = evm.ctx_inspector();
         let DebugInspector::RawDefault(inspector) = inspector else {
             panic!("expected the raw struct logger")
         };
-        let frame = inspector.take_frame(&result.tx_result.result);
+        let frame = inspector.take_frame(&result?.tx_result.result);
         let logs =
             serde_json::from_str::<Vec<Box<serde_json::value::RawValue>>>(frame.struct_logs.get())
                 .unwrap();
@@ -367,6 +372,7 @@ fn raw_struct_logs_stop_at_the_byte_budget() {
         Some((logs, inspector.limit_exceeded()))
     };
 
+    let run = |spec, limit, limits| run_roots(spec, limit, limits, &[CONTRACT]);
     for spec in [SpecId::OSAKA, SpecId::AMSTERDAM] {
         let (full, exceeded) = run(spec, None, None).unwrap();
         assert!(!exceeded);
@@ -381,6 +387,17 @@ fn raw_struct_logs_stop_at_the_byte_budget() {
             for behavior in [TraceLimitBehavior::Skip, TraceLimitBehavior::Halt] {
                 let budget = limits(through_create).set_behavior(behavior);
                 assert_eq!(run(spec, limit, Some(budget)), Some((prefix.to_vec(), false)));
+            }
+            // A second root may use all the bytes beyond the first root's final geth prefix.
+            let second = Address::with_last_byte(RETURNER);
+            let (expected, _) = run_roots(spec, limit, None, &[second]).unwrap();
+            let exact = through_create + expected.iter().map(String::len).sum::<usize>();
+            for bytes in [exact, exact + 1] {
+                let budget = limits(bytes).set_behavior(TraceLimitBehavior::Halt);
+                assert_eq!(
+                    run_roots(spec, limit, Some(budget), &[CONTRACT, second]),
+                    Some((expected.clone(), false))
+                );
             }
             let halt = |bytes| Some(limits(bytes).set_behavior(TraceLimitBehavior::Halt));
             assert_eq!(run(spec, limit, halt(through_create - 1)), None);
@@ -408,6 +425,73 @@ fn raw_struct_logs_stop_at_the_byte_budget() {
             );
         }
     }
+}
+
+#[derive(Default)]
+struct CountLogs(usize);
+
+impl Inspector<BaseEvmTypes> for CountLogs {
+    fn log(&mut self, _log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+        self.0 += 1;
+    }
+}
+
+#[test]
+fn an_over_budget_log_halts_before_the_opcode_runs() {
+    let mut db = db_with(call(op::CALL, WRITER, ALL_GAS));
+    // Set up LOG0's operands, expand memory to 4 KiB, then emit the log.
+    db.insert_account_info(
+        &Address::with_last_byte(WRITER),
+        AccountInfo {
+            code: Some(Bytecode::new_raw(hex!("5f5f5f610fe052a000").into())),
+            ..Default::default()
+        },
+    );
+    let run = |limit, budget| {
+        let config =
+            GethDefaultTracingOptions { enable_memory: Some(true), limit, ..Default::default() };
+        let mut tracer = DebugInspector::new_with_struct_log_mode(
+            GethDebugTracingOptions { config, ..Default::default() },
+            StructLogMode::Raw,
+        )
+        .unwrap()
+        .with_limits(
+            TraceLimits::default()
+                .set_max_recorded_bytes(budget)
+                .set_behavior(TraceLimitBehavior::Halt),
+        );
+        let mut observer = CountLogs::default();
+        let spec = SpecId::OSAKA;
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            spec,
+            Default::default(),
+            ethereum_tx_registry(spec),
+            db.clone(),
+            Precompiles::base(spec),
+        );
+        evm.set_inspector((&mut tracer, &mut observer));
+        let result = evm.transact(&call_contract().envelope()).ok().map(|res| res.detach());
+        drop(evm);
+        let DebugInspector::RawDefault(mut raw) = tracer else { unreachable!() };
+        let logs = result.map(|res| {
+            serde_json::from_str::<Vec<Box<serde_json::value::RawValue>>>(
+                raw.take_frame(&res.result).struct_logs.get(),
+            )
+            .unwrap()
+        });
+        (observer.0, logs)
+    };
+    let (count, logs) = run(None, None);
+    assert_eq!(count, 1);
+    let before = logs
+        .unwrap()
+        .iter()
+        .take_while(|log| !log.get().contains(r#""op":"LOG0""#))
+        .map(|log| log.get().len())
+        .sum::<usize>();
+    let (count, result) = run(Some(before as u64 + 1024), Some(before + 2048));
+    assert!(result.is_none());
+    assert_eq!(count, 0);
 }
 
 /// Runs a raw or typed tracer composed with another inspector.

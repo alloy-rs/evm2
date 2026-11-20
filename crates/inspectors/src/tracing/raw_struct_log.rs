@@ -105,7 +105,9 @@ impl RawStructLogInspector {
     /// Sets the byte budget for the struct logs, and keeps it across [`Self::fuse`].
     ///
     /// The budget counts the JSON bytes of each complete struct log. The first log that would
-    /// exceed it and every following log are omitted.
+    /// exceed it and every following log are omitted. If a pending call can move the geth
+    /// cutoff ahead of that log, recording stops immediately and a requested halt waits until
+    /// the cutoff is known.
     pub const fn set_limits(&mut self, limits: TraceLimits) {
         self.budget.limits = limits;
     }
@@ -238,9 +240,11 @@ impl RawStructLogInspector {
             && self.root_byte_budget().is_some_and(|max| limit < max as u64)
         {
             if !self.open_steps.is_empty() {
-                return;
-            }
-            if self.json_len > limit {
+                let growth = (self.open_steps.len() as u64).saturating_mul(MAX_PATCH_GROWTH);
+                if self.json_len.saturating_add(growth) > limit {
+                    return;
+                }
+            } else if self.json_len > limit {
                 self.finalize_logs();
                 if self.json_len > limit {
                     // The complete geth prefix fits within the recording budget.
@@ -356,6 +360,7 @@ impl RawStructLogInspector {
                         patch.extend_from_slice(error.as_bytes());
                     }
                 });
+                debug_assert!(added as u64 <= MAX_PATCH_GROWTH);
                 self.json_len += added as u64;
                 self.budget.reserve(added);
             }
@@ -422,6 +427,14 @@ impl RawStructLogInspector {
         }
         if self.frames.is_empty() {
             self.failed = !success;
+            // Only the completed geth prefix counts against the budget of subsequent roots.
+            if !self.budget.exceeded()
+                && self.opts.limit.is_some_and(|limit| self.json_len > limit)
+                && !self.patches.entries.is_empty()
+            {
+                self.finalize_logs();
+                self.budget.recorded = self.root_start_bytes + self.json_len as usize;
+            }
         }
     }
 
@@ -978,6 +991,13 @@ const STORAGE_ENTRY_LEN: usize = WORD_JSON_LEN + 1 + WORD_JSON_LEN;
 const STATE_GAS_COST_KEY: &[u8] = b",\"stateGasCost\":";
 
 const ERROR_KEY: &[u8] = b",\"error\":";
+
+/// A parent can gain a signed state gas cost and an error. Its gas cost can only shrink.
+/// `CreateContractStartingWithEF` is the longest halt name and `i64::MIN` takes 20 bytes.
+const MAX_PATCH_GROWTH: u64 = (STATE_GAS_COST_KEY.len()
+    + 20
+    + ERROR_KEY.len()
+    + br#""Some(CreateContractStartingWithEF)""#.len()) as u64;
 
 const RETURN_DATA_KEY: &[u8] = b",\"returnData\":\"";
 
