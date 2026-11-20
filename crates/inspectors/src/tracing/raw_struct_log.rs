@@ -51,8 +51,8 @@ pub struct RawStructLogInspector {
     json_len: u64,
     /// Remaining step hooks under the geth capture limit, including hidden frames.
     steps_left: Option<u64>,
-    /// The outermost message the typed builder cannot reach through a call opcode.
-    hidden_depth: Option<u16>,
+    /// Message depths observed on entry. A hidden frame and its descendants carry `None`.
+    frames: Vec<Option<u16>>,
     /// The running step, unless a message it started is running.
     step: StepState,
     /// The storage slot the running step accesses.
@@ -86,7 +86,7 @@ impl RawStructLogInspector {
             logs: Vec::new(),
             capacity_hint: 0,
             json_len: 0,
-            hidden_depth: None,
+            frames: Vec::new(),
             steps_left: geth_step_limit(&opts).map(|n| n.get()),
             step: StepState::None,
             storage_access: None,
@@ -126,7 +126,7 @@ impl RawStructLogInspector {
         let Self {
             logs,
             json_len,
-            hidden_depth,
+            frames,
             steps_left,
             step,
             storage_access,
@@ -143,7 +143,7 @@ impl RawStructLogInspector {
         } = self;
         logs.clear();
         *json_len = 0;
-        *hidden_depth = None;
+        frames.clear();
         *steps_left = geth_step_limit(opts).map(|n| n.get());
         *step = StepState::None;
         *storage_access = None;
@@ -222,7 +222,7 @@ impl RawStructLogInspector {
     /// Starts recording a step.
     ///
     /// Invoked on [`Inspector::step`].
-    fn start_step<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+    fn start_step<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>, depth: u16) {
         self.storage_access = None;
         // geth stops logging once the JSON written so far is over the limit.
         if self.budget.exceeded() || self.opts.limit.is_some_and(|limit| self.json_len > limit) {
@@ -274,7 +274,7 @@ impl RawStructLogInspector {
             gas: gas.remaining(),
             gas_before: gas.remaining_excluding_state_spill(),
             message_cost: None,
-            depth: u64::from(interp.message().depth) + 1,
+            depth: u64::from(depth) + 1,
             refund: gas.refunded() as u64,
             state_gas_spent: gas.state_gas_spent(),
             state_gas_reservoir: interp
@@ -340,11 +340,13 @@ impl RawStructLogInspector {
         forwarded: u64,
     ) {
         self.features = interp.version().features;
-        if self.hidden_depth.is_some() {
+        if self.frames.last() == Some(&None) {
+            self.frames.push(None);
             return;
         }
-        if message.depth == 0 {
+        if self.frames.is_empty() && message.depth == 0 {
             self.failed = true;
+            self.frames.push(Some(message.depth));
             return;
         }
         if let StepState::Recording(step) = &mut self.step {
@@ -355,6 +357,7 @@ impl RawStructLogInspector {
                 if let Some(fields) = self.write_log(&step, cost, None, None) {
                     self.open_steps.push(OpenStep { step, cost, fields });
                     self.step = StepState::None;
+                    self.frames.push(Some(message.depth));
                     return;
                 }
                 self.step = StepState::Skipped;
@@ -364,27 +367,20 @@ impl RawStructLogInspector {
         }
         // A parentless message above depth zero, a native precompile subcall, or a child of
         // an ordinary opcode has no corresponding call step in the typed trace.
-        self.hidden_depth = Some(message.depth);
+        self.frames.push(None);
     }
 
     /// Finalizes a frame, including a step that a composed inspector stopped before execution.
-    fn end_message<T: EvmTypes>(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
-        depth: u16,
-        success: bool,
-    ) {
-        if let Some(hidden) = self.hidden_depth {
-            if depth == hidden {
-                self.hidden_depth = None;
-            }
+    fn end_message<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>, success: bool) {
+        // A later inspector may edit the message, including its depth, before it returns.
+        if !matches!(self.frames.pop(), Some(Some(_))) {
             return;
         }
         if let StepState::Recording(step) = mem::take(&mut self.step) {
             self.write_log(&step, 0, None, None);
             self.budget.halt(interp, false);
         }
-        if depth == 0 {
+        if self.frames.is_empty() {
             self.failed = !success;
         }
     }
@@ -498,23 +494,21 @@ impl<T: EvmTypes> Inspector<T> for RawStructLogInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if let Some(left) = &mut self.steps_left {
             if *left == 0 {
-                if self.hidden_depth.is_none() {
+                if matches!(self.frames.last(), Some(Some(_))) {
                     self.step = StepState::Skipped;
                 }
                 return;
             }
             *left -= 1;
         }
-        if self.hidden_depth.is_some() {
-            return;
-        }
-        self.start_step(interp);
+        let Some(&Some(depth)) = self.frames.last() else { return };
+        self.start_step(interp, depth);
         self.budget.halt(interp, true);
     }
 
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        if self.hidden_depth.is_some() {
+        if !matches!(self.frames.last(), Some(Some(_))) {
             return;
         }
         self.end_step(interp);
@@ -534,10 +528,10 @@ impl<T: EvmTypes> Inspector<T> for RawStructLogInspector {
     fn call_end(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
-        message: &Message<T>,
+        _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        self.end_message(interp, message.depth, result.is_success());
+        self.end_message(interp, result.is_success());
     }
 
     fn create(
@@ -553,10 +547,10 @@ impl<T: EvmTypes> Inspector<T> for RawStructLogInspector {
     fn create_end(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
-        message: &Message<T>,
+        _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        self.end_message(interp, message.depth, result.is_success());
+        self.end_message(interp, result.is_success());
     }
 }
 

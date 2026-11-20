@@ -2,6 +2,7 @@
 
 use super::*;
 use evm2::{
+    NoopInspector,
     evm::precompile::PrecompileOutput,
     interpreter::{GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, MessageResult},
     precompiles::{Precompile, PrecompileId},
@@ -399,7 +400,7 @@ fn trace_with_hooks(
     depth: u16,
     mode: StructLogMode,
     limit: Option<u64>,
-    hooks: impl Inspector<BaseEvmTypes>,
+    hooks: (impl Inspector<BaseEvmTypes>, impl Inspector<BaseEvmTypes>),
     precompiles: Precompiles,
 ) -> Value {
     let spec = SpecId::OSAKA;
@@ -417,7 +418,7 @@ fn trace_with_hooks(
     let mut evm =
         Evm::<BaseEvmTypes>::new(spec, block, ethereum_tx_registry(spec), db.clone(), precompiles);
     evm.set_initial_call_depth(depth);
-    evm.set_inspector((hooks, &mut inspector));
+    evm.set_inspector(((hooks.0, &mut inspector), hooks.1));
     let result = evm.transact(&tx).unwrap().detach();
     drop(evm);
     let trace = inspector.get_trace(None, &tx, &block, &result, &mut db).unwrap();
@@ -431,6 +432,22 @@ impl Inspector<BaseEvmTypes> for StopOnPush {
         if interp.opcode() == op::PUSH0 {
             interp.set_stop(InstrStop::Stop);
         }
+    }
+}
+
+/// Edits a native subcall after the tracer has observed its entry.
+struct EditSubcallDepth;
+
+impl Inspector<BaseEvmTypes> for EditSubcallDepth {
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &mut Message,
+    ) -> Option<MessageResult> {
+        if message.destination == Address::with_last_byte(RETURNER) {
+            message.depth += 1;
+        }
+        None
     }
 }
 
@@ -461,7 +478,7 @@ fn raw_struct_logs_follow_only_visible_frames_and_keep_stopped_steps() {
                 Ok(PrecompileOutput::new(result.output))
             },
         ));
-        trace_with_hooks(&code, depth, mode, limit, StopOnPush, precompiles)
+        trace_with_hooks(&code, depth, mode, limit, (StopOnPush, EditSubcallDepth), precompiles)
     };
     for depth in [0, 7] {
         let raw = run(depth, StructLogMode::Raw, None);
@@ -525,7 +542,7 @@ fn storage_tracks_the_account_that_ran_the_initcode() {
             0,
             mode,
             None,
-            OverrideCreatedAddress,
+            (OverrideCreatedAddress, NoopInspector::default()),
             Precompiles::base(SpecId::OSAKA),
         );
         let stores = logs_of(&frame, "SSTORE");
@@ -594,7 +611,7 @@ fn call_stopped_after_its_child_has_zero_sentry_cost() {
             0,
             mode,
             None,
-            SentryAfterCall::default(),
+            (SentryAfterCall::default(), NoopInspector::default()),
             Precompiles::base(SpecId::OSAKA),
         )
     };
