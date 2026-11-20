@@ -111,6 +111,11 @@ pub struct CallTrace {
     pub step_deltas: Vec<StepDelta>,
     /// Optional complementary decoded call data.
     pub decoded: Option<Box<DecodedCallTrace>>,
+    /// Whether the parent's steps leave out the step that made this call.
+    ///
+    /// A step limit, an opcode filter or the trace budget can leave it out, and the call then
+    /// follows an unrelated step in the parent's ordering.
+    pub parent_step_omitted: bool,
 }
 
 impl CallTrace {
@@ -776,6 +781,12 @@ impl CallTraceStep {
         )
     }
 
+    /// Returns true if the step is a CREATE or CREATE2 operation
+    #[inline]
+    pub(crate) const fn is_create_op(&self) -> bool {
+        matches!(self.op.get(), op::CREATE | op::CREATE2)
+    }
+
     // Reverts are control flow; only exceptional halts populate a step error.
     #[inline]
     pub(crate) const fn is_error(&self) -> bool {
@@ -1017,6 +1028,8 @@ mod trace_serde {
         steps: &'a [CallTraceStep],
         step_deltas: &'a [StepDelta],
         decoded: &'a Option<Box<DecodedCallTrace>>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        parent_step_omitted: bool,
     }
 
     #[derive(Deserialize)]
@@ -1044,6 +1057,8 @@ mod trace_serde {
         #[serde(default)]
         step_deltas: Vec<StepDelta>,
         decoded: Option<Box<DecodedCallTrace>>,
+        #[serde(default)]
+        parent_step_omitted: bool,
     }
 
     impl Serialize for CallTrace {
@@ -1069,6 +1084,7 @@ mod trace_serde {
                 steps: &self.steps,
                 step_deltas: &self.step_deltas,
                 decoded: &self.decoded,
+                parent_step_omitted: self.parent_step_omitted,
             }
             .serialize(serializer)
         }
@@ -1102,6 +1118,7 @@ mod trace_serde {
                 steps: trace.steps,
                 step_deltas: trace.step_deltas,
                 decoded: trace.decoded,
+                parent_step_omitted: trace.parent_step_omitted,
             }
         }
     }

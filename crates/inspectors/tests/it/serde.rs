@@ -31,3 +31,13 @@ fn call_trace_serializes_as_flat_structs() {
         assert_eq!(serde_json::to_string(&value).unwrap(), json);
     }
 }
+
+/// A round-tripped trace still knows whether to pair the child with a VM step.
+#[test]
+fn call_trace_preserves_an_omitted_parent_step() {
+    let mut trace = serde_json::from_str::<CallTrace>(&trace_json(NO_SELFDESTRUCT)).unwrap();
+    assert!(!trace.parent_step_omitted);
+    trace.parent_step_omitted = true;
+    let json = serde_json::to_string(&trace).unwrap();
+    assert_eq!(serde_json::from_str::<CallTrace>(&json).unwrap(), trace);
+}
