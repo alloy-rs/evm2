@@ -12,7 +12,7 @@
 //! max with the index recovers the offset.
 
 use super::{END_OFFSET, Entry, Kernel, PUSHX, analyze_blocks, lanes, uncarried};
-use crate::interpreter::op;
+use crate::{interpreter::op, utils::detected};
 
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
@@ -34,19 +34,6 @@ const END_OFFSETS64: __m512i =
     unsafe { core::mem::transmute(lanes::<64>(64, 0u8.wrapping_sub(END_OFFSET))) };
 /// Second table of `vpermt2b`, which keeps offsets past the block.
 const EXITS64: __m512i = unsafe { core::mem::transmute(lanes::<64>(64, 64)) };
-
-/// Returns whether the CPU supports all of the given target features.
-macro_rules! detected {
-    ($($feature:tt),+ $(,)?) => {
-        cfg!(all($(target_feature = $feature),+)) || {
-            #[cfg(feature = "std")]
-            let detected = $(std::is_x86_feature_detected!($feature))&&+;
-            #[cfg(not(feature = "std"))]
-            let detected = false;
-            detected
-        }
-    };
-}
 
 pub(super) fn analyze(code: &[u8], table: &mut [u8]) -> usize {
     // SAFETY: the required target features are available.

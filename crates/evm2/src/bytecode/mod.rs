@@ -11,6 +11,11 @@ use analysis::pad_legacy;
 use core::{cmp::Ordering, fmt, hash};
 use thiserror::Error;
 
+#[cfg(feature = "sx")]
+use alloc::boxed::Box;
+#[cfg(feature = "sx")]
+use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
+
 mod analysis;
 mod jump_table;
 
@@ -66,7 +71,28 @@ struct BytecodeInner {
     jump_table: OnceLock<JumpTable>,
     /// Cached hash of the original bytecode.
     hash: OnceLock<B256>,
+    /// Legacy code translated to superinstructions.
+    #[cfg(feature = "sx")]
+    sx: SxCache,
 }
+
+/// Legacy code translated to superinstructions, and the opcodes it was translated for.
+#[cfg(feature = "sx")]
+#[derive(Debug, Default)]
+struct SxCache {
+    code: OnceLock<(crate::interpreter::sx::Ops, Box<[u8]>)>,
+    /// Frames that ran the code before it was translated; see [`SX_TRANSLATE_AFTER`].
+    entries: AtomicU32,
+}
+
+/// Frame entries after which legacy code is translated to superinstructions.
+///
+/// Translation costs about 1 ns per byte of code with AVX-512 (2 ns without) and saves about a
+/// third of a nanosecond per instruction executed, and a block loads much code that runs only a few
+/// times. On mainnet blocks, translating on the 4th to 16th entry performs the same, and earlier or
+/// later is slower.
+#[cfg(feature = "sx")]
+pub(crate) const SX_TRANSLATE_AFTER: u32 = 8;
 
 /// The kind of bytecode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd, Default)]
@@ -150,6 +176,8 @@ impl Bytecode {
                 let _ = hash.set(KECCAK256_EMPTY);
                 hash
             },
+            #[cfg(feature = "sx")]
+            sx: SxCache::default(),
         })
     }
 
@@ -179,6 +207,8 @@ impl Bytecode {
             bytecode,
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
+            #[cfg(feature = "sx")]
+            sx: SxCache::default(),
         })))
     }
 
@@ -257,6 +287,8 @@ impl Bytecode {
             bytecode: bytes,
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
+            #[cfg(feature = "sx")]
+            sx: SxCache::default(),
         })))
     }
 
@@ -301,6 +333,8 @@ impl Bytecode {
                 cached
             },
             hash: OnceLock::new(),
+            #[cfg(feature = "sx")]
+            sx: SxCache::default(),
         })))
     }
 
@@ -347,6 +381,43 @@ impl Bytecode {
                 JumpTable::default()
             }
         })
+    }
+
+    /// Returns the code translated by `matcher`: now with `now`, or else once this is asked for
+    /// the [`SX_TRANSLATE_AFTER`]th time.
+    ///
+    /// Returns `None` for bytecode other than legacy, before translation, and when the code was
+    /// translated for other opcodes.
+    #[cfg(feature = "sx")]
+    #[inline]
+    pub(crate) fn sx_code(
+        &self,
+        matcher: &crate::interpreter::sx::Matcher,
+        now: bool,
+    ) -> Option<&[u8]> {
+        let inner = self.inner();
+        if !self.is_legacy() || inner.original_len > crate::interpreter::sx::MAX_LEN {
+            return None;
+        }
+        if !now && inner.sx.code.get().is_none() {
+            // Racing increments may lose counts, which only delays translation.
+            let entries = inner.sx.entries.load(Relaxed) + 1;
+            inner.sx.entries.store(entries, Relaxed);
+            if entries < SX_TRANSLATE_AFTER {
+                return None;
+            }
+        }
+        let (ops, code) = inner.sx.code.get_or_init(|| {
+            let jumps = self.jump_table().as_slice();
+            let code = crate::interpreter::sx::translate(
+                &inner.bytecode,
+                inner.original_len,
+                matcher,
+                jumps,
+            );
+            (*matcher.ops(), code)
+        });
+        (ops == matcher.ops()).then_some(code)
     }
 
     /// Calculates or returns cached hash of the bytecode.

@@ -110,6 +110,8 @@ path = "examples/custom_evm/main.rs"
 doc-scrape-examples = true
 
 [features]
+# Stack superinstructions, off until `ExecutionConfig::set_superinstructions`.
+sx = []
 default = [
     "std",
     "map-foldhash",

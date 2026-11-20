@@ -16,6 +16,8 @@ bitflags! {
         /// dispatch stores the latest pc, stack length and gas into it first. Implies
         /// [`Self::DYNAMIC_GAS`].
         const HOOKED = 1 << 1;
+        /// The instruction sets the program counter itself, so the dispatch does not advance it.
+        const SETS_PC = 1 << 2;
     }
 }
 

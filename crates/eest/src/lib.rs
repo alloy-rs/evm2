@@ -23,6 +23,8 @@ mod harness;
 mod jit;
 mod runner;
 mod state;
+#[cfg(feature = "sx")]
+mod sx;
 mod trace;
 mod tx;
 mod types;

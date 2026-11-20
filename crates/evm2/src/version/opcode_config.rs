@@ -2,7 +2,7 @@ use crate::{
     BaseEvmConfig, EvmConfig, EvmTypesHost, SpecId,
     interpreter::{
         instructions as instr, op,
-        private::{Instruction, InstructionFlags, InstructionImplFn},
+        private::{Instruction, InstructionFlags, InstructionImplFn, InstructionLogic},
     },
 };
 use core::fmt;
@@ -125,6 +125,22 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         }
     }
 
+    /// Returns a copy of this config, for configs derived from it at compile time.
+    #[cfg(feature = "sx")]
+    pub(crate) const fn copied(&self) -> Self {
+        Self {
+            static_gas_table: StaticGasTable { table: self.static_gas_table.table, _align: [] },
+            instruction_impls: InstructionImplTable {
+                instrs: self.instruction_impls.instrs,
+                flags: self.instruction_impls.flags,
+                logic: self.instruction_impls.logic,
+            },
+            revisions: self.revisions,
+            instruction_sets: self.instruction_sets,
+            origin: self.origin,
+        }
+    }
+
     /// Returns the dispatch-table revision for `opcode`.
     #[inline(always)]
     pub(crate) const fn revision(&self, opcode: u8) -> u8 {
@@ -146,6 +162,13 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         self.instruction_impls.get(opcode)
     }
 
+    /// Returns the logic of the instruction for `opcode`, if it has one.
+    #[cfg(feature = "sx")]
+    #[inline(always)]
+    pub(crate) const fn instruction_logic(&self, opcode: u8) -> Option<InstructionLogic<T>> {
+        self.instruction_impls.logic[opcode as usize]
+    }
+
     /// Returns whether `opcode` has no instruction implementation in this config.
     #[inline(always)]
     pub(crate) const fn is_unknown_opcode(&self, opcode: u8) -> bool {
@@ -161,6 +184,10 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         assert!(opcode != op::INVALID, "INVALID opcode cannot be overridden");
         self.set_static_gas(opcode, gas);
         self.instruction_sets[opcode as usize] += 1;
+        #[cfg(feature = "sx")]
+        {
+            self.instruction_impls.logic[opcode as usize] = I::LOGIC;
+        }
         if self.instruction_impls.set(opcode, I::execute, I::FLAGS) {
             self.bump_revision(opcode);
         }
@@ -242,13 +269,20 @@ impl StaticGasTable {
 struct InstructionImplTable<T: EvmTypesHost> {
     instrs: [Option<InstructionImplFn<T>>; 256],
     flags: [InstructionFlags; 256],
+    #[cfg(feature = "sx")]
+    logic: [Option<InstructionLogic<T>>; 256],
 }
 
 impl<T: EvmTypesHost> InstructionImplTable<T> {
     /// Creates an empty instruction implementation table.
     #[inline]
     const fn empty() -> Self {
-        Self { instrs: [None; 256], flags: [InstructionFlags::empty(); 256] }
+        Self {
+            instrs: [None; 256],
+            flags: [InstructionFlags::empty(); 256],
+            #[cfg(feature = "sx")]
+            logic: [None; 256],
+        }
     }
 
     /// Returns the instruction implementation for `opcode`.
