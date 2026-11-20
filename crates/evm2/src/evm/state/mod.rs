@@ -1828,29 +1828,23 @@ mod tip1175_cooling_tests {
         assert!(account.load_code_and_warm().unwrap().1);
     }
 
-    #[rstest::rstest]
-    fn cooling_cools_installed_code(#[values(false, true)] cool_all: bool) {
+    #[test]
+    fn set_code_does_not_warm_code() {
+        // Installing code doesn't pay for loading it, so the first load in the transaction is
+        // still cold and pays the code price.
         let address = Address::with_last_byte(43);
         let mut state = State::new(InMemoryDB::default());
         let mut account = state.account(&address).unwrap();
         account.warm();
         let code = Bytecode::new_legacy(alloc::vec![0x00].into());
         account.set_code(code.hash_slow(), code);
-        assert!(account.is_code_warm());
-        drop(account);
-        if cool_all {
-            state.cool_loaded();
-        } else {
-            state.set_account_warm(&address, false);
-        }
-        let mut account = state.account(&address).unwrap();
         assert!(!account.is_code_warm());
         assert!(account.load_code_and_warm().unwrap().1);
         assert!(account.is_code_warm());
     }
 
     #[test]
-    fn rollback_cools_installed_code() {
+    fn rollback_removes_installed_code_and_its_warmth() {
         let address = Address::with_last_byte(44);
         let mut state = State::new(InMemoryDB::default());
         state.account(&address).unwrap().warm();
@@ -1858,7 +1852,7 @@ mod tip1175_cooling_tests {
         let mut account = state.account(&address).unwrap();
         let code = Bytecode::new_legacy(alloc::vec![0x00].into());
         account.set_code(code.hash_slow(), code);
-        assert!(account.is_code_warm());
+        assert!(account.load_code_and_warm().unwrap().1);
         drop(account);
         state.rollback(checkpoint, crate::EvmFeatures::empty());
         let mut account = state.account(&address).unwrap();

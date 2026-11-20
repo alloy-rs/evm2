@@ -959,7 +959,7 @@ fn tip1175_prewarmed_code_is_free() {
 }
 
 #[rstest::rstest]
-fn tip1175_code_deployed_in_tx_is_warm(#[values(false, true)] reverted_first: bool) {
+fn tip1175_code_deployed_in_tx_is_cold(#[values(false, true)] reverted_first: bool) {
     // Initcode returning the one-byte runtime code 0x00.
     let initcode = hex!("600060005360016000f3");
     let mut code = Vec::new();
@@ -968,7 +968,7 @@ fn tip1175_code_deployed_in_tx_is_warm(#[values(false, true)] reverted_first: bo
     code.push(op::MSTORE);
     if reverted_first {
         // A CREATE2 whose initcode reverts installs nothing. Rollback of installed code is
-        // covered by the state tests (`rollback_cools_installed_code`).
+        // covered by the state tests (`rollback_removes_installed_code_and_its_warmth`).
         push(&mut code, Word::from_be_slice(&hex!("60006000fd")));
         push(&mut code, 0x40);
         code.push(op::MSTORE);
@@ -984,7 +984,8 @@ fn tip1175_code_deployed_in_tx_is_warm(#[values(false, true)] reverted_first: bo
     push(&mut code, jumpdest);
     code.extend([op::JUMPI, op::INVALID, op::JUMPDEST, op::STOP]);
     assert_eq!(code[jumpdest], op::JUMPDEST);
-    assert_eq!(cold_code_loads(&code, &[], &[]), 0);
+    // Deploying the code doesn't warm it: the first load pays the code price.
+    assert_eq!(cold_code_loads(&code, &[], &[]), 1);
 }
 
 #[rstest::rstest]
