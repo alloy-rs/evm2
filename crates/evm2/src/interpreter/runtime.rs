@@ -608,7 +608,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
                     // SAFETY: `prepare_run` initialized the host, and the config is only read
                     // here.
                     let config = unsafe { self.execution_config_detached() };
-                    dispatch::run(self, config.instructions)
+                    core::cfg_select! {
+                        // SAFETY: `prepare_run` prepared the interpreter, and the config is the one
+                        // of its message.
+                        dispatch_match => unsafe { (config.match_loop)(self) },
+                        _ => dispatch::run(self, config.instructions),
+                    }
                 }
             }
         };

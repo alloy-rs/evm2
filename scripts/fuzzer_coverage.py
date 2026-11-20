@@ -24,7 +24,7 @@ from common import cargo_env, repo_root
 ROOT = Path(repo_root())
 DEFAULT_OUTPUT_DIR = ROOT / "target" / "llvm-cov" / "fuzzer-html"
 DEFAULT_IGNORE_REGEX = r"(^|/)crates/cli/src/fuzzer/"
-BACKENDS = ("tco", "packed", "unpacked")
+BACKENDS = ("tco", "match", "packed", "unpacked")
 
 
 def parse_args() -> argparse.Namespace:

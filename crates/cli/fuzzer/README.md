@@ -27,7 +27,7 @@ Force an evm2 dispatch backend with `EVM2_DISPATCH_BACKEND`:
 EVM2_DISPATCH_BACKEND=packed cargo run -q -p evm2-cli -- fuzzer --duration 1m -j 0
 ```
 
-Accepted backends are `auto`, `tco`, `packed`, and `unpacked`.
+Accepted backends are `auto`, `tco`, `match`, `packed`, and `unpacked`.
 
 ## Corpus and replay
 

@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dispatch_backend: [tco, packed, unpacked]
+        dispatch_backend: [tco, match, packed, unpacked]
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@2ab28a31ae569be9f780c7675b684471060afa40 # 2026-10-09T21-43-19Z-2ab28a31
