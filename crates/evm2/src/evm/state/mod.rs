@@ -501,7 +501,7 @@ impl<'a> State<'a> {
     /// Takes logs emitted by the current in-flight transaction.
     pub(crate) fn take_logs(&mut self) -> Vec<Log> {
         let logs = &mut self.inner.logs;
-        if logs.capacity() > 4 && logs.len() <= 4 {
+        if logs.capacity() > 4 && logs.len() <= logs.capacity() / 2 {
             // Moves the logs into a right-sized vector and keeps the buffer; `mem::take` would not.
             #[allow(clippy::drain_collect)]
             return logs.drain(..).collect();
@@ -1783,6 +1783,9 @@ mod tests {
 
         let heavy = take(10);
         assert_eq!(heavy.len(), 10);
+
+        let light = take(5);
+        assert_eq!((light.len(), light.capacity()), (5, 5));
     }
     #[test]
     fn reload_storage_slot_rereads_slot_read_as_zero_under_rolled_back_creation() {
