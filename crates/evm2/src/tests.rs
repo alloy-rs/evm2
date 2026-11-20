@@ -7,7 +7,7 @@ use crate::{
         eip7702::{AuthRefunds, Eip7702Authorization, RuntimeAuthCharges, apply_auth_list},
         ethereum_tx_registry, prepare_initial_frame,
     },
-    evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
+    evm::{AccountInfo, AccountLoadFlags, DbStats, InMemoryDB, SYSTEM_ADDRESS},
     interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
     test_utils::{legacy_bytecode, push, push_address, push_all, return_top_word},
@@ -789,4 +789,534 @@ fn apply_auth_list_accepts_custom_filtered_authorizations() {
     // Only the existing, applied authority is refunded.
     let per_auth = evm.version().gas_params.get(GasId::TxEip7702AuthRefund);
     assert_eq!(refunds.execution_refund, per_auth);
+}
+
+// Tempo TIP-1175: bytecode loads are priced separately from account loads.
+
+const CODE_COST: u32 = 1_000;
+const DELEGATION_COST: u32 = 300;
+
+/// Runs `entry_code` as the target of a top-level call and returns the total execution gas
+/// (top-level charges included), with the bytecode load priced at `code_cost`.
+fn code_load_gas_priced(
+    spec: SpecId,
+    code_cost: u32,
+    delegation_cost: u32,
+    entry_code: &[u8],
+    accounts: &[(Address, Bytecode)],
+    prewarm: &[Address],
+) -> u64 {
+    let caller = Address::with_last_byte(0xca);
+    let entry = Address::with_last_byte(0xe0);
+    let mut version = Version::new(spec);
+    version.gas_params.set(GasId::ColdCodeAdditionalCost, code_cost);
+    version.gas_params.set(GasId::ColdDelegationCodeAdditionalCost, delegation_cost);
+    let mut database = InMemoryDB::default();
+    database
+        .insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1u64 << 60)));
+    database.insert_account_info(
+        &entry,
+        AccountInfo::default().with_code(legacy_bytecode(entry_code.to_vec())),
+    );
+    for (address, code) in accounts {
+        database.insert_account_info(address, AccountInfo::default().with_code(code.clone()));
+    }
+    let mut evm = TestEvm::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(spec, version),
+        spec,
+        BlockEnvExt::default(),
+        TxRegistry::new(),
+        database,
+        Precompiles::base(spec),
+    );
+    evm.warm_precompiles();
+    evm.state.prewarm(&caller);
+    evm.state.prewarm(&entry);
+    for address in prewarm {
+        evm.state.prewarm(address);
+    }
+    let mut gas = GasTracker::new(1_000_000);
+    let mut frame = prepare_initial_frame(
+        &mut evm,
+        caller,
+        0,
+        TxKind::Call(entry),
+        &Default::default(),
+        U256::ZERO,
+        &mut gas,
+    )
+    .unwrap();
+    let result = Host::execute_message(&mut evm, &mut frame.message).unwrap();
+    assert!(result.is_success(), "{:?}", result.stop);
+    (1_000_000 - gas.remaining()) + result.gas.spent()
+}
+
+fn code_load_gas(
+    spec: SpecId,
+    code_cost: u32,
+    entry_code: &[u8],
+    accounts: &[(Address, Bytecode)],
+    prewarm: &[Address],
+) -> u64 {
+    code_load_gas_priced(spec, code_cost, 0, entry_code, accounts, prewarm)
+}
+
+/// Returns how many cold bytecode loads `entry_code` pays for, checking that Ethereum pricing
+/// (zero) is unaffected.
+fn cold_code_loads(
+    entry_code: &[u8],
+    accounts: &[(Address, Bytecode)],
+    prewarm: &[Address],
+) -> u64 {
+    let base = code_load_gas(SpecId::PRAGUE, 0, entry_code, accounts, prewarm);
+    let priced = code_load_gas(SpecId::PRAGUE, CODE_COST, entry_code, accounts, prewarm);
+    let extra = priced - base;
+    assert_eq!(extra % u64::from(CODE_COST), 0, "extra gas {extra}");
+    extra / u64::from(CODE_COST)
+}
+
+const CONTRACT: Address = Address::with_last_byte(0xc0);
+const EOA: Address = Address::with_last_byte(0xe1);
+const DELEGATING: Address = Address::with_last_byte(0xd0);
+const REVERTER: Address = Address::with_last_byte(0xbe);
+
+fn code_accounts() -> Vec<(Address, Bytecode)> {
+    // REVERTER loads CONTRACT's code and reverts, rolling back the warmth.
+    let mut reverter = Vec::new();
+    push_address(&mut reverter, &CONTRACT);
+    reverter.extend([op::EXTCODESIZE, op::POP]);
+    push_all(&mut reverter, [0, 0]);
+    reverter.push(op::REVERT);
+    vec![
+        (CONTRACT, legacy_bytecode(vec![op::STOP])),
+        (EOA, Bytecode::default()),
+        (DELEGATING, Bytecode::new_eip7702(CONTRACT)),
+        (REVERTER, legacy_bytecode(reverter)),
+    ]
+}
+
+fn ext_op(code: &mut Vec<u8>, opcode: u8, address: &Address) {
+    match opcode {
+        op::EXTCODECOPY => {
+            push_all(code, [0, 0, 0]);
+            push_address(code, address);
+            code.push(op::EXTCODECOPY);
+        }
+        op::STATICCALL | op::DELEGATECALL => {
+            push_all(code, [0, 0, 0, 0]);
+            push_address(code, address);
+            code.extend([op::GAS, opcode, op::POP]);
+        }
+        op::CALL | op::CALLCODE => {
+            push_all(code, [0, 0, 0, 0, 0]);
+            push_address(code, address);
+            code.extend([op::GAS, opcode, op::POP]);
+        }
+        _ => {
+            push_address(code, address);
+            code.extend([opcode, op::POP]);
+        }
+    }
+}
+
+fn program(steps: &[(u8, Address)]) -> Vec<u8> {
+    let mut code = Vec::new();
+    for (opcode, address) in steps {
+        ext_op(&mut code, *opcode, address);
+    }
+    code.push(op::STOP);
+    code
+}
+
+#[rstest::rstest]
+#[case::extcodesize_once(&[(op::EXTCODESIZE, CONTRACT)], 1)]
+#[case::extcodesize_twice_charged_once(&[(op::EXTCODESIZE, CONTRACT), (op::EXTCODESIZE, CONTRACT)], 1)]
+#[case::extcodecopy(&[(op::EXTCODECOPY, CONTRACT)], 1)]
+#[case::extcodehash_is_account_only(&[(op::EXTCODEHASH, CONTRACT)], 0)]
+#[case::balance_is_account_only(&[(op::BALANCE, CONTRACT)], 0)]
+#[case::warm_account_still_pays_code(&[(op::BALANCE, CONTRACT), (op::EXTCODESIZE, CONTRACT)], 1)]
+#[case::code_then_balance(&[(op::EXTCODESIZE, CONTRACT), (op::BALANCE, CONTRACT)], 1)]
+#[case::call(&[(op::CALL, CONTRACT)], 1)]
+#[case::callcode(&[(op::CALLCODE, CONTRACT)], 1)]
+#[case::delegatecall(&[(op::DELEGATECALL, CONTRACT)], 1)]
+#[case::staticcall(&[(op::STATICCALL, CONTRACT)], 1)]
+#[case::call_then_extcodecopy(&[(op::STATICCALL, CONTRACT), (op::EXTCODECOPY, CONTRACT)], 1)]
+#[case::address_without_code(&[(op::EXTCODESIZE, EOA), (op::CALL, EOA)], 0)]
+#[case::precompile(&[(op::EXTCODESIZE, Address::with_last_byte(2)), (op::STATICCALL, Address::with_last_byte(2))], 0)]
+#[case::extcode_on_delegating_account(&[(op::EXTCODESIZE, DELEGATING), (op::EXTCODECOPY, DELEGATING)], 0)]
+#[case::call_follows_delegation(&[(op::STATICCALL, DELEGATING)], 1)]
+#[case::delegation_target_warmed(&[(op::STATICCALL, DELEGATING), (op::EXTCODESIZE, CONTRACT)], 1)]
+#[case::reverted_load_is_rolled_back(&[(op::STATICCALL, REVERTER), (op::EXTCODESIZE, CONTRACT)], 3)]
+#[case::own_code_is_prewarmed(&[(op::EXTCODESIZE, Address::with_last_byte(0xe0))], 0)]
+fn tip1175_code_load_pricing(#[case] steps: &[(u8, Address)], #[case] expected: u64) {
+    assert_eq!(cold_code_loads(&program(steps), &code_accounts(), &[]), expected);
+}
+
+#[test]
+fn tip1175_prewarmed_code_is_free() {
+    let code = program(&[(op::EXTCODESIZE, CONTRACT), (op::STATICCALL, CONTRACT)]);
+    assert_eq!(cold_code_loads(&code, &code_accounts(), &[CONTRACT]), 0);
+}
+
+#[rstest::rstest]
+fn tip1175_code_deployed_in_tx_is_cold(#[values(false, true)] reverted_first: bool) {
+    // Initcode returning the one-byte runtime code 0x00.
+    let initcode = hex!("600060005360016000f3");
+    let mut code = Vec::new();
+    push(&mut code, Word::from_be_slice(&initcode));
+    push(&mut code, 0);
+    code.push(op::MSTORE);
+    if reverted_first {
+        // A CREATE2 whose initcode reverts installs nothing. Rollback of installed code is
+        // covered by the state tests (`rollback_removes_installed_code_and_its_warmth`).
+        push(&mut code, Word::from_be_slice(&hex!("60006000fd")));
+        push(&mut code, 0x40);
+        code.push(op::MSTORE);
+        push_all(&mut code, [7, 5, 0x40 + 27, 0]);
+        code.extend([op::CREATE2, op::POP]);
+    }
+    push_all(&mut code, [7, 10, 22, 0]);
+    code.extend([op::CREATE2, op::EXTCODESIZE]);
+    // Halt unless the deployed code is one byte, so a failed deployment can't pass vacuously.
+    push(&mut code, 1);
+    code.push(op::EQ);
+    let jumpdest = code.len() + 4;
+    push(&mut code, jumpdest);
+    code.extend([op::JUMPI, op::INVALID, op::JUMPDEST, op::STOP]);
+    assert_eq!(code[jumpdest], op::JUMPDEST);
+    // Deploying the code doesn't warm it: the first load pays the code price.
+    assert_eq!(cold_code_loads(&code, &[], &[]), 1);
+}
+
+#[rstest::rstest]
+#[case::eip2780_charges_target(SpecId::AMSTERDAM, 1)]
+#[case::free_resolution_warms_target(SpecId::PRAGUE, 0)]
+fn tip1175_top_level_delegation(#[case] spec: SpecId, #[case] expected: u64) {
+    // The transaction target delegates to CONTRACT, whose code then loads its own code with
+    // EXTCODESIZE: free either way, since resolving the delegation warmed it.
+    let mut accounts = code_accounts();
+    accounts[0].1 = legacy_bytecode(program(&[(op::EXTCODESIZE, CONTRACT)]));
+    accounts.push((Address::with_last_byte(0xe0), Bytecode::new_eip7702(CONTRACT)));
+    let gas = |cost| code_load_gas(spec, cost, &[], &accounts, &[]);
+    assert_eq!(gas(CODE_COST) - gas(0), expected * u64::from(CODE_COST));
+}
+
+fn tip1175_host() -> TestEvm {
+    tip1175_host_with(&[])
+}
+
+/// [`tip1175_host`] with `extra` accounts added to the database.
+fn tip1175_host_with(extra: &[(Address, Bytecode)]) -> TestEvm {
+    tip1175_host_from(extra, |database| database)
+}
+
+/// [`tip1175_host`] whose database counts its reads, for [`code_reads`].
+fn tip1175_counting_host() -> TestEvm {
+    tip1175_host_from(&[], DbStats::new)
+}
+
+/// Returns how many times `evm`'s counting database read bytecode.
+fn code_reads(evm: &TestEvm) -> u64 {
+    evm.database_as::<DbStats<InMemoryDB>>().unwrap().counts().get_code_by_hash
+}
+
+fn tip1175_host_from<D: crate::evm::DynDatabase + 'static>(
+    extra: &[(Address, Bytecode)],
+    wrap: impl FnOnce(InMemoryDB) -> D,
+) -> TestEvm {
+    let mut version = Version::new(SpecId::PRAGUE);
+    version.gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
+    version.gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
+    let mut database = InMemoryDB::default();
+    for (address, code) in code_accounts().into_iter().chain(extra.iter().cloned()) {
+        database.insert_account_info(&address, AccountInfo::default().with_code(code));
+    }
+    TestEvm::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::PRAGUE, version),
+        SpecId::PRAGUE,
+        BlockEnvExt::default(),
+        TxRegistry::new(),
+        wrap(database),
+        Precompiles::base(SpecId::PRAGUE),
+    )
+}
+
+/// Loads and warms `address` without its code, as `BALANCE` would with gas to spare.
+fn warm_account(evm: &mut TestEvm, address: &Address) {
+    Host::load_account(evm, address, AccountLoadFlags::NO_GAS_CHECK).unwrap();
+}
+
+/// Loads `address` with its code, with `gas` left for the cold surcharges.
+fn load_code(
+    evm: &mut TestEvm,
+    address: &Address,
+    gas: u64,
+) -> Result<crate::evm::AccountLoad, crate::HostError> {
+    let gas_params = Host::execution_config(evm).version().gas_params;
+    Host::load_account(evm, address, AccountLoadFlags::affordable(gas, &gas_params, true))
+}
+
+#[test]
+fn tip1175_skipped_cold_code_load_halts_without_warming() {
+    let mut evm = tip1175_counting_host();
+    warm_account(&mut evm, &CONTRACT);
+    let reads = code_reads(&evm);
+    assert!(matches!(
+        load_code(&mut evm, &CONTRACT, 0),
+        Err(crate::HostError::Halt(InstrStop::OutOfGas))
+    ));
+    // Not even the cheaper code price fits, so the code is never fetched.
+    assert_eq!(code_reads(&evm), reads);
+    assert!(!evm.state.account(&CONTRACT).unwrap().is_code_warm());
+    // Paying for it afterwards still sees a cold load, then a warm one.
+    assert!(load_code(&mut evm, &CONTRACT, u64::MAX).unwrap().is_code_cold);
+    let warm = load_code(&mut evm, &CONTRACT, 0).unwrap();
+    assert!(!warm.is_code_cold);
+    assert_eq!(warm.code.original_bytes().as_ref(), &[op::STOP]);
+}
+
+#[rstest::rstest]
+#[case::without_code(EOA)]
+#[case::precompile(Address::with_last_byte(2))]
+fn tip1175_free_code_load_is_never_skipped(#[case] address: Address) {
+    // Give the precompile real code, so only the prewarm set keeps its code load free.
+    let mut evm =
+        tip1175_host_with(&[(Address::with_last_byte(2), legacy_bytecode(vec![op::STOP]))]);
+    evm.warm_precompiles();
+    warm_account(&mut evm, &address);
+    assert!(!load_code(&mut evm, &address, 0).unwrap().is_code_cold);
+}
+
+#[test]
+fn tip1175_code_load_not_skipped_when_unpriced() {
+    // On Ethereum the code price is zero, so a code load never skips or tracks warmth.
+    let mut evm = TestEvm::new(
+        SpecId::PRAGUE,
+        BlockEnvExt::default(),
+        TxRegistry::new(),
+        {
+            let mut database = InMemoryDB::default();
+            database.insert_account_info(
+                &CONTRACT,
+                AccountInfo::default().with_code(legacy_bytecode(vec![op::STOP])),
+            );
+            database
+        },
+        Precompiles::base(SpecId::PRAGUE),
+    );
+    warm_account(&mut evm, &CONTRACT);
+    let load = load_code(&mut evm, &CONTRACT, 0).unwrap();
+    assert!(!load.is_code_cold);
+    assert!(!evm.state.account(&CONTRACT).unwrap().is_code_warm());
+}
+
+#[rstest::rstest]
+// PUSH20 (3) + EXTCODESIZE: warm access (100) + cold account (2500) + code (CODE_COST). The
+// program ends right after it, so the gas must cover exactly the opcode and nothing else.
+#[case::extcodesize_exact(3 + 2_600 + 1_000, true)]
+#[case::extcodesize_short_by_one(3 + 2_600 + 1_000 - 1, false)]
+fn tip1175_code_load_gas_boundary(#[case] gas: u64, #[case] success: bool) {
+    let mut evm = tip1175_host();
+    let mut code = Vec::new();
+    push_address(&mut code, &CONTRACT);
+    code.extend([op::EXTCODESIZE, op::STOP]);
+    let mut message = MessageExt {
+        destination: Address::with_last_byte(0xe0),
+        code_address: Address::with_last_byte(0xe0),
+        gas_limit: gas,
+        code: legacy_bytecode(code),
+        ..Default::default()
+    };
+    let result = Host::execute_message(&mut evm, &mut message).unwrap();
+    assert_eq!(result.is_success(), success, "{:?}", result.stop);
+    // The host refuses a load it can't pay for before charging, so an exact boundary alone
+    // doesn't prove the charge: a successful run must also spend every unit of gas.
+    if success {
+        assert_eq!(result.gas.spent(), gas);
+    }
+    assert_eq!(evm.state.account(&CONTRACT).unwrap().is_code_warm(), success);
+}
+
+#[rstest::rstest]
+#[case::extcodesize(&[(op::EXTCODESIZE, DELEGATING)], DELEGATION_COST)]
+#[case::extcodesize_twice(&[(op::EXTCODESIZE, DELEGATING), (op::EXTCODECOPY, DELEGATING)], DELEGATION_COST)]
+#[case::extcodehash_is_account_only(&[(op::EXTCODEHASH, DELEGATING)], 0)]
+#[case::call_pays_designator_and_target(&[(op::STATICCALL, DELEGATING)], DELEGATION_COST + CODE_COST)]
+#[case::call_then_extcode_is_warm(
+    &[(op::STATICCALL, DELEGATING), (op::EXTCODESIZE, DELEGATING), (op::EXTCODESIZE, CONTRACT)],
+    DELEGATION_COST + CODE_COST
+)]
+#[case::contract_pays_code_price(&[(op::EXTCODESIZE, CONTRACT)], CODE_COST)]
+fn tip1175_delegation_designator_pricing(#[case] steps: &[(u8, Address)], #[case] expected: u32) {
+    let code = program(steps);
+    let gas = |code_cost, delegation_cost| {
+        code_load_gas_priced(
+            SpecId::PRAGUE,
+            code_cost,
+            delegation_cost,
+            &code,
+            &code_accounts(),
+            &[],
+        )
+    };
+    assert_eq!(gas(CODE_COST, DELEGATION_COST) - gas(0, 0), u64::from(expected));
+}
+
+#[test]
+fn tip1175_skipped_designator_load_halts_without_warming() {
+    let mut evm = tip1175_counting_host();
+    warm_account(&mut evm, &DELEGATING);
+    let reads = code_reads(&evm);
+    assert!(matches!(
+        load_code(&mut evm, &DELEGATING, 0),
+        Err(crate::HostError::Halt(InstrStop::OutOfGas))
+    ));
+    assert_eq!(code_reads(&evm), reads);
+    assert!(!evm.state.account(&DELEGATING).unwrap().is_code_warm());
+    let load = load_code(&mut evm, &DELEGATING, u64::MAX).unwrap();
+    assert!(load.is_code_cold);
+    assert!(load.code.is_eip7702());
+}
+
+#[rstest::rstest]
+// Gas between the cheaper (designator) and the real (contract) price: the load is refused at the
+// real price and leaves the code cold.
+#[case::between_prices(DELEGATION_COST + 1, true)]
+#[case::exact_price(CODE_COST, false)]
+fn tip1175_code_load_checks_the_exact_price(#[case] gas_limit: u32, #[case] skipped: bool) {
+    let mut evm = tip1175_host();
+    warm_account(&mut evm, &CONTRACT);
+    let load = load_code(&mut evm, &CONTRACT, u64::from(gas_limit));
+    if skipped {
+        assert!(matches!(load, Err(crate::HostError::Halt(InstrStop::OutOfGas))));
+    } else {
+        assert!(load.unwrap().is_code_cold);
+    }
+    assert_eq!(evm.state.account(&CONTRACT).unwrap().is_code_warm(), !skipped);
+}
+
+#[rstest::rstest]
+// A cold account with cold code needs both prices: with only the account's, the load halts and
+// leaves both the account and its code cold.
+#[case::account_and_code(2_500 + CODE_COST, true)]
+#[case::account_only(2_500 + CODE_COST - 1, false)]
+#[case::nothing(2_499, false)]
+fn tip1175_cold_account_and_code_load(#[case] gas: u32, #[case] loaded: bool) {
+    let mut evm = tip1175_host();
+    let load = load_code(&mut evm, &CONTRACT, u64::from(gas));
+    if loaded {
+        let load = load.unwrap();
+        assert!(load.is_cold && load.is_code_cold);
+        assert_eq!(
+            load.cold_cost(&Host::execution_config(&evm).version().gas_params),
+            u64::from(gas)
+        );
+    } else {
+        assert!(matches!(load, Err(crate::HostError::Halt(InstrStop::OutOfGas))));
+    }
+    let account = evm.state.account(&CONTRACT).unwrap();
+    assert_eq!(account.is_warm(), loaded);
+    assert_eq!(account.is_code_warm(), loaded);
+}
+
+#[test]
+fn tip1175_account_and_code_warmth_roll_back_together() {
+    let mut evm = tip1175_host();
+    let checkpoint = evm.state.checkpoint();
+    load_code(&mut evm, &CONTRACT, u64::MAX).unwrap();
+    evm.state.rollback(checkpoint, crate::EvmFeatures::empty());
+    // Check before anything reloads it: `State::account` would insert a fresh entry. The
+    // rollback must keep the read in the overlay, so the block access list still records it.
+    assert!(evm.state.loaded_accounts().any(|(address, _)| *address == CONTRACT));
+    let account = evm.state.account(&CONTRACT).unwrap();
+    assert!(!account.is_warm());
+    assert!(!account.is_code_warm());
+}
+
+#[test]
+fn tip1175_load_flags_affordable() {
+    let mut gas_params = Version::new(SpecId::PRAGUE).gas_params;
+    gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
+    gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
+    let flags = |gas| AccountLoadFlags::affordable(gas, &gas_params, true);
+    assert_eq!(flags(0), AccountLoadFlags::CODE);
+    assert_eq!(
+        flags(u64::from(DELEGATION_COST)),
+        AccountLoadFlags::CODE | AccountLoadFlags::COLD_DELEGATION
+    );
+    assert_eq!(
+        flags(2_500),
+        AccountLoadFlags::CODE
+            | AccountLoadFlags::COLD_ACCOUNT
+            | AccountLoadFlags::COLD_CODE
+            | AccountLoadFlags::COLD_DELEGATION
+    );
+    assert_eq!(
+        flags(2_500 + u64::from(CODE_COST)),
+        AccountLoadFlags::CODE | AccountLoadFlags::NO_GAS_CHECK
+    );
+    assert!(
+        !AccountLoadFlags::affordable(u64::MAX, &gas_params, false)
+            .contains(AccountLoadFlags::CODE)
+    );
+}
+
+/// Builds an EIP-2780 host whose transaction target delegates to `CONTRACT`, prepares the
+/// top-level frame with `gas`, and returns the gas spent, whether the frame ran out of gas
+/// before executing, and whether `CONTRACT`'s code is warm.
+fn tip1175_top_level_delegation_run(gas: u64) -> (u64, bool, bool) {
+    let spec = SpecId::AMSTERDAM;
+    let caller = Address::with_last_byte(0xca);
+    let entry = Address::with_last_byte(0xe0);
+    let mut version = Version::new(spec);
+    version.gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
+    version.gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
+    let mut database = InMemoryDB::default();
+    database
+        .insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1u64 << 60)));
+    database.insert_account_info(
+        &entry,
+        AccountInfo::default().with_code(Bytecode::new_eip7702(CONTRACT)),
+    );
+    database.insert_account_info(
+        &CONTRACT,
+        AccountInfo::default().with_code(legacy_bytecode(vec![op::STOP])),
+    );
+    let mut evm = TestEvm::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(spec, version),
+        spec,
+        BlockEnvExt::default(),
+        TxRegistry::new(),
+        database,
+        Precompiles::base(spec),
+    );
+    evm.state.prewarm(&caller);
+    evm.state.prewarm(&entry);
+    let mut tracker = GasTracker::new(gas);
+    let frame = prepare_initial_frame(
+        &mut evm,
+        caller,
+        0,
+        TxKind::Call(entry),
+        &Default::default(),
+        U256::ZERO,
+        &mut tracker,
+    )
+    .unwrap();
+    let warm = evm.state.account(&CONTRACT).unwrap().is_code_warm();
+    (gas - tracker.remaining(), frame.runtime_oog, warm)
+}
+
+#[test]
+fn tip1175_top_level_delegation_unaffordable_code_stays_cold() {
+    // With enough gas the target's code is charged at the contract price and warmed.
+    let (spent, halted, warm) = tip1175_top_level_delegation_run(1_000_000);
+    assert!(!halted);
+    assert!(warm);
+    // Leave enough for the cheaper (designator) price but not the contract price at the code
+    // step: the frame halts and the code must stay cold.
+    let budget = spent - u64::from(CODE_COST) + u64::from(DELEGATION_COST) + 1;
+    let (_, halted, warm) = tip1175_top_level_delegation_run(budget);
+    assert!(halted, "the short budget must halt the frame before it runs");
+    assert!(!warm);
 }

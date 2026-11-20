@@ -1,6 +1,6 @@
 use crate::{
     EvmTypesHost,
-    evm::AccountLoad,
+    evm::{AccountLoad, AccountLoadFlags},
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{WordExt, read_word_padded},
     version::GasParams,
@@ -12,17 +12,14 @@ fn load_account<T: EvmTypesHost>(
     addr: Word,
     load_code: bool,
 ) -> Result<AccountLoad> {
-    let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
-    let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let account_address = addr.to_address();
+    // Built first: computing it inside the call would borrow `cx.state` while `host()` holds it.
+    let flags = AccountLoadFlags::affordable(cx.gas.remaining(), cx.state.gas_params(), load_code);
     let account = cx
         .state
         .host()
-        .load_account(&account_address, load_code, skip_cold_load)
+        .load_account(&addr.to_address(), flags)
         .map_err(|error| cx.state.fail(error))?;
-    if account.is_cold {
-        cx.gas.spend(cold_load_gas)?;
-    }
+    cx.gas.spend(account.cold_cost(cx.state.gas_params()))?;
     Ok(account)
 }
 

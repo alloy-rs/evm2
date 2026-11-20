@@ -1,6 +1,10 @@
 use alloy_primitives::{Address, U256};
 use core::{hint::cold_path, num::NonZero};
-use evm2::{EvmTypesHost, evm::AccountLoad, interpreter::Host};
+use evm2::{
+    EvmTypesHost,
+    evm::{AccountLoad, AccountLoadFlags},
+    interpreter::Host,
+};
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
 pub type BuiltinResult = Result<(), BuiltinError>;
@@ -56,15 +60,11 @@ pub(crate) fn load_account<T: EvmTypesHost>(
     address: &Address,
     load_code: bool,
 ) -> Result<AccountLoad, BuiltinError> {
-    let cold_load_gas = ecx.gas_params().cold_account_additional_cost();
-    let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-    let account = ecx
-        .host()
-        .load_account(address, load_code, skip_cold_load)
-        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
-    if account.is_cold {
-        ecx.gas.spend(cold_load_gas)?;
-    }
+    // Built first: computing it inside the call would borrow `ecx` while `host()` holds it.
+    let flags = AccountLoadFlags::affordable(ecx.gas.remaining(), ecx.gas_params(), load_code);
+    let account =
+        ecx.host().load_account(address, flags).map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+    ecx.gas.spend(account.cold_cost(ecx.gas_params()))?;
     Ok(account)
 }
 
