@@ -166,7 +166,7 @@ where
     crate::for_each_spec!([] make_selector_tables)
 }
 
-/// Returns the match loop of each spec of selector `F`.
+/// Returns the match loop of each spec of selector `F`, one per spec.
 #[cfg(dispatch_match)]
 const fn make_selector_match_loops<T, F, const CUSTOM_SPEC_ID: u32>()
 -> [MatchLoop<T>; crate::SpecId::COUNT]
@@ -174,13 +174,6 @@ where
     T: EvmTypesHost,
     F: EvmConfigSelector<T>,
 {
-    if F::BASE_CONFIGS
-        && CUSTOM_SPEC_ID == u32::MAX
-        && let Some(loops) = T::BASE_MATCH_LOOPS
-    {
-        return loops;
-    }
-
     macro_rules! make_selector_match_loops {
         ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {
             [$(
@@ -190,19 +183,16 @@ where
         };
     }
 
-    share_equal_loops(
-        SelectorOpcodeConfig::<T, F, CUSTOM_SPEC_ID>::OPCODE_CONFIG,
-        crate::for_each_spec!([] make_selector_match_loops),
-    )
+    crate::for_each_spec!([] make_selector_match_loops)
 }
 
 /// The match loops of the base configs for [`BaseEvmTypes`].
 ///
-/// The loops are instantiated here, behind public non-generic functions, so that the crates that
-/// use the base types link to them instead of each instantiating its own copy. A private function
-/// would be instantiated again in every crate that references it.
+/// The loops are instantiated here, inside non-generic functions, so that the crates that use the
+/// base types link to these copies instead of instantiating the loops themselves. The functions
+/// need not be public: the `evm2-cli` binary holds no copy of the loops with either visibility.
 #[cfg(dispatch_match)]
-pub mod base_match_loops {
+pub(crate) mod base_match_loops {
     use super::*;
 
     macro_rules! base_match_loops {
@@ -214,9 +204,8 @@ pub mod base_match_loops {
                 ///
                 /// The interpreter must be prepared for a run, with its host and bytecode set, and
                 /// its message must use this spec.
-                #[doc(hidden)]
                 #[inline(never)]
-                pub unsafe fn $name(
+                pub(crate) unsafe fn $name(
                     interpreter: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 ) -> InstrStop {
                     // A spec that shares its predecessor's loop never uses its own.
@@ -268,6 +257,25 @@ const fn share_equal_loops<T: EvmTypesHost>(
         i += 1;
     }
     loops
+}
+
+/// The match loops of [`BaseEvmConfigSelector`], shared by the specs whose opcode configs are
+/// equal.
+///
+/// Only this selector shares loops: its configs are the base configs, which are equal when their
+/// revisions are. The revisions of another selector's configs do not tell whether they are.
+#[cfg(dispatch_match)]
+pub(crate) struct BaseMatchLoops<T>(core::marker::PhantomData<fn() -> T>);
+
+#[cfg(dispatch_match)]
+impl<T: EvmTypesHost> BaseMatchLoops<T> {
+    pub(crate) const LOOPS: [MatchLoop<T>; crate::SpecId::COUNT] = match T::BASE_MATCH_LOOPS {
+        Some(loops) => loops,
+        None => share_equal_loops(
+            SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG,
+            SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::MATCH_LOOPS,
+        ),
+    };
 }
 
 pub(crate) struct ConfigInstrTables<T, C>(core::marker::PhantomData<fn() -> (T, C)>);
@@ -391,5 +399,79 @@ impl<T: EvmTypesHost, const ALL: bool> InspectMode<T> for DynInspector<ALL> {
     #[inline(always)]
     fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {
         state.inspect_step_end(pc, stack_len);
+    }
+}
+
+#[cfg(all(test, dispatch_match))]
+mod tests {
+    use super::*;
+    use crate::{
+        BaseEvmConfig, ExecutionConfig, SpecId,
+        interpreter::{Interpreter, Message, Word},
+        test_utils::{TestHost, TestInterpreter, TestTypes, legacy_bytecode},
+    };
+    use evm2_macros::instruction;
+
+    const SPEC_OPCODE: u8 = 0x0c;
+
+    /// Pushes the base spec its config was built for.
+    #[instruction(no_stack_preamble, EvmTypes = TestTypes)]
+    fn push_spec<const SPEC: u32>() -> Result {
+        stack.push(Word::from(SPEC))
+    }
+
+    /// A config that sets one opcode to an instruction of its own spec, whatever the spec.
+    struct PushSpecConfig<const SPEC: u32>;
+
+    impl<const SPEC: u32> EvmConfig<TestTypes> for PushSpecConfig<SPEC> {
+        const BASE_SPEC_ID: SpecId = SpecId::try_from_u32(SPEC).unwrap();
+        const OPCODE_CONFIG: &'static OpcodeConfig<TestTypes> = &{
+            let mut config = OpcodeConfig::<TestTypes>::base::<BaseEvmConfig<SPEC>>();
+            config.set_instruction::<push_spec<SPEC>>(SPEC_OPCODE, 0);
+            config
+        };
+    }
+
+    struct PushSpecSelector;
+
+    impl EvmConfigSelector<TestTypes> for PushSpecSelector {
+        type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> =
+            PushSpecConfig<BASE_SPEC_ID>;
+
+        fn execution_config(spec_id: SpecId) -> ExecutionConfig<TestTypes> {
+            ExecutionConfig::for_base_spec::<Self>(spec_id)
+        }
+    }
+
+    /// Every spec of a selector runs its own config's loop, even where consecutive configs have
+    /// equal revisions.
+    #[test]
+    fn selector_runs_the_instruction_of_its_own_spec() {
+        for spec in SpecId::FRONTIER as u32..=SpecId::AMSTERDAM as u32 {
+            let spec_id = SpecId::try_from_u32(spec).unwrap();
+            let message = Message::<TestTypes> {
+                code: legacy_bytecode([SPEC_OPCODE, op::STOP]),
+                gas_limit: 1_000,
+                ..Default::default()
+            };
+            let mut interpreter = Interpreter::<TestTypes>::new(&message);
+            let mut host = TestHost {
+                spec_id,
+                execution_config: ExecutionConfig::for_base_spec::<PushSpecSelector>(spec_id),
+                ..TestHost::default()
+            };
+            let err = interpreter.run(&mut host).unwrap();
+            let (stack, stack_len, gas, memory, output) = interpreter.into_parts();
+            let result = TestInterpreter {
+                stack,
+                stack_len,
+                gas,
+                memory,
+                output,
+                err,
+                execution_error: None,
+            };
+            assert_eq!(result.stack(), [Word::from(spec)], "{spec_id:?}");
+        }
     }
 }

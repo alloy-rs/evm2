@@ -13,7 +13,7 @@ use core::fmt::Debug;
 use derive_where::derive_where;
 
 #[cfg(dispatch_match)]
-use crate::interpreter::dispatch::MatchLoop;
+use crate::interpreter::dispatch::{BaseMatchLoops, MatchLoop};
 
 /// Runtime EVM type family.
 ///
@@ -55,10 +55,12 @@ pub trait EvmTypesHost: Sized + 'static {
     /// Host type used by this EVM.
     type Host<'a>: Host<Self> + ?Sized;
 
-    /// The match loops of the base configs, for types that instantiate them in their own crate.
+    /// The match loops of the base configs, built once in the crate that defines the types.
     ///
-    /// Without them, every crate that uses the types instantiates its own copies of the loops.
+    /// Not public API: only `evm2` sets it, for `BaseEvmTypes`, so that the crates that use those
+    /// types link to its loops. Implementors must not override it.
     #[cfg(dispatch_match)]
+    #[doc(hidden)]
     const BASE_MATCH_LOOPS: Option<[MatchLoop<Self>; SpecId::COUNT]> = None;
 }
 
@@ -92,10 +94,6 @@ pub trait EvmConfigSelector<T: EvmTypesHost>: Sized {
     /// runtime ID type. `CUSTOM_SPEC_ID` is a selector-specific `u32` discriminant; `u32::MAX`
     /// represents the base table inherited from `BASE_SPEC_ID`.
     type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32>: EvmConfig<T>;
-
-    /// Whether the configs of base spec ids with the base sentinel are [`BaseEvmConfig`]s.
-    #[cfg(dispatch_match)]
-    const BASE_CONFIGS: bool = false;
 
     /// Returns the selected execution config for `spec_id`.
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T>;
@@ -160,15 +158,41 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
     ///
     /// This uses the selector's base inherited tables by passing `u32::MAX` as the custom-spec
     /// sentinel.
+    #[cfg(test)]
     #[inline]
     pub(crate) const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
         Self::for_custom_spec::<F, { u32::MAX }>(base_spec_id)
     }
 
     /// Creates an execution config for selector custom spec `CUSTOM_SPEC_ID` and base `SpecId`.
+    #[cfg(test)]
     #[inline]
     pub(crate) const fn for_custom_spec<F: EvmConfigSelector<T>, const CUSTOM_SPEC_ID: u32>(
         base_spec_id: SpecId,
+    ) -> Self {
+        Self::for_selector::<F, CUSTOM_SPEC_ID>(
+            base_spec_id,
+            #[cfg(dispatch_match)]
+            SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::MATCH_LOOPS[base_spec_id as usize],
+        )
+    }
+
+    /// Creates an execution config for a base `SpecId` through [`BaseEvmConfigSelector`].
+    ///
+    /// Only this selector uses the shared match loops of [`BaseMatchLoops`].
+    #[inline]
+    pub(crate) const fn for_base_selector(base_spec_id: SpecId) -> Self {
+        Self::for_selector::<BaseEvmConfigSelector, { u32::MAX }>(
+            base_spec_id,
+            #[cfg(dispatch_match)]
+            BaseMatchLoops::<T>::LOOPS[base_spec_id as usize],
+        )
+    }
+
+    #[inline]
+    const fn for_selector<F: EvmConfigSelector<T>, const CUSTOM_SPEC_ID: u32>(
+        base_spec_id: SpecId,
+        #[cfg(dispatch_match)] match_loop: MatchLoop<T>,
     ) -> Self {
         let i = base_spec_id as usize;
         Self {
@@ -179,7 +203,7 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             inspect_instructions:
                 &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
             #[cfg(dispatch_match)]
-            match_loop: SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::MATCH_LOOPS[i],
+            match_loop,
         }
     }
 
@@ -298,10 +322,7 @@ pub struct BaseEvmConfigSelector(());
 impl<T: EvmTypesHost> EvmConfigSelector<T> for BaseEvmConfigSelector {
     type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> = BaseEvmConfig<BASE_SPEC_ID>;
 
-    #[cfg(dispatch_match)]
-    const BASE_CONFIGS: bool = true;
-
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T> {
-        ExecutionConfig::for_base_spec::<Self>(spec_id.into())
+        ExecutionConfig::for_base_selector(spec_id.into())
     }
 }
