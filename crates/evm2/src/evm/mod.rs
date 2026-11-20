@@ -908,6 +908,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Replaces the precompile provider.
+    ///
+    /// A `Box<dyn PrecompileProvider<T>>` with no extra bounds is stored as is, so
+    /// [`Self::precompiles_as`] sees the boxed provider's concrete type.
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.set_boxed_precompiles(boxed_precompile_provider(precompiles));
@@ -1054,6 +1057,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Sets the active execution inspector.
+    ///
+    /// A `Box<dyn Inspector<T>>` with no extra bounds is stored as is, so
+    /// [`Self::clear_inspector_as`] sees the boxed inspector's concrete type.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.set_boxed_inspector(boxed_inspector(inspector));
@@ -3131,6 +3137,16 @@ mod tests {
     }
 
     #[test]
+    fn set_precompiles_with_boxed_provider_downcasts_to_the_inner_provider() {
+        let mut evm = lifecycle_evm();
+        let boxed: Box<dyn PrecompileProvider<BaseEvmTypes>> = Box::new(precompiles_with([]));
+
+        evm.set_precompiles(boxed);
+
+        assert!(evm.precompiles_as::<Precompiles>().is_some());
+    }
+
+    #[test]
     fn take_precompiles_preserves_provider_and_can_be_restored() {
         let mut evm = lifecycle_evm();
         let original_ids = evm.precompiles().precompile_ids();
@@ -3239,6 +3255,23 @@ mod tests {
         };
 
         let _ = evm.run_interpreter(&message);
+    }
+
+    #[test]
+    fn set_inspector_with_boxed_inspector_downcasts_to_the_inner_inspector() {
+        struct HeapInspector(Vec<u8>);
+
+        impl Inspector<BaseEvmTypes> for HeapInspector {}
+
+        let mut evm = lifecycle_evm();
+        let inspector = Box::new(HeapInspector(vec![1]));
+        let ptr = &raw const *inspector;
+
+        evm.set_inspector(inspector as Box<dyn Inspector<BaseEvmTypes>>);
+
+        let inspector = evm.clear_inspector_as::<HeapInspector>().unwrap();
+        assert_eq!(&raw const *inspector, ptr);
+        assert_eq!(inspector.0, [1]);
     }
 
     #[test]
