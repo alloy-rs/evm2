@@ -372,6 +372,20 @@ mod tests {
     }
 
     #[test]
+    fn zero_withdrawal_preserves_absent_account_probe() {
+        let address = Address::repeat_byte(0x11);
+        let mut overlay = Overlay::default();
+        overlay.apply_withdrawal(address, U256::ZERO);
+        let mut builder = CaptureBuilder::mainnet();
+        let pre = account_trace(address, json!({ "balance": "0x0" }));
+
+        builder.capture_base_requirements(1, 0, &pre, &overlay).unwrap();
+
+        assert!(builder.absent_accounts.contains(&address));
+        assert!(!builder.accounts.contains_key(&address));
+    }
+
+    #[test]
     fn absent_account_probe_accepts_zero_balance() {
         let account = json!({ "balance": "0x0" });
 
