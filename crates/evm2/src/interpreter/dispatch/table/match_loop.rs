@@ -9,57 +9,43 @@
 //! Only frames that run without an inspector use it, on the config its function was
 //! instantiated for. The others keep the table loop.
 
-use super::{Cursor as _, dispatch_inner, finish_run, imp};
-use crate::{
-    EvmConfig, EvmTypesHost,
-    interpreter::{InstrStop, Interpreter, Pc, Stack, dispatch::run_state, op},
-};
+use crate::interpreter::{InstrStop, Interpreter};
 
 /// Runs a frame without an inspector to its stop.
 pub(crate) type MatchLoop<T> = fn(&mut Interpreter<'_, '_, T>) -> InstrStop;
 
-pub(in crate::interpreter) fn run_match<T: EvmTypesHost, C: EvmConfig<T>>(
-    interpreter: &mut Interpreter<'_, '_, T>,
-) -> InstrStop {
-    let (state, mut pc, mut raw_stack) = run_state(interpreter);
-    // SAFETY: This is the only stack borrow outside inspector callbacks.
-    let backing = unsafe { raw_stack.borrow() };
-    let (backing, mut len) = (backing.stack, backing.len);
-    let mut gas = imp::loop_state(state.gas_mut());
-
-    macro_rules! arms {
-        ($($op:literal),* $(,)?) => {
-            loop {
-                match pc.op() {
-                    $(
-                        $op => {
-                            // The table maps the unknown opcodes of a spec to `INVALID`.
-                            let opcode = if C::OPCODE_CONFIG.is_unknown_opcode($op) {
-                                op::INVALID
-                            } else {
-                                $op
-                            };
-                            let mut stack = Stack::new(&mut *backing, len);
-                            let (next_pc, next_gas) = dispatch_inner::<T, C, super::NoInspector, _>(
-                                pc,
-                                stack.as_mut(),
-                                gas,
-                                state,
-                                opcode,
-                            );
-                            len = stack.len;
-                            gas = next_gas;
-                            if next_pc.as_ptr().is_null() {
-                                break;
-                            }
-                            pc = next_pc;
-                        }
-                    )*
+/// The loops, defined in a few modules of their own and named by spec.
+///
+/// The compiler puts all instances of a function in one codegen unit, so the loops would be
+/// optimized in one thread, one after the other. Separate definitions of the same source spread
+/// them over several codegen units.
+pub(in crate::interpreter) mod loops {
+    macro_rules! loop_modules {
+        ($($group:ident),*) => {
+            $(
+                pub(in crate::interpreter) mod $group {
+                    include!("match_loop_body.rs");
                 }
-            }
+            )*
         };
     }
-    for_each_opcode_value!(arms);
 
-    finish_run(state, imp::Cursor::new(Pc::new(core::ptr::null()), len), gas)
+    loop_modules!(g0, g1, g2, g3);
+
+    pub(in crate::interpreter) use g0 as frontier;
+    pub(in crate::interpreter) use g0 as homestead;
+    pub(in crate::interpreter) use g0 as tangerine;
+    pub(in crate::interpreter) use g0 as spurious_dragon;
+    pub(in crate::interpreter) use g1 as byzantium;
+    pub(in crate::interpreter) use g1 as petersburg;
+    pub(in crate::interpreter) use g1 as istanbul;
+    pub(in crate::interpreter) use g1 as berlin;
+    pub(in crate::interpreter) use g2 as london;
+    pub(in crate::interpreter) use g2 as merge;
+    pub(in crate::interpreter) use g2 as shanghai;
+    pub(in crate::interpreter) use g2 as cancun;
+    pub(in crate::interpreter) use g3 as prague;
+    pub(in crate::interpreter) use g3 as osaka;
+    pub(in crate::interpreter) use g3 as amsterdam;
+    pub(in crate::interpreter) use g3 as custom;
 }

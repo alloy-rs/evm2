@@ -26,7 +26,7 @@ pub(super) use imp::{RawInstrFn, dispatch};
 #[cfg(dispatch_match)]
 pub(crate) use match_loop::MatchLoop;
 #[cfg(dispatch_match)]
-pub(super) use match_loop::run_match;
+pub(super) use match_loop::loops;
 
 /// Table instruction dispatch table.
 pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];

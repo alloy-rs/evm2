@@ -184,7 +184,7 @@ where
     macro_rules! make_selector_match_loops {
         ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {
             [$(
-                imp::run_match::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>>
+                imp::loops::$name::run::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>>
                     as MatchLoop<T>,
             )*]
         };
@@ -215,7 +215,7 @@ pub mod base_match_loops {
                     if const { shares_loop(crate::SpecId::$spec as usize) } {
                         unreachable!()
                     }
-                    imp::run_match::<BaseEvmTypes, BaseEvmConfig<{ crate::SpecId::$spec as u32 }>>(
+                    imp::loops::$name::run::<BaseEvmTypes, BaseEvmConfig<{ crate::SpecId::$spec as u32 }>>(
                         interpreter,
                     )
                 }
@@ -272,7 +272,7 @@ where
         Self::base_opcode_config(),
     );
     #[cfg(dispatch_match)]
-    pub(crate) const MATCH_LOOP: MatchLoop<T> = imp::run_match::<T, C>;
+    pub(crate) const MATCH_LOOP: MatchLoop<T> = imp::loops::custom::run::<T, C>;
     pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, DynInspector>(
         Self::base_table(
             SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSPECT_INSTRUCTIONS,
