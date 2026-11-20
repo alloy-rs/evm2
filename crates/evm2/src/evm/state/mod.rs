@@ -451,6 +451,10 @@ impl<'a> State<'a> {
     /// set unchanged. Addresses in the pre-warmed set remain effectively warm even when their
     /// runtime warmth is cleared.
     ///
+    /// With `warm` set to `false`, the account's bytecode is marked cold too (Tempo TIP-1175), so
+    /// the next code load pays the code price again. With `true`, only the account is warmed: code
+    /// warmth is left as it was.
+    ///
     /// This call adds no journal entry; rolling back an existing account-change entry still
     /// restores the account's recorded runtime warmth.
     pub fn set_account_warm(&mut self, address: &Address, warm: bool) {
