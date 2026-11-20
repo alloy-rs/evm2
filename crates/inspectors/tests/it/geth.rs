@@ -1,6 +1,8 @@
 //! Geth tests
 
 mod consistency;
+#[cfg(feature = "raw-struct-logs")]
+mod raw_struct_logs;
 mod refund_counter;
 mod runtime_oog;
 
