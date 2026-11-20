@@ -5,7 +5,7 @@ use crate::tracing::{
     builder::geth::{struct_log_header_len, struct_log_stack_len},
     config::geth_step_limit,
     limits::TraceBudget,
-    storage_change,
+    step_refund_counter, storage_change,
     types::is_call_like,
     utils::step_cost,
 };
@@ -274,6 +274,7 @@ impl RawStructLogInspector {
         }
 
         let op = OpCode::new_or_unknown(interp.opcode());
+        let refund = step_refund_counter(interp);
         let gas = interp.gas();
         let mut step = RecordingStep {
             pc: interp.pc() as u64,
@@ -282,7 +283,7 @@ impl RawStructLogInspector {
             gas_before: gas.remaining_excluding_state_spill(),
             message_cost: None,
             depth: u64::from(depth) + 1,
-            refund: gas.refunded() as u64,
+            refund,
             state_gas_spent: gas.state_gas_spent(),
             state_gas_reservoir: interp
                 .version()
