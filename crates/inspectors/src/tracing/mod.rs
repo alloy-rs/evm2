@@ -499,6 +499,9 @@ impl TracingInspector {
             Bytes::new()
         };
 
+        let frame_refunded = interp.gas().refunded();
+        let refunded = interp.host().tx_refunded(frame_refunded).max(0) as u64;
+
         let mut immediate_bytes = None;
         if self.config.record_immediate_bytes {
             let size = usize::from(immediate_size(op.get()));
@@ -526,7 +529,7 @@ impl TracingInspector {
             stack,
             memory,
             gas_remaining: interp.gas().remaining(),
-            gas_refund_counter: interp.gas().refunded() as u64,
+            gas_refund_counter: refunded,
             // The state gas cost is populated in `step_end`, and the decoded data never is in
             // `TracingInspector`.
             extra: CallTraceStepExtra { returndata, immediate_bytes, ..Default::default() }.boxed(),
