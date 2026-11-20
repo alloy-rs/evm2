@@ -131,6 +131,17 @@ pub trait DynDatabase: NonStaticAny {
     /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
     /// provide is a database failure reported through the error, never a benign miss.
     fn get_block_hash(&mut self, number: &Word) -> DbResult<B256>;
+
+    /// Returns whether this database can hold storage for an account it reports as absent, such as
+    /// a development node that loads empty accounts as absent under EIP-161 but keeps storage set
+    /// on them, which code delegated to the account by EIP-7702 can read.
+    ///
+    /// [`CacheDB`] reads such storage as zero without asking the database unless this returns
+    /// `true`. Defaults to `false`.
+    #[inline]
+    fn has_storage_for_absent_accounts(&self) -> bool {
+        false
+    }
 }
 
 /// Shared backing database implementation with a concrete error type.
