@@ -5,7 +5,7 @@ use alloy_rpc_types_trace::opcode::OpcodeGas;
 use evm2::{
     EvmTypesHost, Inspector,
     interpreter::{
-        Interpreter, Message, MessageKind, MessageResult,
+        GasTracker, Interpreter, Message, MessageKind, MessageResult,
         opcode::{OpCode, op},
     },
 };
@@ -14,10 +14,15 @@ use evm2::{
 struct PendingOpcodeGas {
     opcode: Option<OpCode>,
     gas_remaining: u64,
+    /// The remaining gas plus spilled state gas when the step started.
+    gas_before: u64,
     child_gas_used: u64,
 }
 
 /// An Inspector that counts opcodes and measures gas usage per opcode.
+///
+/// An opcode's gas leaves out the state gas it charges, the part that spills past the reservoir
+/// into the remaining gas included, as the tracing inspector's step cost does.
 #[derive(Clone, Debug, Default)]
 pub struct OpcodeGasInspector {
     /// Map of opcode counts per transaction.
@@ -92,6 +97,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
         self.pending_steps.push(PendingOpcodeGas {
             opcode,
             gas_remaining: interp.gas().remaining(),
+            gas_before: interp.gas().remaining_excluding_state_spill(),
             child_gas_used: 0,
         });
     }
@@ -104,7 +110,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
             let gas_cost = step_cost(
                 interp.result(),
                 pending.gas_remaining,
-                pending.gas_remaining.saturating_sub(interp.gas().remaining()),
+                pending.gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill()),
             )
             .saturating_sub(pending.child_gas_used);
             *self.opcode_gas.entry(opcode).or_default() += gas_cost;
@@ -133,7 +139,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
             MessageKind::Create | MessageKind::Create2 => return,
             _ => return,
         };
-        self.exclude_child_gas(opcode, result.gas.spent());
+        self.exclude_child_gas(opcode, spent_excluding_state_spill(&result.gas));
     }
 
     fn create_end(
@@ -155,13 +161,18 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
             MessageKind::Create2 => op::CREATE2,
             _ => return,
         };
-        self.exclude_child_gas(opcode, result.gas.spent());
+        self.exclude_child_gas(opcode, spent_excluding_state_spill(&result.gas));
     }
 }
 
 /// Returns the immediate byte size for an opcode.
 pub fn immediate_size(opcode: u8) -> u8 {
     OpCode::new(opcode).map_or(0, OpCode::immediate_size)
+}
+
+/// Returns the gas a returned frame spent, less the state gas it drew from its remaining gas.
+const fn spent_excluding_state_spill(gas: &GasTracker) -> u64 {
+    gas.limit().saturating_sub(gas.remaining_excluding_state_spill())
 }
 
 #[cfg(test)]

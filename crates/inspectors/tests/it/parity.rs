@@ -1,8 +1,9 @@
 //! Parity tests
 
 use crate::utils::{
-    AccountInfo, Bytecode, Context, DatabaseCommit, ExecutionResult, Output, SpecId, TransactTo,
-    TxEnv, deploy_contract, inspect_deploy_contract, op, print_traces,
+    AccountInfo, Bytecode, Context, DatabaseCommit, ExecutionResult, InspectorSlot, Output,
+    ResultAndState, SpecId, TestEvmWithInspector, TransactTo, TxEnv, deploy_contract,
+    inspect_deploy_contract, op, print_traces,
 };
 use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
@@ -487,6 +488,20 @@ fn inspect_funded_code(
     balance: u64,
     gas_limit: u64,
 ) -> TracingInspector {
+    let inspector = TracingInspector::new(config);
+    run_funded_code(code, child, spec, inspector, balance, gas_limit).0.into_inspector()
+}
+
+/// Runs `code` at `0x42` with `balance` and a transaction gas limit of `gas_limit` under
+/// `inspector`, with `child` at `0x43`, and returns the EVM and the result.
+fn run_funded_code<I: InspectorSlot>(
+    code: &[u8],
+    child: &[u8],
+    spec: SpecId,
+    inspector: I,
+    balance: u64,
+    gas_limit: u64,
+) -> (TestEvmWithInspector<I>, ResultAndState) {
     let target = Address::with_last_byte(0x42);
     let child_address = Address::with_last_byte(0x43);
     let mut db = InMemoryDB::default();
@@ -501,10 +516,11 @@ fn inspect_funded_code(
     let mut evm = Context::mainnet()
         .modify_cfg_chained(|cfg| cfg.spec = spec)
         .with_db(db)
-        .build_mainnet_with_inspector(TracingInspector::new(config));
-    evm.inspect_tx(TxEnv { gas_limit, kind: TransactTo::Call(target), ..Default::default() })
+        .build_mainnet_with_inspector(inspector);
+    let res = evm
+        .inspect_tx(TxEnv { gas_limit, kind: TransactTo::Call(target), ..Default::default() })
         .unwrap();
-    evm.into_inspector()
+    (evm, res)
 }
 
 #[test]
