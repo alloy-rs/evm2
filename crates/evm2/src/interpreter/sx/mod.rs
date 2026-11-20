@@ -40,7 +40,10 @@ use super::{
     opcode::OpCode,
     private::{Instruction, InstructionFlags, split_gas_state},
 };
-use crate::{EvmConfig, EvmTypesHost, OpcodeConfig, OpcodeSet, SpecId, constants::STACK_LIMIT};
+use crate::{
+    EvmConfig, EvmTypesHost, OpcodeConfig, OpcodeSet, SpecId, constants::STACK_LIMIT,
+    utils::WordExt,
+};
 use core::{hint::cold_path, marker::PhantomData};
 use patterns::{PATTERNS, Sx};
 pub(crate) use translate::{MAX_LEN, Matcher, Ops, translate};
@@ -368,7 +371,7 @@ fn run<T: EvmTypesHost, C: EvmConfig<T>, const I: usize>(
     *stack_len = height - input + out_len;
 
     let [target, cond] = const { plan(PATTERNS[I]).jump };
-    let taken = target != NONE && (cond == NONE || !v[cond as usize % VALS].is_zero());
+    let taken = target != NONE && (cond == NONE || !v[cond as usize % VALS].is_zero_limbs());
     if !taken {
         if target != NONE {
             cold_path();

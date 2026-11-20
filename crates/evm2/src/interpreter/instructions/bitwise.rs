@@ -24,12 +24,12 @@ pub fn sgt([a, b]: [Word]) -> out {
 
 #[instruction]
 pub fn eq([a, b]: [Word]) -> out {
-    out.write_u64((a == b) as u64);
+    out.write_u64(a.eq_limbs(b) as u64);
 }
 
 #[instruction]
 pub fn iszero([value]: [Word]) -> out {
-    out.write_u64(value.is_zero() as u64);
+    out.write_u64(value.is_zero_limbs() as u64);
 }
 
 #[instruction]
