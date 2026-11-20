@@ -58,19 +58,27 @@ impl CallTraceArena {
     /// This appends a new trace to the arena, and also inserts a new entry in the node's parent
     /// node children set.
     ///
-    /// If there is no parent, the trace replaces the root node, regardless of its visible depth.
+    /// A trace without a parent at depth 0 replaces the root node. A trace without a parent at a
+    /// greater depth is attached to the root node instead, which stays an empty placeholder, as in
+    /// revm-inspectors: top-level messages that start below an implicit parent, such as the calls
+    /// of a batch transaction, then share one root.
     pub(crate) fn push_trace(&mut self, parent: Option<usize>, new_trace: CallTrace) -> usize {
-        // The entry node, just update it.
-        let Some(parent) = parent else {
-            self.arena[0].trace = new_trace;
-            return 0;
+        let parent = match parent {
+            Some(parent) => {
+                debug_assert_eq!(
+                    self.arena[parent].trace.depth + 1,
+                    new_trace.depth,
+                    "parent must be exactly one level above the new trace"
+                );
+                parent
+            }
+            // The entry node, just update it.
+            None if new_trace.depth == 0 => {
+                self.arena[0].trace = new_trace;
+                return 0;
+            }
+            None => 0,
         };
-
-        debug_assert_eq!(
-            self.arena[parent].trace.depth + 1,
-            new_trace.depth,
-            "parent must be exactly one level above the new trace"
-        );
 
         let idx = self.arena.len();
         self.arena.push(CallTraceNode {
@@ -87,5 +95,33 @@ impl CallTraceArena {
         parent.children.push(idx);
 
         idx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parentless_traces_above_depth_zero_share_an_empty_root() {
+        let mut arena = CallTraceArena::default();
+        let first = arena.push_trace(None, CallTrace { depth: 1, ..Default::default() });
+        arena.push_trace(Some(first), CallTrace { depth: 2, ..Default::default() });
+        let second = arena.push_trace(None, CallTrace { depth: 1, ..Default::default() });
+
+        let nodes = arena.nodes();
+        assert_eq!(nodes[0].trace, CallTrace::default());
+        assert_eq!(nodes[0].children, [first, second]);
+        assert_eq!(nodes[first].parent, Some(0));
+        assert_eq!(nodes[second].parent, Some(0));
+    }
+
+    #[test]
+    fn parentless_trace_at_depth_zero_replaces_the_root() {
+        let mut arena = CallTraceArena::default();
+        let address = Address::repeat_byte(0x11);
+        assert_eq!(arena.push_trace(None, CallTrace { address, ..Default::default() }), 0);
+        assert_eq!(arena.nodes().len(), 1);
+        assert_eq!(arena.nodes()[0].trace.address, address);
     }
 }

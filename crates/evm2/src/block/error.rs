@@ -5,7 +5,7 @@ use alloc::{
     boxed::Box,
     string::{String, ToString},
 };
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use core::{any::Any, error::Error};
 
 /// Abstraction over transaction validation errors.
@@ -107,12 +107,6 @@ pub enum BlockValidationError {
     ConsolidationRequestsContractCall {
         /// The error message.
         message: String,
-    },
-    /// A request system contract has no code, so the block cannot produce its requests.
-    #[error("system contract {address} has no code")]
-    SystemContractEmpty {
-        /// The address of the system contract.
-        address: Address,
     },
     /// Error when decoding deposit requests from receipts.
     #[error("failed to decode deposit requests from receipts: {_0}")]

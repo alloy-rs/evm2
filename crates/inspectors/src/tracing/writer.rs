@@ -369,12 +369,12 @@ impl<W: Write> TraceWriter<W> {
         let node = &nodes[node_idx];
         let step = &node.trace.steps[step_idx];
 
-        let Some(decoded) = &step.decoded else {
+        let Some(decoded) = step.decoded() else {
             // We only write explicitly decoded steps to avoid bloating the output.
             return Ok(item_idx + 1);
         };
 
-        match &**decoded {
+        match decoded {
             DecodedTraceStep::InternalCall(call, end_idx) => {
                 let gas_used =
                     step.gas_remaining.saturating_sub(node.trace.steps[*end_idx].gas_remaining);

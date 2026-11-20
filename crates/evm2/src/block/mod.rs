@@ -158,6 +158,9 @@ where
 pub trait BlockTransactionResult<T: EvmTypes> {
     /// Returns the raw transaction execution result.
     fn result(&self) -> &TxResultWithState<T>;
+
+    /// Consumes the output and returns the raw transaction execution result.
+    fn into_result(self) -> TxResultWithState<T>;
 }
 
 /// The result of executing a block.
