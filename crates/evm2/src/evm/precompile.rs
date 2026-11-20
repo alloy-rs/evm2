@@ -75,8 +75,12 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     ///
     /// Dispatch uses the original callee even when its stored code is an EIP-7702 delegation.
     /// Returns `None` when the original callee has no registered precompile.
+    ///
+    /// Takes `&self` because a precompile may call back into the EVM, which can execute this
+    /// provider again before the outer call returns. Implementations must not hold a borrow of
+    /// interior state across such a call.
     fn execute(
-        &mut self,
+        &self,
         evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
@@ -139,7 +143,7 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for NoPrecompiles {
 
     #[inline]
     fn execute(
-        &mut self,
+        &self,
         _evm: &mut Evm<'_, T>,
         _message: &Message<T>,
         _gas: &mut GasTracker,

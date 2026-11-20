@@ -105,7 +105,7 @@ impl PrecompileProvider<BaseEvmTypes> for OnDemandPrecompiles {
     }
 
     fn execute(
-        &mut self,
+        &self,
         evm: &mut Evm<'_, BaseEvmTypes>,
         message: &Message<BaseEvmTypes>,
         gas: &mut GasTracker,
