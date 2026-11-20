@@ -12,7 +12,9 @@
 use crate::interpreter::{InstrStop, Interpreter};
 
 /// Runs a frame without an inspector to its stop.
-pub(crate) type MatchLoop<T> = fn(&mut Interpreter<'_, '_, T>) -> InstrStop;
+///
+/// Calling it requires a prepared interpreter, as for the loops themselves.
+pub(crate) type MatchLoop<T> = unsafe fn(&mut Interpreter<'_, '_, T>) -> InstrStop;
 
 /// The loops, defined in a few modules of their own and named by spec.
 ///

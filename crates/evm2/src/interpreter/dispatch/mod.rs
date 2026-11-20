@@ -208,16 +208,28 @@ pub mod base_match_loops {
     macro_rules! base_match_loops {
         ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {
             $(
+                /// Runs a frame without an inspector to its stop.
+                ///
+                /// # Safety
+                ///
+                /// The interpreter must be prepared for a run, with its host and bytecode set, and
+                /// its message must use this spec.
                 #[doc(hidden)]
                 #[inline(never)]
-                pub fn $name(interpreter: &mut Interpreter<'_, '_, BaseEvmTypes>) -> InstrStop {
+                pub unsafe fn $name(
+                    interpreter: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                ) -> InstrStop {
                     // A spec that shares its predecessor's loop never uses its own.
                     if const { shares_loop(crate::SpecId::$spec as usize) } {
                         unreachable!()
                     }
-                    imp::loops::$name::run::<BaseEvmTypes, BaseEvmConfig<{ crate::SpecId::$spec as u32 }>>(
-                        interpreter,
-                    )
+                    // SAFETY: The caller upholds the contract of this function.
+                    unsafe {
+                        imp::loops::$name::run::<
+                            BaseEvmTypes,
+                            BaseEvmConfig<{ crate::SpecId::$spec as u32 }>,
+                        >(interpreter)
+                    }
                 }
             )*
 

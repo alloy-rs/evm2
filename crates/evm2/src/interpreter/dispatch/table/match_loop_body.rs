@@ -8,7 +8,13 @@ use crate::{
     },
 };
 
-pub(in crate::interpreter) fn run<T: EvmTypesHost, C: EvmConfig<T>>(
+/// Runs a frame without an inspector to its stop.
+///
+/// # Safety
+///
+/// The interpreter must be prepared for a run, with its host and bytecode set, and `C` must be
+/// the config of its message.
+pub(in crate::interpreter) unsafe fn run<T: EvmTypesHost, C: EvmConfig<T>>(
     interpreter: &mut Interpreter<'_, '_, T>,
 ) -> InstrStop {
     let (state, mut pc, mut raw_stack) = run_state(interpreter);

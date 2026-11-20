@@ -609,7 +609,9 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
                     // here.
                     let config = unsafe { self.execution_config_detached() };
                     core::cfg_select! {
-                        dispatch_match => (config.match_loop)(self),
+                        // SAFETY: `prepare_run` prepared the interpreter, and the config is the one
+                        // of its message.
+                        dispatch_match => unsafe { (config.match_loop)(self) },
                         _ => dispatch::run(self, config.instructions),
                     }
                 }
