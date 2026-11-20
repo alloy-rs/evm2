@@ -340,8 +340,11 @@ fn raw_struct_logs_are_reset_by_fuse() {
 fn raw_struct_logs_stop_at_the_byte_budget() {
     let db = db_with(busy_code());
     let tx = TxEnv { gas_limit: 16_000_000, ..call_contract() };
-    let run = |spec, limits: Option<TraceLimits>| {
-        let opts = GethDebugTracingOptions::default();
+    let run = |spec, limit, limits: Option<TraceLimits>| {
+        let opts = GethDebugTracingOptions {
+            config: GethDefaultTracingOptions { limit, ..Default::default() },
+            ..Default::default()
+        };
         let mut inspector =
             DebugInspector::new_with_struct_log_mode(opts, StructLogMode::Raw).unwrap();
         if let Some(limits) = limits {
@@ -365,13 +368,26 @@ fn raw_struct_logs_stop_at_the_byte_budget() {
     };
 
     for spec in [SpecId::OSAKA, SpecId::AMSTERDAM] {
-        let (full, exceeded) = run(spec, None).unwrap();
+        let (full, exceeded) = run(spec, None, None).unwrap();
         assert!(!exceeded);
         let len = full.iter().map(String::len).sum::<usize>();
         let limits = |bytes| TraceLimits::default().set_max_recorded_bytes(Some(bytes));
-        assert_eq!(run(spec, Some(limits(len))).unwrap(), (full.clone(), false));
+        assert_eq!(run(spec, None, Some(limits(len))).unwrap(), (full.clone(), false));
+        if spec == SpecId::AMSTERDAM {
+            let create = full.iter().position(|log| log.contains(r#""op":"CREATE""#)).unwrap();
+            let prefix = &full[..=create];
+            let through_create = prefix.iter().map(String::len).sum::<usize>();
+            let limit = Some(through_create as u64 - 1);
+            for behavior in [TraceLimitBehavior::Skip, TraceLimitBehavior::Halt] {
+                let budget = limits(through_create).set_behavior(behavior);
+                assert_eq!(run(spec, limit, Some(budget)), Some((prefix.to_vec(), false)));
+            }
+            let halt = |bytes| Some(limits(bytes).set_behavior(TraceLimitBehavior::Halt));
+            assert_eq!(run(spec, limit, halt(through_create - 1)), None);
+            assert_eq!(run(spec, Some(through_create as u64), halt(through_create)), None);
+        }
         for budget in [0, 48, 1000, len / 2, len - 1] {
-            let (limited, exceeded) = run(spec, Some(limits(budget))).unwrap();
+            let (limited, exceeded) = run(spec, None, Some(limits(budget))).unwrap();
             assert!(exceeded);
             let mut remaining = budget;
             let count = full
@@ -387,7 +403,7 @@ fn raw_struct_logs_stop_at_the_byte_budget() {
                 .count();
             assert_eq!(limited, full[..count], "{spec:?}, {budget}");
             assert_eq!(
-                run(spec, Some(limits(budget).set_behavior(TraceLimitBehavior::Halt))),
+                run(spec, None, Some(limits(budget).set_behavior(TraceLimitBehavior::Halt))),
                 None
             );
         }
@@ -516,6 +532,64 @@ fn raw_frame_serializes_its_actual_field_count() {
         };
         let bytes = rmp_serde::to_vec_named(&frame).unwrap();
         rmp_serde::from_slice::<serde::de::IgnoredAny>(&bytes).unwrap();
+    }
+}
+
+#[test]
+fn a_second_root_replaces_the_first_roots_steps_and_storage() {
+    let first = [call(op::CALL, WRITER, ALL_GAS), hex!("600260015500").to_vec()].concat();
+    let second = [call(op::CALL, RETURNER, ALL_GAS), hex!("60075400").to_vec()].concat();
+    let run = |mode, limit, include_first: bool| {
+        let config =
+            GethDefaultTracingOptions { limit, disable_stack: Some(true), ..Default::default() };
+        let mut tracer = DebugInspector::new_with_struct_log_mode(
+            GethDebugTracingOptions { config, ..Default::default() },
+            mode,
+        )
+        .unwrap();
+        let spec = SpecId::OSAKA;
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            spec,
+            Default::default(),
+            ethereum_tx_registry(spec),
+            db_with(Vec::new()),
+            Precompiles::base(spec),
+        );
+        evm.set_inspector(&mut tracer);
+        for code in include_first.then_some(&first).into_iter().chain([&second]) {
+            let mut message = MessageExt {
+                destination: CONTRACT,
+                caller: CALLER,
+                call_target: CONTRACT,
+                code_address: CONTRACT,
+                code: Bytecode::new_raw(code.clone().into()),
+                gas_limit: 2_000_000,
+                ..Default::default()
+            };
+            assert!(evm.execute_message(&mut message).unwrap().is_success());
+        }
+        drop(evm);
+        match tracer {
+            DebugInspector::Default(inspector, _) => serde_json::to_value(
+                inspector.geth_builder().geth_traces(0, Bytes::new(), config).struct_logs,
+            )
+            .unwrap(),
+            DebugInspector::RawDefault(mut inspector) => serde_json::from_str::<Value>(
+                inspector.take_frame(&evm2::TxResult::<BaseEvmTypes>::default()).struct_logs.get(),
+            )
+            .unwrap(),
+            _ => unreachable!(),
+        }
+    };
+    let expected = run(StructLogMode::Typed, None, false);
+    for mode in [StructLogMode::Typed, StructLogMode::Raw] {
+        assert_eq!(run(mode, None, true), expected);
+    }
+    for limit in [48, 1_050, 4_000] {
+        assert_eq!(
+            run(StructLogMode::Raw, Some(limit), true),
+            run(StructLogMode::Typed, Some(limit), true)
+        );
     }
 }
 

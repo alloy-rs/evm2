@@ -40,6 +40,8 @@ pub struct RawStructLogInspector {
     opts: GethDefaultTracingOptions,
     /// Tracks the bytes of JSON written.
     budget: TraceBudget,
+    /// Cumulative recording bytes charged before the current depth-zero message.
+    root_start_bytes: usize,
     /// The JSON array of the struct logs written so far, without its closing bracket.
     logs: Vec<u8>,
     /// The capacity to reserve for the struct logs of a transaction, from the size of those of
@@ -83,6 +85,7 @@ impl RawStructLogInspector {
                 ..opts
             },
             budget: TraceBudget::default(),
+            root_start_bytes: 0,
             logs: Vec::new(),
             capacity_hint: 0,
             json_len: 0,
@@ -125,6 +128,7 @@ impl RawStructLogInspector {
     pub fn fuse(&mut self) {
         let Self {
             logs,
+            root_start_bytes,
             json_len,
             frames,
             steps_left,
@@ -142,6 +146,7 @@ impl RawStructLogInspector {
             budget,
         } = self;
         logs.clear();
+        *root_start_bytes = 0;
         *json_len = 0;
         frames.clear();
         *steps_left = geth_step_limit(opts).map(|n| n.get());
@@ -162,11 +167,10 @@ impl RawStructLogInspector {
     ///
     /// Calling this again before the next transaction returns a frame without struct logs.
     pub fn take_frame<E>(&mut self, result: &TxResultExt<E>) -> RawDefaultFrame {
-        let mut logs = mem::take(&mut self.logs);
         if !self.patches.entries.is_empty() {
-            self.patches.apply(&mut logs);
-            self.trim_patched_logs(&mut logs);
+            self.finalize_logs();
         }
+        let mut logs = mem::take(&mut self.logs);
         self.open_steps.clear();
         self.json_len = 0;
         if logs.is_empty() {
@@ -196,27 +200,57 @@ impl RawStructLogInspector {
         }
     }
 
-    /// A completed parent can move the byte cutoff back into its already written children.
-    fn trim_patched_logs(&self, logs: &mut Vec<u8>) {
-        let mut bytes = self.json_len;
-        while !logs.is_empty() {
-            let over_budget =
-                self.budget.limits.max_recorded_bytes.is_some_and(|max| bytes > max as u64);
-            if !over_budget && self.opts.limit.is_none_or(|limit| bytes <= limit) {
+    /// Applies deferred fields and enforces both byte cutoffs on the completed prefix.
+    fn finalize_logs(&mut self) {
+        self.patches.apply(&mut self.logs);
+        let budget = self.root_byte_budget();
+        while !self.logs.is_empty() {
+            let over_budget = budget.is_some_and(|max| self.json_len > max as u64);
+            if !over_budget && self.opts.limit.is_none_or(|limit| self.json_len <= limit) {
                 break;
             }
-            // Every log begins with this literal. Nested storage keys are hex strings, and
-            // quotes inside string values are escaped, so only a log separator can match.
+            // Every log begins with this literal. Only a log separator can match it.
             const NEXT_LOG: &[u8] = b",{\"pc\":";
-            let start = logs.windows(NEXT_LOG.len()).rposition(|w| w == NEXT_LOG).unwrap_or(0);
-            bytes -= (logs.len() - start - 1) as u64;
-            // The geth limit includes the first log that crosses it; the recording budget
+            let start = self.logs.windows(NEXT_LOG.len()).rposition(|w| w == NEXT_LOG).unwrap_or(0);
+            let before = self.json_len - (self.logs.len() - start - 1) as u64;
+            // The geth limit includes the first log that crosses it. The recording budget
             // excludes it.
-            if !over_budget && self.opts.limit.is_none_or(|limit| bytes <= limit) {
+            if !over_budget && self.opts.limit.is_none_or(|limit| before <= limit) {
                 break;
             }
-            logs.truncate(start);
+            self.logs.truncate(start);
+            self.json_len = before;
         }
+    }
+
+    fn root_byte_budget(&self) -> Option<usize> {
+        self.budget.limits.max_recorded_bytes.map(|max| max.saturating_sub(self.root_start_bytes))
+    }
+
+    /// A pending parent can put the first omitted child beyond the geth cutoff. Stop copying
+    /// as soon as the budget is full, then decide whether to halt once that parent is final.
+    #[inline]
+    fn check_budget<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>, in_step: bool) {
+        if !self.budget.exceeded() {
+            return;
+        }
+        if let Some(limit) = self.opts.limit
+            && self.root_byte_budget().is_some_and(|max| limit < max as u64)
+        {
+            if !self.open_steps.is_empty() {
+                return;
+            }
+            if self.json_len > limit {
+                self.finalize_logs();
+                if self.json_len > limit {
+                    // The complete geth prefix fits within the recording budget.
+                    self.budget.recorded = self.root_start_bytes + self.json_len as usize;
+                    self.budget.exceeded = false;
+                    return;
+                }
+            }
+        }
+        self.budget.halt(interp, in_step);
     }
 
     /// Starts recording a step.
@@ -345,6 +379,12 @@ impl RawStructLogInspector {
             return;
         }
         if self.frames.is_empty() && message.depth == 0 {
+            // The typed arena replaces its root. The capture limits span the whole transaction.
+            self.logs.clear();
+            self.patches.clear();
+            self.storage.clear();
+            self.json_len = 0;
+            self.root_start_bytes = self.budget.recorded;
             self.failed = true;
             self.frames.push(Some(message.depth));
             return;
@@ -378,7 +418,7 @@ impl RawStructLogInspector {
         }
         if let StepState::Recording(step) = mem::take(&mut self.step) {
             self.write_log(&step, 0, None, None);
-            self.budget.halt(interp, false);
+            self.check_budget(interp, false);
         }
         if self.frames.is_empty() {
             self.failed = !success;
@@ -503,7 +543,7 @@ impl<T: EvmTypes> Inspector<T> for RawStructLogInspector {
         }
         let Some(&Some(depth)) = self.frames.last() else { return };
         self.start_step(interp, depth);
-        self.budget.halt(interp, true);
+        self.check_budget(interp, true);
     }
 
     #[inline]
@@ -512,7 +552,7 @@ impl<T: EvmTypes> Inspector<T> for RawStructLogInspector {
             return;
         }
         self.end_step(interp);
-        self.budget.halt(interp, true);
+        self.check_budget(interp, true);
     }
 
     fn call(
@@ -521,7 +561,7 @@ impl<T: EvmTypes> Inspector<T> for RawStructLogInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.start_message(interp, message, 0);
-        self.budget.halt(interp, false);
+        self.check_budget(interp, false);
         None
     }
 
@@ -540,7 +580,7 @@ impl<T: EvmTypes> Inspector<T> for RawStructLogInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.start_message(interp, message, message.gas_limit);
-        self.budget.halt(interp, false);
+        self.check_budget(interp, false);
         None
     }
 

@@ -72,10 +72,11 @@ impl CallTraceArena {
                 );
                 parent
             }
-            // The entry node, just update it.
             None if new_trace.depth == 0 => {
-                self.arena[0].trace = new_trace;
-                self.arena[0].execution_address_override = None;
+                // A new root's step indices start at zero. Its ordering cannot refer to
+                // children or logs from the previous root.
+                self.arena.clear();
+                self.arena.push(CallTraceNode { trace: new_trace, ..Default::default() });
                 return 0;
             }
             None => 0,
