@@ -131,7 +131,7 @@ impl TryFrom<HandlerError> for EthInvalidTxError {
 /// Additional block-level execution context.
 #[derive(Debug, Clone, Copy)]
 pub struct BlockExecutionContext<'a> {
-    /// Inputs of the block's system calls.
+    /// Inputs of the pre-block system calls to run before transaction execution.
     pub system_calls: BlockSystemCalls,
     /// Pre-merge ommer headers included in the block.
     pub ommers: &'a [Header],

@@ -15,7 +15,7 @@ use alloy_rpc_types_trace::{
 };
 use evm2::{evm::InMemoryDB, utils::address_to_word};
 use evm2_inspectors::tracing::{
-    TracingInspector, TracingInspectorConfig, parity::populate_state_diff, types::CallSelfdestruct,
+    TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
 };
 
 #[test]
@@ -73,10 +73,9 @@ fn test_parity_selfdestruct(spec_id: SpecId) {
     let node = &evm.inspector().traces().nodes()[0];
     assert!(node.is_selfdestruct(), "{node:#?}");
     assert_eq!(node.trace.address, addr);
-    assert_eq!(
-        node.trace.selfdestruct,
-        Some(CallSelfdestruct { address: addr, refund_target: deployer, value })
-    );
+    assert_eq!(node.trace.selfdestruct_address(), Some(addr));
+    assert_eq!(node.trace.selfdestruct_refund_target(), Some(deployer));
+    assert_eq!(node.trace.selfdestruct_transferred_value(), Some(value));
 
     let traces = evm
         .into_inspector()
