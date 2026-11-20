@@ -47,7 +47,8 @@ impl AccountStorageCache {
 /// Accounts and code are stored separately: accounts carry the code hash, and bytecode is keyed by
 /// that hash in [`Self::contracts`]. Account and storage entries are authoritative for this cache
 /// layer: a cached `None` account or wiped per-account storage cache shadows the wrapped database
-/// instead of falling through to it.
+/// instead of falling through to it. A cached `None` account does not shadow the storage of a
+/// database that [holds storage for absent accounts](DynDatabase::has_storage_for_absent_accounts).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cache {
     /// Accounts keyed by address. `None` means the account is known to be absent/deleted.
@@ -237,10 +238,14 @@ impl<ExtDB> CacheDB<ExtDB> {
     ///
     /// Reads then fall through to the backing database, including for slots that a storage wipe
     /// had zeroed, unless the account is cached as absent (for example after a committed
-    /// selfdestruct): those reads still return zero.
+    /// selfdestruct): their storage is left wiped, so those reads still return zero.
     #[inline]
     pub fn remove_account_storage(&mut self, address: &Address) -> Option<AccountStorageCache> {
-        self.cache.storage.remove(address)
+        let removed = self.cache.storage.remove(address);
+        if self.cache.accounts.get(address).is_some_and(Option::is_none) {
+            self.cache.storage.entry(*address).or_default().wipe();
+        }
+        removed
     }
 
     /// Sets a historical block hash.
@@ -391,16 +396,15 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
         // A cached slot can be a locally committed write even when the backing account is absent.
         // Only use account absence to suppress uncached backing-storage reads.
+        let absent = !self.db.has_storage_for_absent_accounts()
+            && self.cache.accounts.get(address).is_some_and(Option::is_none);
         match self.cache.storage.entry(*address) {
             Entry::Occupied(mut entry) => {
                 let storage = entry.get_mut();
                 match storage.slots.entry(*key) {
                     Entry::Occupied(slot) => Ok(*slot.get()),
                     Entry::Vacant(slot) => {
-                        if storage.wiped {
-                            return Ok(Word::ZERO);
-                        }
-                        if self.cache.accounts.get(address).is_some_and(Option::is_none) {
+                        if storage.wiped || absent {
                             return Ok(Word::ZERO);
                         }
                         let value = self.db.get_storage(address, key)?;
@@ -409,7 +413,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
                 }
             }
             Entry::Vacant(entry) => {
-                if self.cache.accounts.get(address).is_some_and(Option::is_none) {
+                if absent {
                     return Ok(Word::ZERO);
                 }
                 let value = self.db.get_storage(address, key)?;
@@ -589,6 +593,30 @@ mod tests {
         }
     }
 
+    struct HoldsAbsentStorage<D>(D);
+
+    impl<D: DynDatabase> DynDatabase for HoldsAbsentStorage<D> {
+        fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+            self.0.get_account(address)
+        }
+
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+            self.0.get_code_by_hash(code_hash)
+        }
+
+        fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+            self.0.get_storage(address, key)
+        }
+
+        fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
+            self.0.get_block_hash(number)
+        }
+
+        fn has_storage_for_absent_accounts(&self) -> bool {
+            true
+        }
+    }
+
     #[test]
     fn cache_db_normalizes_zero_code_hash() {
         let address = Address::with_last_byte(1);
@@ -704,7 +732,19 @@ mod tests {
         // An account cached as absent still shadows the backing database.
         cache.cache.accounts.insert(other, None);
         cache.remove_account_storage(&other);
+        let loads = cache.db.inner().storage_loads;
         assert_eq!(cache.get_storage(&other, &key).unwrap(), Word::ZERO);
+        assert_eq!(cache.db.inner().storage_loads, loads);
+
+        // Unless the backing database holds storage for absent accounts, until it is removed.
+        let mut cache = CacheDB::new(HoldsAbsentStorage(crate::evm::Db::new(CountingDB {
+            storage: backing,
+            ..CountingDB::default()
+        })));
+        assert!(cache.get_account(&address).unwrap().is_none());
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), backing);
+        cache.remove_account_storage(&address);
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), Word::ZERO);
     }
 
     #[test]
