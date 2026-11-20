@@ -148,11 +148,14 @@ pub mod inspector;
 pub mod precompile;
 pub mod registry;
 mod system;
+mod tx_gas;
 pub use system::{
     BEACON_ROOTS_ADDRESS, BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS,
     CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS, SYSTEM_CALL_GAS_LIMIT,
     SYSTEM_MAX_SSTORES_PER_CALL, SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
 };
+pub use tx_gas::TxGasSchedule;
+use tx_gas::TxGasState;
 
 mod any;
 pub use any::NonStaticAny;
@@ -243,6 +246,9 @@ pub struct Evm<'a, T: EvmTypesHost> {
     /// Refreshed whenever either changes.
     #[derive_where(skip)]
     runner_supported: bool,
+    /// The alternate gas schedule for some transactions, if any.
+    #[derive_where(skip)]
+    tx_gas: Option<TxGasState<T>>,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
@@ -381,6 +387,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             initial_call_depth: 0,
             interpreter_runner: None,
             runner_supported: false,
+            tx_gas: None,
             current_frame: None,
             frames_entered: 0,
             frame_checkpoint: None,
@@ -435,19 +442,34 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn assert_interpreter_runner_mutable(&self) {
         assert!(!self.running, "interpreter runner cannot be modified during EVM execution");
+        self.assert_tx_gas_not_swapped();
     }
 
     #[inline]
     fn assert_execution_config_mutable(&self) {
         assert!(!self.running, "execution config cannot be modified during EVM execution");
+        self.assert_tx_gas_not_swapped();
+    }
+
+    /// Clears the cached runner verdicts for both gas tables.
+    #[inline]
+    const fn clear_runner_verdicts(&mut self) {
+        self.runner_supported = false;
+        if let Some(state) = &mut self.tx_gas {
+            state.clear_runner_verdict();
+        }
     }
 
     #[inline]
     fn refresh_runner_support(&mut self) {
+        // Both verdicts are cleared before either probe, so a panicking probe falls back to the
+        // interpreter instead of keeping an earlier runner's or config's verdict.
+        self.clear_runner_verdicts();
         self.runner_supported = self
             .interpreter_runner
             .as_ref()
             .is_some_and(|runner| runner.supports(&self.execution_config));
+        self.refresh_tx_gas_runner_support();
     }
 
     #[inline]
@@ -630,6 +652,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.set_block(block);
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
+        self.retain_tx_gas_for_config();
         self.refresh_runner_support();
     }
 
@@ -646,6 +669,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.execution_config = execution_config;
         // Refresh before the old registry and precompiles drop, so an unwinding destructor
         // cannot leave a stale verdict.
+        self.retain_tx_gas_for_config();
         self.refresh_runner_support();
         self.registry = registry;
         self.precompiles = precompiles;
@@ -1127,6 +1151,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_shared_interpreter_runner(&mut self, runner: Arc<dyn InterpreterRunner<T>>) {
         self.assert_interpreter_runner_mutable();
+        // Cleared before the old runner drops, so an unwinding destructor cannot leave its verdicts
+        // with the new runner.
+        self.clear_runner_verdicts();
         self.interpreter_runner = Some(runner);
         self.refresh_runner_support();
     }
@@ -1135,6 +1162,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn clear_interpreter_runner(&mut self) -> Option<Arc<dyn InterpreterRunner<T>>> {
         self.assert_interpreter_runner_mutable();
+        self.clear_runner_verdicts();
         let runner = self.interpreter_runner.take();
         self.refresh_runner_support();
         runner
@@ -1312,9 +1340,11 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[inline]
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let guard = self.enter_execution();
+        let scope = self.tx_gas_guard(tx.inner());
+        let guard = scope.evm.enter_execution();
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
+        drop(scope);
         if result.is_err() {
             self.state.clear_transaction_state();
         }
@@ -1339,10 +1369,10 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     ///
     /// Uses the active validation rules; callers must configure any pool-specific relaxations.
     pub fn validate_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<()> {
-        let result = self
-            .registry
-            .try_get_by_type(tx.ty())
-            .and_then(|handler| handler.validate(tx.as_recovered_ref(), self));
+        let result = self.registry.try_get_by_type(tx.ty()).and_then(|handler| {
+            let scope = self.tx_gas_guard(tx.inner());
+            handler.validate(tx.as_recovered_ref(), scope.evm)
+        });
         self.state.clear_transaction_state();
         result
     }
@@ -3626,6 +3656,484 @@ mod tests {
         let tx = test_tx(0);
 
         assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
+    }
+
+    /// Cold account cost of the schedule's gas parameters in [`schedule_evm`].
+    const ALTERNATE_COLD_ACCOUNT_COST: u32 = 7;
+
+    fn cold_account_cost(evm: &Evm<'_, BaseEvmTypes>) -> u64 {
+        u64::from(evm.version().gas_params[GasId::ColdAccountAdditionalCost])
+    }
+
+    /// Selects nonces 7, 9 and 11.
+    fn select_alternate(tx: &TxEnvelope) -> bool {
+        matches!(alloy_consensus::Transaction::nonce(tx), 7 | 9 | 11)
+    }
+
+    /// A schedule that changes only the cold account cost of `evm`'s gas parameters.
+    fn schedule(evm: &Evm<'_, BaseEvmTypes>) -> TxGasSchedule<BaseEvmTypes> {
+        let mut gas_params = evm.version().gas_params;
+        gas_params[GasId::ColdAccountAdditionalCost] = ALTERNATE_COLD_ACCOUNT_COST;
+        TxGasSchedule { select: select_alternate, gas_params }
+    }
+
+    /// An EVM with [`schedule`] installed, whose handler reports the cold account cost it runs
+    /// with as gas spent and its validation the cold account cost through `validated`. The handler
+    /// panics for nonce 9, and for nonces 11 (selected) and 13 (not selected) reports the cold
+    /// account cost of a nested transaction of the other kind as `installed * 1_000_000 + nested`.
+    fn schedule_evm(
+        validated: &'static core::sync::atomic::AtomicU64,
+    ) -> Evm<'static, BaseEvmTypes> {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                move |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
+                    validated
+                        .store(cold_account_cost(req.host), core::sync::atomic::Ordering::Relaxed);
+                    Ok(())
+                },
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    assert_ne!(req.tx.nonce, 9, "handler unwinds");
+                    let total_gas_spent = if matches!(req.tx.nonce, 11 | 13) {
+                        let installed = cold_account_cost(req.host);
+                        let nested = test_tx(if req.tx.nonce == 11 { 41 } else { 7 });
+                        let nested = {
+                            let guard = req.host.tx_gas_guard(nested.inner());
+                            cold_account_cost(guard.evm)
+                        };
+                        assert_eq!(cold_account_cost(req.host), installed);
+                        installed * 1_000_000 + nested
+                    } else {
+                        cold_account_cost(req.host)
+                    };
+                    Ok(TxResultExt { status: true, total_gas_spent, ..TxResultExt::default() })
+                },
+            ),
+        );
+        let mut version = crate::Version::new(SpecId::OSAKA);
+        version.tx_gas_limit_cap = 42;
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let schedule = schedule(&evm);
+        evm.set_tx_gas_schedule(Some(schedule));
+        evm
+    }
+
+    fn gas_used(evm: &mut Evm<'_, BaseEvmTypes>, nonce: u64) -> HandlerResult<u64> {
+        evm.transact(&test_tx(nonce)).map(|executed| executed.discard().tx_gas_used())
+    }
+
+    #[test]
+    fn dispatches_transaction_with_scheduled_gas_params() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        let own = cold_account_cost(&evm);
+        let alternate = u64::from(ALTERNATE_COLD_ACCOUNT_COST);
+        assert_ne!(own, alternate);
+
+        assert_eq!(gas_used(&mut evm, 7), Ok(alternate));
+        assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
+        assert_eq!(evm.version().tx_gas_limit_cap, 42, "the rest of the version is kept");
+        assert_eq!(gas_used(&mut evm, 41), Ok(own));
+
+        let validated = |evm: &mut Evm<'_, BaseEvmTypes>, nonce| {
+            evm.validate_tx(&test_tx(nonce)).unwrap();
+            VALIDATED.load(core::sync::atomic::Ordering::Relaxed)
+        };
+        assert_eq!(validated(&mut evm, 7), alternate);
+        assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
+        assert_eq!(validated(&mut evm, 41), own);
+
+        // Nested transactions keep the outer transaction's table: an unselected child of a
+        // selected parent runs with the schedule's, and a selected child of an unselected parent
+        // with the EVM's own.
+        assert_eq!(gas_used(&mut evm, 11), Ok(alternate * 1_000_000 + alternate));
+        assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
+        assert_eq!(gas_used(&mut evm, 13), Ok(own * 1_000_000 + own));
+        assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
+
+        evm.set_tx_gas_schedule(None);
+        assert_eq!(gas_used(&mut evm, 7), Ok(own), "removing the schedule prices every tx alike");
+    }
+
+    #[test]
+    fn changing_execution_config_keeps_schedule_only_for_same_gas_params() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        let own = cold_account_cost(&evm);
+
+        // Same gas parameters, such as a segment boundary within one spec: the schedule stays.
+        let mut same = *evm.version();
+        same.tx_gas_limit_cap = 43;
+        let block = *evm.block();
+        evm.set_block_and_execution_config_within_spec(
+            block,
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, same),
+        );
+        assert_eq!(gas_used(&mut evm, 7), Ok(u64::from(ALTERNATE_COLD_ACCOUNT_COST)));
+        assert_eq!(gas_used(&mut evm, 41), Ok(own));
+
+        let mut version = crate::Version::new(SpecId::OSAKA);
+        version.gas_params[GasId::ColdAccountAdditionalCost] = 1_000;
+        let block = *evm.block();
+        evm.set_block_and_execution_config_within_spec(
+            block,
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+        );
+        assert!(evm.tx_gas.is_none());
+        assert_eq!(gas_used(&mut evm, 7), Ok(1_000), "the stale schedule no longer applies");
+
+        let schedule = schedule(&evm);
+        evm.set_tx_gas_schedule(Some(schedule));
+        assert_eq!(gas_used(&mut evm, 7), Ok(u64::from(ALTERNATE_COLD_ACCOUNT_COST)));
+        assert_eq!(gas_used(&mut evm, 41), Ok(1_000));
+    }
+
+    /// A runner that panics when asked about a gas table with the schedule's cold account cost.
+    #[derive(Debug)]
+    struct PanickingProbeRunner;
+
+    impl InterpreterRunner<BaseEvmTypes> for PanickingProbeRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            None
+        }
+
+        fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            assert_ne!(
+                config.version().gas_params[GasId::ColdAccountAdditionalCost],
+                ALTERNATE_COLD_ACCOUNT_COST,
+                "runner panics on the schedule's table"
+            );
+            true
+        }
+    }
+
+    /// A runner that supports every config.
+    #[derive(Debug)]
+    struct ApproveAllRunner;
+
+    impl InterpreterRunner<BaseEvmTypes> for ApproveAllRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            None
+        }
+
+        fn supports(&self, _config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn nested_selected_transaction_keeps_outer_table_during_validation() {
+        static NESTED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
+                    if req.tx.nonce == 13 {
+                        // An unselected parent validates a selected child.
+                        let child = test_tx(7);
+                        let guard = req.host.tx_gas_guard(child.inner());
+                        NESTED.store(
+                            cold_account_cost(guard.evm),
+                            core::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    Ok(())
+                },
+                |_, ()| Ok(TxResultExt::default()),
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let schedule = schedule(&evm);
+        evm.set_tx_gas_schedule(Some(schedule));
+        let own = cold_account_cost(&evm);
+
+        evm.validate_tx(&test_tx(13)).unwrap();
+        assert_eq!(
+            NESTED.load(core::sync::atomic::Ordering::Relaxed),
+            own,
+            "the child keeps the parent's table, as under transact"
+        );
+        assert_eq!(cold_account_cost(&evm), own);
+        // A later top-level selected transaction still gets the schedule's table.
+        let selected = test_tx(7);
+        let guard = evm.tx_gas_guard(selected.inner());
+        assert_eq!(cold_account_cost(guard.evm), u64::from(ALTERNATE_COLD_ACCOUNT_COST));
+    }
+
+    /// A runner that approves only configs with the schedule's cold account cost, and panics on
+    /// any other.
+    #[derive(Debug)]
+    struct PanickingOwnProbeRunner;
+
+    impl InterpreterRunner<BaseEvmTypes> for PanickingOwnProbeRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            None
+        }
+
+        fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            assert_eq!(
+                config.version().gas_params[GasId::ColdAccountAdditionalCost],
+                ALTERNATE_COLD_ACCOUNT_COST,
+                "runner panics on the EVM's own table"
+            );
+            true
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn own_table_probe_unwind_clears_schedule_verdict() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        evm.set_interpreter_runner(ApproveAllRunner);
+        assert_eq!(evm.tx_gas_other_runner_supported(), Some(true));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            evm.set_interpreter_runner(PanickingOwnProbeRunner);
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(evm.tx_gas_other_runner_supported(), Some(false));
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn runner_probe_unwind_clears_previous_runner_verdict() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        evm.set_interpreter_runner(ApproveAllRunner);
+        assert_eq!(evm.tx_gas_other_runner_supported(), Some(true));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            evm.set_interpreter_runner(PanickingProbeRunner);
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(
+            evm.tx_gas_other_runner_supported(),
+            Some(false),
+            "the new runner never approved the schedule's table"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn runner_probe_unwind_keeps_own_gas_params() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        let own = cold_account_cost(&evm);
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            evm.set_interpreter_runner(PanickingProbeRunner);
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(cold_account_cost(&evm), own, "the live table never held the schedule's");
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn validation_cannot_replace_config_while_schedule_installed() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
+                    // Replace the config with a copy of the live one, which holds the schedule's
+                    // table.
+                    let version = *req.host.version();
+                    let block = *req.host.block();
+                    req.host.set_block_and_execution_config_within_spec(
+                        block,
+                        ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+                    );
+                    Ok(())
+                },
+                |_, ()| Ok(TxResultExt::default()),
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let schedule = schedule(&evm);
+        evm.set_tx_gas_schedule(Some(schedule));
+        let own = cold_account_cost(&evm);
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.validate_tx(&test_tx(7));
+        }));
+        assert!(unwound.is_err(), "replacing the config during selected validation panics");
+        assert_eq!(cold_account_cost(&evm), own, "the EVM's own table is restored");
+        assert!(evm.tx_gas_schedule_installed(), "the schedule stays installed");
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn selector_unwind_keeps_schedule_usable() {
+        fn select_panicking(tx: &TxEnvelope) -> bool {
+            let nonce = alloy_consensus::Transaction::nonce(tx);
+            assert_ne!(nonce, 5, "selector unwinds");
+            nonce == 7
+        }
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        let gas_params = schedule(&evm).gas_params;
+        evm.set_tx_gas_schedule(Some(TxGasSchedule { select: select_panicking, gas_params }));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact(&test_tx(5));
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(gas_used(&mut evm, 7), Ok(u64::from(ALTERNATE_COLD_ACCOUNT_COST)));
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn unselected_validation_cannot_replace_schedule() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
+                    let schedule = schedule(req.host);
+                    req.host.set_tx_gas_schedule(Some(schedule));
+                    Ok(())
+                },
+                |_, ()| Ok(TxResultExt::default()),
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let schedule = schedule(&evm);
+        evm.set_tx_gas_schedule(Some(schedule));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.validate_tx(&test_tx(41));
+        }));
+        assert!(unwound.is_err(), "replacing the schedule during unselected validation panics");
+        let selected = test_tx(7);
+        let guard = evm.tx_gas_guard(selected.inner());
+        assert_eq!(cold_account_cost(guard.evm), u64::from(ALTERNATE_COLD_ACCOUNT_COST));
+    }
+
+    /// A runner whose destructor panics.
+    #[derive(Debug)]
+    #[cfg(feature = "std")]
+    struct PanickingDropRunner;
+
+    #[cfg(feature = "std")]
+    impl InterpreterRunner<BaseEvmTypes> for PanickingDropRunner {
+        fn run<'frame, 'host>(
+            &self,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            None
+        }
+
+        fn supports(&self, _config: &ExecutionConfig<BaseEvmTypes>) -> bool {
+            true
+        }
+    }
+
+    #[cfg(feature = "std")]
+    impl Drop for PanickingDropRunner {
+        fn drop(&mut self) {
+            if !std::thread::panicking() {
+                panic!("runner destructor unwinds");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn runner_drop_unwind_clears_schedule_verdict() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        evm.set_interpreter_runner(PanickingDropRunner);
+        assert_eq!(evm.tx_gas_other_runner_supported(), Some(true));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            evm.set_interpreter_runner(PanickingOwnProbeRunner);
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(evm.tx_gas_other_runner_supported(), Some(false));
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn restores_gas_params_when_transaction_unwinds() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        let own = cold_account_cost(&evm);
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact(&test_tx(9));
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(cold_account_cost(&evm), own, "the EVM's gas parameters are restored");
+        assert_eq!(gas_used(&mut evm, 41), Ok(own));
+    }
+
+    #[test]
+    #[should_panic = "schedule MemoryQuadraticReduction must be non-zero"]
+    fn rejects_invalid_scheduled_gas_params() {
+        static VALIDATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let mut evm = schedule_evm(&VALIDATED);
+        let mut schedule = schedule(&evm);
+        schedule.gas_params[GasId::MemoryQuadraticReduction] = 0;
+        evm.set_tx_gas_schedule(Some(schedule));
+    }
+
+    #[test]
+    fn validates_unregistered_transaction_without_selecting_gas_params() {
+        fn select_never(_: &TxEnvelope) -> bool {
+            panic!("selector called for an unregistered transaction type")
+        }
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let gas_params = evm.version().gas_params;
+        evm.set_tx_gas_schedule(Some(TxGasSchedule { select: select_never, gas_params }));
+        assert!(evm.validate_tx(&test_tx(0)).is_err());
+        assert!(evm.transact(&test_tx(0)).is_err());
     }
 
     #[test]
