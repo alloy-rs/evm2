@@ -46,11 +46,12 @@ pub(crate) type ResidentMap = DashMap<RuntimeCacheKey, Arc<CompiledProgram>, Def
 /// drains via `pop` on every loop iteration. Hotness signal is best-effort.
 pub(crate) type EventQueue = ArrayQueue<LookupEvent>;
 
-/// A lookup queued for the backend thread.
-pub(crate) struct LookupEvent {
-    pub(crate) key: RuntimeCacheKey,
-    /// The bytecode of a miss. Empty for a hit, which has nothing to compile.
-    pub(crate) code: Bytes,
+/// A lookup observed on the hot path.
+pub(crate) enum LookupEvent {
+    /// The key was resident.
+    Hit(RuntimeCacheKey),
+    /// The key was not resident; carries the bytecode to compile once it is hot.
+    Miss { key: RuntimeCacheKey, code: Bytes },
 }
 
 /// Per-entry metadata tracked alongside the resident map for eviction decisions.
@@ -171,10 +172,8 @@ pub(crate) enum Command {
     ClearPersisted,
     /// Clear both resident and persisted.
     ClearAll,
-    /// Pause out-of-process helper execution.
-    Pause,
-    /// Resume out-of-process helper execution.
-    Resume,
+    /// Wakes the backend to apply the current pause depth to the out-of-process helper.
+    SyncPause,
     /// Shut down the backend.
     Shutdown,
 }
@@ -211,22 +210,50 @@ struct EntryState {
     bytecode: Bytes,
     /// When this entry was last observed.
     last_observed_at: Instant,
-    /// Sync notifiers waiting for this entry to finish compiling.
-    pending_notifiers: Vec<SyncNotifier>,
-    /// Links in the cold-entry FIFO, which also queues failed entries; absent while compiling.
-    cold_links: Option<ColdLinks>,
 }
 
 /// Phase of a backend entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Cold and failed entries are queued in the cold-entry FIFO for eviction under the entry cap;
+/// working entries are not, and only they have sync waiters.
 enum EntryPhase {
     /// Not yet hot enough for JIT.
-    Cold,
-    /// JIT compilation in progress on a worker.
-    Working,
-    /// Compilation of this kind failed at this time; the key is not retried for that kind until
-    /// the entry is swept.
-    Failed(Instant, CompilationKind),
+    Cold(ColdLinks),
+    /// A compilation of `kind` in progress on a worker.
+    Working {
+        /// The kind of the job in flight.
+        kind: CompilationKind,
+        /// Sync notifiers of later requests that the job in flight answers.
+        waiters: Vec<SyncNotifier>,
+        /// AOT requests that arrived during a JIT job, which cannot answer them: `Some` holds
+        /// their sync notifiers, and the AOT job starts once the JIT job finishes.
+        aot_after: Option<Vec<SyncNotifier>>,
+    },
+    /// Compilation of `kind` failed at `at`; the key is not retried for that kind until the
+    /// entry is swept.
+    Failed { at: Instant, kind: CompilationKind, links: ColdLinks },
+}
+
+impl EntryPhase {
+    const fn is_working(&self) -> bool {
+        matches!(self, Self::Working { .. })
+    }
+
+    /// Returns the FIFO links of a queued entry.
+    const fn links(&self) -> Option<ColdLinks> {
+        match self {
+            Self::Cold(links) | Self::Failed { links, .. } => Some(*links),
+            Self::Working { .. } => None,
+        }
+    }
+
+    /// Returns the FIFO links of a queued entry, which the FIFO only reaches through queued keys.
+    fn links_mut(&mut self) -> &mut ColdLinks {
+        match self {
+            Self::Cold(links) | Self::Failed { links, .. } => links,
+            Self::Working { .. } => unreachable!("working entries are not in the cold FIFO"),
+        }
+    }
 }
 
 /// Whether a JIT admission request was triggered by hot-path observation
@@ -239,6 +266,7 @@ enum AdmitMode {
 }
 
 /// Links stored directly on cold entries, avoiding stale queue keys.
+#[derive(Clone, Copy)]
 struct ColdLinks {
     prev: Option<RuntimeCacheKey>,
     next: Option<RuntimeCacheKey>,
@@ -269,6 +297,10 @@ struct BackendState {
     config_hash: B256,
     /// Whether observed misses compile AOT artifacts instead of JIT code.
     aot: bool,
+    /// Whether callers block on compilation, so the helper must never be stopped.
+    blocking: bool,
+    /// Whether the out-of-process helper was last told to pause.
+    helper_paused: bool,
     /// Number of keys currently in Working phase.
     pending_jobs: usize,
     /// Monotonically increasing generation counter, bumped on clear/invalidation.
@@ -287,16 +319,35 @@ impl BackendState {
             Command::ClearResident => self.handle_clear_resident(),
             Command::ClearPersisted => self.handle_clear_persisted(),
             Command::ClearAll => self.handle_clear_all(),
-            Command::Pause => self.workers.pause(),
-            Command::Resume => self.workers.resume(),
+            // `tick` applies the pause depth after every wakeup.
+            Command::SyncPause => {}
             Command::Shutdown => return ControlFlow::Break(()),
         }
         ControlFlow::Continue(())
     }
 
     fn tick(&mut self) {
+        self.sync_pause();
         self.drain_events();
         self.run_eviction_sweep();
+    }
+
+    /// Stops or continues the out-of-process helper to match the shared pause depth.
+    ///
+    /// Pause and resume commands are only wakeups and may be dropped or skipped, so the helper
+    /// follows the depth rather than the commands. Blocking mode never stops the helper, because
+    /// the caller itself waits on compilation.
+    fn sync_pause(&mut self) {
+        let paused = !self.blocking && self.inner.pause_depth.load(Ordering::Relaxed) != 0;
+        if paused == self.helper_paused {
+            return;
+        }
+        self.helper_paused = paused;
+        if paused {
+            self.workers.pause();
+        } else {
+            self.workers.resume();
+        }
     }
 
     /// Drains all currently-queued lookup events.
@@ -305,23 +356,25 @@ impl BackendState {
         // work (commands, worker results, sweeps). Surplus events stay in the
         // queue and are picked up next iteration.
         for _ in 0..self.tuning.max_events_per_drain {
-            let Some(event) = self.inner.events.pop() else { break };
-            self.handle_lookup_observed(event);
+            match self.inner.events.pop() {
+                Some(LookupEvent::Hit(key)) => self.handle_lookup_hit(&key),
+                Some(LookupEvent::Miss { key, code }) => self.handle_lookup_miss(key, code),
+                None => break,
+            }
         }
     }
 
-    fn handle_lookup_observed(&mut self, event: LookupEvent) {
-        let hit = event.code.is_empty();
-        if hit {
-            self.inner.stats.lookup_hits.fetch_add(1, Ordering::Relaxed);
-            if let Some(meta) = self.resident_meta.get_mut(&event.key) {
-                meta.last_hit_at = Instant::now();
-            }
-        } else {
-            self.inner.stats.lookup_misses.fetch_add(1, Ordering::Relaxed);
-            let kind = if self.aot { CompilationKind::Aot } else { CompilationKind::Jit };
-            self.try_admit(kind, event.key, event.code, SyncNotifier::none(), AdmitMode::Observed);
+    fn handle_lookup_hit(&mut self, key: &RuntimeCacheKey) {
+        self.inner.stats.lookup_hits.fetch_add(1, Ordering::Relaxed);
+        if let Some(meta) = self.resident_meta.get_mut(key) {
+            meta.last_hit_at = Instant::now();
         }
+    }
+
+    fn handle_lookup_miss(&mut self, key: RuntimeCacheKey, code: Bytes) {
+        self.inner.stats.lookup_misses.fetch_add(1, Ordering::Relaxed);
+        let kind = if self.aot { CompilationKind::Aot } else { CompilationKind::Jit };
+        self.try_admit(kind, key, code, SyncNotifier::none(), AdmitMode::Observed);
     }
 
     fn handle_compile_jit(&mut self, req: CompileJitRequest) {
@@ -384,40 +437,40 @@ impl BackendState {
         }
 
         let now = Instant::now();
-        let inserted = match self.entries.entry(key) {
-            Entry::Occupied(_) => false,
-            Entry::Vacant(entry) => {
-                entry.insert(EntryState {
-                    hotness: 0,
-                    transient_failed: false,
-                    phase: EntryPhase::Cold,
-                    bytecode,
-                    last_observed_at: now,
-                    pending_notifiers: Vec::new(),
-                    cold_links: None,
-                });
-                true
-            }
-        };
-        if inserted {
-            self.link_cold_entry(&key);
+        if let Entry::Vacant(entry) = self.entries.entry(key) {
+            let links = ColdLinks { prev: self.cold_tail, next: None };
+            entry.insert(EntryState {
+                hotness: 0,
+                transient_failed: false,
+                phase: EntryPhase::Cold(links),
+                bytecode,
+                last_observed_at: now,
+            });
+            self.push_cold_tail(&key);
         }
         let entry = self.entries.get_mut(&key).unwrap();
         entry.last_observed_at = now;
 
-        if entry.phase == EntryPhase::Working {
-            sync_notifier.retain_waiter(&mut entry.pending_notifiers);
-            return;
-        }
-
-        if let EntryPhase::Failed(_, failed_kind) = entry.phase {
-            if failed_kind == kind {
-                sync_notifier.notify();
+        match &mut entry.phase {
+            EntryPhase::Cold(_) => {}
+            EntryPhase::Working { kind: working_kind, waiters, aot_after } => {
+                // An AOT job's program answers a JIT request too, but a JIT job persists nothing.
+                if *working_kind == CompilationKind::Jit && kind == CompilationKind::Aot {
+                    sync_notifier.retain_waiter(aot_after.get_or_insert_default());
+                } else {
+                    sync_notifier.retain_waiter(waiters);
+                }
                 return;
             }
-            // The other kind may still succeed, so it starts over from cold.
-            entry.phase = EntryPhase::Cold;
-            entry.hotness = 0;
+            &mut EntryPhase::Failed { kind: failed_kind, links, .. } => {
+                if failed_kind == kind {
+                    sync_notifier.notify();
+                    return;
+                }
+                // The other kind may still succeed, so it starts over from cold.
+                entry.phase = EntryPhase::Cold(links);
+                entry.hotness = 0;
+            }
         }
 
         if matches!(mode, AdmitMode::Observed) {
@@ -461,8 +514,7 @@ impl BackendState {
                     pending_jobs = self.pending_jobs + 1,
                     "dispatched compilation",
                 );
-                entry.phase = EntryPhase::Working;
-                self.unlink_cold_entry(&key);
+                self.start_working(&key, kind);
                 self.pending_jobs += 1;
                 self.inner.stats.compilations_dispatched.fetch_add(1, Ordering::Relaxed);
             }
@@ -531,8 +583,10 @@ impl BackendState {
         self.cold_tail = None;
         // Notify any pending sync callers before clearing entries.
         for (_, entry) in self.entries.drain() {
-            for n in entry.pending_notifiers {
-                n.notify();
+            if let EntryPhase::Working { waiters, aot_after, .. } = entry.phase {
+                for n in waiters.into_iter().chain(aot_after.into_iter().flatten()) {
+                    n.notify();
+                }
             }
         }
         // Discard pending lookup events: they were observed before the clear
@@ -586,12 +640,15 @@ impl BackendState {
             return;
         }
 
-        // Drain pending notifiers from the entry before processing.
-        let pending_notifiers = self
-            .entries
-            .get_mut(&result.key)
-            .map(|e| mem::take(&mut e.pending_notifiers))
-            .unwrap_or_default();
+        // Drain pending notifiers and queued AOT requests from the entry before processing.
+        let (pending_notifiers, aot_after) = match self.entries.get_mut(&result.key) {
+            Some(EntryState {
+                phase: EntryPhase::Working { waiters, aot_after, .. },
+                bytecode,
+                ..
+            }) => (mem::take(waiters), aot_after.take().map(|after| (after, bytecode.clone()))),
+            _ => (Vec::new(), None),
+        };
 
         let notify = || {
             result.sync_notifier.notify();
@@ -649,6 +706,35 @@ impl BackendState {
         }
 
         notify();
+
+        if let Some((aot_waiters, bytecode)) = aot_after {
+            self.admit_aot_after_jit(result.key, bytecode, aot_waiters);
+        }
+    }
+
+    /// Admits the AOT requests that arrived while a JIT job for `key` was in flight.
+    fn admit_aot_after_jit(
+        &mut self,
+        key: RuntimeCacheKey,
+        bytecode: Bytes,
+        waiters: Vec<SyncNotifier>,
+    ) {
+        self.try_admit(
+            CompilationKind::Aot,
+            key,
+            bytecode.clone(),
+            SyncNotifier::none(),
+            AdmitMode::Explicit,
+        );
+        for waiter in waiters {
+            self.try_admit(
+                CompilationKind::Aot,
+                key,
+                bytecode.clone(),
+                waiter,
+                AdmitMode::Explicit,
+            );
+        }
     }
 
     fn handle_jit_object_success(
@@ -821,12 +907,12 @@ impl BackendState {
                 .entries
                 .iter()
                 .filter(|(key, entry)| match entry.phase {
-                    EntryPhase::Cold => {
+                    EntryPhase::Cold(_) => {
                         now.duration_since(entry.last_observed_at) > idle
                             && !self.inner.resident.contains_key(key)
                     }
-                    EntryPhase::Working => false,
-                    EntryPhase::Failed(at, _) => now.duration_since(at) > idle,
+                    EntryPhase::Working { .. } => false,
+                    EntryPhase::Failed { at, .. } => now.duration_since(at) > idle,
                 })
                 .map(|(key, _)| *key)
                 .collect::<Vec<_>>();
@@ -874,9 +960,6 @@ impl BackendState {
     /// Evicts the first-in cold or failed entry with constant-time queue maintenance.
     fn evict_oldest_cold_entry(&mut self) -> bool {
         let Some(key) = self.cold_head else { return false };
-        // Queued entries never accumulate waiters: those belong to working entries.
-        debug_assert_ne!(self.entries[&key].phase, EntryPhase::Working);
-        debug_assert!(self.entries[&key].pending_notifiers.is_empty());
         self.remove_entry(&key);
         true
     }
@@ -885,16 +968,22 @@ impl BackendState {
         self.tuning.jit_max_pending_jobs.saturating_mul(10)
     }
 
-    /// Appends an unlinked entry to the cold FIFO.
-    fn link_cold_entry(&mut self, key: &RuntimeCacheKey) {
-        let prev = self.cold_tail;
-        self.entries.get_mut(key).unwrap().cold_links = Some(ColdLinks { prev, next: None });
-        if let Some(tail) = prev {
-            self.entries.get_mut(&tail).unwrap().cold_links.as_mut().unwrap().next = Some(*key);
+    /// Makes `key`, whose phase already links to the current tail, the new FIFO tail.
+    fn push_cold_tail(&mut self, key: &RuntimeCacheKey) {
+        if let Some(tail) = self.cold_tail {
+            self.entries.get_mut(&tail).unwrap().phase.links_mut().next = Some(*key);
         } else {
             self.cold_head = Some(*key);
         }
         self.cold_tail = Some(*key);
+    }
+
+    /// Moves a queued entry to working on dispatch, unlinking it from the cold FIFO.
+    fn start_working(&mut self, key: &RuntimeCacheKey, kind: CompilationKind) {
+        let phase = &mut self.entries.get_mut(key).unwrap().phase;
+        let working = EntryPhase::Working { kind, waiters: Vec::new(), aot_after: None };
+        let links = mem::replace(phase, working).links();
+        self.unlink(links);
     }
 
     /// Queues a failed working entry for eviction under the entry cap.
@@ -902,31 +991,34 @@ impl BackendState {
     /// The entry is marked failed, except after a first transient failure, which returns it to
     /// cold: a job that crashes its helper looks the same as one that lost its helper.
     fn fail_entry(&mut self, key: &RuntimeCacheKey, kind: CompilationKind, transient: bool) {
+        let links = ColdLinks { prev: self.cold_tail, next: None };
         let Some(entry) = self.entries.get_mut(key) else { return };
+        // Only a working entry has a job whose failure it records; any other entry is already
+        // queued.
+        if !entry.phase.is_working() {
+            return;
+        }
         if transient && !mem::replace(&mut entry.transient_failed, true) {
-            entry.phase = EntryPhase::Cold;
+            entry.phase = EntryPhase::Cold(links);
             entry.hotness = 0;
         } else {
-            entry.phase = EntryPhase::Failed(Instant::now(), kind);
+            entry.phase = EntryPhase::Failed { at: Instant::now(), kind, links };
         }
-        self.link_cold_entry(key);
+        self.push_cold_tail(key);
         // Explicit requests are not capped on admission, so cap their failures here.
         while self.entries.len() > self.max_entries() && self.evict_oldest_cold_entry() {}
     }
 
-    /// Unlinks a cold entry on dispatch or removal, without scanning the table.
-    fn unlink_cold_entry(&mut self, key: &RuntimeCacheKey) {
-        let Some(links) = self.entries.get_mut(key).and_then(|entry| entry.cold_links.take())
-        else {
-            return;
-        };
+    /// Unlinks the FIFO links of an entry leaving the queue, without scanning the table.
+    fn unlink(&mut self, links: Option<ColdLinks>) {
+        let Some(links) = links else { return };
         if let Some(prev) = links.prev {
-            self.entries.get_mut(&prev).unwrap().cold_links.as_mut().unwrap().next = links.next;
+            self.entries.get_mut(&prev).unwrap().phase.links_mut().next = links.next;
         } else {
             self.cold_head = links.next;
         }
         if let Some(next) = links.next {
-            self.entries.get_mut(&next).unwrap().cold_links.as_mut().unwrap().prev = links.prev;
+            self.entries.get_mut(&next).unwrap().phase.links_mut().prev = links.prev;
         } else {
             self.cold_tail = links.prev;
         }
@@ -934,8 +1026,9 @@ impl BackendState {
 
     /// Removes tracking state and its FIFO links together.
     fn remove_entry(&mut self, key: &RuntimeCacheKey) {
-        self.unlink_cold_entry(key);
-        self.entries.remove(key);
+        if let Some(entry) = self.entries.remove(key) {
+            self.unlink(entry.phase.links());
+        }
     }
 
     /// Removes the entry of an evicted resident key unless a job is still in flight for it.
@@ -943,7 +1036,7 @@ impl BackendState {
     /// A working entry is the only deduplication for a job that cannot be cancelled, such as an
     /// AOT job for a JIT-resident key.
     fn remove_evicted_entry(&mut self, key: &RuntimeCacheKey) {
-        if self.entries.get(key).is_none_or(|entry| entry.phase != EntryPhase::Working) {
+        if self.entries.get(key).is_none_or(|entry| !entry.phase.is_working()) {
             self.remove_entry(key);
         }
     }
@@ -989,6 +1082,8 @@ pub(crate) fn run(
         tuning: config.tuning,
         config_hash,
         aot: config.aot,
+        blocking: config.blocking,
+        helper_paused: false,
         pending_jobs: 0,
         generation: 0,
         last_sweep: now,
@@ -1064,11 +1159,20 @@ mod notifier_tests {
             store: config.store,
             tuning: config.tuning,
             aot: false,
+            blocking: false,
+            helper_paused: false,
             pending_jobs: 0,
             generation: 0,
             last_sweep: Instant::now(),
             on_compilation: None,
         }
+    }
+
+    fn waiters<'a>(state: &'a BackendState, key: &RuntimeCacheKey) -> &'a Vec<SyncNotifier> {
+        let EntryPhase::Working { waiters, .. } = &state.entries[key].phase else {
+            panic!("entry is not working");
+        };
+        waiters
     }
 
     fn observe(state: &mut BackendState, i: u32) -> RuntimeCacheKey {
@@ -1077,7 +1181,7 @@ mod notifier_tests {
         code.push(op::STOP);
         let bytecode = Bytes::from(code);
         let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
-        state.handle_lookup_observed(LookupEvent { key, code: bytecode });
+        state.handle_lookup_miss(key, bytecode);
         key
     }
 
@@ -1093,19 +1197,21 @@ mod notifier_tests {
             EntryState {
                 hotness: 1,
                 transient_failed: false,
-                phase: EntryPhase::Working,
+                phase: EntryPhase::Working {
+                    kind: CompilationKind::Jit,
+                    waiters: Vec::new(),
+                    aot_after: None,
+                },
                 bytecode: bytecode.clone(),
                 last_observed_at: Instant::now(),
-                pending_notifiers: Vec::new(),
-                cold_links: None,
             },
         );
         state.pending_jobs = 1;
         for _ in 0..10_000 {
-            state.handle_lookup_observed(LookupEvent { key, code: bytecode.clone() });
+            state.handle_lookup_miss(key, bytecode.clone());
         }
-        assert_eq!(state.entries[&key].pending_notifiers.len(), 0);
-        assert_eq!(state.entries[&key].pending_notifiers.capacity(), 0);
+        assert_eq!(waiters(&state, &key).len(), 0);
+        assert_eq!(waiters(&state, &key).capacity(), 0);
 
         let (first, first_rx) = chan::bounded(1);
         let (second, second_rx) = chan::bounded(1);
@@ -1117,9 +1223,9 @@ mod notifier_tests {
             });
         }
         for _ in 0..10_000 {
-            state.handle_lookup_observed(LookupEvent { key, code: bytecode.clone() });
+            state.handle_lookup_miss(key, bytecode.clone());
         }
-        assert_eq!(state.entries[&key].pending_notifiers.len(), 2);
+        assert_eq!(waiters(&state, &key).len(), 2);
         assert_eq!(first_rx.try_recv(), Err(chan::TryRecvError::Empty));
         assert_eq!(second_rx.try_recv(), Err(chan::TryRecvError::Empty));
         assert_eq!(state.inner.stats.lookup_misses.load(Ordering::Relaxed), 20_000);
@@ -1138,7 +1244,7 @@ mod notifier_tests {
             transient: false,
         });
         assert_eq!(state.pending_jobs, 0);
-        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(..)));
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed { .. }));
         for receiver in [original_rx, first_rx, second_rx] {
             assert_eq!(receiver.try_recv(), Ok(()));
             assert_eq!(receiver.try_recv(), Err(chan::TryRecvError::Disconnected));
@@ -1157,11 +1263,13 @@ mod notifier_tests {
             EntryState {
                 hotness: 8,
                 transient_failed: false,
-                phase: EntryPhase::Working,
+                phase: EntryPhase::Working {
+                    kind: CompilationKind::Aot,
+                    waiters: vec![SyncNotifier::new(waiter)],
+                    aot_after: None,
+                },
                 bytecode,
                 last_observed_at: Instant::now(),
-                pending_notifiers: vec![SyncNotifier::new(waiter)],
-                cold_links: None,
             },
         );
         state.pending_jobs = 2;
@@ -1179,8 +1287,8 @@ mod notifier_tests {
         });
 
         assert_eq!(state.pending_jobs, 1);
-        assert_eq!(state.entries[&key].phase, EntryPhase::Working);
-        assert_eq!(state.entries[&key].pending_notifiers.len(), 1);
+        assert!(state.entries[&key].phase.is_working());
+        assert_eq!(waiters(&state, &key).len(), 1);
         assert_eq!(stale_rx.try_recv(), Ok(()));
         assert_eq!(waiter_rx.try_recv(), Err(chan::TryRecvError::Empty));
     }
@@ -1200,11 +1308,13 @@ mod notifier_tests {
             EntryState {
                 hotness: 0,
                 transient_failed: false,
-                phase: EntryPhase::Working,
+                phase: EntryPhase::Working {
+                    kind: CompilationKind::Jit,
+                    waiters: Vec::new(),
+                    aot_after: None,
+                },
                 bytecode,
                 last_observed_at: Instant::now(),
-                pending_notifiers: Vec::new(),
-                cold_links: None,
             },
         );
         state.pending_jobs = 1;
@@ -1213,7 +1323,7 @@ mod notifier_tests {
         state.run_eviction_sweep();
 
         assert!(state.resident_meta.is_empty());
-        assert_eq!(state.entries[&key].phase, EntryPhase::Working);
+        assert!(state.entries[&key].phase.is_working());
     }
 
     #[test]
@@ -1274,23 +1384,26 @@ mod notifier_tests {
             ..Default::default()
         });
         let working = observe(&mut state, 0);
-        state.entries.get_mut(&working).unwrap().phase = EntryPhase::Working;
-        state.unlink_cold_entry(&working);
+        state.start_working(&working, CompilationKind::Jit);
         let (sender, receiver) = chan::bounded(1);
-        state.entries.get_mut(&working).unwrap().pending_notifiers.push(SyncNotifier::new(sender));
+        let EntryPhase::Working { waiters, .. } =
+            &mut state.entries.get_mut(&working).unwrap().phase
+        else {
+            unreachable!()
+        };
+        waiters.push(SyncNotifier::new(sender));
         for i in 1..=20 {
             observe(&mut state, i);
         }
         assert_eq!(state.entries.len(), 10);
-        assert_eq!(state.entries[&working].phase, EntryPhase::Working);
+        assert!(state.entries[&working].phase.is_working());
         assert_eq!(receiver.try_recv(), Err(chan::TryRecvError::Empty));
         while state.evict_oldest_cold_entry() {}
         assert_eq!(state.entries.len(), 1);
         // No cold candidate: deny a new key when the table is full of working entries.
         for i in 21..30 {
             let key = observe(&mut state, i);
-            state.entries.get_mut(&key).unwrap().phase = EntryPhase::Working;
-            state.unlink_cold_entry(&key);
+            state.start_working(&key, CompilationKind::Jit);
         }
         let denied = observe(&mut state, 30);
         assert!(!state.entries.contains_key(&denied));
@@ -1334,8 +1447,7 @@ mod notifier_tests {
         });
         let keys = (0..10).map(|i| observe(&mut state, i)).collect::<Vec<_>>();
         for key in &keys {
-            state.entries.get_mut(key).unwrap().phase = EntryPhase::Working;
-            state.unlink_cold_entry(key);
+            state.start_working(key, CompilationKind::Jit);
             state.fail_entry(key, CompilationKind::Jit, false);
         }
         assert_eq!(state.cold_head, Some(keys[0]));
@@ -1359,15 +1471,14 @@ mod notifier_tests {
     fn failed_entry_ignores_observed_and_explicit_requests() {
         let mut state = new_state(RuntimeTuning { jit_hot_threshold: 1, ..Default::default() });
         let key = observe(&mut state, 0);
-        state.entries.get_mut(&key).unwrap().phase = EntryPhase::Working;
-        state.unlink_cold_entry(&key);
+        state.start_working(&key, CompilationKind::Jit);
         state.pending_jobs = 1;
         state.fail_entry(&key, CompilationKind::Jit, false);
         state.pending_jobs = 0;
 
         let bytecode = state.entries[&key].bytecode.clone();
         for _ in 0..10 {
-            state.handle_lookup_observed(LookupEvent { key, code: bytecode.clone() });
+            state.handle_lookup_miss(key, bytecode.clone());
         }
         let (sender, receiver) = chan::bounded(1);
         state.handle_compile_jit(CompileJitRequest {
@@ -1377,7 +1488,7 @@ mod notifier_tests {
         });
 
         assert_eq!(receiver.try_recv(), Ok(()));
-        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(..)));
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed { .. }));
         assert_eq!(state.pending_jobs, 0);
         assert_eq!(state.inner.stats.compilations_dispatched.load(Ordering::Relaxed), 0);
 
@@ -1387,7 +1498,7 @@ mod notifier_tests {
             bytecode: state.entries[&key].bytecode.clone(),
             sync_notifier: SyncNotifier::none(),
         }]);
-        assert_eq!(state.entries[&key].phase, EntryPhase::Cold);
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Cold(_)));
     }
 
     #[test]
@@ -1395,10 +1506,8 @@ mod notifier_tests {
         let mut state = new_state(RuntimeTuning { jit_hot_threshold: 2, ..Default::default() });
         let key = observe(&mut state, 0);
         let fail = |state: &mut BackendState, transient: bool| {
-            let entry = state.entries.get_mut(&key).unwrap();
-            entry.phase = EntryPhase::Working;
-            entry.hotness = 2;
-            state.unlink_cold_entry(&key);
+            state.entries.get_mut(&key).unwrap().hotness = 2;
+            state.start_working(&key, CompilationKind::Jit);
             state.pending_jobs = 1;
             state.handle_worker_result(WorkerResult {
                 key,
@@ -1414,13 +1523,13 @@ mod notifier_tests {
 
         // The first transient failure restarts hotness instead of failing the key.
         fail(&mut state, true);
-        assert_eq!(state.entries[&key].phase, EntryPhase::Cold);
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Cold(_)));
         assert_eq!(state.entries[&key].hotness, 0);
         assert_eq!(state.cold_head, Some(key));
 
         // A second consecutive transient failure marks it failed.
         fail(&mut state, true);
-        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(..)));
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed { .. }));
         assert_eq!(state.cold_head, Some(key));
         assert_eq!(state.cold_tail, Some(key));
     }
@@ -1443,8 +1552,7 @@ mod notifier_tests {
             .collect::<Vec<_>>();
         assert_eq!(state.entries.len(), 12);
         for key in &keys {
-            state.entries.get_mut(key).unwrap().phase = EntryPhase::Working;
-            state.unlink_cold_entry(key);
+            state.start_working(key, CompilationKind::Jit);
         }
         for key in &keys {
             state.fail_entry(key, CompilationKind::Jit, false);
@@ -1484,7 +1592,7 @@ mod notifier_tests {
         let mut state = new_state(RuntimeTuning { jit_hot_threshold: 1, ..Default::default() });
         // The helper starts no workers, so dispatch must fail without unlinking.
         let key = observe(&mut state, 0);
-        assert_eq!(state.entries[&key].phase, EntryPhase::Cold);
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Cold(_)));
         assert_eq!(state.cold_head, Some(key));
         assert!(state.evict_oldest_cold_entry());
         assert!(state.entries.is_empty());
@@ -1505,8 +1613,8 @@ mod notifier_tests {
         let first = observe(&mut state, 0);
         let second = observe(&mut state, 1);
         observe(&mut state, 0);
-        assert_eq!(state.entries[&first].phase, EntryPhase::Working);
-        assert!(state.entries[&first].cold_links.is_none());
+        assert!(state.entries[&first].phase.is_working());
+        assert!(state.entries[&first].phase.links().is_none());
         assert_eq!(state.cold_head, Some(second));
         assert_eq!(state.cold_tail, Some(second));
         assert!(state.evict_oldest_cold_entry());
@@ -1520,6 +1628,50 @@ mod notifier_tests {
         assert_eq!(state.entries.len(), usize::from(failed.is_some()));
         assert_eq!(state.cold_head, failed);
         assert_eq!(state.cold_tail, failed);
+        state.workers.shutdown().unwrap();
+    }
+
+    #[test]
+    fn aot_request_during_jit_compile_runs_after_it() {
+        let tuning = RuntimeTuning { jit_worker_count: 1, ..Default::default() };
+        let mut state = new_state(tuning);
+        let (result_tx, result_rx) = chan::unbounded();
+        state.workers = WorkerPool::new(
+            result_tx,
+            RuntimeConfig { tuning, ..Default::default() },
+            Arc::clone(&state.inner.stats),
+        );
+        state.result_rx = result_rx;
+        let bytecode = Bytes::from_static(&[op::PUSH1, 1, op::STOP]);
+        let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
+        state.handle_compile_jit(CompileJitRequest {
+            key,
+            bytecode: bytecode.clone(),
+            sync_notifier: SyncNotifier::none(),
+        });
+        assert_eq!(state.inner.stats.compilations_dispatched.load(Ordering::Relaxed), 1);
+
+        // An AOT request for the key while its JIT job runs.
+        let (aot, aot_rx) = chan::bounded(1);
+        state.handle_prepare_aot(vec![PrepareAotRequest {
+            key,
+            bytecode,
+            sync_notifier: SyncNotifier::new(aot),
+        }]);
+
+        // Finishing the JIT job, whatever its outcome, does not answer the AOT request: it starts
+        // the AOT compilation instead.
+        let result = state.result_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(result.kind, CompilationKind::Jit);
+        state.handle_worker_result(result);
+        assert_eq!(aot_rx.try_recv(), Err(chan::TryRecvError::Empty));
+        assert_eq!(state.inner.stats.compilations_dispatched.load(Ordering::Relaxed), 2);
+
+        // The AOT job then answers it (it fails here: the state has no artifact store).
+        let result = state.result_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(result.kind, CompilationKind::Aot);
+        state.handle_worker_result(result);
+        assert_eq!(aot_rx.try_recv(), Ok(()));
         state.workers.shutdown().unwrap();
     }
 

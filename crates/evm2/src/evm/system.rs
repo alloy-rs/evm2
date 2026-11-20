@@ -6,7 +6,7 @@
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
 //! and produces no state changes.
 
-use super::{Evm, ExecutedTx, TxResult, TxResultExt};
+use super::{Evm, ExecutedTx, ScopedInspector, TxResult, TxResultExt};
 #[cfg(feature = "async")]
 use super::{SendEvmRef, r#async};
 #[cfg(feature = "async")]
@@ -120,22 +120,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// deploy protocol system contracts or synthesize their bytecode.
     ///
     /// The active inspector observes the call only when [`Evm::set_inspect_system_calls`] is set.
+    /// If the call unwinds, the transaction state is discarded and the inspector is kept.
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         let result = if self.inspect_system_calls {
-            self.execute_system_call(tx)
+            self.run_tx(|evm| evm.execute_system_call(tx))
         } else {
-            let inspector = self.inspector.take();
-            let result = self.execute_system_call(tx);
-            self.inspector = inspector;
-            result
+            let scope = ScopedInspector::hide(self);
+            scope.evm.run_tx(|evm| evm.execute_system_call(tx))
         };
-        match result {
-            Ok(outcome) => self.finish_executed_tx(outcome),
-            Err(error) => {
-                self.state.clear_transaction_state();
-                Err(error)
-            }
-        }
+        self.finish_executed_tx(result?)
     }
 
     /// Executes a system call without finalizing transaction state.

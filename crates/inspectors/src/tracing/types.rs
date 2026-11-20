@@ -56,8 +56,6 @@ pub struct CallTrace {
     ///
     /// The depth of a call's steps is the depth of the call plus one.
     pub depth: u16,
-    /// Whether the call was successful.
-    pub success: bool,
     /// The caller address.
     pub caller: Address,
     /// The target address of this call.
@@ -114,6 +112,17 @@ pub struct CallTrace {
 }
 
 impl CallTrace {
+    /// Returns true if the call ended successfully, see [InstrStop::is_success].
+    ///
+    /// A call that has not ended is neither successful nor an error.
+    #[inline]
+    pub const fn is_success(&self) -> bool {
+        match self.status {
+            Some(status) => status.is_success(),
+            None => false,
+        }
+    }
+
     /// Returns true if the status code is an error or revert, See [InstrStop::Revert].
     #[inline]
     pub const fn is_error(&self) -> bool {
@@ -486,7 +495,7 @@ impl CallTraceNode {
         }
 
         // we need to populate error and revert reason
-        if !self.trace.success {
+        if !self.trace.is_success() {
             if self.kind().is_any_create() {
                 call_frame.to = None;
             }
@@ -1023,7 +1032,6 @@ mod trace_serde {
     #[serde(rename = "CallTrace")]
     pub(super) struct CallTraceDe {
         depth: usize,
-        success: bool,
         caller: Address,
         address: Address,
         maybe_precompile: Option<bool>,
@@ -1050,7 +1058,7 @@ mod trace_serde {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             CallTraceSer {
                 depth: self.depth.into(),
-                success: self.success,
+                success: self.is_success(),
                 caller: &self.caller,
                 address: &self.address,
                 maybe_precompile: self.maybe_precompile,
@@ -1084,7 +1092,6 @@ mod trace_serde {
             Self {
                 // A depth above the call depth limit is not a recorded trace.
                 depth: trace.depth.try_into().unwrap_or(u16::MAX),
-                success: trace.success,
                 caller: trace.caller,
                 address: trace.address,
                 maybe_precompile: trace.maybe_precompile,

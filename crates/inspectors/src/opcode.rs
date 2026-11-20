@@ -26,6 +26,8 @@ pub struct OpcodeGasInspector {
     opcode_gas: HashMap<OpCode, u64>,
     /// Tracks opcodes waiting for `step_end`.
     pending_steps: Vec<PendingOpcodeGas>,
+    /// The number of pending steps when each active frame started.
+    frame_starts: Vec<usize>,
 }
 
 impl OpcodeGasInspector {
@@ -77,6 +79,16 @@ impl OpcodeGasInspector {
             pending.child_gas_used = pending.child_gas_used.saturating_add(child_gas_used);
         }
     }
+
+    /// Drops the steps a frame that ended left pending.
+    ///
+    /// A step that an inspector stopped in `step` never receives `step_end`, so it would pair
+    /// with a step of the parent frame.
+    fn end_frame(&mut self) {
+        if let Some(pending_steps) = self.frame_starts.pop() {
+            self.pending_steps.truncate(pending_steps);
+        }
+    }
 }
 
 impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
@@ -111,12 +123,31 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
         }
     }
 
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, T>,
+        _message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        self.frame_starts.push(self.pending_steps.len());
+        None
+    }
+
+    fn create(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, T>,
+        _message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        self.frame_starts.push(self.pending_steps.len());
+        None
+    }
+
     fn call_end(
         &mut self,
         _interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
+        self.end_frame();
         if message.depth == 0 {
             // skip the root call
             return;
@@ -142,6 +173,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
+        self.end_frame();
         if message.depth == 0 {
             // skip the root create
             return;

@@ -1158,7 +1158,7 @@ fn create_with_empty_initcode_runs_no_steps() {
         assert_eq!(nodes.len(), depth_nodes);
         let create = nodes.last().unwrap();
         assert!(create.kind().is_any_create());
-        assert!(create.trace.success && create.trace.steps.is_empty());
+        assert!(create.trace.is_success() && create.trace.steps.is_empty());
         assert_eq!(create.trace.gas_used, 0);
     }
 }
