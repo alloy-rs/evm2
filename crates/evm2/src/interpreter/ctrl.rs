@@ -22,6 +22,13 @@ impl<'a> BytecodeRef<'a> {
         }
     }
 
+    /// Returns a view of `bytecode` that runs `code`, its translation to superinstructions.
+    #[cfg(feature = "sx")]
+    pub(crate) fn with_code(bytecode: &'a Bytecode, code: &'a [u8]) -> Self {
+        debug_assert_eq!(code.len(), bytecode.bytes_slice().len());
+        Self { base: NonNull::from(code).cast(), jump_table: bytecode.jump_table().as_ref() }
+    }
+
     /// Returns a pointer to the start of the bytecode.
     #[inline]
     pub const fn as_ptr(&self) -> *const u8 {

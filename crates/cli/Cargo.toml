@@ -64,6 +64,7 @@ evm2-jit-build = { workspace = true, optional = true }
 
 [features]
 default = ["mimalloc"]
+sx = ["evm2-eest/sx"]
 jit = [
     "evm2-eest/jit",
     "dep:evm2-jit-context",

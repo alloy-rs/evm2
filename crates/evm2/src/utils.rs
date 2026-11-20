@@ -5,6 +5,23 @@ use alloc::{borrow::Cow, vec};
 use alloy_primitives::{Address, B256, Bytes};
 use core::hint::cold_path;
 
+/// Returns whether the CPU supports all of the given target features.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+macro_rules! detected {
+    ($($feature:tt),+ $(,)?) => {
+        cfg!(all($(target_feature = $feature),+)) || {
+            #[cfg(feature = "std")]
+            let detected = $(std::is_x86_feature_detected!($feature))&&+;
+            #[cfg(not(feature = "std"))]
+            let detected = false;
+            detected
+        }
+    };
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub(crate) use detected;
+
 /// Returns the number of EVM words needed for `len` bytes.
 #[inline]
 pub const fn num_words(len: usize) -> usize {
