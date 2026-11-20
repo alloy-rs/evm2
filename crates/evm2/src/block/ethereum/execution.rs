@@ -100,6 +100,7 @@ impl TryFrom<HandlerError> for EthInvalidTxError {
     fn try_from(error: HandlerError) -> Result<Self, Self::Error> {
         match error {
             HandlerError::Database(_)
+            | HandlerError::MissingSystemContractCode(_)
             | HandlerError::Fatal(_)
             | HandlerError::WrongTransactionType { .. } => Err(error),
             HandlerError::External(_)
@@ -455,11 +456,12 @@ fn execute_system_call<T: EvmTypes>(
     address: Address,
     data: Bytes,
 ) -> Result<TxResult<T>, BlockExecutionError> {
-    let executed = evm.system_call(SystemTx::new(address, data)).map_err(map_handler_error)?;
-    // History and beacon-root calls accept reverts and halts, unlike request-producing calls.
-    if !executed.result().is_success()
-        && !matches!(address, BEACON_ROOTS_ADDRESS | HISTORY_STORAGE_ADDRESS)
-    {
+    // History and beacon-root calls allow absent code, reverts and halts.
+    let require_code = !matches!(address, BEACON_ROOTS_ADDRESS | HISTORY_STORAGE_ADDRESS);
+    let executed = evm
+        .system_call(SystemTx::new(address, data).with_code_required(require_code))
+        .map_err(map_handler_error)?;
+    if !executed.result().is_success() && require_code {
         let reason = executed.result().stop;
         let _ = executed.discard();
         return Err(match address {
@@ -716,5 +718,17 @@ mod tests {
             EthInvalidTxError(HandlerError::IntrinsicGasGreaterThanCap { required: 2, cap: 1 });
         assert!(!cap.is_gas_limit_too_low());
         assert!(!cap.is_gas_limit_too_high());
+    }
+
+    #[test]
+    fn missing_system_contract_code_invalidates_the_block() {
+        let error = HandlerError::MissingSystemContractCode(WITHDRAWAL_REQUEST_ADDRESS);
+        assert_eq!(EthInvalidTxError::try_from(error.clone()).unwrap_err(), error);
+        let error = map_handler_error(error);
+        assert!(error.as_validation().is_some());
+        assert_eq!(
+            error.to_string(),
+            alloc::format!("system contract {WITHDRAWAL_REQUEST_ADDRESS} has no code")
+        );
     }
 }

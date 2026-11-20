@@ -704,6 +704,7 @@ fn precompile_dispatch_uses_original_callee(
         &bytes!("01020304"),
         U256::ZERO,
         &mut gas,
+        false,
     )
     .unwrap();
     let result = Host::execute_message(&mut evm, &mut frame.message).unwrap();

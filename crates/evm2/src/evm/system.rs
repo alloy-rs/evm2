@@ -4,7 +4,7 @@
 //! does not install or inject protocol system contract bytecode; callers that use these hooks are
 //! responsible for making the target account and code available in the backing database or overlay
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
-//! and produces no state changes.
+//! and produces no state changes unless [`SystemTx::require_code`] is set.
 
 use super::{Evm, ExecutedTx, TxResult, TxResultExt};
 #[cfg(feature = "async")]
@@ -69,6 +69,9 @@ pub struct SystemTx {
     pub data: Bytes,
     /// Execution gas limit. Defaults to [`SYSTEM_CALL_GAS_LIMIT`].
     pub gas_limit: u64,
+    /// Whether an empty destination code invalidates the system call.
+    /// Checked at the initial account load, before EIP-7702 delegation resolution.
+    pub require_code: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -81,6 +84,7 @@ impl Default for SystemTx {
             system_contract_address: Address::ZERO,
             data: Bytes::new(),
             gas_limit: SYSTEM_CALL_GAS_LIMIT,
+            require_code: false,
             _non_exhaustive: (),
         }
     }
@@ -97,6 +101,13 @@ impl SystemTx {
     #[inline]
     pub const fn with_caller(mut self, caller: Address) -> Self {
         self.caller = caller;
+        self
+    }
+
+    /// Requires nonempty code at the destination, as request-producing system calls do.
+    #[inline]
+    pub const fn with_code_required(mut self, require_code: bool) -> Self {
+        self.require_code = require_code;
         self
     }
 
@@ -144,7 +155,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// registry handler to execute system-call semantics and return the outcome to the outer
     /// transaction lifecycle for finalization.
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
-        let SystemTx { caller, system_contract_address, data, gas_limit, .. } = tx;
+        let SystemTx { caller, system_contract_address, data, gas_limit, require_code, .. } = tx;
         self.state.prewarm(&system_contract_address);
         self.tx_env = TxEnvExt {
             origin: caller,
@@ -173,6 +184,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             &data,
             U256::ZERO,
             &mut tx_gas,
+            require_code,
         )?;
         let result = execute_initial_frame(self, frame, &mut tx_gas, gas_limit, reservoir)?;
         // The reservoir is funded on top of `gas_limit`, so the transaction gas limit includes it.
@@ -654,5 +666,62 @@ mod tests {
         assert_eq!(inspector.calls, expected_calls);
         assert_eq!(inspector.call_ends, expected_calls);
         assert_eq!(inspector.steps, expected_steps);
+    }
+
+    #[test]
+    fn system_call_requires_destination_code_only_when_requested() {
+        let contract = Address::repeat_byte(0x42);
+        for absent in [false, true] {
+            for require_code in [false, true] {
+                let mut database = InMemoryDB::default();
+                if !absent {
+                    database.insert_account_info(
+                        &contract,
+                        AccountInfo::default().with_balance(U256::ONE),
+                    );
+                }
+                let mut evm = TestEvm::new(
+                    SpecId::PRAGUE,
+                    BlockEnvExt::default(),
+                    TxRegistry::new(),
+                    database,
+                    Precompiles::base(SpecId::PRAGUE),
+                );
+                let result = evm.system_call(
+                    SystemTx::new(contract, Bytes::new()).with_code_required(require_code),
+                );
+                if require_code {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        HandlerError::MissingSystemContractCode(contract)
+                    );
+                } else {
+                    assert!(result.unwrap().result().is_success());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn required_code_is_checked_before_delegation() {
+        let contract = Address::repeat_byte(0x42);
+        let delegate = Address::repeat_byte(0x43);
+        for code in
+            [Bytecode::new_legacy(Bytes::from_static(&[op::STOP])), Bytecode::new_eip7702(delegate)]
+        {
+            let mut database = InMemoryDB::default();
+            database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+            let mut evm = TestEvm::new(
+                SpecId::PRAGUE,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                database,
+                Precompiles::base(SpecId::PRAGUE),
+            );
+            let result = evm
+                .system_call(SystemTx::new(contract, Bytes::new()).with_code_required(true))
+                .unwrap();
+            assert!(result.result().is_success());
+        }
     }
 }

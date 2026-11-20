@@ -185,6 +185,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
             &tx.input,
             tx.value,
             &mut tx_gas,
+            false,
         )?
     };
     // A runtime gas phase that ran out of gas (the authorization charges or the first-frame
