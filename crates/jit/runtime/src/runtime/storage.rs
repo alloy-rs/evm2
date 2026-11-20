@@ -1,7 +1,7 @@
 //! Artifact storage trait and data model.
 
 use crate::{OptimizationLevel, eyre, runtime::RuntimeConfig};
-use alloy_primitives::{B256, keccak256};
+use alloy_primitives::{B256, Keccak256, keccak256};
 use dashmap::DashMap;
 use evm2::{SpecId, version::GasId};
 use std::{
@@ -89,6 +89,53 @@ pub(crate) fn compile_config_hash(config: &RuntimeConfig) -> B256 {
     keccak256(bytes)
 }
 
+/// Returns the keyed digest that authenticates an artifact: Keccak-256 over the authentication
+/// key, a domain separator, the artifact identity, the symbol name and the object bytes.
+///
+/// Keccak-256 is not vulnerable to length extension, so a secret prefix makes it a MAC. Without
+/// the key, a writer of the artifact store cannot produce an artifact the runtime will link.
+pub(crate) fn artifact_mac(
+    auth_key: &B256,
+    artifact_key: &ArtifactKey,
+    symbol_name: &str,
+    object: &[u8],
+) -> [u8; 32] {
+    let mut hasher = Keccak256::new();
+    hasher.update(auth_key);
+    hasher.update(b"evm2-jit-aot-artifact-v1");
+    hasher.update(artifact_key.runtime.code_hash);
+    hasher.update([
+        artifact_key.runtime.spec_id as u8,
+        artifact_key.backend as u8,
+        artifact_key.opt_level as u8,
+    ]);
+    hasher.update(artifact_key.abi_version.to_le_bytes());
+    hasher.update(artifact_key.config_hash);
+    hasher.update((symbol_name.len() as u64).to_le_bytes());
+    hasher.update(symbol_name);
+    hasher.update((object.len() as u64).to_le_bytes());
+    hasher.update(object);
+    hasher.finalize().0
+}
+
+/// Checks that `object` is the artifact `manifest` describes and that `auth_key` authenticated
+/// it.
+pub(crate) fn verify_artifact(
+    auth_key: &B256,
+    manifest: &ArtifactManifest,
+    object: &[u8],
+) -> eyre::Result<()> {
+    eyre::ensure!(
+        object.len() == manifest.artifact_len,
+        "artifact length does not match its manifest"
+    );
+    let mac = artifact_mac(auth_key, &manifest.artifact_key, &manifest.symbol_name, object);
+    // Constant time, so a timing side channel cannot recover a valid digest byte by byte.
+    let diff = mac.iter().zip(&manifest.mac).fold(0u8, |acc, (a, b)| acc | (a ^ b));
+    eyre::ensure!(diff == 0, "artifact authentication failed");
+    Ok(())
+}
+
 /// A stored artifact consisting of a manifest and a path to the relocatable object.
 #[derive(Clone, Debug)]
 pub struct StoredArtifact {
@@ -113,6 +160,10 @@ pub struct ArtifactManifest {
     pub created_at_unix_secs: u64,
     /// Keccak-256 digest of the object bytes.
     pub content_hash: [u8; 32],
+    /// Keyed digest of the artifact identity, symbol name and object bytes under the runtime's
+    /// [`artifact_auth_key`](RuntimeConfig::artifact_auth_key). The runtime links a stored
+    /// artifact only when this matches.
+    pub mac: [u8; 32],
 }
 
 /// Backend selection for compilation.
@@ -236,7 +287,7 @@ impl ArtifactStore for RuntimeArtifactStore {
 mod tests {
     use super::{
         ArtifactKey, ArtifactManifest, ArtifactStore, BackendSelection, RuntimeArtifactStore,
-        RuntimeCacheKey,
+        RuntimeCacheKey, artifact_mac, verify_artifact,
     };
     use alloy_primitives::B256;
     use evm2::SpecId;
@@ -259,6 +310,7 @@ mod tests {
             artifact_len,
             created_at_unix_secs: 42,
             content_hash: [7; 32],
+            mac: [0; 32],
         }
     }
 
@@ -343,5 +395,32 @@ mod tests {
     #[test]
     fn backend_selection_defaults_to_auto() {
         assert_eq!(BackendSelection::default(), BackendSelection::Auto);
+    }
+
+    #[test]
+    fn artifact_mac_binds_key_identity_symbol_and_bytes() {
+        let auth_key = B256::repeat_byte(1);
+        let key = artifact_key(B256::with_last_byte(1));
+        let object = b"object";
+        let mut manifest = manifest(key, object.len());
+        manifest.mac = artifact_mac(&auth_key, &key, "main", object);
+        verify_artifact(&auth_key, &manifest, object).unwrap();
+
+        // Another runtime's key, tampered bytes, a renamed symbol or another identity all fail.
+        assert!(verify_artifact(&B256::repeat_byte(2), &manifest, object).is_err());
+        assert!(verify_artifact(&auth_key, &manifest, b"objecT").is_err());
+        assert!(verify_artifact(&auth_key, &manifest, b"object!").is_err());
+        let renamed = ArtifactManifest { symbol_name: "evil".into(), ..manifest };
+        assert!(verify_artifact(&auth_key, &renamed, object).is_err());
+        let moved = ArtifactManifest {
+            artifact_key: artifact_key(B256::with_last_byte(9)),
+            ..manifest.clone()
+        };
+        assert!(verify_artifact(&auth_key, &moved, object).is_err());
+        let downgraded = ArtifactManifest {
+            artifact_key: ArtifactKey { opt_level: OptimizationLevel::None, ..key },
+            ..manifest
+        };
+        assert!(verify_artifact(&auth_key, &downgraded, object).is_err());
     }
 }

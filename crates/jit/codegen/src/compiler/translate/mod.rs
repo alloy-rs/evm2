@@ -219,6 +219,9 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     /// covers every access at `base + c` with `lo <= c` and `c + len <= hi`. Memory never
     /// shrinks within a frame, so these hold until the next section head.
     ensured_memory: Vec<(B::Value, u64, u64)>,
+    /// Memory size that a guard in the current stack section proved, so that elided memory
+    /// accesses ending at or below it need no guard of their own.
+    guarded_mem_size: u64,
     /// Values in the current stack section known to equal another value plus a small constant,
     /// as `(value, base, addend)`: `ADD` results and reloads of materialized stack slots.
     value_offsets: Vec<(B::Value, B::Value, u64)>,
@@ -243,6 +246,10 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     incoming_dynamic_jumps: Incoming<B>,
     /// The dynamic jump table block where all dynamic jumps branch to.
     dynamic_jump_table: B::BasicBlock,
+    /// Traps if reached. Paths that only our analyses rule out branch here instead of to an LLVM
+    /// `unreachable`: if an analysis is wrong, `unreachable` lets LLVM assume the path away and
+    /// miscompile the code around it, while a trap stops execution there.
+    trap_block: B::BasicBlock,
 
     /// `failure_block` incoming values.
     incoming_failures: Incoming<B>,
@@ -325,13 +332,13 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let stack_bytes = bcx.new_stack_slot(isize_type, "stack_bytes.addr");
 
         // Create all instruction entry blocks. Dead-code instructions map to
-        // `unreachable_block`; dedup redirects are resolved at control-flow callsites.
-        let unreachable_block = bcx.create_block("unreachable");
+        // `trap_block`; dedup redirects are resolved at control-flow callsites.
+        let trap_block = bcx.create_block("trap");
         let inst_entries: IndexVec<Inst, _> = bytecode
             .iter_all_insts()
             .map(|(i, data)| {
                 if data.is_dead_code() {
-                    unreachable_block
+                    trap_block
                 } else {
                     let name = if config.debug { &bytecode.op_block_name(Some(i), "") } else { "" };
                     bcx.create_block(name)
@@ -366,6 +373,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             cached_mem_base: None,
             unchecked_gas: 0,
             ensured_memory: Vec::new(),
+            guarded_mem_size: 0,
             value_offsets: Vec::new(),
             relief_stores: Vec::new(),
             joins: 0,
@@ -378,6 +386,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
             incoming_dynamic_jumps: Vec::new(),
             dynamic_jump_table,
+            trap_block,
 
             incoming_failures: Vec::new(),
             failure_block: Some(failure_block),
@@ -412,16 +421,16 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             fx.bcx.clear_debug_location();
         }
 
-        // Finalize the dynamic jump table.
-        fx.bcx.switch_to_block(unreachable_block);
-        fx.bcx.unreachable();
+        // Finalize the trap block and the dynamic jump table.
+        fx.bcx.switch_to_block(trap_block);
+        fx.bcx.trap();
         if bytecode.has_dynamic_jumps() {
-            fx.build_dynamic_jump_table(unreachable_block);
+            fx.build_dynamic_jump_table();
         } else {
             // No dynamic jumps.
             debug_assert!(fx.incoming_dynamic_jumps.is_empty());
             fx.bcx.switch_to_block(fx.dynamic_jump_table);
-            fx.bcx.unreachable();
+            fx.bcx.trap();
         }
 
         // Initialize stack length in the entry path.
@@ -599,6 +608,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.stored_len_offset = 0;
                 self.cached_mem_base = None;
                 self.ensured_memory.clear();
+                self.guarded_mem_size = 0;
                 self.value_offsets.clear();
                 self.relief_stores.clear();
                 self.vstack.reset(section.inputs as usize, section.max_growth.max(0) as usize);
@@ -1855,6 +1865,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// Ensures the memory is large enough for `offset + len` bytes, calling the `mresize`
     /// builtin on the cold path if needed. Returns the pointer to `mem_base + offset`.
+    ///
+    /// Every range recorded in `ensured_memory` and `guarded_mem_size` was checked at runtime, so
+    /// a wrong memory analysis cannot access memory out of bounds.
     fn build_ensure_memory(&mut self, offset: B::Value, len: u64) -> B::Value {
         let (base, addend) = self.memory_offset_parts(offset);
         let end = addend + len;
@@ -1863,27 +1876,29 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // An earlier access at `base + lo` passed its check, so that offset fits in 63 bits, and
         // `base + addend` for `addend >= lo` fits in 64 bits.
         let fits = ensured.is_some_and(|(lo, _)| lo <= addend);
+        // An earlier access in this section already ensured this range.
+        if fits && ensured.is_some_and(|(_, hi)| end <= hi) {
+            let offset = self.bcx.ireduce(self.isize_type, offset);
+            return self.build_memory_addr(offset);
+        }
+
+        // Analysis proved this access is already covered on every path.
+        if let Some(offset) = self.skippable_memory_offset(len) {
+            return self.build_guarded_memory_addr(offset, len);
+        }
+
         let offset = if fits {
             self.bcx.ireduce(self.isize_type, offset)
         } else {
             // 63 bits lets us avoid overflow in the addition below.
             self.u256_to_u64_saturating(offset, 63)
         };
-        // An earlier access in this section already ensured this range.
-        if fits && ensured.is_some_and(|(_, hi)| end <= hi) {
-            return self.build_memory_addr(offset);
-        }
         // Every path below either fails or leaves memory covering this access.
         if let Some((_, lo, hi)) = self.ensured_memory.iter_mut().find(|(b, ..)| *b == base) {
             *lo = (*lo).min(addend);
             *hi = (*hi).max(end);
         } else {
             self.ensured_memory.push((base, addend, end));
-        }
-
-        // Analysis proved this access is already covered on every path.
-        if self.current_inst.is_some_and(|inst| self.can_skip_ensure_memory(inst)) {
-            return self.build_memory_addr(offset);
         }
 
         let isize_type = self.isize_type;
@@ -1940,6 +1955,55 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
         }
         has_memory_access
+    }
+
+    /// Returns the constant offset of the current access if the memory analysis proved that
+    /// memory already covers it, so the size check can be skipped.
+    fn skippable_memory_offset(&self, len: u64) -> Option<u64> {
+        let inst = self.current_inst?;
+        if !self.can_skip_ensure_memory(inst) {
+            return None;
+        }
+        let [Some((Some(offset), _)), _] = self.bytecode.const_memory_accesses(inst) else {
+            return None;
+        };
+        offset.checked_add(len).filter(|&end| end <= i64::MAX as u64)?;
+        Some(offset)
+    }
+
+    /// Returns the pointer to `mem_base + offset` for an access whose size check the memory
+    /// analysis elided, trapping unless `offset + len <= ecx.mem_len`.
+    ///
+    /// The address uses the analysis' constant `offset` rather than the stack value, so the guard
+    /// checks exactly the address accessed even if the analysis is wrong. One guard covers every
+    /// later elided access in the section that ends at or below it, since memory never shrinks.
+    fn build_guarded_memory_addr(&mut self, offset: u64, len: u64) -> B::Value {
+        let end = offset + len;
+        if end > self.guarded_mem_size {
+            let mem_len_field = self.get_field(
+                self.ecx,
+                mem::offset_of!(EvmContext<'_, '_, '_>, mem_len),
+                "ecx.mem_len.addr",
+            );
+            let mem_len = self.bcx.load(self.isize_type, mem_len_field, "ecx.mem_len");
+            let out_of_bounds = self.bcx.icmp_imm(IntCC::UnsignedLessThan, mem_len, end as i64);
+            let current_block = self.current_block();
+            let in_bounds = self.create_block_after(current_block, "mem.guarded");
+            self.bcx.brif_cold(out_of_bounds, self.trap_block, in_bounds, true);
+            self.bcx.switch_to_block(in_bounds);
+            self.guarded_mem_size = end;
+        }
+        // LLVM uniques constants, so this covers later accesses whose stack value is this
+        // constant, and only those.
+        let base = self.bcx.iconst_256(U256::from(offset));
+        if let Some((_, lo, hi)) = self.ensured_memory.iter_mut().find(|(b, ..)| *b == base) {
+            *lo = 0;
+            *hi = (*hi).max(len);
+        } else {
+            self.ensured_memory.push((base, 0, len));
+        }
+        let offset = self.bcx.iconst(self.isize_type, offset as i64);
+        self.build_memory_addr(offset)
     }
 
     fn build_memory_addr(&mut self, offset: B::Value) -> B::Value {
@@ -2099,7 +2163,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     /// Builds the block that dispatches unresolved dynamic jumps to their target.
-    fn build_dynamic_jump_table(&mut self, unreachable_block: B::BasicBlock) {
+    fn build_dynamic_jump_table(&mut self) {
         self.bcx.switch_to_block(self.dynamic_jump_table);
         let i64_type = self.bcx.type_int(64);
         let i32_type = self.bcx.type_int(32);
@@ -2169,7 +2233,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.switch_to_block(dispatch);
         let at_or_after = self.bcx.popcnt(bits);
         let index = self.bcx.iadd(base, at_or_after);
-        self.bcx.switch(index, unreachable_block, &targets, false);
+        self.bcx.switch(index, self.trap_block, &targets, false);
     }
 
     fn add_invalid_jump(&mut self) -> B::BasicBlock {

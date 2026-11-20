@@ -470,6 +470,12 @@ pub trait Builder: BackendTypes + TypeMethods {
 
     fn unreachable(&mut self);
 
+    /// Terminates the current block with a trap that aborts execution if reached.
+    ///
+    /// Unlike [`unreachable`](Self::unreachable), the optimizer cannot assume the block is never
+    /// reached, so a wrong assumption stops execution instead of miscompiling surrounding code.
+    fn trap(&mut self);
+
     fn get_or_build_function(
         &mut self,
         name: &str,
