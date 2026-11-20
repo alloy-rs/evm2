@@ -447,9 +447,12 @@ fn an_over_budget_log_halts_before_the_opcode_runs() {
             ..Default::default()
         },
     );
-    let run = |limit, budget| {
-        let config =
-            GethDefaultTracingOptions { enable_memory: Some(true), limit, ..Default::default() };
+    let run = |db: &InMemoryDB, enable_memory, limit, budget| {
+        let config = GethDefaultTracingOptions {
+            enable_memory: Some(enable_memory),
+            limit,
+            ..Default::default()
+        };
         let mut tracer = DebugInspector::new_with_struct_log_mode(
             GethDebugTracingOptions { config, ..Default::default() },
             StructLogMode::Raw,
@@ -481,7 +484,7 @@ fn an_over_budget_log_halts_before_the_opcode_runs() {
         });
         (observer.0, logs)
     };
-    let (count, logs) = run(None, None);
+    let (count, logs) = run(&db, true, None, None);
     assert_eq!(count, 1);
     let before = logs
         .unwrap()
@@ -489,9 +492,24 @@ fn an_over_budget_log_halts_before_the_opcode_runs() {
         .take_while(|log| !log.get().contains(r#""op":"LOG0""#))
         .map(|log| log.get().len())
         .sum::<usize>();
-    let (count, result) = run(Some(before as u64 + 1024), Some(before + 2048));
+    let (count, result) = run(&db, true, Some(before as u64 + 1024), Some(before + 2048));
     assert!(result.is_none());
     assert_eq!(count, 0);
+
+    // With no memory snapshots, the next log's header and stack alone exceed the budget.
+    let db = db_with(hex!("5f5fa000").to_vec());
+    let (count, logs) = run(&db, false, None, None);
+    assert_eq!(count, 1);
+    let logs = logs.unwrap();
+    let prefix = logs[..2].iter().map(|log| log.get().len()).sum::<usize>();
+    let mut minimum = serde_json::from_str::<Value>(logs[2].get()).unwrap();
+    minimum["gasCost"] = json!(0);
+    let minimum = serde_json::to_vec(&minimum).unwrap().len();
+    for bytes in [prefix, prefix + minimum - 1] {
+        let (count, result) = run(&db, false, None, Some(bytes));
+        assert!(result.is_none());
+        assert_eq!(count, 0);
+    }
 }
 
 /// Runs a raw or typed tracer composed with another inspector.

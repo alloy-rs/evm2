@@ -1,7 +1,12 @@
 //! Geth struct logs written as JSON while the transaction executes.
 
 use crate::tracing::{
-    TraceLimits, config::geth_step_limit, limits::TraceBudget, storage_change, types::is_call_like,
+    TraceLimits,
+    builder::geth::{struct_log_header_len, struct_log_stack_len},
+    config::geth_step_limit,
+    limits::TraceBudget,
+    storage_change,
+    types::is_call_like,
     utils::step_cost,
 };
 use alloc::{boxed::Box, collections::BTreeMap, format, string::String, vec::Vec};
@@ -268,45 +273,9 @@ impl RawStructLogInspector {
             return;
         }
 
-        // The return data and the memory can be large, so they are charged before they are
-        // copied. The rest of the struct log is charged once its size is known.
-        let mut reserved = 0;
-        self.tail.clear();
-        if self.opts.is_stack_enabled() {
-            self.tail.push_stack(interp.stack().as_slice());
-        }
-        if self.opts.is_return_data_enabled() && !interp.return_data().is_empty() {
-            let len = Tail::return_data_len(interp.return_data());
-            if !self.budget.reserve(len) {
-                self.step = StepState::Skipped;
-                return;
-            }
-            reserved += len;
-            self.tail.push_return_data(interp.return_data());
-        }
-        if self.opts.is_memory_enabled() && !interp.memory().is_empty() {
-            let memory = interp.memory();
-            let memory = memory.slice(0, memory.len());
-            let len = Tail::memory_len(memory);
-            if !self.budget.reserve(len) {
-                self.step = StepState::Skipped;
-                return;
-            }
-            reserved += len;
-            self.tail.push_memory(memory);
-        }
-
         let op = OpCode::new_or_unknown(interp.opcode());
-        if self.opts.is_storage_enabled() {
-            self.storage_access = storage_change(interp, op.get()).map(|change| StorageAccess {
-                address: interp.message().destination,
-                key: change.key,
-                value: change.value,
-            });
-        }
-
         let gas = interp.gas();
-        self.step = StepState::Recording(RecordingStep {
+        let mut step = RecordingStep {
             pc: interp.pc() as u64,
             op,
             gas: gas.remaining(),
@@ -319,8 +288,61 @@ impl RawStructLogInspector {
                 .version()
                 .feature(EvmFeatures::EIP8037)
                 .then_some(gas.reservoir()),
-            reserved,
-        });
+            reserved: 0,
+        };
+        let stack = interp.stack();
+        let stack = self.opts.is_stack_enabled().then(|| stack.as_slice());
+        let return_data = interp.return_data().as_ref();
+        let return_data =
+            (self.opts.is_return_data_enabled() && !return_data.is_empty()).then_some(return_data);
+        let memory = interp.memory();
+        let memory = (self.opts.is_memory_enabled() && !memory.is_empty())
+            .then(|| memory.slice(0, memory.len()));
+        // Charge fields known at entry before reserving scratch space or executing the opcode.
+        // Even a zero gas cost takes one digit. Outcome-dependent fields can only add bytes.
+        if self.budget.limits.max_recorded_bytes.is_some() {
+            let op_len = if op.is_valid() {
+                op.as_str().len()
+            } else {
+                format!("opcode {:#x} not defined", op.get()).len()
+            };
+            let mut len = struct_log_header_len(
+                step.pc,
+                op_len,
+                step.gas,
+                0,
+                step.depth,
+                step.state_gas_reservoir,
+                step.refund,
+            );
+            len += stack.map_or(0, struct_log_stack_len);
+            len += return_data.map_or(0, Tail::return_data_len);
+            len += memory.map_or(0, Tail::memory_len);
+            if !self.budget.reserve(len) {
+                self.step = StepState::Skipped;
+                return;
+            }
+            step.reserved = len;
+        }
+        self.tail.clear();
+        if let Some(stack) = stack {
+            self.tail.push_stack(stack);
+        }
+        if let Some(data) = return_data {
+            self.tail.push_return_data(data);
+        }
+        if let Some(memory) = memory {
+            self.tail.push_memory(memory);
+        }
+        if self.opts.is_storage_enabled() {
+            self.storage_access = storage_change(interp, op.get()).map(|change| StorageAccess {
+                address: interp.message().destination,
+                key: change.key,
+                value: change.value,
+            });
+        }
+
+        self.step = StepState::Recording(step);
     }
 
     /// Writes the struct log of the running step, unless a message it started has written it.
@@ -681,7 +703,7 @@ struct RecordingStep {
     state_gas_spent: i64,
     /// The state gas reservoir, if the fork has one.
     state_gas_reservoir: Option<u64>,
-    /// The bytes of the step's buffers that are already charged to the byte budget.
+    /// The step's known JSON bytes already charged to the recording budget.
     reserved: usize,
 }
 
