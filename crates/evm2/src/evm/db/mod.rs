@@ -440,6 +440,11 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
         self.counts.get_block_hash += 1;
         self.db.get_block_hash(number)
     }
+
+    #[inline]
+    fn has_storage_for_absent_accounts(&self) -> bool {
+        self.db.has_storage_for_absent_accounts()
+    }
 }
 
 impl<'a> core::ops::Deref for dyn DynDatabase + 'a {
