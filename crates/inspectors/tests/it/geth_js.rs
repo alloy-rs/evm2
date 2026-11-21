@@ -640,27 +640,30 @@ fn test_geth_exceptional_halt_costs_zero() {
         events: [],
         step: function(log) {
             if (log.getError()) this.events.push(["step", log.op.toString(), log.getGas(), log.getCost()]);
+            else this.cost = log.getCost();
         },
         fault: function(log) {
-            this.events.push(["fault", log.op.toString(), log.getGas(), log.getCost()]);
+            this.events.push(["fault", log.op.toString(), log.getGas(), log.getCost(), this.cost]);
         },
         result: function() { return this.events; }
     }"#;
     // Before ethereum/go-ethereum#36166, geth reported the constant gas of an opcode that fails its
-    // stack check, such as 32000 for CREATE.
-    for (call, child_gas, child, opcode, gas, hook) in [
-        (op::CALL, 100_000, &hex!("6001630fffffff52")[..], "MSTORE", 99_994, "step"),
-        (op::CALL, 0x400, &hex!("5f5f5f5f5f60445af1")[..], "CALL", 1_009, "step"),
-        (op::CALL, 50_000, &hex!("602a5f55")[..], "SSTORE", 49_995, "step"),
-        (op::CALL, 100_000, &hex!("01")[..], "ADD", 100_000, "step"),
-        (op::CALL, 100_000, &[op::PUSH0; 1025][..], "PUSH0", 97_952, "step"),
-        (op::CALL, 100_000, &hex!("f0")[..], "CREATE", 100_000, "step"),
-        (op::CALL, 100_000, &hex!("a3")[..], "LOG3", 100_000, "step"),
-        (op::CALL, 100_000, &hex!("3b")[..], "EXTCODESIZE", 100_000, "step"),
-        (op::CALL, 100_000, &hex!("600556")[..], "JUMP", 99_997, "fault"),
-        (op::CALL, 100_000, &hex!("60015f5f3e")[..], "RETURNDATACOPY", 99_993, "fault"),
-        (op::STATICCALL, 100_000, &hex!("5f5fa0")[..], "LOG0", 99_996, "fault"),
-        (op::STATICCALL, 100_000, &hex!("5fff")[..], "SELFDESTRUCT", 99_998, "step"),
+    // stack check, such as 32000 for CREATE. A `fault` follows a `step` that has the opcode's cost.
+    for (call, child_gas, child, opcode, gas, fault_step_cost) in [
+        (op::CALL, 100_000, &hex!("6001630fffffff52")[..], "MSTORE", 99_994, None),
+        (op::CALL, 0x400, &hex!("5f5f5f5f5f60445af1")[..], "CALL", 1_009, None),
+        (op::CALL, 50_000, &hex!("602a5f55")[..], "SSTORE", 49_995, None),
+        (op::CALL, 100_000, &hex!("01")[..], "ADD", 100_000, None),
+        (op::CALL, 100_000, &[op::PUSH0; 1025][..], "PUSH0", 97_952, None),
+        (op::CALL, 100_000, &hex!("f0")[..], "CREATE", 100_000, None),
+        (op::CALL, 100_000, &hex!("a3")[..], "LOG3", 100_000, None),
+        (op::CALL, 100_000, &hex!("3b")[..], "EXTCODESIZE", 100_000, None),
+        (op::CALL, 100_000, &hex!("600556")[..], "JUMP", 99_997, Some(8)),
+        // Geth's `step` has cost 9: it charges the memory and copy gas before the bounds check,
+        // which evm2 does first.
+        (op::CALL, 100_000, &hex!("60015f5f3e")[..], "RETURNDATACOPY", 99_993, Some(3)),
+        (op::STATICCALL, 100_000, &hex!("5f5fa0")[..], "LOG0", 99_996, Some(375)),
+        (op::STATICCALL, 100_000, &hex!("5fff")[..], "SELFDESTRUCT", 99_998, None),
     ] {
         // call(child_gas, child, [0,] 0, 0, 0, 0), POP, STOP
         let mut code = vec![op::PUSH0; 4 + usize::from(call == op::CALL)];
@@ -696,7 +699,11 @@ fn test_geth_exceptional_halt_costs_zero() {
                     assert_eq!(log.state_gas_cost, None, "{opcode}");
                 }
                 GethTrace::JS(events) => {
-                    assert_eq!(events, json!([[hook, opcode, gas, 0]]), "{opcode}");
+                    let expected = match fault_step_cost {
+                        Some(cost) => json!([["fault", opcode, gas, 0, cost]]),
+                        None => json!([["step", opcode, gas, 0]]),
+                    };
+                    assert_eq!(events, expected, "{opcode}");
                 }
                 trace => panic!("unexpected trace: {trace:?}"),
             }
