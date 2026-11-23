@@ -692,7 +692,9 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return;
         }
         let result = interp.result().err();
-        let is_fault = result.is_some_and(|stop| should_fault(stop, pending.instruction.op));
+        // A failed stack check leaves the stack as the opcode found it.
+        let is_fault = result
+            .is_some_and(|stop| should_fault(stop, pending.instruction.op, interp.stack().len()));
         let error = result.and_then(|stop| utils::fmt_error_msg(stop, TraceStyle::Geth));
         if self.step_fn.is_some() {
             self.invoke_step_hook(interp, false, if is_fault { None } else { error.clone() });
@@ -1055,10 +1057,16 @@ struct FaultStep {
 }
 
 // Geth reports validation failures through step; execution failures also invoke fault.
-const fn should_fault(stop: InstrStop, opcode: u8) -> bool {
+const fn should_fault(stop: InstrStop, opcode: u8, stack_len: usize) -> bool {
     match stop {
-        InstrStop::StackUnderflow
-        | InstrStop::StackOverflow
+        // Geth checks only the jump table minimum up front; a deeper item named by the
+        // immediate underflows while the opcode runs.
+        InstrStop::StackUnderflow => match opcode {
+            op::DUPN => stack_len >= 1,
+            op::SWAPN | op::EXCHANGE => stack_len >= 2,
+            _ => false,
+        },
+        InstrStop::StackOverflow
         | InstrStop::CreateInitCodeSizeLimit
         | InstrStop::CallNotAllowedInsideStatic => false,
         // LOG and TSTORE check write protection during execution, unlike these opcodes.
