@@ -577,9 +577,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Sets the warmth flags in `flags` ([`AccountFlags::WARM`], [`AccountFlags::CODE_WARM`]) that
     /// are not already in effect, and returns the ones it set.
     ///
-    /// The flags it sets are journaled together: when this handle already recorded an account
-    /// snapshot, that snapshot restores them on rollback; otherwise one
-    /// [`JournalEntry::AccountWarmed`] records exactly the flags set.
+    /// Setting any of them records the handle's [`JournalEntry::AccountChange`] snapshot, which
+    /// restores them on rollback.
     #[inline]
     pub fn warm_with(&mut self, flags: AccountFlags) -> AccountFlags {
         let mut cold = AccountFlags::empty();
@@ -589,11 +588,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if set.is_empty() {
             return set;
         }
-        if self.snapshot.is_none() {
-            self.inner
-                .journal
-                .push(JournalEntry::AccountWarmed { address: self.address, flags: set });
-        }
+        self.record_change();
         self.tracked.flags.insert(set);
         set
     }

@@ -908,11 +908,6 @@ impl<'a> State<'a> {
                         entry.flags = (previous_flags - kept) | (entry.flags & kept);
                     }
                 }
-                JournalEntry::AccountWarmed { address, flags } => {
-                    if let Some(entry) = self.accounts.get_mut(&address) {
-                        entry.flags.remove(flags);
-                    }
-                }
                 JournalEntry::StorageChange { address, key, previous } => {
                     if let Some(slot) = self
                         .accounts
@@ -1830,6 +1825,24 @@ mod tip1175_cooling_tests {
         let mut account = state.account(&address).unwrap();
         assert!(!account.is_code_warm());
         assert!(account.load_code_and_warm().unwrap().1);
+    }
+
+    #[test]
+    fn warm_code_then_change_rolls_back_both() {
+        // Warming the code and then changing the account in the same handle records one
+        // snapshot taken before either, so rollback restores the balance and cools the code.
+        let address = Address::with_last_byte(45);
+        let mut state = State::new(database(address));
+        let checkpoint = state.checkpoint();
+        let mut account = state.account(&address).unwrap();
+        assert!(account.warm_code());
+        account.set_balance(Word::from(7));
+        drop(account);
+        assert_eq!(state.journal.len(), 1);
+        state.rollback(checkpoint, crate::EvmFeatures::empty());
+        let account = state.account(&address).unwrap();
+        assert!(!account.is_code_warm());
+        assert_eq!(account.balance(), Word::ZERO);
     }
 
     #[test]

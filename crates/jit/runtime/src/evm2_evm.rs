@@ -909,12 +909,9 @@ mod tests {
                         let result = Host::execute_message(&mut host, &mut message).unwrap();
                         let destination_journaled =
                             host.state_mut().journal().iter().any(|entry| {
-                                // A warm-only load journals `AccountWarmed`, any other change
-                                // an `AccountChange` snapshot.
                                 matches!(
                                     entry,
                                     JournalEntry::AccountChange { address, .. }
-                                        | JournalEntry::AccountWarmed { address, .. }
                                         if *address == destination
                                 )
                             });
