@@ -557,40 +557,33 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.touch();
     }
 
-    /// Marks the account warm for EIP-2929 gas accounting.
+    /// Marks the account warm for EIP-2929 gas accounting, recording a revert snapshot when this
+    /// access transitions it from cold to warm.
     ///
     /// Returns `true` if the account was cold before this call. Accounts already warm through the
     /// base warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        !self.warm_with(AccountFlags::WARM).is_empty()
+        if self.is_warm() {
+            return false;
+        }
+        self.record_change();
+        self.tracked.flags.insert(AccountFlags::WARM);
+        true
     }
 
-    /// Marks the account's bytecode warm for Tempo TIP-1175 gas accounting.
+    /// Marks the account's bytecode warm for Tempo TIP-1175 gas accounting, recording a revert
+    /// snapshot when this transitions it from cold to warm.
     ///
     /// Returns `true` if the bytecode was cold before this call.
     #[inline]
     pub fn warm_code(&mut self) -> bool {
-        !self.warm_with(AccountFlags::CODE_WARM).is_empty()
-    }
-
-    /// Sets the warmth flags in `flags` ([`AccountFlags::WARM`], [`AccountFlags::CODE_WARM`]) that
-    /// are not already in effect, and returns the ones it set.
-    ///
-    /// Setting any of them records the handle's [`JournalEntry::AccountChange`] snapshot, which
-    /// restores them on rollback.
-    #[inline]
-    pub fn warm_with(&mut self, flags: AccountFlags) -> AccountFlags {
-        let mut cold = AccountFlags::empty();
-        cold.set(AccountFlags::WARM, !self.is_warm());
-        cold.set(AccountFlags::CODE_WARM, !self.is_code_warm());
-        let set = flags & cold;
-        if set.is_empty() {
-            return set;
+        if self.is_code_warm() {
+            return false;
         }
         self.record_change();
-        self.tracked.flags.insert(set);
-        set
+        self.tracked.flags.insert(AccountFlags::CODE_WARM);
+        true
     }
 
     /// Loads the account's bytecode as a step separate from the account load, and warms it for

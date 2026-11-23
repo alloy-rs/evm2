@@ -2007,9 +2007,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         {
             return Err(InstrStop::OutOfGas.into());
         }
-        let mut warm = AccountFlags::WARM;
-        warm.set(AccountFlags::CODE_WARM, is_code_cold);
-        account.warm_with(warm);
+        account.warm();
+        if is_code_cold {
+            account.warm_code();
+        }
 
         let is_empty_for_new_account_gas = account.is_empty_for_new_account_gas(self.features);
         let (balance, nonce, code_hash, is_empty) = match account.get() {
