@@ -565,9 +565,10 @@ impl JsInspector {
         };
         let refund = interp.host().tx_refunded(frame_refund);
         debug_assert!(refund >= 0, "transaction-wide refund counter went negative: {refund}");
-        // An out-of-gas step consumes the whole remainder it started with.
-        let cost = if interp.result().is_err_and(InstrStop::is_out_of_gas) {
-            pending.instruction.gas
+        // Like geth, the hook that reports an exceptional halt sees cost 0, while a `step` before
+        // a `fault` sees the opcode's cost.
+        let cost = if error.is_some() && interp.result().is_err_and(InstrStop::is_halt) {
+            0
         } else {
             interp.gas().spent().saturating_sub(pending.gas_spent_before)
         };
