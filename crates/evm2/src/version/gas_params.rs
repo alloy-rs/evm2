@@ -173,8 +173,6 @@ gas_ids! {
     TxCreateAccessCost;
     /// Tempo TIP-1175 additional gas for a transaction's first load of an account's bytecode (0 on Ethereum).
     ColdCodeAdditionalCost;
-    /// Tempo TIP-1175 additional gas for a transaction's first load of an EIP-7702 delegation designator (0 on Ethereum).
-    ColdDelegationCodeAdditionalCost;
 
     // Reserved custom gas parameter slots.
 
@@ -456,41 +454,11 @@ impl GasParams {
         self.get(GasId::ColdCodeAdditionalCost)
     }
 
-    /// Returns additional cold EIP-7702 delegation designator load gas (Tempo TIP-1175), zero on
-    /// Ethereum.
-    ///
-    /// A designator is priced apart from contract bytecode, so a cold code load can be charged,
-    /// or skipped, from the account's code hash alone, before the code is read.
-    #[inline]
-    pub const fn cold_delegation_code_additional_cost(&self) -> u64 {
-        self.get(GasId::ColdDelegationCodeAdditionalCost)
-    }
-
     /// Returns whether bytecode loads are priced (Tempo TIP-1175), which turns code warmth
     /// tracking on. False on every Ethereum fork.
     #[inline]
     pub const fn prices_code_load(&self) -> bool {
-        self.cold_code_additional_cost() != 0 || self.cold_delegation_code_additional_cost() != 0
-    }
-
-    /// Returns the cheapest cold bytecode load (Tempo TIP-1175): a caller with less gas left than
-    /// this skips a cold code load before reading it.
-    #[inline]
-    pub const fn min_cold_code_cost(&self) -> u64 {
-        let code = self.cold_code_additional_cost();
-        let delegation = self.cold_delegation_code_additional_cost();
-        if code < delegation { code } else { delegation }
-    }
-
-    /// Returns the gas a cold load of `code` pays (Tempo TIP-1175): the delegation designator
-    /// price for an EIP-7702 designator, the bytecode price otherwise.
-    #[inline]
-    pub fn cold_code_cost(&self, code: &crate::bytecode::Bytecode) -> u64 {
-        if code.is_eip7702() {
-            self.cold_delegation_code_additional_cost()
-        } else {
-            self.cold_code_additional_cost()
-        }
+        self.cold_code_additional_cost() != 0
     }
 
     /// Returns the `(intrinsic_tokens, floor_tokens)` of transaction calldata `input`.

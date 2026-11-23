@@ -794,14 +794,12 @@ fn apply_auth_list_accepts_custom_filtered_authorizations() {
 // Tempo TIP-1175: bytecode loads are priced separately from account loads.
 
 const CODE_COST: u32 = 1_000;
-const DELEGATION_COST: u32 = 300;
 
 /// Runs `entry_code` as the target of a top-level call and returns the total execution gas
 /// (top-level charges included), with the bytecode load priced at `code_cost`.
 fn code_load_gas_priced(
     spec: SpecId,
     code_cost: u32,
-    delegation_cost: u32,
     entry_code: &[u8],
     accounts: &[(Address, Bytecode)],
     prewarm: &[Address],
@@ -810,7 +808,6 @@ fn code_load_gas_priced(
     let entry = Address::with_last_byte(0xe0);
     let mut version = Version::new(spec);
     version.gas_params.set(GasId::ColdCodeAdditionalCost, code_cost);
-    version.gas_params.set(GasId::ColdDelegationCodeAdditionalCost, delegation_cost);
     let mut database = InMemoryDB::default();
     database
         .insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1u64 << 60)));
@@ -858,7 +855,7 @@ fn code_load_gas(
     accounts: &[(Address, Bytecode)],
     prewarm: &[Address],
 ) -> u64 {
-    code_load_gas_priced(spec, code_cost, 0, entry_code, accounts, prewarm)
+    code_load_gas_priced(spec, code_cost, entry_code, accounts, prewarm)
 }
 
 /// Returns how many cold bytecode loads `entry_code` pays for, checking that Ethereum pricing
@@ -943,9 +940,9 @@ fn program(steps: &[(u8, Address)]) -> Vec<u8> {
 #[case::call_then_extcodecopy(&[(op::STATICCALL, CONTRACT), (op::EXTCODECOPY, CONTRACT)], 1)]
 #[case::address_without_code(&[(op::EXTCODESIZE, EOA), (op::CALL, EOA)], 0)]
 #[case::precompile(&[(op::EXTCODESIZE, Address::with_last_byte(2)), (op::STATICCALL, Address::with_last_byte(2))], 0)]
-#[case::extcode_on_delegating_account(&[(op::EXTCODESIZE, DELEGATING), (op::EXTCODECOPY, DELEGATING)], 0)]
-#[case::call_follows_delegation(&[(op::STATICCALL, DELEGATING)], 1)]
-#[case::delegation_target_warmed(&[(op::STATICCALL, DELEGATING), (op::EXTCODESIZE, CONTRACT)], 1)]
+#[case::extcode_on_delegating_account(&[(op::EXTCODESIZE, DELEGATING), (op::EXTCODECOPY, DELEGATING)], 1)]
+#[case::call_follows_delegation(&[(op::STATICCALL, DELEGATING)], 2)]
+#[case::delegation_target_warmed(&[(op::STATICCALL, DELEGATING), (op::EXTCODESIZE, CONTRACT)], 2)]
 #[case::reverted_load_is_rolled_back(&[(op::STATICCALL, REVERTER), (op::EXTCODESIZE, CONTRACT)], 3)]
 #[case::own_code_is_prewarmed(&[(op::EXTCODESIZE, Address::with_last_byte(0xe0))], 0)]
 fn tip1175_code_load_pricing(#[case] steps: &[(u8, Address)], #[case] expected: u64) {
@@ -1026,7 +1023,6 @@ fn tip1175_host_from<D: crate::evm::DynDatabase + 'static>(
 ) -> TestEvm {
     let mut version = Version::new(SpecId::PRAGUE);
     version.gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
-    version.gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
     let mut database = InMemoryDB::default();
     for (address, code) in code_accounts().into_iter().chain(extra.iter().cloned()) {
         database.insert_account_info(&address, AccountInfo::default().with_code(code));
@@ -1138,28 +1134,17 @@ fn tip1175_code_load_gas_boundary(#[case] gas: u64, #[case] success: bool) {
 }
 
 #[rstest::rstest]
-#[case::extcodesize(&[(op::EXTCODESIZE, DELEGATING)], DELEGATION_COST)]
-#[case::extcodesize_twice(&[(op::EXTCODESIZE, DELEGATING), (op::EXTCODECOPY, DELEGATING)], DELEGATION_COST)]
+// A delegation designator is priced as ordinary bytecode.
+#[case::extcodesize(&[(op::EXTCODESIZE, DELEGATING)], 1)]
+#[case::extcodesize_twice(&[(op::EXTCODESIZE, DELEGATING), (op::EXTCODECOPY, DELEGATING)], 1)]
 #[case::extcodehash_is_account_only(&[(op::EXTCODEHASH, DELEGATING)], 0)]
-#[case::call_pays_designator_and_target(&[(op::STATICCALL, DELEGATING)], DELEGATION_COST + CODE_COST)]
+#[case::call_pays_designator_and_target(&[(op::STATICCALL, DELEGATING)], 2)]
 #[case::call_then_extcode_is_warm(
     &[(op::STATICCALL, DELEGATING), (op::EXTCODESIZE, DELEGATING), (op::EXTCODESIZE, CONTRACT)],
-    DELEGATION_COST + CODE_COST
+    2
 )]
-#[case::contract_pays_code_price(&[(op::EXTCODESIZE, CONTRACT)], CODE_COST)]
-fn tip1175_delegation_designator_pricing(#[case] steps: &[(u8, Address)], #[case] expected: u32) {
-    let code = program(steps);
-    let gas = |code_cost, delegation_cost| {
-        code_load_gas_priced(
-            SpecId::PRAGUE,
-            code_cost,
-            delegation_cost,
-            &code,
-            &code_accounts(),
-            &[],
-        )
-    };
-    assert_eq!(gas(CODE_COST, DELEGATION_COST) - gas(0, 0), u64::from(expected));
+fn tip1175_delegation_designator_pricing(#[case] steps: &[(u8, Address)], #[case] expected: u64) {
+    assert_eq!(cold_code_loads(&program(steps), &code_accounts(), &[]), expected);
 }
 
 #[test]
@@ -1179,9 +1164,8 @@ fn tip1175_skipped_designator_load_halts_without_warming() {
 }
 
 #[rstest::rstest]
-// Gas between the cheaper (designator) and the real (contract) price: the load is refused at the
-// real price and leaves the code cold.
-#[case::between_prices(DELEGATION_COST + 1, true)]
+// One gas short of the code price: the load is refused and leaves the code cold.
+#[case::short_by_one(CODE_COST - 1, true)]
 #[case::exact_price(CODE_COST, false)]
 fn tip1175_code_load_checks_the_exact_price(#[case] gas_limit: u32, #[case] skipped: bool) {
     let mut evm = tip1175_host();
@@ -1237,19 +1221,12 @@ fn tip1175_account_and_code_warmth_roll_back_together() {
 fn tip1175_load_flags_for_gas() {
     let mut gas_params = Version::new(SpecId::PRAGUE).gas_params;
     gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
-    gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
     let flags = |gas| AccountLoadFlags::for_gas(gas, &gas_params).with_code();
     assert_eq!(flags(0), AccountLoadFlags::CODE);
-    assert_eq!(
-        flags(u64::from(DELEGATION_COST)),
-        AccountLoadFlags::CODE | AccountLoadFlags::COLD_DELEGATION
-    );
+    assert_eq!(flags(u64::from(CODE_COST)), AccountLoadFlags::CODE | AccountLoadFlags::COLD_CODE);
     assert_eq!(
         flags(2_500),
-        AccountLoadFlags::CODE
-            | AccountLoadFlags::COLD_ACCOUNT
-            | AccountLoadFlags::COLD_CODE
-            | AccountLoadFlags::COLD_DELEGATION
+        AccountLoadFlags::CODE | AccountLoadFlags::COLD_ACCOUNT | AccountLoadFlags::COLD_CODE
     );
     assert_eq!(
         flags(2_500 + u64::from(CODE_COST)),
@@ -1267,7 +1244,6 @@ fn tip1175_top_level_delegation_run(gas: u64) -> (u64, bool, bool) {
     let entry = Address::with_last_byte(0xe0);
     let mut version = Version::new(spec);
     version.gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
-    version.gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
     let mut database = InMemoryDB::default();
     database
         .insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1u64 << 60)));
@@ -1310,9 +1286,9 @@ fn tip1175_top_level_delegation_unaffordable_code_stays_cold() {
     let (spent, halted, warm) = tip1175_top_level_delegation_run(1_000_000);
     assert!(!halted);
     assert!(warm);
-    // Leave enough for the cheaper (designator) price but not the contract price at the code
-    // step: the frame halts and the code must stay cold.
-    let budget = spent - u64::from(CODE_COST) + u64::from(DELEGATION_COST) + 1;
+    // One gas short of the code price at the code step: the frame halts and the code must stay
+    // cold.
+    let budget = spent - 1;
     let (_, halted, warm) = tip1175_top_level_delegation_run(budget);
     assert!(halted, "the short budget must halt the frame before it runs");
     assert!(!warm);

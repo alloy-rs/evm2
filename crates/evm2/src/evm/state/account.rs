@@ -592,7 +592,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Returns the bytecode and whether its load was cold: the account has code (an EIP-7702
     /// delegation designator included) that was not warm. Only a cold load warms the code, so the
     /// caller charges
-    /// [`GasParams::cold_code_cost`](crate::version::GasParams::cold_code_cost) exactly when this
+    /// [`GasParams::cold_code_additional_cost`](crate::version::GasParams::cold_code_additional_cost) exactly when this
     /// returns `true`, and a later load in the transaction is free.
     #[inline]
     pub fn load_code_and_warm(&mut self) -> DbResult<(Bytecode, bool)> {
