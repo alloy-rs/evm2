@@ -2222,7 +2222,8 @@ bitflags::bitflags! {
     /// The host halts with out of gas, before warming anything, when the account or its code
     /// turns out to be cold and the matching `COLD_*` flag is unset. A cold account the caller
     /// can't pay for is not read from the database at all. Build the flags from the gas left with
-    /// [`Self::affordable`], or use [`Self::NO_GAS_CHECK`] when the load is not gated on gas.
+    /// [`Self::for_gas`], or use [`Self::NO_GAS_CHECK`] when the load is not gated on gas, and add
+    /// [`Self::with_code`] to load the bytecode.
     ///
     /// Code is part of the account, so a warm code load costs nothing beyond the account access
     /// and code is never loaded without its account. New cold outcomes get their own bit.
@@ -2250,21 +2251,14 @@ bitflags::bitflags! {
 }
 
 impl AccountLoadFlags {
-    /// Returns the flags for a load with `gas_left` to pay its cold surcharges, loading the
-    /// bytecode when `load_code` is set.
+    /// Returns the flags for a load with `gas_left` to pay its cold surcharges. Loads only the
+    /// account; chain [`Self::with_code`] to load the bytecode too.
     #[inline]
-    pub const fn affordable(
-        gas_left: u64,
-        gas_params: &crate::version::GasParams,
-        load_code: bool,
-    ) -> Self {
+    pub const fn for_gas(gas_left: u64, gas_params: &crate::version::GasParams) -> Self {
         let account = gas_params.cold_account_additional_cost();
         let code = gas_params.cold_code_additional_cost();
         let delegation = gas_params.cold_delegation_code_additional_cost();
         let mut bits = 0;
-        if load_code {
-            bits |= Self::CODE.bits();
-        }
         if gas_left >= account {
             bits |= Self::COLD_ACCOUNT.bits();
         }
@@ -2281,6 +2275,13 @@ impl AccountLoadFlags {
             bits |= Self::COLD_ACCOUNT_AND_DELEGATION.bits();
         }
         Self::from_bits_retain(bits)
+    }
+
+    /// Returns these flags with [`Self::CODE`] set, so the load also returns the bytecode.
+    #[inline]
+    #[must_use]
+    pub const fn with_code(self) -> Self {
+        self.union(Self::CODE)
     }
 
     /// Returns the flag a cold bytecode load needs: with or without a cold account, for contract

@@ -91,7 +91,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
     // its account access and its bytecode.
     let remaining_gas = gas.remaining();
     let mut account =
-        host.load_account(&to, AccountLoadFlags::affordable(remaining_gas, gas_params, true))?;
+        host.load_account(&to, AccountLoadFlags::for_gas(remaining_gas, gas_params).with_code())?;
     let mut cost = account.cold_cost(gas_params);
     let mut code = core::mem::take(&mut account.code);
     let mut code_address = to;
@@ -104,7 +104,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
         }
         let delegated_account = host.load_account(
             &delegated_address,
-            AccountLoadFlags::affordable(remaining_gas - cost, gas_params, true),
+            AccountLoadFlags::for_gas(remaining_gas - cost, gas_params).with_code(),
         )?;
         cost += delegated_account.cold_cost(gas_params);
         code = delegated_account.code;

@@ -58,10 +58,10 @@ pub(crate) fn word_to_usize(value: U256) -> Result<usize, InstrStop> {
 pub(crate) fn load_account<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &Address,
-    load_code: bool,
+    code: AccountLoadFlags,
 ) -> Result<AccountLoad, BuiltinError> {
     // Built first: computing it inside the call would borrow `ecx` while `host()` holds it.
-    let flags = AccountLoadFlags::affordable(ecx.gas.remaining(), ecx.gas_params(), load_code);
+    let flags = AccountLoadFlags::for_gas(ecx.gas.remaining(), ecx.gas_params()).union(code);
     let account =
         ecx.host().load_account(address, flags).map_err(|stop| ecx.interpreter_mut().fail(stop))?;
     ecx.gas.spend(account.cold_cost(ecx.gas_params()))?;

@@ -617,7 +617,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     let load = match Host::load_account(
                         host,
                         &delegated_address,
-                        AccountLoadFlags::affordable(tx_gas.remaining(), &gas_params, true),
+                        AccountLoadFlags::for_gas(tx_gas.remaining(), &gas_params).with_code(),
                     ) {
                         Ok(load) => load,
                         Err(HostError::Halt(_)) => return Ok(halted(host)),

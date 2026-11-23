@@ -1053,7 +1053,7 @@ fn load_code(
     gas: u64,
 ) -> Result<crate::evm::AccountLoad, crate::HostError> {
     let gas_params = Host::execution_config(evm).version().gas_params;
-    Host::load_account(evm, address, AccountLoadFlags::affordable(gas, &gas_params, true))
+    Host::load_account(evm, address, AccountLoadFlags::for_gas(gas, &gas_params).with_code())
 }
 
 #[test]
@@ -1234,11 +1234,11 @@ fn tip1175_account_and_code_warmth_roll_back_together() {
 }
 
 #[test]
-fn tip1175_load_flags_affordable() {
+fn tip1175_load_flags_for_gas() {
     let mut gas_params = Version::new(SpecId::PRAGUE).gas_params;
     gas_params.set(GasId::ColdCodeAdditionalCost, CODE_COST);
     gas_params.set(GasId::ColdDelegationCodeAdditionalCost, DELEGATION_COST);
-    let flags = |gas| AccountLoadFlags::affordable(gas, &gas_params, true);
+    let flags = |gas| AccountLoadFlags::for_gas(gas, &gas_params).with_code();
     assert_eq!(flags(0), AccountLoadFlags::CODE);
     assert_eq!(
         flags(u64::from(DELEGATION_COST)),
@@ -1255,10 +1255,7 @@ fn tip1175_load_flags_affordable() {
         flags(2_500 + u64::from(CODE_COST)),
         AccountLoadFlags::CODE | AccountLoadFlags::NO_GAS_CHECK
     );
-    assert!(
-        !AccountLoadFlags::affordable(u64::MAX, &gas_params, false)
-            .contains(AccountLoadFlags::CODE)
-    );
+    assert!(!AccountLoadFlags::for_gas(u64::MAX, &gas_params).contains(AccountLoadFlags::CODE));
 }
 
 /// Builds an EIP-2780 host whose transaction target delegates to `CONTRACT`, prepares the

@@ -10,10 +10,10 @@ use evm2_macros::instruction;
 fn load_account<T: EvmTypesHost>(
     cx: &mut GasInstructionCx<'_, '_, '_, T>,
     addr: Word,
-    load_code: bool,
+    code: AccountLoadFlags,
 ) -> Result<AccountLoad> {
     // Built first: computing it inside the call would borrow `cx.state` while `host()` holds it.
-    let flags = AccountLoadFlags::affordable(cx.gas.remaining(), cx.state.gas_params(), load_code);
+    let flags = AccountLoadFlags::for_gas(cx.gas.remaining(), cx.state.gas_params()).union(code);
     let account = cx
         .state
         .host()
@@ -48,7 +48,7 @@ pub fn address(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn balance(cx: _, [addr]: [Word]) -> Result<out> {
-    *out = load_account(&mut cx, *addr, false)?.balance;
+    *out = load_account(&mut cx, *addr, AccountLoadFlags::empty())?.balance;
 }
 
 #[instruction]
@@ -109,12 +109,12 @@ pub fn gasprice(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
-    out.write_u64(load_account(&mut cx, *addr, true)?.code.len() as u64);
+    out.write_u64(load_account(&mut cx, *addr, AccountLoadFlags::CODE)?.code.len() as u64);
 }
 
 #[instruction(dynamic_gas)]
 pub fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
-    let account = load_account(&mut cx, *addr, false)?;
+    let account = load_account(&mut cx, *addr, AccountLoadFlags::empty())?;
     *out = if account.is_empty { Word::ZERO } else { account.code_hash.into() };
 }
 
@@ -129,7 +129,7 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
     } else {
         0
     };
-    let code = load_account(&mut cx, *addr, true)?.code;
+    let code = load_account(&mut cx, *addr, AccountLoadFlags::CODE)?.code;
     cx.state.0.memory.set_data(
         memory_offset,
         code_offset.to_usize_saturated(),

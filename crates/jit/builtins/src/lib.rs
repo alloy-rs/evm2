@@ -201,7 +201,7 @@ pub unsafe fn __revmc_builtin_balance<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let account = load_account(ecx, &address.to_address(), false)?;
+    let account = load_account(ecx, &address.to_address(), AccountLoadFlags::empty())?;
     *address = account.balance.into();
     Ok(())
 }
@@ -264,7 +264,7 @@ pub unsafe fn __revmc_builtin_extcodesize<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let account = load_account(ecx, &address.to_address(), true)?;
+    let account = load_account(ecx, &address.to_address(), AccountLoadFlags::CODE)?;
     *address = U256::from(account.code.len()).into();
     Ok(())
 }
@@ -284,7 +284,7 @@ pub unsafe fn __revmc_builtin_extcodecopy<T: EvmTypesHost>(
         ensure_memory(ecx, memory_offset_usize, len)?;
     }
 
-    let account = load_account(ecx, &address.to_address(), true)?;
+    let account = load_account(ecx, &address.to_address(), AccountLoadFlags::CODE)?;
     let code = account.code.original_bytes();
 
     let code_offset_usize =
@@ -325,7 +325,7 @@ pub unsafe fn __revmc_builtin_extcodehash<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let account = load_account(ecx, &address.to_address(), false)?;
+    let account = load_account(ecx, &address.to_address(), AccountLoadFlags::empty())?;
     let code_hash = if account.is_empty { B256::ZERO } else { account.code_hash };
     *address = EvmWord::from_be_bytes(code_hash);
     Ok(())
@@ -900,7 +900,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let remaining_gas = ecx.gas.remaining();
     let mut account = ecx
         .host()
-        .load_account(&to, AccountLoadFlags::affordable(remaining_gas, &version.gas_params, true))
+        .load_account(
+            &to,
+            AccountLoadFlags::for_gas(remaining_gas, &version.gas_params).with_code(),
+        )
         .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
     let mut cost = account.cold_cost(&version.gas_params);
     let mut new_account_state_gas = 0;
@@ -917,7 +920,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
             .host()
             .load_account(
                 &delegated_address,
-                AccountLoadFlags::affordable(remaining_gas - cost, &version.gas_params, true),
+                AccountLoadFlags::for_gas(remaining_gas - cost, &version.gas_params).with_code(),
             )
             .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
         cost += delegated_account.cold_cost(&version.gas_params);
