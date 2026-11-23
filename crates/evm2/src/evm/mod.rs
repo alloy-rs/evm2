@@ -2261,6 +2261,14 @@ impl AccountLoadFlags {
         Self::from_bits_retain(bits)
     }
 
+    /// Returns flags for a load that only goes ahead when nothing is cold: a cold account, or with
+    /// [`Self::with_code`] cold code, halts with out of gas without being read. Use it when the
+    /// caller has no gas for any cold surcharge.
+    #[inline]
+    pub const fn warm_only() -> Self {
+        Self::empty()
+    }
+
     /// Returns these flags with [`Self::CODE`] set, so the load also returns the bytecode.
     #[inline]
     #[must_use]

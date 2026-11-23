@@ -201,7 +201,7 @@ pub unsafe fn __revmc_builtin_balance<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let account = load_account(ecx, &address.to_address(), AccountLoadFlags::empty())?;
+    let account = load_account(ecx, &address.to_address())?;
     *address = account.balance.into();
     Ok(())
 }
@@ -264,7 +264,7 @@ pub unsafe fn __revmc_builtin_extcodesize<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let account = load_account(ecx, &address.to_address(), AccountLoadFlags::CODE)?;
+    let account = load_account_with_code(ecx, &address.to_address())?;
     *address = U256::from(account.code.len()).into();
     Ok(())
 }
@@ -284,7 +284,7 @@ pub unsafe fn __revmc_builtin_extcodecopy<T: EvmTypesHost>(
         ensure_memory(ecx, memory_offset_usize, len)?;
     }
 
-    let account = load_account(ecx, &address.to_address(), AccountLoadFlags::CODE)?;
+    let account = load_account_with_code(ecx, &address.to_address())?;
     let code = account.code.original_bytes();
 
     let code_offset_usize =
@@ -325,7 +325,7 @@ pub unsafe fn __revmc_builtin_extcodehash<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let account = load_account(ecx, &address.to_address(), AccountLoadFlags::empty())?;
+    let account = load_account(ecx, &address.to_address())?;
     let code_hash = if account.is_empty { B256::ZERO } else { account.code_hash };
     *address = EvmWord::from_be_bytes(code_hash);
     Ok(())

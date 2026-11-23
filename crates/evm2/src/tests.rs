@@ -1217,6 +1217,32 @@ fn tip1175_account_and_code_warmth_roll_back_together() {
     assert!(!account.is_code_warm());
 }
 
+#[rstest::rstest]
+fn tip1175_warm_only_skips_cold_loads(#[values(false, true)] with_code: bool) {
+    let mut evm = tip1175_counting_host();
+    let flags = if with_code {
+        AccountLoadFlags::warm_only().with_code()
+    } else {
+        AccountLoadFlags::warm_only()
+    };
+    // A cold account is skipped without being read.
+    assert!(matches!(
+        Host::load_account(&mut evm, &CONTRACT, flags),
+        Err(crate::HostError::Halt(InstrStop::OutOfGas))
+    ));
+    assert!(!evm.state.loaded_accounts().any(|(address, _)| *address == CONTRACT));
+    // A warm account with cold code: the account loads, the code is skipped.
+    warm_account(&mut evm, &CONTRACT);
+    let reads = code_reads(&evm);
+    let load = Host::load_account(&mut evm, &CONTRACT, flags);
+    if with_code {
+        assert!(matches!(load, Err(crate::HostError::Halt(InstrStop::OutOfGas))));
+        assert_eq!(code_reads(&evm), reads);
+    } else {
+        assert!(!load.unwrap().is_cold);
+    }
+}
+
 #[test]
 fn tip1175_load_flags_for_gas() {
     let mut gas_params = Version::new(SpecId::PRAGUE).gas_params;
