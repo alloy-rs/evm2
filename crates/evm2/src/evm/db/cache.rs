@@ -237,14 +237,20 @@ impl<ExtDB> CacheDB<ExtDB> {
     ///
     /// A storage wipe marker is dropped as well, so slots it had zeroed read from the backing
     /// database again, unless the account is cached as absent (for example after a committed
-    /// selfdestruct): its storage stays wiped, so those reads still return zero.
+    /// selfdestruct): those reads still return zero, and a database that
+    /// [holds storage for absent accounts](DynDatabase::has_storage_for_absent_accounts) keeps
+    /// the account's storage wiped.
     #[inline]
-    pub fn remove_account_storage(&mut self, address: &Address) -> Option<AccountStorageCache> {
+    pub fn remove_account_storage(&mut self, address: &Address) -> Option<AccountStorageCache>
+    where
+        ExtDB: DynDatabase,
+    {
         let removed = self.cache.storage.remove(address);
         // A database that holds storage for absent accounts would otherwise serve the storage a
         // committed deletion wiped.
         if removed.as_ref().is_some_and(|storage| storage.wiped)
             && self.cache.accounts.get(address).is_some_and(Option::is_none)
+            && self.db.has_storage_for_absent_accounts()
         {
             self.cache.storage.entry(*address).or_default().wipe();
         }
@@ -741,11 +747,17 @@ mod tests {
         assert_eq!(cache.get_storage(&other, &key).unwrap(), backing);
 
         // An account cached as absent still shadows the backing database.
+        cache.cache.storage.entry(other).or_default().wipe();
         cache.cache.accounts.insert(other, None);
-        cache.remove_account_storage(&other);
+        assert!(cache.remove_account_storage(&other).unwrap().wiped);
         let loads = cache.db.inner().storage_loads;
         assert_eq!(cache.get_storage(&other, &key).unwrap(), Word::ZERO);
         assert_eq!(cache.db.inner().storage_loads, loads);
+        // Without a wipe marker left behind: nothing is left to remove, and the backing database is
+        // read once the account exists again.
+        assert!(cache.remove_account_storage(&other).is_none());
+        cache.insert_account_info(&other, AccountInfo::default());
+        assert_eq!(cache.get_storage(&other, &key).unwrap(), backing);
 
         // Unless the backing database holds storage for absent accounts, also through wrappers.
         let holds_absent_storage = || {
