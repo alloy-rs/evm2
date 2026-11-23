@@ -1039,7 +1039,7 @@ fn tip1175_host_from<D: crate::evm::DynDatabase + 'static>(
 
 /// Loads and warms `address` without its code, as `BALANCE` would with gas to spare.
 fn warm_account(evm: &mut TestEvm, address: &Address) {
-    Host::load_account(evm, address, AccountLoadFlags::NO_GAS_CHECK).unwrap();
+    Host::load_account(evm, address, AccountLoadFlags::always_load()).unwrap();
 }
 
 /// Loads `address` with its code, with `gas` left for the cold surcharges.

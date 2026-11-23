@@ -375,7 +375,7 @@ pub unsafe fn __revmc_builtin_self_balance<T: EvmTypesHost>(
     let destination = ecx.message().destination;
     let balance = ecx
         .host()
-        .load_account(&destination, AccountLoadFlags::NO_GAS_CHECK)
+        .load_account(&destination, AccountLoadFlags::always_load())
         .map_err(|stop| ecx.interpreter_mut().fail(stop))?
         .balance;
     *slot = balance.into();
@@ -667,7 +667,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     } else {
         Some(
             ecx.host()
-                .load_account(&caller, AccountLoadFlags::NO_GAS_CHECK)
+                .load_account(&caller, AccountLoadFlags::always_load())
                 .map_err(|error| ecx.interpreter_mut().fail(error))?,
         )
     };
@@ -705,7 +705,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         // failures return above before the destination is accessed.
         if ecx
             .host()
-            .load_account(&destination, AccountLoadFlags::NO_GAS_CHECK)
+            .load_account(&destination, AccountLoadFlags::always_load())
             .map_err(|error| ecx.interpreter_mut().fail(error))?
             .is_empty_for_new_account_gas
         {

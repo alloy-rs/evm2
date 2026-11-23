@@ -456,7 +456,7 @@ pub fn create_with<T: EvmTypesHost>(
         Some(
             state
                 .host()
-                .load_account(&caller, AccountLoadFlags::NO_GAS_CHECK)
+                .load_account(&caller, AccountLoadFlags::always_load())
                 .map_err(|error| state.fail(error))?,
         )
     };
@@ -496,7 +496,7 @@ pub fn create_with<T: EvmTypesHost>(
         // failures return above before the destination is accessed.
         if state
             .host()
-            .load_account(&destination, AccountLoadFlags::NO_GAS_CHECK)
+            .load_account(&destination, AccountLoadFlags::always_load())
             .map_err(|error| state.fail(error))?
             .is_empty_for_new_account_gas
         {

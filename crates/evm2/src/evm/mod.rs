@@ -2219,7 +2219,7 @@ bitflags::bitflags! {
     /// The host halts with out of gas, before warming anything, when the account or its code
     /// turns out to be cold and the matching `COLD_*` flag is unset. A cold account the caller
     /// can't pay for is not read from the database at all. Build the flags from the gas left with
-    /// [`Self::for_gas`], or use [`Self::NO_GAS_CHECK`] when the load is not gated on gas, and add
+    /// [`Self::for_gas`], or use [`Self::always_load`] when the load is not gated on gas, and add
     /// [`Self::with_code`] to load the bytecode.
     ///
     /// Code is part of the account, so a warm code load costs nothing beyond the account access
@@ -2267,6 +2267,13 @@ impl AccountLoadFlags {
     #[inline]
     pub const fn warm_only() -> Self {
         Self::empty()
+    }
+
+    /// Returns flags for a load that always goes ahead and reads from the database, cold or not: it
+    /// is not gated on gas. Add [`Self::with_code`] to load the bytecode too.
+    #[inline]
+    pub const fn always_load() -> Self {
+        Self::NO_GAS_CHECK
     }
 
     /// Returns these flags with [`Self::CODE`] set, so the load also returns the bytecode.
