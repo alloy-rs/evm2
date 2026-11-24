@@ -1,6 +1,9 @@
 //! Builtin functions
 
-use crate::tracing::{js::bindings::type_error, types::CallKind};
+use crate::tracing::{
+    js::bindings::{to_int64, type_error},
+    types::CallKind,
+};
 use alloc::{borrow::Cow, format, rc::Rc, vec::Vec};
 use alloy_primitives::{Address, B256, FixedBytes, U256, hex};
 use boa_engine::{
@@ -431,10 +434,10 @@ pub(crate) fn slice(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResul
     let val = args.get_or_undefined(0).clone();
 
     let buf = bytes_from_value(val, ctx)?;
-    let start = args.get_or_undefined(1).to_numeric_number(ctx)? as usize;
-    let end = args.get_or_undefined(2).to_numeric_number(ctx)? as usize;
+    let start = to_int64(args.get_or_undefined(1), ctx)?;
+    let end = to_int64(args.get_or_undefined(2), ctx)?;
 
-    if start > end || end > buf.len() {
+    if start < 0 || start > end || end > buf.len() as i64 {
         Err(JsError::from_native(JsNativeError::error().with_message(format!(
             "Tracer accessed out of bound memory: available {}, start {}, end {}",
             buf.len(),
@@ -442,7 +445,7 @@ pub(crate) fn slice(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResul
             end
         ))))
     } else {
-        to_uint8_array_value(buf[start..end].iter().copied(), ctx)
+        to_uint8_array_value(buf[start as usize..end as usize].iter().copied(), ctx)
     }
 }
 
@@ -787,5 +790,23 @@ mod tests {
 
         let result = ctx.eval(Source::from_bytes(b"var ret = bigInt(0); !ret.equals(0)")).unwrap();
         assert!(!result.as_boolean().unwrap());
+    }
+
+    #[test]
+    fn slice_rejects_negative_bounds() {
+        let mut ctx = Context::default();
+        register_builtins(&mut ctx).unwrap();
+
+        let result = ctx.eval(Source::from_bytes(b"toHex(slice([1, 2, 3, 4], 1, 3))")).unwrap();
+        assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), "0x0203");
+
+        // Geth interrupts the tracer for a negative start or end, as for any other bound.
+        for script in ["slice([1, 2, 3, 4], -1, 2)", "slice([1, 2, 3, 4], -2, -1)"] {
+            let err = ctx.eval(Source::from_bytes(script)).unwrap_err();
+            assert!(
+                err.to_string().contains("Tracer accessed out of bound memory: available 4"),
+                "{script}: {err}"
+            );
+        }
     }
 }

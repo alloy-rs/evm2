@@ -988,7 +988,7 @@ fn build_step_contract_object(
 ///
 /// NaN and infinities become 0, fractions truncate toward zero and values outside the `int64`
 /// range become `i64::MIN`, as Go's float conversion does on amd64.
-fn to_int64(value: &JsValue, ctx: &mut Context) -> JsResult<i64> {
+pub(crate) fn to_int64(value: &JsValue, ctx: &mut Context) -> JsResult<i64> {
     // Boa's `ToNumber` rejects BigInt, but stack-derived tracer values are BigInt. Geth's bigint
     // objects reach goja through their `Number` value, so go through a float as well.
     let number = match value.as_bigint() {
