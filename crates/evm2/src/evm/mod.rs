@@ -1222,16 +1222,23 @@ impl<'a, T: EvmTypesHost> InspectorSlot<'a, T> {
         match self {
             Self::Owned(inspector) => &mut **inspector,
             // SAFETY: A borrowed pointer is only installed by `ScopedInspector`, which holds the
-            // inspector's `&mut` borrow and removes the pointer before that borrow ends, so the
-            // pointee is live and not otherwise borrowed for as long as the slot holds it.
+            // inspector's `&mut` borrow and removes the pointer before that borrow ends, or
+            // aborts if the EVM holding it was moved away, so the pointee is live and not
+            // otherwise borrowed for as long as the slot holds it.
             Self::Borrowed(inspector) => unsafe { inspector.as_mut() },
         }
     }
 }
 
 /// Installs a borrowed inspector in an [`Evm`] and restores the previous slot on drop.
+///
+/// Handlers and hooks get `&mut Evm`, so they can move the running EVM out, such as with
+/// [`core::mem::replace`], and keep it past the call. The moved EVM still holds the borrowed
+/// pointer, which `Drop` cannot reach, so `Drop` aborts the process when the EVM it installed the
+/// inspector in no longer holds it.
 struct ScopedInspector<'scope, 'a, T: EvmTypesHost> {
     evm: &'scope mut Evm<'a, T>,
+    inspector: NonNull<dyn Inspector<T>>,
     previous: Option<InspectorSlot<'a, T>>,
     completed: bool,
 }
@@ -1244,20 +1251,29 @@ impl<'scope, 'a, T: EvmTypesHost> ScopedInspector<'scope, 'a, T> {
         // only touches the EVM from handlers and hooks, which run with `running` set, where
         // every inspector setter and `inspector_mut` panic, while `inspector` and the other
         // readers skip a borrowed slot. `Drop` removes the pointer before this call returns or
-        // unwinds, which ends the `inspector` borrow.
+        // unwinds, which ends the `inspector` borrow, and aborts if a handler or hook moved the
+        // EVM holding the pointer out of `evm`.
         let inspector = unsafe {
             core::mem::transmute::<NonNull<dyn Inspector<T> + '_>, NonNull<dyn Inspector<T>>>(
                 NonNull::from(inspector),
             )
         };
         let previous = evm.inspector.replace(InspectorSlot::Borrowed(inspector));
-        Self { evm, previous, completed: false }
+        Self { evm, inspector, previous, completed: false }
     }
 }
 
 impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
     #[inline]
     fn drop(&mut self) {
+        let installed = matches!(
+            self.evm.inspector,
+            Some(InspectorSlot::Borrowed(inspector))
+                if inspector.cast::<()>() == self.inspector.cast::<()>()
+        );
+        if !installed {
+            moved_borrowed_inspector();
+        }
         self.evm.inspector = self.previous.take();
         // A panic unwinding out of a frame skips its cleanup, which would leave this pointing at
         // a dropped interpreter.
@@ -1267,6 +1283,25 @@ impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
             self.evm.state.clear_transaction_state();
         }
     }
+}
+
+/// Aborts the process: an EVM moved out of [`Evm::transact_with_inspector`] still points at the
+/// borrowed inspector, which is about to be released. A panic would not do, since the moved EVM
+/// can outlive a caught unwind.
+#[cold]
+#[inline(never)]
+fn moved_borrowed_inspector() -> ! {
+    const MESSAGE: &str =
+        "an EVM holding a borrowed inspector was moved out of `Evm::transact_with_inspector`";
+    // A panic while another one unwinds aborts, also without `std`.
+    struct Abort;
+    impl Drop for Abort {
+        fn drop(&mut self) {
+            panic!("{MESSAGE}");
+        }
+    }
+    let _abort = Abort;
+    panic!("{MESSAGE}");
 }
 
 struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
@@ -3183,6 +3218,108 @@ mod tests {
     #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
     fn set_precompiles_panics_during_execution() {
         run_precompile_access(PrecompileAccess::Set);
+    }
+
+    /// A precompile provider that keeps an EVM a handler moved out of the host.
+    struct StashedEvm<'a>(core::cell::RefCell<Option<Evm<'a, BaseEvmTypes>>>);
+
+    impl PrecompileProvider<BaseEvmTypes> for StashedEvm<'_> {
+        fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+            Vec::new()
+        }
+
+        fn contains(&self, _address: &Address) -> bool {
+            false
+        }
+
+        fn move_precompiles(
+            &mut self,
+            moves: &[(Address, Address)],
+        ) -> Result<(), crate::precompiles::MovePrecompileError> {
+            <crate::evm::precompile::NoPrecompiles as PrecompileProvider<BaseEvmTypes>>::move_precompiles(
+                &mut Default::default(),
+                moves,
+            )
+        }
+
+        fn execute(
+            &mut self,
+            _evm: &mut Evm<'_, BaseEvmTypes>,
+            _message: &Message<BaseEvmTypes>,
+            _gas: &mut GasTracker,
+        ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+            None
+        }
+    }
+
+    /// Runs a transaction with a borrowed inspector whose handler moves the running EVM out of the
+    /// host and keeps it, then uses the moved EVM after the inspector is dropped.
+    fn move_evm_out_of_borrowed_inspector_call() {
+        struct HeapInspector(Vec<u8>);
+
+        impl Inspector<BaseEvmTypes> for HeapInspector {
+            fn log(&mut self, _log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+                self.0.push(self.0[0]);
+            }
+        }
+
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    let moved = core::mem::replace(req.host, lifecycle_evm());
+                    req.host.set_precompiles(StashedEvm(core::cell::RefCell::new(Some(moved))));
+                    Ok(TxResultExt { status: true, ..TxResultExt::default() })
+                },
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let tx = test_tx(0);
+        {
+            let mut inspector = HeapInspector(vec![1; 64]);
+            let _ = evm.transact_with_inspector(&tx, &mut inspector);
+        }
+        let stash = evm.precompiles_as::<StashedEvm<'static>>().expect("handler stashed the EVM");
+        if let Some(moved) = stash.0.borrow_mut().as_mut() {
+            moved.log(Log::new_unchecked(LIFECYCLE_ACCOUNT, vec![], Bytes::new()));
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[cfg_attr(miri, ignore = "spawns a process")]
+    fn moving_evm_out_of_borrowed_inspector_call_aborts() {
+        const CHILD: &str = "EVM2_TEST_MOVE_EVM_OUT_OF_BORROWED_INSPECTOR_CALL";
+        if std::env::var_os(CHILD).is_some() {
+            move_evm_out_of_borrowed_inspector_call();
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "evm::tests::moving_evm_out_of_borrowed_inspector_call_aborts",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stderr = std::string::String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "the moved EVM was not caught: {stderr}");
+        assert!(stderr.contains("was moved out of `Evm::transact_with_inspector`"), "{stderr}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(output.status.signal(), Some(6), "expected an abort: {stderr}");
+        }
     }
 
     #[derive(Clone, Copy)]
