@@ -1294,13 +1294,7 @@ fn moved_borrowed_inspector() -> ! {
     const MESSAGE: &str =
         "an EVM holding a borrowed inspector was moved out of `Evm::transact_with_inspector`";
     // A panic while another one unwinds aborts, also without `std`.
-    struct Abort;
-    impl Drop for Abort {
-        fn drop(&mut self) {
-            panic!("{MESSAGE}");
-        }
-    }
-    let _abort = Abort;
+    let _abort = core::mem::DropGuard::new((), |()| panic!("{MESSAGE}"));
     panic!("{MESSAGE}");
 }
 

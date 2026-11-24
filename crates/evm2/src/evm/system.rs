@@ -6,7 +6,7 @@
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
 //! and produces no state changes.
 
-use super::{Evm, ExecutedTx, InspectorSlot, TxResult, TxResultExt};
+use super::{Evm, ExecutedTx, TxResult, TxResultExt};
 #[cfg(feature = "async")]
 use super::{SendEvmRef, r#async};
 #[cfg(feature = "async")]
@@ -23,6 +23,7 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
 #[cfg(feature = "async")]
 use core::future::Future;
+use core::mem::DropGuard;
 
 /// Caller address used by execution-layer system calls.
 pub const SYSTEM_ADDRESS: Address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
@@ -126,21 +127,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             // Restores the inspector also when the call unwinds, so a borrowed inspector's scope
             // still finds it installed.
-            struct RestoreInspector<'evm, 'a, T: EvmTypes> {
-                evm: &'evm mut Evm<'a, T>,
-                inspector: Option<InspectorSlot<'a, T>>,
-            }
-
-            impl<T: EvmTypes> Drop for RestoreInspector<'_, '_, T> {
-                #[inline]
-                fn drop(&mut self) {
-                    self.evm.inspector = self.inspector.take();
-                }
-            }
-
             let inspector = self.inspector.take();
-            let guard = RestoreInspector { evm: self, inspector };
-            guard.evm.execute_system_call(tx)
+            let mut guard = DropGuard::new((&mut *self, inspector), |(evm, inspector)| {
+                evm.inspector = inspector
+            });
+            guard.0.execute_system_call(tx)
         };
         match result {
             Ok(outcome) => self.finish_executed_tx(outcome),
