@@ -6,7 +6,7 @@
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
 //! and produces no state changes.
 
-use super::{Evm, ExecutedTx, TxResult, TxResultExt};
+use super::{Evm, ExecutedTx, InspectorSlot, TxResult, TxResultExt};
 #[cfg(feature = "async")]
 use super::{SendEvmRef, r#async};
 #[cfg(feature = "async")]
@@ -124,10 +124,23 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let result = if self.inspect_system_calls {
             self.execute_system_call(tx)
         } else {
+            // Restores the inspector also when the call unwinds, so a borrowed inspector's scope
+            // still finds it installed.
+            struct RestoreInspector<'evm, 'a, T: EvmTypes> {
+                evm: &'evm mut Evm<'a, T>,
+                inspector: Option<InspectorSlot<'a, T>>,
+            }
+
+            impl<T: EvmTypes> Drop for RestoreInspector<'_, '_, T> {
+                #[inline]
+                fn drop(&mut self) {
+                    self.evm.inspector = self.inspector.take();
+                }
+            }
+
             let inspector = self.inspector.take();
-            let result = self.execute_system_call(tx);
-            self.inspector = inspector;
-            result
+            let guard = RestoreInspector { evm: self, inspector };
+            guard.evm.execute_system_call(tx)
         };
         match result {
             Ok(outcome) => self.finish_executed_tx(outcome),

@@ -3322,6 +3322,43 @@ mod tests {
         }
     }
 
+    #[test]
+    #[cfg(feature = "std")]
+    fn panic_in_nested_system_call_unwinds_out_of_borrowed_inspector_call() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    let _ = req
+                        .host
+                        .system_call(super::system::SystemTx::new(TEST_PRECOMPILE, Bytes::new()));
+                    Ok(TxResultExt { status: true, ..TxResultExt::default() })
+                },
+            ),
+        );
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |_, _, _| {
+            panic!("system call panicked")
+        })]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            precompiles,
+        );
+        let tx = test_tx(0);
+        let mut inspector = NoopInspector::default();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact_with_inspector(&tx, &mut inspector);
+        }));
+
+        assert!(result.is_err());
+        assert!(evm.inspector().is_none());
+    }
+
     #[derive(Clone, Copy)]
     enum InspectorAccess {
         Mut,
