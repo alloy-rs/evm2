@@ -53,6 +53,14 @@ impl EvmCase {
     pub(crate) fn txs(&self) -> impl Iterator<Item = &CaseTx> {
         core::iter::once(&self.tx).chain(self.extra_txs.iter())
     }
+
+    /// Rejects cases the generator never emits and the backends would convert differently.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(tx) = self.txs().find(|tx| tx.creates && !tx.kind.supports_create()) {
+            return Err(format!("{} transactions cannot create contracts", tx.kind));
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct CaseGenerator {
@@ -317,7 +325,7 @@ impl FuzzTxKind {
         }
     }
 
-    const fn supports_create(self) -> bool {
+    pub(crate) const fn supports_create(self) -> bool {
         matches!(self, Self::Legacy | Self::Eip2930 | Self::Eip1559)
     }
 
@@ -789,5 +797,21 @@ mod tests {
             assert_eq!(decoded, case, "seed {seed}");
             assert_eq!(serde_json::to_vec(&decoded).unwrap(), json, "seed {seed}");
         }
+    }
+
+    #[test]
+    fn validate_rejects_creates_for_non_creating_tx_kinds() {
+        let mut case = EvmCase::default();
+        case.tx.creates = true;
+        assert_eq!(case.validate(), Ok(()));
+        case.extra_txs.push(CaseTx {
+            kind: FuzzTxKind::Eip7702,
+            creates: true,
+            ..CaseTx::default()
+        });
+        assert_eq!(
+            case.validate(),
+            Err("eip7702 transactions cannot create contracts".to_string())
+        );
     }
 }
