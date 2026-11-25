@@ -21,13 +21,17 @@ pub struct JumpTableRef<'a> {
 
 impl fmt::Debug for JumpTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JumpTable").field("map", &hex::encode(self.as_slice())).finish()
+        f.debug_struct("JumpTable")
+            .field("map", &format_args!("\"{}\"", hex::display(self.as_slice())))
+            .finish()
     }
 }
 
 impl fmt::Debug for JumpTableRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JumpTableRef").field("map", &hex::encode(self.as_slice())).finish()
+        f.debug_struct("JumpTableRef")
+            .field("map", &format_args!("\"{}\"", hex::display(self.as_slice())))
+            .finish()
     }
 }
 

@@ -67,6 +67,10 @@ impl<'a> Instruction<'a> {
 
     /// Returns a [`Display`](fmt::Display) of the instruction as `spec_id` names it.
     ///
+    /// `spec_id` must be the spec that [`Instructions::new`] decoded the instruction with: the
+    /// decoder only takes the operand of `DUPN`, `SWAPN` and `EXCHANGE` from the spec that enables
+    /// them.
+    ///
     /// This differs from the instruction's own `Display` in two ways: the opcode `0x44` is
     /// `PREVRANDAO` from Paris on, and `DUPN`, `SWAPN` and `EXCHANGE` print the stack indices
     /// they decode to, such as `DUPN 17` and `EXCHANGE 1, 2`, instead of the immediate byte.

@@ -1782,7 +1782,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             // Other paths can arrive with gas left unchecked, so force a check.
             self.unchecked_gas = GAS_CHECK_THRESHOLD;
         }
-        let cost = self.bytecode.inst(head).gas_section.gas_cost as u64;
+        let cost = u64::from(self.bytecode.inst(head).gas_section.gas_cost);
         if cost != 0 {
             let remaining = self.load_gas_remaining();
             let remaining = self.bcx.isub_imm(remaining, cost as i64);
