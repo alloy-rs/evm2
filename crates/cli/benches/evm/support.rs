@@ -6,7 +6,7 @@ use evm2::{
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::InMemoryDB,
 };
-use evm2_cli::evm_bench::BenchCase;
+use evm2_cli::evm_bench::{self, BenchCase};
 use std::borrow::Cow;
 
 type BenchEvm = Evm<'static, BaseEvmTypes>;
@@ -81,5 +81,12 @@ impl Runner {
 }
 
 fn new_evm(spec: SpecId, block: BlockEnv, db: InMemoryDB) -> BenchEvm {
-    BenchEvm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
+    BenchEvm::new_with_execution_config(
+        evm_bench::execution_config(spec),
+        spec,
+        block,
+        ethereum_tx_registry(spec),
+        db,
+        Precompiles::base(spec),
+    )
 }

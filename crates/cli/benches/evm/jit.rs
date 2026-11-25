@@ -8,7 +8,7 @@ use evm2::{
     evm::InMemoryDB,
     interpreter::{InstrStop, Interpreter},
 };
-use evm2_cli::evm_bench::{BenchCase, JitBench};
+use evm2_cli::evm_bench::{self, BenchCase, JitBench};
 use evm2_jit_context::{EvmCompilerFn, can_run_compiled};
 use evm2_jit_llvm::EvmLlvmBackend;
 use evm2_jit_runtime::{EvmCompiler, OptimizationLevel};
@@ -203,7 +203,14 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
 }
 
 fn new_evm(spec: SpecId, block: BlockEnv, db: InMemoryDB) -> BenchEvm {
-    BenchEvm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
+    BenchEvm::new_with_execution_config(
+        evm_bench::execution_config(spec),
+        spec,
+        block,
+        ethereum_tx_registry(spec),
+        db,
+        Precompiles::base(spec),
+    )
 }
 
 fn new_compiler(opt_level: OptimizationLevel) -> LlvmCompiler {
