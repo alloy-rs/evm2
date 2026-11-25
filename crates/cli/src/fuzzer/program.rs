@@ -1,5 +1,5 @@
 use crate::fuzzer::{features::FuzzFeatures, precompile, rng::Gen};
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use evm2::{BaseEvmTypes, OpcodeConfig, SpecId, interpreter::op};
 
 #[derive(Default)]
@@ -267,10 +267,7 @@ impl Program {
             self.emit(op::MSTORE, 2, 0);
         }
         let topics = rng.range(5);
-        let mut topic_values = Vec::with_capacity(topics);
-        for _ in 0..topics {
-            topic_values.push(rng.biased_word());
-        }
+        let topic_values = (0..topics).map(|_| rng.biased_word()).collect::<Vec<_>>();
         for topic in topic_values.into_iter().rev() {
             self.push_word(topic);
         }
@@ -471,7 +468,7 @@ impl Program {
     }
 
     fn invalid_jumpi(&mut self, rng: &mut Gen) {
-        self.push_u64(if rng.one_in(3) { 0 } else { 1 });
+        self.push_u64(u64::from(!rng.one_in(3)));
         self.push_word(rng.biased_invalid_jumpdest());
         self.emit(op::JUMPI, 2, 0);
     }
@@ -485,7 +482,7 @@ impl Program {
     }
 
     fn forward_jumpi(&mut self, rng: &mut Gen) {
-        self.push_u64(if rng.one_in(2) { 0 } else { 1 });
+        self.push_u64(u64::from(!rng.one_in(2)));
         let dest = self.push_jump_placeholder();
         self.emit(op::JUMPI, 2, 0);
         self.skipped_block(rng);
@@ -618,9 +615,7 @@ impl Program {
     }
 
     fn push_bytes_word(&mut self, bytes: &[u8]) {
-        let mut word = [0; 32];
-        word[..bytes.len()].copy_from_slice(bytes);
-        self.push_word(U256::from_be_bytes(word));
+        self.push_word(B256::right_padding_from(bytes).into());
     }
 
     fn push_word(&mut self, value: U256) {

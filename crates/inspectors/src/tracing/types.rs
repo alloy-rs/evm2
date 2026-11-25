@@ -367,7 +367,7 @@ impl CallTraceNode {
 
     /// Returns the call context's 4 byte selector
     pub fn selector(&self) -> Option<FixedBytes<4>> {
-        (self.trace.data.len() >= 4).then(|| FixedBytes::from_slice(&self.trace.data[..4]))
+        self.trace.data.first_chunk().map(|chunk| FixedBytes::new(*chunk))
     }
 
     /// Returns `true` if this trace was a selfdestruct.
@@ -960,10 +960,6 @@ pub struct RecordedMemory(pub(crate) Bytes);
 impl RecordedMemory {
     #[inline]
     pub(crate) fn new(mem: &[u8]) -> Self {
-        if mem.is_empty() {
-            return Self(Bytes::new());
-        }
-
         Self(Bytes::copy_from_slice(mem))
     }
 

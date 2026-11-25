@@ -6,7 +6,6 @@ use crate::{
 };
 use alloy_primitives::map::HashMap;
 use evm2::interpreter::{op, opcode::OpCode};
-use std::cmp::Ordering;
 
 /// Parse EVM assembly from a string into bytecode.
 ///
@@ -632,22 +631,11 @@ fn expect_imm<'a>(
 
 /// Encode a U256 as big-endian bytes with optional fixed size.
 fn encode_imm(num: U256, size: Option<u8>) -> Result<Vec<u8>> {
-    let mut bytes = num.to_be_bytes_trimmed_vec();
-    if let Some(size) = size {
-        debug_assert!(size <= 32);
-        match bytes.len().cmp(&(size as usize)) {
-            Ordering::Less => {
-                let extend = size as usize - bytes.len();
-                bytes.splice(0..0, std::iter::repeat_n(0, extend));
-            }
-            Ordering::Equal => {}
-            Ordering::Greater => {
-                eyre::bail!("expected at most {size} immediate bytes, got {}", bytes.len());
-            }
-        }
-    }
-    debug_assert!(bytes.len() <= 32);
-    Ok(bytes)
+    let Some(size) = size else { return Ok(num.to_be_bytes_trimmed_vec()) };
+    debug_assert!(size <= 32);
+    let len = num.byte_len();
+    eyre::ensure!(len <= size as usize, "expected at most {size} immediate bytes, got {len}");
+    Ok(num.to_be_bytes::<32>()[32 - size as usize..].to_vec())
 }
 
 /// Compute the minimum push width for a value (0 for zero, 1 for 1..=0xff, etc.).
@@ -710,10 +698,7 @@ fn layout_and_emit(items: &[Item<'_>]) -> Result<Vec<u8>> {
                         PushKind::Auto => {
                             let width = match &inst.imm {
                                 Some(Imm::Label(_)) => auto_widths[i],
-                                Some(Imm::Number(n)) => {
-                                    let bytes = n.to_be_bytes_trimmed_vec();
-                                    bytes.len() as u8
-                                }
+                                Some(Imm::Number(n)) => n.byte_len() as u8,
                                 None => 0,
                             };
                             pc += width as usize;
@@ -761,10 +746,7 @@ fn layout_and_emit(items: &[Item<'_>]) -> Result<Vec<u8>> {
                     let val = resolve_imm(inst.imm.as_ref().unwrap(), &label_pcs)?;
                     let width = match &inst.imm {
                         Some(Imm::Label(_)) => auto_widths[i],
-                        _ => {
-                            let bytes = val.to_be_bytes_trimmed_vec();
-                            bytes.len() as u8
-                        }
+                        _ => val.byte_len() as u8,
                     };
                     let push0 = OpCode::PUSH0.get();
                     code.push(push0 + width);

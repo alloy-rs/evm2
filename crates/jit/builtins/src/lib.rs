@@ -110,8 +110,7 @@ pub unsafe fn __revmc_builtin_assert_spec_id<T: EvmTypesHost>(
 
 #[inline]
 pub unsafe fn __revmc_builtin_div<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
-    let divisor = b.to_u256();
-    *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_div(divisor) }.into();
+    *b = a.to_u256().checked_div(b.to_u256()).unwrap_or_default().into();
 }
 
 #[inline]
@@ -121,8 +120,7 @@ pub unsafe fn __revmc_builtin_sdiv<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2
 
 #[inline]
 pub unsafe fn __revmc_builtin_mod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
-    let divisor = b.to_u256();
-    *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_rem(divisor) }.into();
+    *b = a.to_u256().checked_rem(b.to_u256()).unwrap_or_default().into();
 }
 
 #[inline]
@@ -647,7 +645,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     ecx.gas.spend(create_cost)?;
     let salt = if is_create2 {
         pop!(sp; salt);
-        B256::from(salt.to_be_bytes())
+        salt.to_be_bytes()
     } else {
         B256::ZERO
     };

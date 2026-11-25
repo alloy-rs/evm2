@@ -4,10 +4,10 @@
 use crate::{
     interpreter::GasTracker,
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult, eip7823},
-    utils::{b256_to_word, left_pad, left_pad_vec_be, read_word_padded, right_pad_vec},
+    utils::{b256_to_word, left_pad_vec_be, read_word_padded, right_pad_vec},
 };
 use alloc::{vec, vec::Vec};
-use alloy_primitives::{Bytes, U256, uint};
+use alloy_primitives::{B256, Bytes, U256, uint};
 use core::cmp::{max, min};
 
 /// Well-known prime moduli for [`fermat_inverse`].
@@ -169,16 +169,12 @@ pub fn run_osaka(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 
 /// Calculate the iteration count for the modexp precompile.
 pub(crate) fn calculate_iteration_count(exp_length: u64, exp_highp: &U256, multiplier: u64) -> u64 {
-    let mut iteration_count: u64 = 0;
-
-    if exp_length <= 32 && exp_highp.is_zero() {
-        iteration_count = 0;
-    } else if exp_length <= 32 {
-        iteration_count = exp_highp.bit_len() as u64 - 1;
-    } else if exp_length > 32 {
-        iteration_count = (multiplier.saturating_mul(exp_length - 32))
-            .saturating_add(max(1, exp_highp.bit_len() as u64) - 1);
-    }
+    let high_bits = (exp_highp.bit_len() as u64).saturating_sub(1);
+    let iteration_count = if exp_length <= 32 {
+        high_bits
+    } else {
+        multiplier.saturating_mul(exp_length - 32).saturating_add(high_bits)
+    };
 
     max(iteration_count, 1)
 }
@@ -222,8 +218,7 @@ fn run_inner(
         // zeroes.
         let right_padded_highp = read_word_padded(input, base_len);
         // If exp_len is less then 32 bytes get only exp_len bytes and do left padding.
-        let out = left_pad::<32>(&right_padded_highp[..exp_highp_len]);
-        U256::from_be_bytes(out.into_owned())
+        U256::from_be_bytes(B256::left_padding_from(&right_padded_highp[..exp_highp_len]).0)
     };
 
     // Check if we have enough gas.

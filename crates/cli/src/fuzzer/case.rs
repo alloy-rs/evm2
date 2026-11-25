@@ -132,15 +132,9 @@ impl CaseGenerator {
         if address_pool.len() != 7 + 10 + extra_accounts + precompile::targets().len() + 3 {
             address_pool.truncate(7 + 10);
             call_pool.truncate(precompile::targets().len() + 3 + 4);
-            for account in &accounts[2..] {
-                address_pool.push(account.address);
-            }
-            for precompile in precompile::targets() {
-                address_pool.push(precompile.address());
-            }
-            for account in &accounts[2..] {
-                call_pool.push(account.address);
-            }
+            address_pool.extend(accounts[2..].iter().map(|account| account.address));
+            address_pool.extend(precompile::targets().iter().map(|target| target.address()));
+            call_pool.extend(accounts[2..].iter().map(|account| account.address));
             for i in 0..3 {
                 let address = Address::with_last_byte(0x80 + i);
                 address_pool.push(address);
@@ -182,15 +176,10 @@ pub(crate) struct CaseBlock {
 
 fn tiny_callee_code(rng: &mut Gen, spec: SpecId) -> Bytes {
     match rng.range(7) {
-        0 => [op::STOP].into_iter().collect::<Vec<_>>().into(),
-        1 => [op::PUSH1, 0, op::PUSH1, 0, op::RETURN].into_iter().collect::<Vec<_>>().into(),
-        2 if spec.enables(SpecId::BYZANTIUM) => {
-            [op::PUSH1, 0, op::PUSH1, 0, op::REVERT].into_iter().collect::<Vec<_>>().into()
-        }
-        3 => [op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP]
-            .into_iter()
-            .collect::<Vec<_>>()
-            .into(),
+        0 => [op::STOP].into(),
+        1 => [op::PUSH1, 0, op::PUSH1, 0, op::RETURN].into(),
+        2 if spec.enables(SpecId::BYZANTIUM) => [op::PUSH1, 0, op::PUSH1, 0, op::REVERT].into(),
+        3 => [op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP].into(),
         4 => returning_callee_code(op::RETURN),
         5 if spec.enables(SpecId::BYZANTIUM) => returning_callee_code(op::REVERT),
         _ => {
@@ -211,14 +200,11 @@ fn returning_callee_code(stop: u8) -> Bytes {
 fn creation_input(rng: &mut Gen, spec: SpecId) -> Bytes {
     match rng.range(5) {
         0 => Bytes::new(),
-        1 => [op::PUSH1, 0, op::PUSH1, 0, op::MSTORE8, op::PUSH1, 1, op::PUSH1, 0, op::RETURN]
-            .into_iter()
-            .collect::<Vec<_>>()
-            .into(),
-        2 => returning_callee_code(op::RETURN),
-        3 if spec.enables(SpecId::BYZANTIUM) => {
-            [op::PUSH1, 0, op::PUSH1, 0, op::REVERT].into_iter().collect::<Vec<_>>().into()
+        1 => {
+            [op::PUSH1, 0, op::PUSH1, 0, op::MSTORE8, op::PUSH1, 1, op::PUSH1, 0, op::RETURN].into()
         }
+        2 => returning_callee_code(op::RETURN),
+        3 if spec.enables(SpecId::BYZANTIUM) => [op::PUSH1, 0, op::PUSH1, 0, op::REVERT].into(),
         _ => {
             let len = rng.range_inclusive(1, 32);
             rng.bytes(len).into()
@@ -370,9 +356,10 @@ fn generate_access_list(rng: &mut Gen, accounts: &[CaseAccount], list: &mut Acce
 }
 
 fn versioned_hash(rng: &mut Gen) -> B256 {
-    let mut hash = rng.bytes(32);
+    let mut hash = B256::ZERO;
+    rng.fill_bytes(hash.as_mut_slice());
     hash[0] = 0x01;
-    B256::from_slice(&hash)
+    hash
 }
 
 fn generate_eip7702_authorization_list(rng: &mut Gen, list: &mut Vec<SignedAuthorization>) {
@@ -726,7 +713,7 @@ impl CaseTx {
                 FuzzTxKind::Legacy | FuzzTxKind::Eip2930 => None,
             },
             blob_hashes: self.blob_hashes.clone(),
-            max_fee_per_blob_gas: if self.kind == FuzzTxKind::Eip4844 { 1 } else { 0 },
+            max_fee_per_blob_gas: u128::from(self.kind == FuzzTxKind::Eip4844),
             ..RevmTxEnv::default()
         }
     }
