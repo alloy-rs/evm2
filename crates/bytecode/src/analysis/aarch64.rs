@@ -4,7 +4,7 @@
 //! index is out of range, so offsets past the block need no bias.
 
 use super::{END_OFFSET, Entry, Kernel, PUSHX, analyze_blocks, lanes, uncarried};
-use crate::interpreter::op;
+use crate::opcode::op;
 use core::arch::aarch64::*;
 
 // SAFETY: the vector types are plain bytes.

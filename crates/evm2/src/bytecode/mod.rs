@@ -7,22 +7,19 @@ use crate::{
 };
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
-use analysis::pad_legacy;
 use core::{cmp::Ordering, fmt, hash};
+use padding::pad_legacy;
 use thiserror::Error;
 
-mod analysis;
-mod blocks;
-mod instructions;
-mod jump_table;
+mod padding;
 
 #[cfg(feature = "serde")]
 mod serde_impl;
 
-pub use analysis::analyze_legacy;
-pub use blocks::{BasicBlock, BasicBlocks, JumpTarget, Terminator};
-pub use instructions::{Instruction, Instructions};
-pub use jump_table::{JumpTable, JumpTableRef};
+pub use evm2_bytecode::{
+    BasicBlock, BasicBlocks, Instruction, Instructions, JumpTable, JumpTableRef, JumpTarget,
+    Terminator, analyze_legacy,
+};
 
 /// EIP-7702 decode errors.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]

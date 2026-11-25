@@ -1,0 +1,31 @@
+[package]
+name = "evm2-bytecode"
+description = "EVM opcodes, specs and bytecode disassembly for evm2"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+
+# parse
+paste = { workspace = true, optional = true }
+phf = { workspace = true, features = ["macros"], optional = true }
+
+[dev-dependencies]
+rand = { workspace = true, features = ["std"] }
+
+[features]
+default = ["parse"]
+std = ["alloy-primitives/std"]
+parse = ["dep:paste", "dep:phf"]

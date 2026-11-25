@@ -276,7 +276,10 @@ macro_rules! evm_versions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BaseEvmConfig, BaseEvmTypes, OpcodeConfig, interpreter::op};
+    use crate::{
+        BaseEvmConfig, BaseEvmTypes, OpcodeConfig,
+        interpreter::{op, opcode::OpCode},
+    };
 
     fn opcode_config(spec: SpecId) -> &'static OpcodeConfig<BaseEvmTypes> {
         crate::spec_to_generic!(spec, |BASE_SPEC_ID| {
@@ -341,6 +344,20 @@ mod tests {
 
         let prague = Version::base(SpecId::PRAGUE);
         assert_eq!(prague.max_blobs_per_tx, 9);
+    }
+
+    #[test]
+    fn opcode_enabled_matches_base_opcode_config() {
+        for spec in (0..SpecId::COUNT as u32).map(|spec| SpecId::try_from_u32(spec).unwrap()) {
+            let config = opcode_config(spec);
+            for byte in 0..=u8::MAX {
+                assert_eq!(
+                    OpCode::new_or_unknown(byte).is_enabled(spec),
+                    config.is_defined(byte),
+                    "{spec:?} {byte:#04x}"
+                );
+            }
+        }
     }
 
     #[test]

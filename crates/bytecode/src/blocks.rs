@@ -1,7 +1,6 @@
 //! Basic blocks of a bytecode.
 
-use super::{Instruction, Instructions};
-use crate::{BaseEvmTypes, OpcodeConfig, SpecId, interpreter::op};
+use crate::{Instruction, Instructions, SpecId, opcode::op};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::U256;
 use core::{fmt, ops::Range, slice};
@@ -109,12 +108,12 @@ impl BasicBlock {
 pub struct BasicBlocks<'a> {
     insts: Vec<Instruction<'a>>,
     blocks: Vec<BasicBlock>,
+    spec_id: SpecId,
 }
 
 impl<'a> BasicBlocks<'a> {
     /// Splits `code` into basic blocks.
     pub fn new(code: &'a [u8], spec_id: SpecId) -> Self {
-        let config = OpcodeConfig::<BaseEvmTypes>::base_for_spec(spec_id);
         let mut insts = Vec::with_capacity(code.len() / 2);
         insts.extend(Instructions::new(code, spec_id));
 
@@ -141,7 +140,7 @@ impl<'a> BasicBlocks<'a> {
                 op::DUPN | op::SWAPN | op::EXCHANGE if inst.immediate.is_empty() => {
                     Terminator::Halt
                 }
-                _ if !config.is_defined(opcode) || inst.opcode.info().is_terminating() => {
+                _ if !inst.opcode.is_enabled(spec_id) || inst.opcode.info().is_terminating() => {
                     Terminator::Halt
                 }
                 _ => continue,
@@ -153,7 +152,7 @@ impl<'a> BasicBlocks<'a> {
             close(start, insts.len(), Terminator::Halt);
         }
 
-        let mut this = Self { insts, blocks };
+        let mut this = Self { insts, blocks, spec_id };
         this.resolve_adjacent_jumps();
         this
     }
@@ -307,7 +306,7 @@ impl fmt::Display for BasicBlocks<'_> {
             }
             write!(f, "bb{i}:")?;
             for inst in self.block_instructions(i) {
-                write!(f, "\n  {:0width$x}  {inst}", inst.pc)?;
+                write!(f, "\n  {:0width$x}  {}", inst.pc, inst.display(self.spec_id))?;
             }
             match &block.terminator {
                 Terminator::Jump(target) => write!(f, "  ; -> {target}")?,
@@ -655,6 +654,35 @@ bb4:
 bb5:
   000d  JUMPDEST
   000e  STOP"
+        );
+    }
+
+    #[test]
+    fn display_names_opcodes_by_spec() {
+        // DIFFICULTY, DUPN 0x80, EXCHANGE 0x8e, STOP.
+        let code = [op::DIFFICULTY, op::DUPN, 0x80, op::EXCHANGE, 0x8e, op::STOP];
+        assert_eq!(
+            BasicBlocks::new(&code, SpecId::AMSTERDAM).to_string(),
+            "\
+bb0:
+  0000  PREVRANDAO
+  0001  DUPN 17
+  0003  EXCHANGE 1, 2
+  0005  STOP"
+        );
+        // Before Paris the opcode is DIFFICULTY, and DUPN and EXCHANGE are not enabled.
+        assert_eq!(
+            BasicBlocks::new(&code, SpecId::LONDON).to_string(),
+            "\
+bb0:
+  0000  DIFFICULTY
+  0001  DUPN
+bb1:
+  0002  DUP1
+  0003  EXCHANGE
+bb2:
+  0004  DUP15
+  0005  STOP"
         );
     }
 }

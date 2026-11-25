@@ -12,7 +12,7 @@
 //! max with the index recovers the offset.
 
 use super::{END_OFFSET, Entry, Kernel, PUSHX, analyze_blocks, lanes, uncarried};
-use crate::interpreter::op;
+use crate::opcode::op;
 
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
@@ -391,7 +391,7 @@ fn descend64(successors: __m512i, positions: __m512i) -> __m512i {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::analysis::tests::check_simd;
+    use crate::analysis::tests::check_simd;
 
     #[test]
     fn test_sse41() {

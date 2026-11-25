@@ -227,6 +227,7 @@ fn cached_base_precompiles<T: EvmTypesHost>(spec: SpecId) -> &'static Precompile
         SpecId::CANCUN => 4,
         SpecId::PRAGUE => 5,
         SpecId::OSAKA | SpecId::AMSTERDAM => 6,
+        _ => unreachable!("unknown spec id {spec:?}"),
     };
 
     shared_base_precompiles::<T>()

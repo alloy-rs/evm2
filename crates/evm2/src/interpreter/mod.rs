@@ -18,7 +18,7 @@ pub(crate) mod dispatch;
 #[doc(hidden)] // For macro only. Not public API.
 pub mod private;
 
-pub mod opcode;
+pub use evm2_bytecode::opcode;
 pub use opcode::op;
 
 mod ctrl;

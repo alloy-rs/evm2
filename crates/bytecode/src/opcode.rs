@@ -1,5 +1,6 @@
 //! Opcode byte constants and metadata.
 
+use crate::SpecId;
 use core::{fmt, ptr::NonNull};
 
 macro_rules! opcodes {
@@ -115,6 +116,38 @@ impl OpCode {
     #[inline]
     pub const fn is_valid(&self) -> bool {
         OPCODE_INFO[self.0 as usize].is_some()
+    }
+
+    /// Returns whether `spec_id` enables the opcode.
+    ///
+    /// An opcode that no spec enables, such as `INVALID` or a byte that is not an opcode, is
+    /// never enabled.
+    pub const fn is_enabled(self, spec_id: SpecId) -> bool {
+        let since = match self.0 {
+            DELEGATECALL => SpecId::HOMESTEAD,
+            RETURNDATASIZE | RETURNDATACOPY | STATICCALL | REVERT => SpecId::BYZANTIUM,
+            SHL | SHR | SAR | EXTCODEHASH | CREATE2 => SpecId::PETERSBURG,
+            CHAINID | SELFBALANCE => SpecId::ISTANBUL,
+            BASEFEE => SpecId::LONDON,
+            PUSH0 => SpecId::SHANGHAI,
+            BLOBHASH | BLOBBASEFEE | TLOAD | TSTORE | MCOPY => SpecId::CANCUN,
+            CLZ => SpecId::OSAKA,
+            DUPN | SWAPN | EXCHANGE | SLOTNUM => SpecId::AMSTERDAM,
+            INVALID => return false,
+            _ if self.is_valid() => SpecId::FRONTIER,
+            _ => return false,
+        };
+        spec_id.enables(since)
+    }
+
+    /// Returns the opcode name in `spec_id`, which only differs for `0x44`: `PREVRANDAO` from
+    /// Paris on and `DIFFICULTY` before.
+    pub const fn name_in(self, spec_id: SpecId) -> &'static str {
+        if self.0 == DIFFICULTY && spec_id.enables(SpecId::MERGE) {
+            "PREVRANDAO"
+        } else {
+            self.as_str()
+        }
     }
 
     /// Returns opcode stack and immediate metadata.

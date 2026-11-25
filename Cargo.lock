@@ -2598,14 +2598,13 @@ dependencies = [
  "c-kzg",
  "corosensei",
  "derive-where",
+ "evm2-bytecode",
  "evm2-macros",
  "gmp-mpfr-sys",
  "k256 0.14.0",
  "mcl_rust",
  "once_cell",
  "p256 0.14.0",
- "paste",
- "phf",
  "postcard",
  "rand 0.10.3",
  "revm-bytecode",
@@ -2622,6 +2621,16 @@ dependencies = [
  "triomphe",
  "typeid",
  "wincode",
+]
+
+[[package]]
+name = "evm2-bytecode"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "paste",
+ "phf",
+ "rand 0.10.3",
 ]
 
 [[package]]

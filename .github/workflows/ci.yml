@@ -270,7 +270,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ["riscv32imac-unknown-none-elf", "riscv64imac-unknown-none-elf"]
+        target:
+          [
+            "riscv32imac-unknown-none-elf",
+            "riscv64imac-unknown-none-elf",
+            "wasm32-unknown-unknown",
+          ]
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@2ab28a31ae569be9f780c7675b684471060afa40 # 2026-10-09T21-43-19Z-2ab28a31
@@ -286,7 +291,10 @@ jobs:
         with:
           cache-on-failure: true
           cache-bin: false
-      - name: check
+      - name: check bytecode
+        run: cargo build -p evm2-bytecode --target ${{ matrix.target }} --no-default-features
+      - name: check evm2
+        if: matrix.target != 'wasm32-unknown-unknown'
         run: cargo build -p evm2 --target ${{ matrix.target }} --no-default-features
 
   feature-checks:

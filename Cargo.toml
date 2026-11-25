@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/bytecode",
     "crates/cli",
     "crates/evm2",
     "crates/macros",
@@ -50,6 +51,7 @@ all = "warn"
 
 [workspace.dependencies]
 evm2 = { path = "crates/evm2", version = "0.1.0", default-features = false }
+evm2-bytecode = { path = "crates/bytecode", version = "0.1.0", default-features = false }
 evm2-macros = { path = "crates/macros", version = "0.1.0" }
 evm2-inspectors = { path = "crates/inspectors", version = "0.1.0" }
 evm2-jit = { path = "crates/jit", version = "0.1.0", default-features = false }
