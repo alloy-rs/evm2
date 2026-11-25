@@ -7,7 +7,7 @@ use crate::{
     utils::{b256_to_word, left_pad_vec_be, read_word_padded, right_pad_vec},
 };
 use alloc::{vec, vec::Vec};
-use alloy_primitives::{Bytes, U256, uint};
+use alloy_primitives::{B256, Bytes, U256, uint};
 use core::cmp::{max, min};
 
 /// Well-known prime moduli for [`fermat_inverse`].
@@ -218,7 +218,7 @@ fn run_inner(
         // zeroes.
         let right_padded_highp = read_word_padded(input, base_len);
         // If exp_len is less then 32 bytes get only exp_len bytes and do left padding.
-        U256::from_be_slice(&right_padded_highp[..exp_highp_len])
+        U256::from_be_bytes(B256::left_padding_from(&right_padded_highp[..exp_highp_len]).0)
     };
 
     // Check if we have enough gas.
