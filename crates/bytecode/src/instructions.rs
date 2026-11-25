@@ -76,11 +76,14 @@ impl<'a> Instruction<'a> {
                 return write!(f, "UNKNOWN(0x{:02x})", opcode.get());
             }
             f.write_str(opcode.name_in(spec_id))?;
+            // An immediate that the end of the code cuts off reads as zero.
+            let imm = immediate.first().copied().unwrap_or(0);
+            let enabled = opcode.is_enabled(spec_id);
             match (opcode.get(), immediate) {
-                (op::DUPN | op::SWAPN, &[imm]) if let Some(n) = decode_single(imm) => {
+                (op::DUPN | op::SWAPN, _) if enabled && let Some(n) = decode_single(imm) => {
                     write!(f, " {n}")
                 }
-                (op::EXCHANGE, &[imm]) if let Some((n, m)) = decode_pair(imm) => {
+                (op::EXCHANGE, _) if enabled && let Some((n, m)) = decode_pair(imm) => {
                     write!(f, " {n}, {m}")
                 }
                 (_, []) => Ok(()),
@@ -283,6 +286,21 @@ mod tests {
         let insts =
             Instructions::new(&code, SpecId::OSAKA).map(|i| i.to_string()).collect::<Vec<_>>();
         assert_eq!(insts, ["PUSH2 0x003e", "JUMPDEST", "UNKNOWN(0x0c)", "PUSH2 0x01"]);
+    }
+
+    #[test]
+    fn display_reads_a_cut_off_immediate_as_zero() {
+        let show = |code: &[u8], spec_id| {
+            Instructions::new(code, spec_id).last().unwrap().display(spec_id).to_string()
+        };
+        assert_eq!(show(&[op::DUPN], SpecId::AMSTERDAM), "DUPN 145");
+        assert_eq!(show(&[op::SWAPN], SpecId::AMSTERDAM), "SWAPN 145");
+        assert_eq!(show(&[op::EXCHANGE], SpecId::AMSTERDAM), "EXCHANGE 9, 16");
+        // Not enabled before Amsterdam, and an invalid byte is shown as it is.
+        assert_eq!(show(&[op::DUPN], SpecId::OSAKA), "DUPN");
+        assert_eq!(show(&[op::DUPN, 0x5b], SpecId::AMSTERDAM), "JUMPDEST");
+        let invalid = Instructions::new(&[op::DUPN, 0x5b], SpecId::AMSTERDAM).next().unwrap();
+        assert_eq!(invalid.display(SpecId::AMSTERDAM).to_string(), "DUPN 0x5b");
     }
 
     #[test]
