@@ -169,16 +169,12 @@ pub fn run_osaka(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 
 /// Calculate the iteration count for the modexp precompile.
 pub(crate) fn calculate_iteration_count(exp_length: u64, exp_highp: &U256, multiplier: u64) -> u64 {
-    let mut iteration_count: u64 = 0;
-
-    if exp_length <= 32 && exp_highp.is_zero() {
-        iteration_count = 0;
-    } else if exp_length <= 32 {
-        iteration_count = exp_highp.bit_len() as u64 - 1;
-    } else if exp_length > 32 {
-        iteration_count = (multiplier.saturating_mul(exp_length - 32))
-            .saturating_add(max(1, exp_highp.bit_len() as u64) - 1);
-    }
+    let high_bits = (exp_highp.bit_len() as u64).saturating_sub(1);
+    let iteration_count = if exp_length <= 32 {
+        high_bits
+    } else {
+        multiplier.saturating_mul(exp_length - 32).saturating_add(high_bits)
+    };
 
     max(iteration_count, 1)
 }

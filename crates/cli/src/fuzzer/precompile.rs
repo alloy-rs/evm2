@@ -84,12 +84,11 @@ pub(crate) fn target_for_address(address: Address) -> Option<PrecompileTarget> {
 
 pub(crate) fn random_target(rng: &mut Gen, spec: SpecId) -> PrecompileTarget {
     let include_future = rng.one_in(20);
-    let mut candidates = Vec::new();
-    for target in PRECOMPILES {
-        if target.is_enabled(spec) || include_future {
-            candidates.push(*target);
-        }
-    }
+    let candidates = PRECOMPILES
+        .iter()
+        .filter(|target| target.is_enabled(spec) || include_future)
+        .copied()
+        .collect::<Vec<_>>();
     rng.pick(&candidates)
 }
 
