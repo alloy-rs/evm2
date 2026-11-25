@@ -1967,6 +1967,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
+        // Makes the previous frame current again when the guard ends, also by unwinding, which
+        // drops this frame.
+        guard.frame_on_exit = Some(prev_frame);
         if let Some(parent) = prev_frame {
             // SAFETY: The parent frame is suspended on this call stack while this frame runs.
             let held = unsafe { parent.as_ref() }.memory().live_bytes();
@@ -1976,7 +1979,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         if guard.evm.active_inspector().is_some() {
             let enclosing_refund = guard.evm.enclosing_refund;
             guard.refund_on_exit = Some(enclosing_refund);
-            guard.frame_on_exit = Some(prev_frame);
             if let Some(parent) = prev_frame {
                 // SAFETY: The parent frame is suspended on this call stack while this frame runs.
                 guard.evm.enclosing_refund =
@@ -5955,5 +5957,50 @@ mod tests {
             drop(executed);
             assert_eq!(stops.0, expected);
         }
+    }
+    #[cfg(feature = "std")]
+    #[test]
+    fn unwinding_runner_restores_the_current_frame() {
+        #[derive(Debug, Default)]
+        struct PanicOnce(core::sync::atomic::AtomicBool);
+
+        impl InterpreterRunner<BaseEvmTypes> for PanicOnce {
+            fn run<'frame, 'host>(
+                &self,
+                _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+                _host: &mut Evm<'host, BaseEvmTypes>,
+            ) -> Option<InstrStop> {
+                if !self.0.swap(true, Ordering::Relaxed) {
+                    panic!("runner panic");
+                }
+                None
+            }
+        }
+
+        let mut version = Version::new(SpecId::OSAKA);
+        version.tx_memory_limit = u64::MAX;
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnv::<BaseEvmTypes>::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_interpreter_runner(PanicOnce::default());
+        let message = || MessageExt {
+            gas_limit: 100_000,
+            code: legacy_bytecode([op::STOP]),
+            ..Default::default()
+        };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = Host::execute_message(&mut evm, &mut message());
+        }));
+
+        assert!(result.is_err());
+        assert!(evm.current_frame.is_none());
+        let result = Host::execute_message(&mut evm, &mut message()).unwrap();
+        assert_eq!(result.stop, InstrStop::Stop);
     }
 }
