@@ -27,5 +27,5 @@ rand = { workspace = true, features = ["std"] }
 
 [features]
 default = ["parse"]
-std = ["alloy-primitives/std"]
+std = ["alloy-primitives/std", "phf?/std"]
 parse = ["dep:paste", "dep:phf"]
