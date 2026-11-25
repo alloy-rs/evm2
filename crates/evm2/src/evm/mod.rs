@@ -1190,14 +1190,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.execution_config.version()
     }
 
-    /// Returns the active gas parameters mutably, including between messages in a transaction
-    /// handler. Changes persist until the caller replaces them; handlers selecting per-transaction
-    /// pricing must select it for each transaction.
+    /// Returns mutable gas parameters, including between messages in transaction handlers.
+    /// Changes persist; per-transaction pricing must be selected for every transaction.
     ///
-    /// Invalidates the interpreter runner's cached compatibility verdict, which is rechecked
-    /// before the next frame. The caller must keep gas divisors non-zero and must not change the
-    /// schedule while a message is executing; only active or suspended interpreter frames are
-    /// detected here, as with [`Self::set_initial_call_depth`].
+    /// Invalidates cached runner compatibility until the next frame. Keep gas divisors non-zero
+    /// and do not mutate during message execution; only interpreter frames are detected here.
     ///
     /// # Panics
     ///
@@ -3827,7 +3824,9 @@ mod tests {
     struct SpecBoundRunner {
         spec_id: SpecId,
         chain_id: u64,
+        gas_params: GasParams,
         calls: Arc<AtomicUsize>,
+        support_checks: Arc<AtomicUsize>,
     }
 
     impl InterpreterRunner<BaseEvmTypes> for SpecBoundRunner {
@@ -3841,13 +3840,17 @@ mod tests {
         }
 
         fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
-            config.base_spec_id() == self.spec_id && config.version().chain_id == self.chain_id
+            self.support_checks.fetch_add(1, Ordering::Relaxed);
+            config.base_spec_id() == self.spec_id
+                && config.version().chain_id == self.chain_id
+                && config.version().gas_params == self.gas_params
         }
     }
 
     #[test]
     fn interpreter_runner_support_follows_runner_and_execution_config() {
         let calls = Arc::new(AtomicUsize::new(0));
+        let support_checks = Arc::new(AtomicUsize::new(0));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -3876,7 +3879,9 @@ mod tests {
         evm.set_shared_interpreter_runner(Arc::new(SpecBoundRunner {
             spec_id: SpecId::PRAGUE,
             chain_id: Version::new(SpecId::PRAGUE).chain_id,
+            gas_params: Version::new(SpecId::PRAGUE).gas_params,
             calls: Arc::clone(&calls),
+            support_checks: Arc::clone(&support_checks),
         }));
         assert_eq!(run(&mut evm), (InstrStop::Stop, 0));
 
@@ -3908,6 +3913,16 @@ mod tests {
 
         evm.set_shared_interpreter_runner(runner);
         assert_eq!(run(&mut evm), (InstrStop::Return, 4));
+
+        let checks = support_checks.load(Ordering::Relaxed);
+        evm.gas_params_mut()[GasId::ColdStorageAdditionalCost] -= 1;
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 4));
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 4));
+        assert_eq!(support_checks.load(Ordering::Relaxed), checks + 1);
+
+        evm.gas_params_mut()[GasId::ColdStorageAdditionalCost] += 1;
+        assert_eq!(run(&mut evm), (InstrStop::Return, 5));
+        assert_eq!(support_checks.load(Ordering::Relaxed), checks + 2);
     }
 
     #[test]
@@ -3922,11 +3937,7 @@ mod tests {
                     Ok(())
                 },
                 |req, ()| {
-                    assert_eq!(
-                        req.host.version().gas_params[GasId::ColdStorageAdditionalCost],
-                        1000
-                    );
-                    req.host.gas_params_mut()[GasId::ColdStorageAdditionalCost] = 2000;
+                    req.host.gas_params_mut()[GasId::ColdStorageAdditionalCost] += 1;
                     Ok(TxResult::<BaseEvmTypes>::default())
                 },
             ),
@@ -3934,59 +3945,7 @@ mod tests {
         evm.validate_tx(&test_tx(0)).unwrap();
         assert_eq!(evm.version().gas_params[GasId::ColdStorageAdditionalCost], 1000);
         assert_eq!(evm.transact(&test_tx(0)).unwrap().discard().tx_gas_used(), 0);
-        assert_eq!(evm.version().gas_params[GasId::ColdStorageAdditionalCost], 2000);
-    }
-
-    #[derive(Debug)]
-    struct GasBoundRunner {
-        cost: u32,
-        calls: Arc<AtomicUsize>,
-        support_checks: Arc<AtomicUsize>,
-    }
-
-    impl InterpreterRunner<BaseEvmTypes> for GasBoundRunner {
-        fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
-            self.support_checks.fetch_add(1, Ordering::Relaxed);
-            config.version().gas_params[GasId::ColdStorageAdditionalCost] == self.cost
-        }
-
-        fn run<'frame, 'host>(
-            &self,
-            _: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
-            _: &mut Evm<'host, BaseEvmTypes>,
-        ) -> Option<InstrStop> {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            Some(InstrStop::Return)
-        }
-    }
-
-    #[test]
-    fn gas_params_mut_refreshes_runner_support() {
-        let mut evm = read_only_evm();
-        let cost = evm.version().gas_params[GasId::ColdStorageAdditionalCost];
-        let calls = Arc::new(AtomicUsize::new(0));
-        let support_checks = Arc::new(AtomicUsize::new(0));
-        evm.set_interpreter_runner(GasBoundRunner {
-            cost,
-            calls: calls.clone(),
-            support_checks: support_checks.clone(),
-        });
-        let message = MessageExt {
-            gas_limit: 30_000,
-            code: legacy_bytecode(vec![op::STOP]),
-            ..Default::default()
-        };
-        assert_eq!(evm.run_interpreter(&message).unwrap(), InstrStop::Return);
-        assert_eq!(support_checks.load(Ordering::Relaxed), 1);
-        evm.gas_params_mut()[GasId::ColdStorageAdditionalCost] = cost - 1;
-        assert_eq!(evm.run_interpreter(&message).unwrap(), InstrStop::Stop);
-        assert_eq!(support_checks.load(Ordering::Relaxed), 2);
-        assert_eq!(evm.run_interpreter(&message).unwrap(), InstrStop::Stop);
-        assert_eq!(support_checks.load(Ordering::Relaxed), 2);
-        evm.gas_params_mut()[GasId::ColdStorageAdditionalCost] = cost;
-        assert_eq!(evm.run_interpreter(&message).unwrap(), InstrStop::Return);
-        assert_eq!(calls.load(Ordering::Relaxed), 2);
-        assert_eq!(support_checks.load(Ordering::Relaxed), 3);
+        assert_eq!(evm.version().gas_params[GasId::ColdStorageAdditionalCost], 1001);
     }
 
     #[test]
