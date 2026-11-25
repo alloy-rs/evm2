@@ -63,7 +63,7 @@ impl Memory {
 
     /// Returns the bytes of memory held by this frame and the suspended frames below it.
     #[inline]
-    pub const fn live_bytes(&self) -> u64 {
+    pub(crate) const fn live_bytes(&self) -> u64 {
         self.suspended + self.data.len() as u64
     }
 
@@ -354,5 +354,25 @@ mod tests {
         );
         assert_eq!(memory.len(), 64);
         assert_eq!(gas.memory().words_num, 2);
+    }
+    #[test]
+    fn resize_evm_respects_tx_memory_limit() {
+        let mut gas = Gas::new(100_000);
+        let gas_params = Version::new(SpecId::FRONTIER).gas_params;
+        let mut memory = Memory::new();
+        memory.set_tx_memory_limit(128);
+        memory.set_suspended_bytes(64);
+
+        memory.resize_evm(&mut gas, &gas_params, 0, 64).unwrap();
+        assert_eq!(memory.live_bytes(), 128);
+        assert_matches!(
+            memory.resize_evm(&mut gas, &gas_params, 0, 65),
+            Err(InstrStop::MemoryLimitOOG)
+        );
+        assert_eq!(memory.len(), 64);
+
+        memory.set_tx_memory_limit(u64::MAX);
+        memory.resize_evm(&mut gas, &gas_params, 0, 96).unwrap();
+        assert_eq!(memory.len(), 96);
     }
 }

@@ -54,8 +54,9 @@ pub struct Version {
     ///
     /// A frame that would grow memory past it stops with
     /// [`InstrStop::MemoryLimitOOG`](crate::interpreter::InstrStop::MemoryLimitOOG), as when it
-    /// passes [`memory_limit`](Self::memory_limit). Defaults to 4 GiB. `u64::MAX` disables the
-    /// limit.
+    /// passes [`memory_limit`](Self::memory_limit). A transaction that a hook dispatches from
+    /// inside a running one counts its own frames only. Defaults to 4 GiB. `u64::MAX` disables
+    /// the limit.
     pub tx_memory_limit: u64,
     /// Maximum deployed contract bytecode size.
     pub max_code_size: usize,
@@ -329,6 +330,7 @@ mod tests {
         assert_eq!(osaka.chain_id, DEFAULT_CHAIN_ID);
         assert_eq!(osaka.tx_gas_limit_cap, MAX_TX_GAS_LIMIT_OSAKA);
         assert_eq!(osaka.memory_limit, DEFAULT_MEMORY_LIMIT);
+        assert_eq!(osaka.tx_memory_limit, DEFAULT_TX_MEMORY_LIMIT);
         assert_eq!(osaka.max_code_size, MAX_CODE_SIZE);
         assert_eq!(osaka.max_initcode_size, MAX_INITCODE_SIZE);
         assert_eq!(osaka.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
