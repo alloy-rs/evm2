@@ -15,7 +15,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
-    map::{AddressMap, B256Map, U256Map, hash_map::Entry},
+    map::{AddressMap, AddressSet, B256Map, U256Map, hash_map::Entry},
 };
 use core::convert::Infallible;
 
@@ -59,6 +59,10 @@ pub struct Cache {
     pub storage: AddressMap<AccountStorageCache>,
     /// Cached block hashes keyed by block number.
     pub block_hashes: U256Map<B256>,
+    /// Accounts deleted by a committed transaction whose storage was then removed with
+    /// [`CacheDB::remove_account_storage`]. Their uncached storage reads zero until account info
+    /// is inserted for them again.
+    pub deleted: AddressSet,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -68,9 +72,12 @@ impl Cache {
     ///
     /// Incoming account entries replace existing ones, including `None` entries. An incoming
     /// storage wipe clears previously cached slots before inserting the incoming slots. Otherwise,
-    /// untouched slots and any existing storage wipe are preserved.
+    /// untouched slots and any existing storage wipe are preserved. Incoming deletions are kept,
+    /// and an incoming existing account clears an existing deletion.
     #[inline]
     pub fn merge(&mut self, other: Self) {
+        self.deleted.retain(|address| !matches!(other.accounts.get(address), Some(Some(_))));
+        self.deleted.extend(other.deleted);
         self.accounts.extend(other.accounts);
         self.contracts.extend(other.contracts);
         self.block_hashes.extend(other.block_hashes);
@@ -94,6 +101,7 @@ impl Default for Cache {
             contracts,
             storage: AddressMap::default(),
             block_hashes: U256Map::default(),
+            deleted: AddressSet::default(),
             _non_exhaustive: (),
         }
     }
@@ -216,6 +224,7 @@ impl<ExtDB> CacheDB<ExtDB> {
         self.insert_contract(&mut info);
         info.code = None;
         self.cache.accounts.insert(*address, Some(info));
+        self.cache.deleted.remove(address);
     }
 
     /// Returns cached account info if the account exists in the cache.
@@ -237,22 +246,15 @@ impl<ExtDB> CacheDB<ExtDB> {
     ///
     /// A storage wipe marker is dropped as well, so slots it had zeroed read from the backing
     /// database again, unless the account is cached as absent (for example after a committed
-    /// selfdestruct): those reads still return zero, and a database that
-    /// [holds storage for absent accounts](DynDatabase::has_storage_for_absent_accounts) keeps
-    /// the account's storage wiped.
+    /// selfdestruct): the deletion is kept in [`Cache::deleted`], so those reads still return zero
+    /// until account info is inserted again.
     #[inline]
-    pub fn remove_account_storage(&mut self, address: &Address) -> Option<AccountStorageCache>
-    where
-        ExtDB: DynDatabase,
-    {
+    pub fn remove_account_storage(&mut self, address: &Address) -> Option<AccountStorageCache> {
         let removed = self.cache.storage.remove(address);
-        // A database that holds storage for absent accounts would otherwise serve the storage a
-        // committed deletion wiped.
         if removed.as_ref().is_some_and(|storage| storage.wiped)
             && self.cache.accounts.get(address).is_some_and(Option::is_none)
-            && self.db.has_storage_for_absent_accounts()
         {
-            self.cache.storage.entry(*address).or_default().wipe();
+            self.cache.deleted.insert(*address);
         }
         removed
     }
@@ -412,6 +414,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
                     Entry::Occupied(slot) => Ok(*slot.get()),
                     Entry::Vacant(slot) => {
                         if storage.wiped
+                            || self.cache.deleted.contains(address)
                             || (self.cache.accounts.get(address).is_some_and(Option::is_none)
                                 && !self.db.has_storage_for_absent_accounts())
                         {
@@ -423,8 +426,9 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
                 }
             }
             Entry::Vacant(entry) => {
-                if self.cache.accounts.get(address).is_some_and(Option::is_none)
-                    && !self.db.has_storage_for_absent_accounts()
+                if self.cache.deleted.contains(address)
+                    || (self.cache.accounts.get(address).is_some_and(Option::is_none)
+                        && !self.db.has_storage_for_absent_accounts())
                 {
                     return Ok(Word::ZERO);
                 }
@@ -567,6 +571,8 @@ mod tests {
         incoming.contracts.insert(hash, code.clone());
         incoming.block_hashes.insert(Word::ONE, hash);
         incoming.storage.entry(added).or_default().slots.insert(Word::ZERO, Word::ONE);
+        incoming.deleted.insert(address);
+        cache.deleted.insert(added);
         cache.merge(incoming);
 
         assert_eq!(cache.accounts[&address], None);
@@ -576,6 +582,7 @@ mod tests {
         assert_eq!(cache.block_hashes[&Word::ONE], hash);
         assert_eq!(cache.storage[&added].slots[&Word::ZERO], Word::ONE);
         assert!(!cache.storage[&added].wiped);
+        assert_eq!(cache.deleted, AddressSet::from_iter([address]));
     }
 
     #[derive(Debug, Default)]
@@ -639,6 +646,53 @@ mod tests {
 
         fn has_storage_for_absent_accounts(&self) -> bool {
             true
+        }
+    }
+
+    /// An absent account with one storage value, which opts in through [`crate::evm::Database`].
+    struct AbsentSlot(Word);
+
+    impl crate::evm::Database for AbsentSlot {
+        type Error = Infallible;
+
+        fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Infallible> {
+            crate::evm::DatabaseRef::get_account(self, address)
+        }
+
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Infallible> {
+            crate::evm::DatabaseRef::get_code_by_hash(self, code_hash)
+        }
+
+        fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Infallible> {
+            crate::evm::DatabaseRef::get_storage(self, address, key)
+        }
+
+        fn get_block_hash(&mut self, number: &Word) -> Result<B256, Infallible> {
+            crate::evm::DatabaseRef::get_block_hash(self, number)
+        }
+
+        fn has_storage_for_absent_accounts(&self) -> bool {
+            true
+        }
+    }
+
+    impl crate::evm::DatabaseRef for AbsentSlot {
+        type Error = Infallible;
+
+        fn get_account(&self, _address: &Address) -> Result<Option<AccountInfo>, Infallible> {
+            Ok(None)
+        }
+
+        fn get_code_by_hash(&self, _code_hash: &B256) -> Result<Bytecode, Infallible> {
+            Ok(Bytecode::default())
+        }
+
+        fn get_storage(&self, _address: &Address, _key: &Word) -> Result<Word, Infallible> {
+            Ok(self.0)
+        }
+
+        fn get_block_hash(&self, _number: &Word) -> Result<B256, Infallible> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -761,6 +815,13 @@ mod tests {
         let loads = cache.db.inner().storage_loads;
         assert_eq!(cache.get_storage(&other, &key).unwrap(), Word::ZERO);
         assert_eq!(cache.db.inner().storage_loads, loads);
+        // The deletion is kept for a database that holds storage for absent accounts.
+        let mut clone = CacheDB::new(HoldsAbsentStorage(crate::evm::Db::new(CountingDB {
+            storage: backing,
+            ..CountingDB::default()
+        })));
+        clone.cache = cache.cache.clone();
+        assert_eq!(clone.get_storage(&other, &key).unwrap(), Word::ZERO);
         // Without a wipe marker left behind: nothing is left to remove, and the backing database is
         // read once the account exists again.
         assert!(cache.remove_account_storage(&other).is_none());
@@ -783,6 +844,13 @@ mod tests {
         let mut typed = CacheDB::new(crate::evm::Db::new(CacheDB::new(holds_absent_storage())));
         assert!(typed.get_account(&address).unwrap().is_none());
         assert_eq!(typed.get_storage(&address, &key).unwrap(), backing);
+        let mut db = crate::evm::Db::new(AbsentSlot(backing));
+        let mut owned = CacheDB::new(&mut db);
+        assert!(owned.get_account(&address).unwrap().is_none());
+        assert_eq!(owned.get_storage(&address, &key).unwrap(), backing);
+        let mut shared = CacheDB::new(crate::evm::DbRef::new(&db));
+        assert!(shared.get_account(&address).unwrap().is_none());
+        assert_eq!(shared.get_storage(&address, &key).unwrap(), backing);
 
         // Removing its cached storage keeps reading the backing database.
         let mut cache = CacheDB::new(holds_absent_storage());

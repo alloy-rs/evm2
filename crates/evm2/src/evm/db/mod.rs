@@ -185,6 +185,14 @@ pub trait DatabaseRef: NonStaticAny {
     /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
     /// provide is a database failure reported through the error, never a benign miss.
     fn get_block_hash(&self, number: &Word) -> Result<B256, Self::Error>;
+
+    /// Returns whether this database can hold storage for an account it reports as absent.
+    ///
+    /// See [`DynDatabase::has_storage_for_absent_accounts`]. Defaults to `false`.
+    #[inline]
+    fn has_storage_for_absent_accounts(&self) -> bool {
+        false
+    }
 }
 
 /// Object-safe database adapter for typed shared database implementations.
@@ -280,6 +288,11 @@ impl<T: DatabaseRef> DynDatabase for DbRef<T> {
     fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         DynDatabaseRef::get_block_hash(self, number)
     }
+
+    #[inline]
+    fn has_storage_for_absent_accounts(&self) -> bool {
+        self.db.has_storage_for_absent_accounts()
+    }
 }
 
 /// Shared backing database view used to initialize mutable [`super::State`].
@@ -328,6 +341,12 @@ impl<T: Database + DatabaseRef> DatabaseRef for Db<T> {
     #[inline]
     fn get_block_hash(&self, number: &Word) -> Result<B256, Self::Error> {
         self.inner().get_block_hash(number)
+    }
+
+    // Both views of the database answer as its mutable view does.
+    #[inline]
+    fn has_storage_for_absent_accounts(&self) -> bool {
+        <T as Database>::has_storage_for_absent_accounts(self.inner())
     }
 }
 
