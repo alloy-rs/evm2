@@ -139,6 +139,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.stack_len = 0;
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
+        self.memory.set_suspended_bytes(0);
         self.result = Ok(());
         self.error = None;
         self.output = 0..0;
@@ -511,6 +512,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let config = host.execution_config();
         let version = config.version();
         self.memory.set_memory_limit(version.memory_limit);
+        self.memory.set_tx_memory_limit(version.tx_memory_limit);
         self.spec = config.base_spec_id();
         self.features = version.features;
         self.host = Some(NonNull::from(host));

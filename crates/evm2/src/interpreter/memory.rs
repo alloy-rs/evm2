@@ -7,6 +7,9 @@ use core::{cmp::min, fmt, hint::cold_path, ops::Range};
 pub struct Memory {
     data: Vec<u8>,
     memory_limit: u64,
+    tx_memory_limit: u64,
+    /// Bytes held by the suspended frames below this one.
+    suspended: u64,
 }
 
 impl Default for Memory {
@@ -32,7 +35,12 @@ impl Memory {
     /// Creates memory with the requested capacity.
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { data: Vec::with_capacity(capacity), memory_limit: u64::MAX }
+        Self {
+            data: Vec::with_capacity(capacity),
+            memory_limit: u64::MAX,
+            tx_memory_limit: u64::MAX,
+            suspended: 0,
+        }
     }
 
     /// Returns the memory byte limit.
@@ -45,6 +53,24 @@ impl Memory {
     #[inline]
     pub const fn set_memory_limit(&mut self, limit: u64) {
         self.memory_limit = limit;
+    }
+
+    /// Sets the byte limit on the memory of this frame and all the suspended frames below it.
+    #[inline]
+    pub const fn set_tx_memory_limit(&mut self, limit: u64) {
+        self.tx_memory_limit = limit;
+    }
+
+    /// Returns the bytes of memory held by this frame and the suspended frames below it.
+    #[inline]
+    pub const fn live_bytes(&self) -> u64 {
+        self.suspended + self.data.len() as u64
+    }
+
+    /// Sets the bytes of memory held by the suspended frames below this one.
+    #[inline]
+    pub(crate) const fn set_suspended_bytes(&mut self, bytes: u64) {
+        self.suspended = bytes;
     }
 
     /// Returns the memory length in bytes.
@@ -146,10 +172,13 @@ impl Memory {
         Ok(())
     }
 
-    /// Returns whether `new_words` exceeds the memory limit.
+    /// Returns whether `new_words` exceeds the memory limit of this frame, or the limit on the
+    /// memory of this frame and the suspended frames below it.
     #[inline]
     pub const fn limit_reached(&self, new_words: usize) -> bool {
-        new_words.saturating_mul(32) as u64 > self.memory_limit
+        let new_size = new_words.saturating_mul(32) as u64;
+        new_size > self.memory_limit
+            || new_size.saturating_add(self.suspended) > self.tx_memory_limit
     }
 
     #[inline]

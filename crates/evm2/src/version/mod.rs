@@ -49,6 +49,13 @@ pub struct Version {
     /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) clamps a larger
     /// limit to [`u32::MAX`], and memory stops growing there.
     pub memory_limit: u64,
+    /// Hard limit in bytes on the memory of all live call frames of a transaction together.
+    ///
+    /// A frame that would grow memory past it stops with
+    /// [`InstrStop::MemoryLimitOOG`](crate::interpreter::InstrStop::MemoryLimitOOG), as when it
+    /// passes [`memory_limit`](Self::memory_limit). Defaults to 4 GiB. `u64::MAX` disables the
+    /// limit.
+    pub tx_memory_limit: u64,
     /// Maximum deployed contract bytecode size.
     pub max_code_size: usize,
     /// Maximum contract creation initcode size.
@@ -145,6 +152,7 @@ const fn base_max_blobs_per_tx(spec_id: SpecId) -> usize {
 
 const DEFAULT_MEMORY_LIMIT: u64 = (1 << 32) - 1;
 const DEFAULT_CHAIN_ID: u64 = 1;
+const DEFAULT_TX_MEMORY_LIMIT: u64 = 1 << 32;
 
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     let mut versions = [const {
@@ -155,6 +163,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             tx_gas_limit_cap: u64::MAX,
             tx_total_gas_cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
             memory_limit: DEFAULT_MEMORY_LIMIT,
+            tx_memory_limit: DEFAULT_TX_MEMORY_LIMIT,
             max_code_size: MAX_CODE_SIZE,
             max_initcode_size: MAX_INITCODE_SIZE,
             max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
@@ -171,6 +180,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             tx_gas_limit_cap: base_tx_gas_limit_cap(spec_id),
             tx_total_gas_cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
             memory_limit: DEFAULT_MEMORY_LIMIT,
+            tx_memory_limit: DEFAULT_TX_MEMORY_LIMIT,
             max_code_size: base_max_code_size(spec_id),
             max_initcode_size: base_max_initcode_size(spec_id),
             max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
