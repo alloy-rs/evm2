@@ -441,9 +441,10 @@ impl<'a> Bytecode<'a> {
         self.insts.iter_mut_enumerated()
     }
 
-    /// Runs a list of analysis passes on the instructions.
-    #[instrument(level = "debug", skip_all)]
-    pub(crate) fn analyze(&mut self) -> Result<()> {
+    /// Resolves jump targets, first within each block and then across blocks.
+    ///
+    /// Returns the snapshots of the block-local pass.
+    pub(crate) fn analyze_jumps(&mut self) -> Snapshots {
         self.refresh_cfg();
 
         self.block_analysis_local();
@@ -453,6 +454,14 @@ impl<'a> Bytecode<'a> {
 
         self.block_analysis(&local_snapshots);
         self.refresh_cfg();
+
+        local_snapshots
+    }
+
+    /// Runs a list of analysis passes on the instructions.
+    #[instrument(level = "debug", skip_all)]
+    pub(crate) fn analyze(&mut self) -> Result<()> {
+        let local_snapshots = self.analyze_jumps();
 
         if self.config.contains(AnalysisConfig::DEDUP) {
             self.dedup_blocks(&local_snapshots);

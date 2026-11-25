@@ -12,12 +12,16 @@ use core::{cmp::Ordering, fmt, hash};
 use thiserror::Error;
 
 mod analysis;
+mod blocks;
+mod instructions;
 mod jump_table;
 
 #[cfg(feature = "serde")]
 mod serde_impl;
 
 pub use analysis::analyze_legacy;
+pub use blocks::{BasicBlock, BasicBlocks, JumpTarget, Terminator};
+pub use instructions::{Instruction, Instructions};
 pub use jump_table::{JumpTable, JumpTableRef};
 
 /// EIP-7702 decode errors.
