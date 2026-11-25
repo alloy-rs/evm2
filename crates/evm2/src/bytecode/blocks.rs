@@ -13,7 +13,8 @@ use core::{fmt, ops::Range, slice};
 pub enum JumpTarget {
     /// The target is not known.
     Unknown,
-    /// No target is valid: the jump halts execution with an invalid jump, or never runs.
+    /// No target is valid: a `JUMP` halts execution with an invalid jump, and a `JUMPI` halts
+    /// when it is taken. A jump that never runs can have this target too.
     Invalid,
     /// The jump goes to this block.
     Block(usize),

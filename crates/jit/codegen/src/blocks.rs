@@ -36,7 +36,12 @@ pub fn analyze_blocks(code: &[u8], spec_id: SpecId) -> BasicBlocks<'_> {
                 .collect::<Option<_>>()
                 .map(JumpTarget::Blocks)
         } else {
-            block_at(data.static_jump_target()).map(JumpTarget::Block)
+            let target = data.static_jump_target();
+            // The compiler resolves a `JUMPI` with a constant false condition to the instruction
+            // after it, which is no jump target.
+            let false_condition =
+                data.flags.contains(InstFlags::CONST_JUMP_CONDITION) && target == inst + 1;
+            block_at(target).filter(|_| !false_condition).map(JumpTarget::Block)
         };
         // The decoders can disagree after an invalid `DUPN`, `SWAPN` or `EXCHANGE` immediate, but
         // only about code that does not run.
@@ -55,7 +60,7 @@ pub fn analyze_blocks(code: &[u8], spec_id: SpecId) -> BasicBlocks<'_> {
 mod tests {
     use super::*;
     use crate::parse_asm;
-    use evm2::bytecode::Terminator;
+    use evm2::{bytecode::Terminator, interpreter::op};
 
     fn targets(blocks: &BasicBlocks<'_>) -> Vec<Terminator> {
         blocks.blocks().iter().map(|block| block.terminator().clone()).collect()
@@ -129,5 +134,13 @@ bb3:
   0012  SWAP1
   0013  JUMP  ; -> bb1, bb2"
         );
+    }
+
+    #[test]
+    fn jumpi_with_false_condition_keeps_its_target() {
+        // PUSH0 PUSH1 6 JUMPI JUMPDEST STOP: the target 6 is beyond the code.
+        let code = [op::PUSH0, op::PUSH1, 6, op::JUMPI, op::JUMPDEST, op::STOP];
+        let blocks = analyze_blocks(&code, SpecId::OSAKA);
+        assert_eq!(targets(&blocks), [Terminator::JumpI(JumpTarget::Invalid), Terminator::Halt]);
     }
 }
