@@ -151,6 +151,22 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// transaction lifecycle for finalization.
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
         let SystemTx { caller, system_contract_address, data, gas_limit, .. } = tx;
+        // EIP-8037: system calls start with a state-gas reservoir sized for
+        // `SYSTEM_MAX_SSTORES_PER_CALL` new-slot writes (execution-specs
+        // `process_unchecked_system_transaction`).
+        let reservoir = if self.feature(EvmFeatures::EIP8037) {
+            self.version().gas_params.get(GasId::SstoreSetState) * SYSTEM_MAX_SSTORES_PER_CALL
+        } else {
+            0
+        };
+        // The call's total budget is `gas_limit + reservoir`; it must stay within the hard gas cap.
+        let total_gas_limit = gas_limit.saturating_add(reservoir);
+        let cap = self.version().max_gas_limit;
+        if total_gas_limit > cap {
+            return Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: total_gas_limit, cap });
+        }
+        // The total budget must also fit in a `u64`.
+        let gas_limit = gas_limit.min(u64::MAX - reservoir);
         self.state.prewarm(&system_contract_address);
         self.tx_env = TxEnvExt {
             origin: caller,
@@ -160,22 +176,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             ext: T::TxEnvExt::default(),
             _non_exhaustive: (),
         };
-        // EIP-8037: system calls start with a state-gas reservoir sized for
-        // `SYSTEM_MAX_SSTORES_PER_CALL` new-slot writes (execution-specs
-        // `process_unchecked_system_transaction`).
-        let reservoir = if self.feature(EvmFeatures::EIP8037) {
-            self.version().gas_params.get(GasId::SstoreSetState) * SYSTEM_MAX_SSTORES_PER_CALL
-        } else {
-            0
-        };
-        // The call's total budget is `gas_limit + reservoir`; it must stay within the hard gas cap
-        // and fit in a `u64`.
-        let total_gas_limit = gas_limit.saturating_add(reservoir);
-        let cap = self.version().max_gas_limit;
-        if total_gas_limit > cap {
-            return Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: total_gas_limit, cap });
-        }
-        let gas_limit = gas_limit.min(u64::MAX - reservoir);
         let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
         let frame = prepare_initial_frame(
             self,

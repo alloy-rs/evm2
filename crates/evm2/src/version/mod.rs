@@ -51,6 +51,10 @@ pub struct Version {
     /// runs with bounded gas. Transactions above it are rejected before execution, and gas
     /// accounting is never clamped. `u64::MAX` disables the cap. The default is [`i64::MAX`],
     /// above the gas limits of existing chains and of every EEST fixture.
+    ///
+    /// The Ethereum transaction handlers and [`Evm::system_call`](crate::Evm::system_call) enforce
+    /// it; a custom handler must call
+    /// [`validate_tx_gas_limit_cap`](crate::ethereum::validate_tx_gas_limit_cap) itself.
     pub max_gas_limit: u64,
     /// Hard memory limit in bytes.
     ///
