@@ -148,6 +148,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// registry handler to execute system-call semantics and return the outcome to the outer
     /// transaction lifecycle for finalization.
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
+        // A system call is its own transaction, so it starts without the frames of one that is
+        // running. The guard makes them current again on every exit, also by unwinding.
+        let outer_frame = self.current_frame.take();
+        let mut guard =
+            DropGuard::new((self, outer_frame), |(evm, frame)| evm.current_frame = frame);
+        guard.0.execute_system_call_detached(tx)
+    }
+
+    fn execute_system_call_detached(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
         let SystemTx { caller, system_contract_address, data, gas_limit, .. } = tx;
         self.state.prewarm(&system_contract_address);
         self.tx_env = TxEnvExt {
@@ -253,15 +262,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, Inspector, Precompiles, SpecId,
+        BaseEvmTypes, ExecutionConfig, Inspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
-        env::BlockEnvExt,
-        evm::{AccountInfo, InMemoryDB},
-        interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult, op},
+        env::{BlockEnv, BlockEnvExt},
+        evm::{AccountInfo, InMemoryDB, precompile::PrecompileOutput},
+        interpreter::{
+            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageResult, op,
+        },
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileResult},
         registry::{HandlerError, TxRegistry},
         utils::address_to_word,
     };
+    use core::sync::atomic::{AtomicBool, Ordering};
 
     type TestEvm = Evm<'static, BaseEvmTypes>;
 
@@ -658,5 +670,64 @@ mod tests {
         assert_eq!(inspector.calls, expected_calls);
         assert_eq!(inspector.call_ends, expected_calls);
         assert_eq!(inspector.steps, expected_steps);
+    }
+    #[test]
+    fn nested_system_call_has_its_own_tx_memory_budget() {
+        const PRECOMPILE: Address = Address::with_last_byte(0x44);
+        static SYSTEM_CALL_SUCCEEDED: AtomicBool = AtomicBool::new(false);
+
+        fn system_call_precompile(
+            evm: &mut Evm<'_, BaseEvmTypes>,
+            _message: &Message,
+            _gas: &mut GasTracker,
+        ) -> PrecompileResult {
+            let system_contract = Address::repeat_byte(0x42);
+            let result = evm.system_call(SystemTx::new(system_contract, Bytes::new())).unwrap();
+            SYSTEM_CALL_SUCCEEDED.store(result.result().is_success(), Ordering::Relaxed);
+            drop(result);
+            Ok(PrecompileOutput::new(Bytes::new()))
+        }
+
+        // Both the outer contract and the system contract grow memory to 48 KiB, which fits the
+        // 80 KiB transaction limit alone but not together.
+        let grow = [op::PUSH1, 1, op::PUSH2, 0xbf, 0xff, op::MSTORE8];
+        let mut outer = grow.to_vec();
+        outer.extend([op::PUSH0; 5]);
+        outer.extend([op::PUSH1, PRECOMPILE.0[19], op::GAS, op::CALL, op::STOP]);
+        let mut system = grow.to_vec();
+        system.push(op::STOP);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &Address::repeat_byte(0x42),
+            AccountInfo::default().with_code(Bytecode::new_legacy(system.into())),
+        );
+        let mut precompiles = Precompiles::base(SpecId::OSAKA);
+        precompiles.as_map_mut().insert(Precompile::new(
+            PRECOMPILE,
+            PrecompileId::custom("system-call-test"),
+            system_call_precompile,
+        ));
+        let mut version = Version::new(SpecId::OSAKA);
+        version.memory_limit = 64 * 1024;
+        version.tx_memory_limit = 80 * 1024;
+        let mut evm = TestEvm::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnv::<BaseEvmTypes>::default(),
+            TxRegistry::new(),
+            database,
+            precompiles,
+        );
+        let mut message = MessageExt {
+            gas_limit: 1_000_000,
+            code: Bytecode::new_legacy(outer.into()),
+            ..Default::default()
+        };
+
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
+
+        assert_eq!(result.stop, InstrStop::Stop);
+        assert!(SYSTEM_CALL_SUCCEEDED.load(Ordering::Relaxed));
+        assert!(evm.current_frame.is_none());
     }
 }
