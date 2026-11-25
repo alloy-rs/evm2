@@ -625,30 +625,6 @@ mod tests {
         }
     }
 
-    struct HoldsAbsentStorage<D>(D);
-
-    impl<D: DynDatabase> DynDatabase for HoldsAbsentStorage<D> {
-        fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-            self.0.get_account(address)
-        }
-
-        fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
-            self.0.get_code_by_hash(code_hash)
-        }
-
-        fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-            self.0.get_storage(address, key)
-        }
-
-        fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
-            self.0.get_block_hash(number)
-        }
-
-        fn has_storage_for_absent_accounts(&self) -> bool {
-            true
-        }
-    }
-
     /// An absent account with one storage value, which opts in through [`crate::evm::Database`].
     struct AbsentSlot(Word);
 
@@ -816,10 +792,7 @@ mod tests {
         assert_eq!(cache.get_storage(&other, &key).unwrap(), Word::ZERO);
         assert_eq!(cache.db.inner().storage_loads, loads);
         // The deletion is kept for a database that holds storage for absent accounts.
-        let mut clone = CacheDB::new(HoldsAbsentStorage(crate::evm::Db::new(CountingDB {
-            storage: backing,
-            ..CountingDB::default()
-        })));
+        let mut clone = CacheDB::new(crate::evm::Db::new(AbsentSlot(backing)));
         clone.cache = cache.cache.clone();
         assert_eq!(clone.get_storage(&other, &key).unwrap(), Word::ZERO);
         // Without a wipe marker left behind: nothing is left to remove, and the backing database is
@@ -829,12 +802,7 @@ mod tests {
         assert_eq!(cache.get_storage(&other, &key).unwrap(), backing);
 
         // Unless the backing database holds storage for absent accounts, also through wrappers.
-        let holds_absent_storage = || {
-            HoldsAbsentStorage(crate::evm::Db::new(CountingDB {
-                storage: backing,
-                ..CountingDB::default()
-            }))
-        };
+        let holds_absent_storage = || crate::evm::Db::new(AbsentSlot(backing));
         let mut nested = CacheDB::new(CacheDB::new(holds_absent_storage()));
         assert!(nested.get_account(&address).unwrap().is_none());
         assert_eq!(nested.get_storage(&address, &key).unwrap(), backing);
