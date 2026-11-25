@@ -21,15 +21,9 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 /// Takes a byte slice in Big Endian format and attempts to interpret it as an
 /// elliptic curve field element. Returns an error if the bytes do not form
 /// a valid field element.
-///
-/// # Panics
-///
-/// Panics if the input is not exactly 48 bytes long.
 #[inline]
-fn read_fp(input_be: &[u8]) -> Result<Fq, PrecompileHalt> {
-    assert_eq!(input_be.len(), FP_LENGTH, "input must be {FP_LENGTH} bytes");
-
-    let mut input_le = *input_be.as_array::<FP_LENGTH>().unwrap();
+fn read_fp(input_be: &[u8; FP_LENGTH]) -> Result<Fq, PrecompileHalt> {
+    let mut input_le = *input_be;
 
     // Reverse in-place to convert from big-endian to little-endian.
     input_le.reverse();

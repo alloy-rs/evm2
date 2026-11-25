@@ -65,10 +65,10 @@ pub(super) fn pad_g2_point(unpadded: &[u8]) -> [u8; PADDED_G2_LENGTH] {
 /// after `FP_PAD_BY` zero bytes.
 fn pad_fps<const PADDED_LEN: usize>(unpadded: &[u8]) -> [u8; PADDED_LEN] {
     let mut padded = [0u8; PADDED_LEN];
-    for (padded, fp) in
+    for (chunk, fp) in
         padded.chunks_exact_mut(PADDED_FP_LENGTH).zip(unpadded.chunks_exact(FP_LENGTH))
     {
-        padded[FP_PAD_BY..].copy_from_slice(fp);
+        chunk[FP_PAD_BY..].copy_from_slice(fp);
     }
     padded
 }

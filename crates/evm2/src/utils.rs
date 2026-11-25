@@ -244,18 +244,6 @@ pub fn right_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
     }
 }
 
-/// Left-pads the given slice with zeroes until `LEN`.
-///
-/// Returns the first `LEN` bytes if it does not need padding.
-#[inline]
-pub fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
-    if let Some(data) = data.first_chunk() {
-        Cow::Borrowed(data)
-    } else {
-        Cow::Owned(FixedBytes::<LEN>::left_padding_from(data).0)
-    }
-}
-
 /// Left-pads the given big-endian slice with zeroes until `len`.
 ///
 /// When `data` is longer than `len`, this truncates the leading (most-significant) bytes.
@@ -383,19 +371,6 @@ mod tests {
         assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
         let padded = right_pad_vec(&data, 8);
-        assert_matches!(padded, Cow::Borrowed(_));
-        assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
-    }
-
-    #[test]
-    fn left_padding() {
-        let data = [1, 2, 3, 4];
-        let padded = left_pad::<8>(&data);
-        assert_matches!(padded, Cow::Owned(_));
-        assert_eq!(padded[..], [0, 0, 0, 0, 1, 2, 3, 4]);
-
-        let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let padded = left_pad::<8>(&data);
         assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
     }
