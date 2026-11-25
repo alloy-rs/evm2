@@ -15,7 +15,7 @@ use std::{
     cell::Cell,
     fs,
     io::{self, Write},
-    mem,
+    mem::{self, DropGuard},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -53,19 +53,11 @@ impl Remarks {
         *self = Self::default();
     }
 
-    fn time(&self, field: impl FnOnce(&Self) -> &Cell<Duration>) -> TimingGuard<'_> {
-        TimingGuard { target: field(self), start: Instant::now() }
-    }
-}
-
-struct TimingGuard<'a> {
-    target: &'a Cell<Duration>,
-    start: Instant,
-}
-
-impl Drop for TimingGuard<'_> {
-    fn drop(&mut self) {
-        self.target.set(self.target.get() + self.start.elapsed());
+    /// Adds the time until the returned guard is dropped to `field`.
+    fn time(&self, field: impl FnOnce(&Self) -> &Cell<Duration>) -> impl Drop {
+        DropGuard::new((field(self), Instant::now()), |(target, start)| {
+            target.set(target.get() + start.elapsed());
+        })
     }
 }
 
