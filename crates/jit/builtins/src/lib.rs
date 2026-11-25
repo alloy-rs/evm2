@@ -647,7 +647,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     ecx.gas.spend(create_cost)?;
     let salt = if is_create2 {
         pop!(sp; salt);
-        B256::from(salt.to_be_bytes())
+        salt.to_be_bytes()
     } else {
         B256::ZERO
     };

@@ -416,10 +416,10 @@ impl JitBackend {
             sync_notifier: SyncNotifier::new(tx),
         });
         self.inner.tx.send(cmd).map_err(|_| eyre::eyre!("backend channel closed"))?;
-        self.recv_compile_completion(rx)
+        self.recv_compile_completion(&rx)
     }
 
-    fn recv_compile_completion(&self, rx: chan::Receiver<()>) -> eyre::Result<()> {
+    fn recv_compile_completion(&self, rx: &chan::Receiver<()>) -> eyre::Result<()> {
         match rx.recv_timeout(self.inner.tuning.sync_compile_timeout) {
             Ok(()) => Ok(()),
             Err(chan::RecvTimeoutError::Timeout) => {
@@ -494,7 +494,7 @@ impl JitBackend {
         let cmd = Command::PrepareAot(owned);
         self.inner.tx.send(cmd).map_err(|_| eyre::eyre!("backend channel closed"))?;
         for _ in 0..completions {
-            self.recv_compile_completion(rx.clone())?;
+            self.recv_compile_completion(&rx)?;
         }
         Ok(())
     }
