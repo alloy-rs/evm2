@@ -56,7 +56,8 @@ pub struct Version {
     /// it; a custom handler must call
     /// [`validate_tx_gas_limit_cap`](crate::ethereum::validate_tx_gas_limit_cap) itself.
     pub max_gas_limit: u64,
-    /// Hard memory limit in bytes.
+    /// Hard memory limit in bytes for each call frame, not for the whole transaction. Defaults to
+    /// 100 MiB.
     ///
     /// Frame output ranges are `u32`, so
     /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) clamps a larger
@@ -161,7 +162,7 @@ const fn base_max_blobs_per_tx(spec_id: SpecId) -> usize {
 }
 
 const DEFAULT_MAX_GAS_LIMIT: u64 = i64::MAX as u64;
-const DEFAULT_MEMORY_LIMIT: u64 = (1 << 32) - 1;
+const DEFAULT_MEMORY_LIMIT: u64 = 100 * 1024 * 1024;
 const DEFAULT_CHAIN_ID: u64 = 1;
 
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
