@@ -1,4 +1,5 @@
-//! The cost of a step that runs out of gas is the gas it consumed, in both trace formats.
+//! The cost of a step that runs out of gas is the gas it consumed in the Parity `vmTrace`. Geth
+//! struct logs report 0 for it, like for any exceptional halt.
 
 use super::*;
 use alloy_primitives::Bytes;
@@ -47,7 +48,7 @@ fn out_of_gas_step_costs_the_consumed_gas() {
         let failed = geth.struct_logs.iter().rfind(|log| log.depth == 2).unwrap();
         assert_eq!(failed.opcode(), opcode);
         assert_eq!(failed.gas, remaining, "{opcode}");
-        assert_eq!(failed.gas_cost, cost, "{opcode}");
+        assert_eq!(failed.gas_cost, 0, "{opcode}");
 
         let trace = inspector.into_parity_builder().vm_trace();
         let failed = trace.ops[7].sub.as_ref().unwrap().ops.last().unwrap();
