@@ -2,9 +2,10 @@
 
 use crate::{
     SpecId,
+    eip8024::{decode_pair, decode_single},
     opcode::{OpCode, op},
 };
-use alloy_primitives::hex;
+use alloy_primitives::{U256, hex};
 use core::{fmt, iter::FusedIterator};
 
 /// A decoded instruction: an opcode byte and its immediate data.
@@ -19,20 +20,50 @@ pub struct Instruction<'a> {
     /// The immediate data that follows the opcode byte.
     ///
     /// This is empty for opcodes without immediate data. It is shorter than
-    /// [`OpCode::immediate_size`] for a `PUSH` that the end of the bytecode cuts short, and empty
-    /// for a `DUPN`, `SWAPN` or `EXCHANGE` that has no valid immediate.
+    /// [`OpCode::immediate_size`] for a `PUSH`, `DUPN`, `SWAPN` or `EXCHANGE` that the end of the
+    /// bytecode cuts short.
+    ///
+    /// For an enabled `DUPN`, `SWAPN` or `EXCHANGE` whose byte is not a valid immediate, this is
+    /// that byte, but the instruction does not consume it: the byte is also the next instruction,
+    /// and `stack_io` is `None`. The interpreter halts at such an instruction.
     pub immediate: &'a [u8],
 }
 
-impl Instruction<'_> {
-    /// Returns the offset of the byte after the instruction.
-    #[inline]
-    pub const fn end_pc(&self) -> usize {
-        self.pc + 1 + self.immediate.len()
-    }
-}
-
 impl<'a> Instruction<'a> {
+    /// Returns the value the instruction pushes if it is a `PUSH`, or `None` for any other
+    /// opcode.
+    ///
+    /// The immediate data is read as the EVM reads it: bytes that the end of the bytecode cuts
+    /// off are zeros on the right, so `PUSH2 0x12` at the end is `0x1200`. `PUSH0` is `Some(0)`
+    /// whether or not the spec enables it; use [`OpCode::is_enabled`] to tell.
+    pub fn push_value(&self) -> Option<U256> {
+        let size = match self.opcode.get() {
+            op::PUSH0 => return Some(U256::ZERO),
+            opcode @ op::PUSH1..=op::PUSH32 => (opcode - op::PUSH0) as usize,
+            _ => return None,
+        };
+        let mut word = [0; 32];
+        let len = self.immediate.len().min(size);
+        word[..len].copy_from_slice(&self.immediate[..len]);
+        Some(U256::from_be_slice(&word[..size]))
+    }
+
+    /// Returns the number of stack items the instruction pops and pushes, or `None` if it is a
+    /// `DUPN`, `SWAPN` or `EXCHANGE` with an invalid immediate.
+    ///
+    /// Those three read their depths from the immediate. A missing immediate reads as zero, as
+    /// the zero padding after the bytecode does. The result does not depend on the spec, so check
+    /// [`OpCode::is_enabled`] first. A byte that is not an opcode pops and pushes nothing.
+    pub fn stack_io(&self) -> Option<(u8, u8)> {
+        let immediate = self.immediate.first().copied().unwrap_or(0);
+        match self.opcode.get() {
+            op::DUPN => decode_single(immediate).map(|n| (n, n + 1)),
+            op::SWAPN => decode_single(immediate).map(|n| (n + 1, n + 1)),
+            op::EXCHANGE => decode_pair(immediate).map(|(_, m)| (m + 1, m + 1)),
+            _ => Some(self.opcode.input_output()),
+        }
+    }
+
     /// Returns a [`Display`](fmt::Display) of the instruction as `spec_id` names it.
     ///
     /// This differs from the instruction's own `Display` in two ways: the opcode `0x44` is
@@ -79,8 +110,9 @@ impl fmt::Display for Instruction<'_> {
 ///
 /// - `PUSH1..=PUSH32` take their immediate data. The last instruction can have a shorter one.
 /// - `DUPN`, `SWAPN` and `EXCHANGE` take a one byte immediate when `spec_id` enables them and the
-///   byte is valid. Otherwise the instruction has no immediate, and the byte after it is the next
-///   instruction. Execution halts at such an instruction.
+///   byte is valid. With an invalid byte the instruction does not take it: the byte is the next
+///   instruction, and [`Instruction::immediate`] only shows it. Before the spec enables them, the
+///   three have no immediate.
 /// - Every other byte is an instruction without immediate data.
 #[derive(Clone, Debug)]
 pub struct Instructions<'a> {
@@ -105,19 +137,20 @@ impl<'a> Iterator for Instructions<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let pc = self.pc;
         let &opcode = self.code.get(pc)?;
-        let imm_len = match opcode {
-            op::PUSH1..=op::PUSH32 => (opcode - op::PUSH0) as usize,
+        // The length of the immediate data, and whether the instruction takes it.
+        let (imm_len, takes) = match opcode {
+            op::PUSH1..=op::PUSH32 => ((opcode - op::PUSH0) as usize, true),
             op::DUPN | op::SWAPN | op::EXCHANGE if self.eip8024 => {
-                let valid = self.code.get(pc + 1).is_some_and(|&imm| match opcode {
+                let valid = self.code.get(pc + 1).is_none_or(|&imm| match opcode {
                     op::EXCHANGE => decode_pair(imm).is_some(),
                     _ => decode_single(imm).is_some(),
                 });
-                valid as usize
+                (1, valid)
             }
-            _ => 0,
+            _ => (0, true),
         };
         let end = self.code.len().min(pc + 1 + imm_len);
-        self.pc = end;
+        self.pc = if takes { end } else { pc + 1 };
         Some(Instruction {
             pc,
             opcode: OpCode::new_or_unknown(opcode),
@@ -133,26 +166,6 @@ impl<'a> Iterator for Instructions<'a> {
 }
 
 impl FusedIterator for Instructions<'_> {}
-
-/// Decodes a `DUPN`/`SWAPN` immediate byte into a stack index.
-///
-/// Returns `None` if the immediate is in the invalid range `[91, 127]`.
-pub const fn decode_single(x: u8) -> Option<u8> {
-    if x <= 90 || x >= 128 { Some(x.wrapping_add(145)) } else { None }
-}
-
-/// Decodes an `EXCHANGE` immediate byte into a pair of stack indices `(n, m)`.
-///
-/// Returns `None` if the immediate is in the invalid range `[82, 127]`.
-pub const fn decode_pair(x: u8) -> Option<(u8, u8)> {
-    if x > 81 && x < 128 {
-        return None;
-    }
-    let k = (x ^ 143) as u16;
-    let q = (k / 16) as u8;
-    let r = (k % 16) as u8;
-    if q < r { Some((q + 1, r + 1)) } else { Some((r + 1, 29 - q)) }
-}
 
 #[cfg(test)]
 mod tests {
@@ -219,22 +232,29 @@ mod tests {
     }
 
     #[test]
-    fn invalid_eip8024_immediate_is_not_consumed() {
+    fn invalid_eip8024_immediate_is_shown_but_not_consumed() {
         // 0x5b is a JUMPDEST and 0x60 a PUSH1: neither is an immediate of an invalid encoding.
         let code = [op::DUPN, 0x5b, op::EXCHANGE, 0x52, op::SWAPN, 0x60, 0xff, op::SWAPN];
-        let insts = decode(&code, SpecId::AMSTERDAM);
+        let insts = Instructions::new(&code, SpecId::AMSTERDAM).collect::<Vec<_>>();
         assert_eq!(
-            insts,
+            insts.iter().map(|i| (i.pc, i.opcode.get(), i.immediate.to_vec())).collect::<Vec<_>>(),
             [
-                (0, op::DUPN, vec![]),
+                (0, op::DUPN, vec![0x5b]),
                 (1, op::JUMPDEST, vec![]),
-                (2, op::EXCHANGE, vec![]),
+                (2, op::EXCHANGE, vec![0x52]),
                 (3, 0x52, vec![]),
-                (4, op::SWAPN, vec![]),
+                (4, op::SWAPN, vec![0x60]),
                 (5, op::PUSH1, vec![0xff]),
                 (7, op::SWAPN, vec![]),
             ]
         );
+        // The invalid ones have no stack effect, and the one at the end reads a zero.
+        let io = insts.iter().map(Instruction::stack_io).collect::<Vec<_>>();
+        assert_eq!(io[0], None);
+        assert_eq!(io[2], None);
+        assert_eq!(io[4], None);
+        assert_eq!(io[6], Some((146, 146)));
+        assert_eq!(insts[0].to_string(), "DUPN 0x5b");
     }
 
     #[test]
@@ -295,5 +315,50 @@ mod tests {
         let raw =
             Instructions::new(&code, SpecId::AMSTERDAM).map(|i| i.to_string()).collect::<Vec<_>>();
         assert_eq!(raw[..4], ["DIFFICULTY", "DUPN 0x80", "SWAPN 0x80", "EXCHANGE 0x8e"]);
+    }
+
+    #[test]
+    fn push_value_pads_truncated_data_on_the_right() {
+        let value =
+            |code: &[u8]| Instructions::new(code, SpecId::OSAKA).next().unwrap().push_value();
+        assert_eq!(value(&[op::PUSH0]), Some(U256::ZERO));
+        assert_eq!(value(&[op::PUSH1, 0x7f]), Some(U256::from(0x7f)));
+        assert_eq!(value(&[op::PUSH2, 0x01, 0x02]), Some(U256::from(0x0102)));
+        // The code ends inside the immediate: the missing bytes are zeros after the present ones.
+        assert_eq!(value(&[op::PUSH2, 0x12]), Some(U256::from(0x1200)));
+        assert_eq!(value(&[op::PUSH2]), Some(U256::ZERO));
+        assert_eq!(value(&[op::PUSH3, 0xaa, 0xbb]), Some(U256::from(0xaabb00)));
+        assert_eq!(value(&[op::PUSH32, 0xff]), Some(U256::from(0xff) << 248));
+        let mut full = [0xab; 33];
+        full[0] = op::PUSH32;
+        assert_eq!(value(&full), Some(U256::from_be_bytes([0xab; 32])));
+        // Not pushes.
+        assert_eq!(value(&[op::DUP1]), None);
+        assert_eq!(value(&[op::DUPN, 0x80]), None);
+        assert_eq!(value(&[0x0c]), None);
+    }
+
+    #[test]
+    fn stack_io_decodes_relative_stack_opcodes() {
+        let io =
+            |code: &[u8]| Instructions::new(code, SpecId::AMSTERDAM).next().unwrap().stack_io();
+        assert_eq!(io(&[op::ADD]), Some((2, 1)));
+        assert_eq!(io(&[op::PUSH1, 0]), Some((0, 1)));
+        assert_eq!(io(&[op::DUP16]), Some((16, 17)));
+        assert_eq!(io(&[op::SWAP16]), Some((17, 17)));
+        assert_eq!(io(&[op::CALL]), Some((7, 1)));
+        // DUPN 17 reads 17 and writes 18; SWAPN 17 touches 18; EXCHANGE 1, 2 touches 3.
+        assert_eq!(io(&[op::DUPN, 0x80]), Some((17, 18)));
+        assert_eq!(io(&[op::SWAPN, 0x80]), Some((18, 18)));
+        assert_eq!(io(&[op::EXCHANGE, 0x8e]), Some((3, 3)));
+        assert_eq!(io(&[op::DUPN, 0xff]), Some((144, 145)));
+        // A missing immediate reads as zero: DUPN 145.
+        assert_eq!(io(&[op::DUPN]), Some((145, 146)));
+        // Invalid immediates.
+        assert_eq!(io(&[op::DUPN, 91]), None);
+        assert_eq!(io(&[op::SWAPN, 127]), None);
+        assert_eq!(io(&[op::EXCHANGE, 82]), None);
+        // A byte that is not an opcode.
+        assert_eq!(io(&[0x0c]), Some((0, 0)));
     }
 }

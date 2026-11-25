@@ -786,7 +786,7 @@ impl MemoryView {
         self.len = memory.len();
         self.patch.clear();
         self.patch_offset = 0;
-        if let Some((offset, size)) = memory_write_range(op, stack)
+        if let Some((offset, size)) = OpCode::new_or_unknown(op).memory_write_range(stack)
             && offset < memory.len()
             && size > 0
         {
@@ -820,27 +820,6 @@ impl MemoryView {
             }),
         ))
     }
-}
-
-/// Returns the memory range `(offset, size)` the opcode overwrites, based on its pre-execution
-/// stack.
-///
-/// Returns `None` for opcodes that don't write to memory, or if the operands are out of range, in
-/// which case the opcode fails without writing.
-fn memory_write_range(op: u8, stack: &[U256]) -> Option<(usize, usize)> {
-    let peek = |n: usize| stack.len().checked_sub(n + 1).map(|i| stack[i]);
-    let (offset, size) = match op {
-        opcode::MSTORE => (peek(0)?, U256::from(32)),
-        opcode::MSTORE8 => (peek(0)?, U256::ONE),
-        opcode::MCOPY | opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY => {
-            (peek(0)?, peek(2)?)
-        }
-        opcode::EXTCODECOPY => (peek(1)?, peek(3)?),
-        opcode::CALL | opcode::CALLCODE => (peek(5)?, peek(6)?),
-        opcode::DELEGATECALL | opcode::STATICCALL => (peek(4)?, peek(5)?),
-        _ => return None,
-    };
-    Some((usize::try_from(offset).ok()?, usize::try_from(size).ok()?))
 }
 
 #[derive(Debug, Default)]

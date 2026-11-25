@@ -1312,7 +1312,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 }
                 let _ = write!(
                     section_dump,
-                    "\n  ic{i} pc={} {:?} io={:?} flags={:?} gas={:?} stack={:?}{}{}",
+                    "\n  ic{i} pc={} {} io={:?} flags={:?} gas={:?} stack={:?}{}{}",
                     self.bytecode.pc(idx),
                     d.to_op(),
                     d.stack_io(),
@@ -1326,7 +1326,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             let head_data = self.bytecode.inst(head);
             panic!(
                 "sync: expected_top={expected_top} < base={}, section_len_offset={}, \
-                 diff={diff}, current_top={current_top}, inst={:?} (ic{})\n\
+                 diff={diff}, current_top={current_top}, inst={} (ic{})\n\
                  section head=ic{}, head_stack_section={:?}, section:{section_dump}",
                 self.vstack.live_range().start,
                 self.section_len_offset,
@@ -1357,7 +1357,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         debug_assert_eq!(
             self.vstack.top_offset(),
             expected_top,
-            "virtual stack sync mismatch after {:?}",
+            "virtual stack sync mismatch after {}",
             self.current_inst().to_op(),
         );
     }
@@ -2105,10 +2105,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let i32_type = self.bcx.type_int(32);
         let pc = self.bcx.phi(i64_type, &self.incoming_dynamic_jumps);
 
-        // A decoded JUMPDEST is not necessarily a valid jump target: EIP-8024
-        // immediates can desynchronize decoding from the legacy JUMPDEST analysis,
-        // so a `0x5b` masked by the analysis still decodes as an instruction. Only
-        // analysis-valid targets belong in the dispatch table.
+        // Only analysis-valid targets belong in the dispatch table.
         let bytecode = self.bytecode;
         let jumpdests = bytecode
             .iter_insts()

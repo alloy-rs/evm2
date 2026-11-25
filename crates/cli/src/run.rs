@@ -14,8 +14,7 @@ use evm2_eest::{StateTestPost, StateTestSuite, StateTestUnit};
 use evm2_jit_context::{EvmCompilerFn, can_run_compiled};
 use evm2_jit_llvm::EvmLlvmBackend;
 use evm2_jit_runtime::{
-    EvmCompiler, Linker, OptimizationLevel, analyze_blocks, eyre, eyre::OptionExt, parse_asm,
-    shared_library_path,
+    EvmCompiler, Linker, OptimizationLevel, eyre, eyre::OptionExt, parse_asm, shared_library_path,
 };
 use std::{
     borrow::Cow,
@@ -55,10 +54,6 @@ pub(crate) struct RunArgs {
     /// Print the parsed bytecode IR.
     #[arg(long)]
     display: bool,
-
-    /// Print the disassembly split into basic blocks with the resolved jump targets, and exit.
-    #[arg(long)]
-    disasm: bool,
 
     /// Parse the bytecode and render the CFG as a DOT graph.
     #[arg(long, default_missing_value = "svg", num_args = 0..=1)]
@@ -179,10 +174,6 @@ impl RunArgs {
         let mut aot_dir = None;
         let mut pending_jit = None;
         let entry_bytecode = bench_entry.entry_bytecode()?;
-        if self.disasm {
-            println!("{}", analyze_blocks(entry_bytecode.as_slice(), bench_entry.spec_id));
-            return Ok(());
-        }
 
         {
             let compile_spec_id = bench_entry.spec_id;

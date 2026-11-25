@@ -5,7 +5,7 @@ use alloy_primitives::{
 };
 use evm2::{
     BaseEvmTypes, Evm, Precompiles,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, Instructions},
     env::{BlockEnv, BlockEnvExt, TxEnv},
     ethereum::ethereum_tx_registry,
     evm::{AccountInfo, InMemoryDB},
@@ -126,8 +126,12 @@ impl Default for TestCase<'_> {
 
 impl fmt::Debug for TestCase<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytecode = Instructions::new(self.bytecode, self.spec_id)
+            .map(|inst| inst.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
         f.debug_struct("TestCase")
-            .field("bytecode", &format_bytecode(self.bytecode, self.spec_id))
+            .field("bytecode", &bytecode)
             .field("spec_id", &self.spec_id)
             .field("inspect_stack", &self.inspect_stack)
             .field("modify_message", &self.modify_message.is_some())

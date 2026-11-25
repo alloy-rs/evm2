@@ -536,13 +536,13 @@ tests! {
             spec_id: SpecId::AMSTERDAM,
             expected_return: InstrStop::InvalidJump,
         }),
-        // A valid target inside a PUSH immediate: DUPN desynchronizes decoding, so the
-        // 0x5b sits in the data of a decoded PUSH1 while the analysis (which does not
-        // skip DUPN immediates) sees it at an instruction boundary. The jump must land.
+        // A valid target after a DUPN whose immediate byte is a PUSH1: DUPN does not take the
+        // invalid immediate, so that PUSH1 is an instruction with the second PUSH1 as data, and
+        // the 0x5b after them is an instruction, as the analysis sees it. The jump must land.
         jump_into_desynced_push_immediate(@raw {
             bytecode: &[
                 op::PUSH1, 6, op::JUMP,
-                op::DUPN, op::PUSH1, op::PUSH1, op::JUMPDEST, // decoded: DUPN(PUSH1), PUSH1(0x5b)
+                op::DUPN, op::PUSH1, op::PUSH1, op::JUMPDEST, // decoded: DUPN, PUSH1(PUSH1), JUMPDEST
                 op::STOP,
             ],
             spec_id: SpecId::AMSTERDAM,

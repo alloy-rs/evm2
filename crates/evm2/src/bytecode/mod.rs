@@ -17,8 +17,7 @@ mod padding;
 mod serde_impl;
 
 pub use evm2_bytecode::{
-    BasicBlock, BasicBlocks, Instruction, Instructions, JumpTable, JumpTableRef, JumpTarget,
-    Terminator, analyze_legacy,
+    Instruction, InstructionMap, Instructions, JumpTable, JumpTableRef, analyze_legacy,
 };
 
 /// EIP-7702 decode errors.

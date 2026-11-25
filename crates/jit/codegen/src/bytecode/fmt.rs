@@ -291,7 +291,7 @@ impl fmt::Debug for Bytecode<'_> {
 impl fmt::Debug for InstData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InstData")
-            .field("opcode", &self.to_op())
+            .field("opcode", &format_args!("{}", self.to_op()))
             .field("flags", &format_args!("{:?}", self.flags))
             .field("data", &self.data)
             .field("gas_section", &self.gas_section)

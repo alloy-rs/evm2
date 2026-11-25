@@ -4,7 +4,7 @@ use crate::FxHashMap;
 use alloy_primitives::U256;
 use evm2::{
     OpcodeView, SpecId,
-    bytecode::{JumpTable, analyze_legacy},
+    bytecode::{Instruction, Instructions, JumpTable, analyze_legacy},
     interpreter::{op, opcode::OpCode},
     version::GasParams,
 };
@@ -237,18 +237,16 @@ impl<'a> Bytecode<'a> {
         let gas_params = gas_params.unwrap_or(evm2::Version::base(spec_id).gas_params);
         let mut insts = IndexVec::with_capacity(code.len() + 8);
         let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
-        // EIP-8024: JUMPDEST analysis is unchanged by DUPN/SWAPN/EXCHANGE: only PUSH
-        // data is skipped, their immediates are not. Compute the valid-jump-target
-        // bitmap with the legacy analysis over the raw bytes, independent of instruction
-        // decoding below (which does consume DUPN/SWAPN/EXCHANGE immediates and can
-        // therefore desynchronize from the analysis).
+        // `Instructions` decodes like this analysis, so every valid jump target starts an
+        // instruction.
         let jumpdests = analyze_legacy(&code);
         let mut pc_to_inst = FxHashMap::with_capacity_and_hasher(code.len(), Default::default());
         let mut u256_interner = U256Interner::new();
         let owned_infos = opcodes.map(|opcodes| opcode_infos(opcodes, spec_id));
         let op_infos = owned_infos.as_ref().unwrap_or_else(|| op_info_map(spec_id));
-        let mut iter = OpcodesIter::with_infos(&code, op_infos).with_pc();
-        while let Some((pc, Opcode { opcode, immediate })) = iter.next() {
+        for instruction in Instructions::new(&code, spec_id) {
+            let pc = instruction.pc;
+            let opcode = instruction.opcode.get();
             let inst: Inst = insts.next_idx();
             pc_to_inst.insert(pc as u32, inst);
             inst_to_pc.push(pc as u32);
@@ -272,7 +270,7 @@ impl<'a> Bytecode<'a> {
             let (base_gas, stack_io) =
                 if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
                     (0, (0, 0))
-                } else if let Some(stack_io) = compute_stack_io(opcode, immediate) {
+                } else if let Some(stack_io) = instruction.stack_io() {
                     (info.base_gas(), stack_io)
                 } else {
                     // Pays its static gas, then halts before touching the stack.
@@ -281,22 +279,12 @@ impl<'a> Bytecode<'a> {
                 };
 
             let data = match opcode {
-                op::PUSH0..=op::PUSH32 | op::DUPN | op::SWAPN | op::EXCHANGE => {
-                    let imm_len = min_imm_len(opcode) as usize;
-                    // `OpcodesIter` returns `None` for truncated EOF immediates; recover
-                    // the available bytes directly from `code` and right-pad with zeros
-                    // per EVM spec.
-                    let start = pc + 1;
-                    let avail = code.get(start..).map(|s| &s[..s.len().min(imm_len)]);
-                    let value = match avail {
-                        Some(slice) if slice.len() == imm_len => U256::from_be_slice(slice),
-                        Some(slice) if !slice.is_empty() => {
-                            let mut padded = [0u8; 32];
-                            padded[..slice.len()].copy_from_slice(slice);
-                            U256::from_be_slice(&padded[..imm_len])
-                        }
-                        _ => U256::ZERO,
-                    };
+                op::PUSH0..=op::PUSH32 => {
+                    let value = instruction.push_value().unwrap();
+                    U256Imm::new(value, &mut u256_interner).to_raw()
+                }
+                op::DUPN | op::SWAPN | op::EXCHANGE => {
+                    let value = U256::from(code.get(pc + 1).copied().unwrap_or(0));
                     U256Imm::new(value, &mut u256_interner).to_raw()
                 }
                 op::JUMPDEST | op::PC => {
@@ -319,27 +307,6 @@ impl<'a> Bytecode<'a> {
                 gas_section,
                 stack_section,
             });
-
-            // A valid jump target (per the legacy analysis above) can sit inside a
-            // consumed immediate: directly as a DUPN/SWAPN/EXCHANGE immediate byte, or
-            // inside a PUSH immediate once the decoded stream has diverged from the
-            // analysis past such an opcode. Rewind the iterator to the first such
-            // target so it is re-yielded and jumps have an instruction to land on.
-            // Analysis-aligned PUSH data never contains valid targets, so pre-EIP-8024
-            // bytecode never rewinds. Execution cannot fall through into the rewound
-            // bytes: every desynchronizing immediate is an invalid DUPN/SWAPN/EXCHANGE
-            // encoding, so the opcode preceding them halts at runtime.
-            // A truncated immediate at the end of the code consumes the remaining bytes.
-            let imm_len = if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
-                0
-            } else {
-                min_imm_len(opcode) as usize
-            };
-            let imm_end = (pc + 1 + imm_len).min(code.len());
-            if let Some(target) = (pc + 1..imm_end).find(|&p| jumpdests.is_valid(p)) {
-                // SAFETY: we just consumed the immediate bytes at `pc + 1..imm_end`.
-                unsafe { iter.rewind(imm_end - target) };
-            }
         }
 
         // Pad code to ensure there is at least one diverging instruction.
@@ -381,13 +348,6 @@ impl<'a> Bytecode<'a> {
         self.inst_lines.take()
     }
 
-    /// Returns an iterator over the opcodes.
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn opcodes(&self) -> OpcodesIter<'_> {
-        OpcodesIter::new(&self.code, self.spec_id)
-    }
-
     /// Returns the instruction at the given instruction counter.
     #[inline]
     #[track_caller]
@@ -405,8 +365,12 @@ impl<'a> Bytecode<'a> {
 
     /// Returns the opcode + immediate slice for the given instruction.
     #[inline]
-    pub(crate) fn opcode(&self, inst: Inst) -> Opcode<'_> {
-        Opcode { opcode: self.inst(inst).opcode, immediate: self.get_imm(inst) }
+    pub(crate) fn opcode(&self, inst: Inst) -> Instruction<'_> {
+        Instruction {
+            pc: self.pc(inst) as usize,
+            opcode: OpCode::new_or_unknown(self.inst(inst).opcode),
+            immediate: self.get_imm(inst).unwrap_or_default(),
+        }
     }
 
     /// Returns an iterator over the instructions.
@@ -441,10 +405,9 @@ impl<'a> Bytecode<'a> {
         self.insts.iter_mut_enumerated()
     }
 
-    /// Resolves jump targets, first within each block and then across blocks.
-    ///
-    /// Returns the snapshots of the block-local pass.
-    pub(crate) fn analyze_jumps(&mut self) -> Snapshots {
+    /// Runs a list of analysis passes on the instructions.
+    #[instrument(level = "debug", skip_all)]
+    pub(crate) fn analyze(&mut self) -> Result<()> {
         self.refresh_cfg();
 
         self.block_analysis_local();
@@ -454,14 +417,6 @@ impl<'a> Bytecode<'a> {
 
         self.block_analysis(&local_snapshots);
         self.refresh_cfg();
-
-        local_snapshots
-    }
-
-    /// Runs a list of analysis passes on the instructions.
-    #[instrument(level = "debug", skip_all)]
-    pub(crate) fn analyze(&mut self) -> Result<()> {
-        let local_snapshots = self.analyze_jumps();
 
         if self.config.contains(AnalysisConfig::DEDUP) {
             self.dedup_blocks(&local_snapshots);
@@ -1079,8 +1034,8 @@ impl InstData {
 
     /// Converts this instruction to a raw opcode. Note that the immediate data is not resolved.
     #[inline]
-    pub(crate) const fn to_op(&self) -> Opcode<'static> {
-        Opcode { opcode: self.opcode, immediate: None }
+    pub(crate) const fn to_op(&self) -> Instruction<'static> {
+        Instruction { pc: 0, opcode: OpCode::new_or_unknown(self.opcode), immediate: &[] }
     }
 
     /// Returns `true` if this instruction is a jump instruction (`JUMP`/`JUMPI`).
