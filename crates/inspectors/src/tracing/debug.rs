@@ -233,6 +233,31 @@ impl DebugInspector {
         }
     }
 
+    /// Returns the bytes counted against the limits since the last [`Self::fuse`], see
+    /// [`Self::set_limits`].
+    ///
+    /// A mux tracer returns the sum of its tracers, and tracers that ignore the limits return
+    /// zero. A caller that traces several transactions can pass what is left of a limit to the
+    /// next one, to bound them together.
+    pub fn recorded_bytes(&self) -> usize {
+        match self {
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.recorded_bytes(),
+            #[cfg(feature = "raw-struct-logs")]
+            Self::RawDefault(inspector) => inspector.recorded_bytes(),
+            Self::Erc7562Tracer(inspector) => inspector.recorded_call_bytes(),
+            Self::Mux(inspector, _) => inspector.recorded_bytes(),
+            Self::FourByte(_)
+            | Self::Keccak256Preimage(_)
+            | Self::Noop(_)
+            | Self::StateGasTracer(_) => 0,
+            #[cfg(feature = "js-tracer")]
+            Self::Js(_) => 0,
+        }
+    }
+
     /// Prepares inspector for executing the next transaction. This will remove any state from
     /// previous transactions, except the global state of a JavaScript tracer: its script is
     /// evaluated again in the same JS context, so `globalThis` properties and modified prototypes

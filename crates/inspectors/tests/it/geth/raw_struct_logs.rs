@@ -846,3 +846,33 @@ fn call_stopped_after_its_child_has_zero_sentry_cost() {
     assert_eq!(call["gasCost"], 0);
     assert_eq!(call["error"], "Some(ReentrancySentryOOG)");
 }
+
+#[test]
+fn raw_struct_logs_count_their_json_bytes() {
+    let db = db_with(busy_code());
+    let tx = call_contract();
+    let limits = TraceLimits::default().set_max_recorded_bytes(Some(1 << 30));
+    let opts = GethDebugTracingOptions::default();
+    let inspector = DebugInspector::new_with_struct_log_mode(opts, StructLogMode::Raw)
+        .unwrap()
+        .with_limits(limits);
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::OSAKA)
+        .build_mainnet_with_inspector(inspector);
+    let result = evm.inspect_tx(tx.clone()).unwrap();
+    let (ctx, inspector) = evm.ctx_inspector();
+    let block = *ctx.block();
+    let DebugTrace::RawDefault(frame) =
+        inspector.get_trace(None, &tx.envelope(), &block, &result.tx_result, ctx.db_mut()).unwrap()
+    else {
+        panic!("expected a raw frame")
+    };
+    let logs =
+        serde_json::from_str::<Vec<&serde_json::value::RawValue>>(frame.struct_logs.get()).unwrap();
+    assert!(logs.len() > 100);
+    let json = logs.iter().map(|log| log.get().len()).sum::<usize>();
+    assert_eq!(inspector.recorded_bytes(), json);
+    inspector.fuse().unwrap();
+    assert_eq!(inspector.recorded_bytes(), 0);
+}

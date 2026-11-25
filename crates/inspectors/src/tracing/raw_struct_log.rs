@@ -129,6 +129,12 @@ impl RawStructLogInspector {
         self.budget.exceeded()
     }
 
+    /// Returns the JSON bytes of the struct logs counted against the budget since the last
+    /// [`Self::fuse`].
+    pub const fn recorded_bytes(&self) -> usize {
+        self.budget.recorded
+    }
+
     /// Resets the inspector to its initial state of [`Self::new`], keeping its limits.
     ///
     /// Note that this method has no effect on the allocated capacity of its buffers.
