@@ -1,7 +1,16 @@
-use evm2::{BaseEvmTypes, Evm};
+use evm2::{BaseEvmTypes, Evm, ExecutionConfig, SpecId, Version};
 #[cfg(feature = "jit")]
 use evm2_jit_runtime::{evm2_evm::JitInterpreterRunner, runtime::JitBackend};
 use std::{error::Error, fmt};
+
+/// Returns the execution config fixtures run with.
+///
+/// Fixtures use gas limits up to about `2^63`, so the hard gas cap is disabled.
+pub(crate) fn execution_config(spec: SpecId) -> ExecutionConfig<BaseEvmTypes> {
+    let mut version = Version::new(spec);
+    version.max_gas_limit = u64::MAX;
+    ExecutionConfig::for_spec_and_version(spec, version)
+}
 
 /// EEST execution backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

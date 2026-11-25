@@ -1514,7 +1514,7 @@ mod tests {
         let mut disabled = Version::new(SpecId::AMSTERDAM);
         disabled.tx_total_gas_cap = u64::MAX;
         assert_eq!(validate_tx_gas_limit_cap(&disabled, gas_limit), Ok(()));
-        assert_eq!(validate_tx_gas_limit_cap(&disabled, u64::MAX), Ok(()));
+        assert_eq!(validate_tx_gas_limit_cap(&disabled, disabled.max_gas_limit), Ok(()));
 
         // Without EIP-8037 the field is unused and the execution cap bounds `tx.gas`.
         let mut without_eip8037 = Version::new(SpecId::AMSTERDAM);
@@ -1560,6 +1560,42 @@ mod tests {
             Ok(())
         };
         assert_eq!(evm.validate_tx(&tx), expected);
+    }
+
+    #[rstest::rstest]
+    fn max_gas_limit_holds_without_spec_caps_and_block_check(
+        #[values(SpecId::OSAKA, SpecId::AMSTERDAM)] spec: SpecId,
+    ) {
+        let mut version = Version::new(spec);
+        version.features.remove(EvmFeatures::BLOCK_GAS_LIMIT_CHECK);
+        version.tx_gas_limit_cap = u64::MAX;
+        version.tx_total_gas_cap = u64::MAX;
+        version.max_gas_limit = 1_000_000;
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(spec),
+            InMemoryDB::default(),
+            Precompiles::base(spec),
+        );
+        let tx = |gas_limit| {
+            Recovered::new_unchecked(
+                TxEnvelope::Eip2930(TxEip2930 {
+                    chain_id: 1,
+                    gas_limit,
+                    to: TxKind::Call(Address::with_last_byte(0xbb)),
+                    ..Default::default()
+                }),
+                Address::with_last_byte(0xaa),
+            )
+        };
+
+        assert_eq!(
+            evm.transact(&tx(1_000_001)).map(|executed| executed.discard()),
+            Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: 1_000_001, cap: 1_000_000 })
+        );
+        assert!(evm.transact(&tx(1_000_000)).unwrap().discard().is_success());
     }
 
     #[rstest::rstest]

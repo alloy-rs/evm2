@@ -1,4 +1,4 @@
-use evm2::SpecId;
+use evm2::{BaseEvmTypes, ExecutionConfig, SpecId, Version};
 use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug)]
@@ -199,3 +199,12 @@ pub static BENCHES: &[Bench] = &[
     Bench::transaction_suite(SpecId::OSAKA, "data/precompile-sha256.json"),
     Bench::blockchain_replay("mainnet_25347446_25347455", "data/mainnet-25347446-25347455.bin.zst"),
 ];
+
+/// Returns the execution config benchmark fixtures run with.
+///
+/// Fixtures use gas limits up to about `2^63`, so the hard gas cap is disabled.
+pub fn execution_config(spec: SpecId) -> ExecutionConfig<BaseEvmTypes> {
+    let mut version = Version::new(spec);
+    version.max_gas_limit = u64::MAX;
+    ExecutionConfig::for_spec_and_version(spec, version)
+}
