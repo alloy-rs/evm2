@@ -1664,7 +1664,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             message.input = input;
             let stop = result?;
             let interp = self.interpreter_pool.last_mut().unwrap();
-            (stop, interp.gas(), Bytes::copy_from_slice(interp.output()))
+            let (gas, output) = (interp.gas(), Bytes::copy_from_slice(interp.output()));
+            self.release_returned_frame();
+            (stop, gas, output)
         };
         self.finish_create_message_run(checkpoint, &message.destination, stop, gas, output)
     }
@@ -1903,6 +1905,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let interp = self.interpreter_pool.last_mut().unwrap();
         let child_gas = interp.gas();
         let output = Bytes::copy_from_slice(interp.output());
+        self.release_returned_frame();
         if !stop.is_success() {
             self.state.rollback(checkpoint, self.features);
         }
@@ -1927,6 +1930,16 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             stop,
             gas: GasTracker::new_with_execution_gas_and_reservoir(gas_remaining, reservoir),
             ..MessageResultExt::default()
+        }
+    }
+
+    /// Frees the large memory of the nested frame that just returned, once the caller copied its
+    /// output. The top-level frame keeps its buffers for the next message, as
+    /// [`InterpreterPool::trim`] does.
+    #[inline]
+    fn release_returned_frame(&mut self) {
+        if self.current_frame.is_some() {
+            self.interpreter_pool.release_last();
         }
     }
 
@@ -5958,6 +5971,50 @@ mod tests {
             assert_eq!(stops.0, expected);
         }
     }
+    #[test]
+    fn returned_frames_release_large_memory() {
+        // Each frame calls the next one and grows memory to 200 KB after the call returns, so
+        // memory that stays allocated in returned frames would add up unseen by the limit.
+        let grow = [op::PUSH1, 1, op::PUSH3, 0x03, 0x0d, 0x3f, op::MSTORE8];
+        let addresses = [0x11, 0x22, 0x33].map(Address::repeat_byte);
+        let mut database = InMemoryDB::default();
+        for (i, address) in addresses.iter().enumerate() {
+            let mut code = Vec::new();
+            if let Some(next) = addresses.get(i + 1) {
+                code.extend([op::PUSH0; 5]);
+                push_address(&mut code, next);
+                code.extend([op::GAS, op::CALL, op::POP]);
+            }
+            code.extend(grow);
+            code.push(op::STOP);
+            database.insert_account_info(
+                address,
+                AccountInfo::default().with_code(legacy_bytecode(code)),
+            );
+        }
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(addresses[0]),
+                gas_limit: 5_000_000,
+                ..Default::default()
+            }),
+            Address::repeat_byte(0xaa),
+        );
+
+        let executed = evm.transact(&tx).unwrap();
+        assert!(executed.result().is_success());
+        drop(executed);
+
+        assert!(evm.interpreter_pool.max_nested_capacity() < 100_000);
+    }
+
     #[cfg(feature = "std")]
     #[test]
     fn unwinding_runner_restores_the_current_frame() {

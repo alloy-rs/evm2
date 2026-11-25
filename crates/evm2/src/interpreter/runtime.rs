@@ -1020,6 +1020,32 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
         }
     }
 
+    /// Frees the memory of the frame that just returned beyond [`MAX_IDLE_MEMORY`], so idle
+    /// frames never keep what a transaction-wide memory limit counts only for live frames.
+    ///
+    /// Call it once the caller has copied the frame's output.
+    #[inline]
+    pub(crate) fn release_last(&mut self) {
+        if let Some(frame) = self.frames.last_mut()
+            && frame.memory.capacity() > MAX_IDLE_MEMORY
+        {
+            Self::release(frame);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn release(frame: &mut Interpreter<'static, 'static, T>) {
+        frame.memory.clear();
+        frame.memory.shrink_to(MAX_IDLE_MEMORY);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn max_nested_capacity(&self) -> usize {
+        let rest = self.frames.split_last().map_or(&[][..], |(_, rest)| rest);
+        rest.iter().map(|frame| frame.memory.capacity()).max().unwrap_or(0)
+    }
+
     pub(crate) fn last_mut<'frame, 'host>(&mut self) -> Option<&mut Interpreter<'frame, 'host, T>> {
         let frame = self.frames.last_mut()?.as_mut();
         // SAFETY: Frames stored in the pool have had their frame-local references cleared by

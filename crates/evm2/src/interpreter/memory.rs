@@ -91,6 +91,12 @@ impl Memory {
         self.data.as_mut_ptr()
     }
 
+    /// Returns the allocated capacity in bytes.
+    #[inline]
+    pub(crate) fn capacity(&self) -> usize {
+        self.data.capacity()
+    }
+
     /// Returns whether memory is empty.
     #[inline]
     pub const fn is_empty(&self) -> bool {
