@@ -93,7 +93,7 @@ impl Memory {
 
     /// Returns the allocated capacity in bytes.
     #[inline]
-    pub(crate) fn capacity(&self) -> usize {
+    pub(crate) const fn capacity(&self) -> usize {
         self.data.capacity()
     }
 
