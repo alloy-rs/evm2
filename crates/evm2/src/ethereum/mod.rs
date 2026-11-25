@@ -1514,7 +1514,7 @@ mod tests {
         let mut disabled = Version::new(SpecId::AMSTERDAM);
         disabled.tx_total_gas_cap = u64::MAX;
         assert_eq!(validate_tx_gas_limit_cap(&disabled, gas_limit), Ok(()));
-        assert_eq!(validate_tx_gas_limit_cap(&disabled, i64::MAX as u64), Ok(()));
+        assert_eq!(validate_tx_gas_limit_cap(&disabled, disabled.max_gas_limit), Ok(()));
 
         // Without EIP-8037 the field is unused and the execution cap bounds `tx.gas`.
         let mut without_eip8037 = Version::new(SpecId::AMSTERDAM);

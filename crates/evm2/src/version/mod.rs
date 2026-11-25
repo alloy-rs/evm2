@@ -49,8 +49,8 @@ pub struct Version {
     /// [`tx_total_gas_cap`](Self::tx_total_gas_cap), which are fork rules, this cap holds
     /// whatever the other caps and block checks are set to, so a caller that lifts them still
     /// runs with bounded gas. Transactions above it are rejected before execution, and gas
-    /// accounting is never clamped. `u64::MAX` disables the cap. The default is [`i64::MAX`],
-    /// above the gas limits of existing chains and of every EEST fixture.
+    /// accounting is never clamped. `u64::MAX` disables the cap. The default is `2^40`,
+    /// above the gas limits of existing chains.
     ///
     /// The Ethereum transaction handlers and [`Evm::system_call`](crate::Evm::system_call) enforce
     /// it; a custom handler must call
@@ -161,7 +161,7 @@ const fn base_max_blobs_per_tx(spec_id: SpecId) -> usize {
     }
 }
 
-const DEFAULT_MAX_GAS_LIMIT: u64 = i64::MAX as u64;
+const DEFAULT_MAX_GAS_LIMIT: u64 = 1 << 40;
 const DEFAULT_MEMORY_LIMIT: u64 = 100 * 1024 * 1024;
 const DEFAULT_CHAIN_ID: u64 = 1;
 
