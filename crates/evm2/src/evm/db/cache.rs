@@ -405,15 +405,16 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
         // A cached slot can be a locally committed write even when the backing account is absent.
         // Only use account absence to suppress uncached backing-storage reads.
-        let absent = self.cache.accounts.get(address).is_some_and(Option::is_none)
-            && !self.db.has_storage_for_absent_accounts();
         match self.cache.storage.entry(*address) {
             Entry::Occupied(mut entry) => {
                 let storage = entry.get_mut();
                 match storage.slots.entry(*key) {
                     Entry::Occupied(slot) => Ok(*slot.get()),
                     Entry::Vacant(slot) => {
-                        if storage.wiped || absent {
+                        if storage.wiped
+                            || (self.cache.accounts.get(address).is_some_and(Option::is_none)
+                                && !self.db.has_storage_for_absent_accounts())
+                        {
                             return Ok(Word::ZERO);
                         }
                         let value = self.db.get_storage(address, key)?;
@@ -422,7 +423,9 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
                 }
             }
             Entry::Vacant(entry) => {
-                if absent {
+                if self.cache.accounts.get(address).is_some_and(Option::is_none)
+                    && !self.db.has_storage_for_absent_accounts()
+                {
                     return Ok(Word::ZERO);
                 }
                 let value = self.db.get_storage(address, key)?;
@@ -485,6 +488,11 @@ mod typed {
         #[inline]
         fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error> {
             DynDatabase::get_block_hash(self, number)
+        }
+
+        #[inline]
+        fn has_storage_for_absent_accounts(&self) -> bool {
+            DynDatabase::has_storage_for_absent_accounts(self)
         }
     }
 }
@@ -772,6 +780,9 @@ mod tests {
         let mut stats = CacheDB::new(DbStats::new(holds_absent_storage()));
         assert!(stats.get_account(&address).unwrap().is_none());
         assert_eq!(stats.get_storage(&address, &key).unwrap(), backing);
+        let mut typed = CacheDB::new(crate::evm::Db::new(CacheDB::new(holds_absent_storage())));
+        assert!(typed.get_account(&address).unwrap().is_none());
+        assert_eq!(typed.get_storage(&address, &key).unwrap(), backing);
 
         // Removing its cached storage keeps reading the backing database.
         let mut cache = CacheDB::new(holds_absent_storage());

@@ -39,6 +39,14 @@ pub trait Database: NonStaticAny {
     /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
     /// provide is a database failure reported through the error, never a benign miss.
     fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error>;
+
+    /// Returns whether this database can hold storage for an account it reports as absent.
+    ///
+    /// See [`DynDatabase::has_storage_for_absent_accounts`]. Defaults to `false`.
+    #[inline]
+    fn has_storage_for_absent_accounts(&self) -> bool {
+        false
+    }
 }
 
 /// Object-safe database adapter for typed database implementations.
@@ -111,6 +119,11 @@ impl<T: Database> DynDatabase for Db<T> {
             let fatal = T::is_fatal(&err);
             DatabaseError::new(err, fatal)
         })
+    }
+
+    #[inline]
+    fn has_storage_for_absent_accounts(&self) -> bool {
+        self.db.has_storage_for_absent_accounts()
     }
 }
 
