@@ -1,7 +1,7 @@
 use crate::tracing::{
     Erc7562Inspector, FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
-    MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig, TransactionContext,
-    utils::transaction_info,
+    MuxInspector, RawDefaultFrame, RawStructLogInspector, TraceLimits, TracingInspector,
+    TracingInspectorConfig, TransactionContext, utils::transaction_info,
 };
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, transaction::Recovered};
@@ -22,9 +22,6 @@ use thiserror::Error;
 
 #[cfg(feature = "js-tracer")]
 use alloc::boxed::Box;
-
-#[cfg(feature = "raw-struct-logs")]
-use crate::tracing::{RawDefaultFrame, RawStructLogInspector};
 
 /// Inspector for the `debug` API
 ///
@@ -57,7 +54,6 @@ pub enum DebugInspector {
     /// Default tracer
     Default(TracingInspector, GethDefaultTracingOptions),
     /// Default tracer that writes its struct logs as JSON, see [`StructLogMode::Raw`]
-    #[cfg(feature = "raw-struct-logs")]
     RawDefault(RawStructLogInspector),
     /// JS tracer
     #[cfg(feature = "js-tracer")]
@@ -82,7 +78,6 @@ impl DebugInspector {
             Self::Erc7562Tracer(inspector) => Self::Erc7562Tracer(inspector.clone()),
             Self::Keccak256Preimage(inspector) => Self::Keccak256Preimage(inspector.clone()),
             Self::Default(inspector, config) => Self::Default(inspector.clone(), *config),
-            #[cfg(feature = "raw-struct-logs")]
             Self::RawDefault(inspector) => Self::RawDefault(inspector.fresh()),
             #[cfg(feature = "js-tracer")]
             Self::Js(inspector) => Self::Js(inspector.try_clone()?.into()),
@@ -191,7 +186,6 @@ impl DebugInspector {
                     TracingInspector::new(TracingInspectorConfig::from_geth_config(&config)),
                     config,
                 ),
-                #[cfg(feature = "raw-struct-logs")]
                 StructLogMode::Raw => Self::RawDefault(RawStructLogInspector::new(config)),
             }
         };
@@ -220,7 +214,6 @@ impl DebugInspector {
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector, _)
             | Self::Default(inspector, _) => inspector.set_limits(limits),
-            #[cfg(feature = "raw-struct-logs")]
             Self::RawDefault(inspector) => inspector.set_limits(limits),
             Self::Erc7562Tracer(inspector) => inspector.set_call_limits(limits),
             Self::Mux(inspector, _) => inspector.set_limits(limits),
@@ -245,7 +238,6 @@ impl DebugInspector {
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector, _)
             | Self::Default(inspector, _) => inspector.recorded_bytes(),
-            #[cfg(feature = "raw-struct-logs")]
             Self::RawDefault(inspector) => inspector.recorded_bytes(),
             Self::Erc7562Tracer(inspector) => inspector.recorded_call_bytes(),
             Self::Mux(inspector, _) => inspector.recorded_bytes(),
@@ -271,7 +263,6 @@ impl DebugInspector {
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector, _)
             | Self::Default(inspector, _) => inspector.fuse(),
-            #[cfg(feature = "raw-struct-logs")]
             Self::RawDefault(inspector) => inspector.fuse(),
             Self::Erc7562Tracer(inspector) => inspector.fuse(),
             Self::Keccak256Preimage(inspector) => inspector.clear(),
@@ -318,7 +309,7 @@ impl DebugInspector {
     /// The default struct logger moves the recorded stack snapshots into the result, so calling
     /// this again before [`Self::fuse`] returns struct logs without stacks.
     ///
-    /// With the `raw-struct-logs` feature, use [`Self::get_trace`] for raw output.
+    /// Use [`Self::get_trace`] for raw output.
     pub fn get_result<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         tx_context: Option<TransactionContext>,
@@ -401,7 +392,6 @@ impl DebugInspector {
                     )
                     .into()
             }
-            #[cfg(feature = "raw-struct-logs")]
             Self::RawDefault(_) => return Err(DebugInspectorError::RawStructLogs),
             #[cfg(feature = "js-tracer")]
             Self::Js(inspector) => {
@@ -426,7 +416,6 @@ impl DebugInspector {
         res: &TxResultWithState<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<DebugTrace, DebugInspectorError> {
-        #[cfg(feature = "raw-struct-logs")]
         if let Self::RawDefault(inspector) = self {
             return Ok(DebugTrace::RawDefault(inspector.take_frame(&res.result)));
         }
@@ -443,7 +432,6 @@ macro_rules! delegate {
             Self::FlatCallTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Erc7562Tracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Default($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
-            #[cfg(feature = "raw-struct-logs")]
             Self::RawDefault($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Keccak256Preimage($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Noop($insp) => Inspector::<T>::$method($insp, $($arg),*),
@@ -551,7 +539,6 @@ pub enum DebugInspectorError {
     Database(DatabaseError),
     /// The struct logs are JSON, which a [`GethTrace`] cannot hold, see
     /// [`DebugInspector::get_trace`]
-    #[cfg(feature = "raw-struct-logs")]
     #[error("raw struct logs are only returned by `get_trace`")]
     RawStructLogs,
 }
@@ -564,10 +551,8 @@ pub enum StructLogMode {
     /// [`StructLog`](alloy_rpc_types_trace::geth::StructLog)s from them.
     #[default]
     Typed,
-    /// With the `raw-struct-logs` feature, write the struct logs as JSON during execution. See
-    /// [`RawStructLogInspector`]. The trace serializes to the same JSON, several times faster, but
-    /// its struct logs cannot be inspected.
-    #[cfg(feature = "raw-struct-logs")]
+    /// Write the struct logs as JSON during execution, see [`RawStructLogInspector`]. The trace
+    /// serializes to the same JSON, several times faster, but its struct logs cannot be inspected.
     Raw,
 }
 
@@ -583,6 +568,5 @@ pub enum DebugTrace {
     Geth(GethTrace),
     /// The frame of the default struct logger with its struct logs as JSON, see
     /// [`StructLogMode::Raw`]
-    #[cfg(feature = "raw-struct-logs")]
     RawDefault(RawDefaultFrame),
 }

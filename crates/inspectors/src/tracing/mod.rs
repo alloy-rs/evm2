@@ -75,9 +75,7 @@ pub use mux::{Error as MuxError, MuxInspector};
 mod debug;
 pub use debug::{DebugInspector, DebugInspectorError, DebugTrace, StructLogMode};
 
-#[cfg(feature = "raw-struct-logs")]
 mod raw_struct_log;
-#[cfg(feature = "raw-struct-logs")]
 pub use raw_struct_log::{RawDefaultFrame, RawStructLogInspector};
 
 /// An inspector that collects call traces.
