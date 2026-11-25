@@ -64,7 +64,7 @@ pub(super) fn compile_job(
     helper: &HelperProcess,
 ) -> WorkerResult {
     let t0 = Instant::now();
-    let (outcome, timings, transient) = match run_helper_job(&job, config, helper) {
+    let (outcome, timings, transient) = match helper.compile(&job, config) {
         Ok(result) => (result.outcome, result.timings, false),
         Err(failure) => (Err(failure.error), CompileTimings::default(), failure.transient),
     };
@@ -78,14 +78,6 @@ pub(super) fn compile_job(
         timings,
         transient,
     }
-}
-
-fn run_helper_job(
-    job: &CompileJob,
-    config: &RuntimeConfig,
-    helper: &HelperProcess,
-) -> Result<HelperJobResult, HelperFailure> {
-    helper.compile(job, config)
 }
 
 /// A job that did not produce a compile outcome.
@@ -227,7 +219,8 @@ impl HelperProcessInner {
 
         let mut child = command.spawn().map_err(|e| format!("failed to spawn JIT helper: {e}"))?;
         let mut stdin = BufWriter::new(child.stdin.take().ok_or("helper stdin unavailable")?);
-        write_init(&mut stdin, &init).map_err(|e| format!("failed to write helper init: {e}"))?;
+        write_message(&mut stdin, &HelperRequest::Init(init.clone()))
+            .map_err(|e| format!("failed to write helper init: {e}"))?;
         stdin.flush().map_err(|e| format!("failed to flush helper init: {e}"))?;
         let stdout = child.stdout.take().ok_or("helper stdout unavailable")?;
         let pending = PendingResponses::default();
@@ -355,7 +348,8 @@ impl HelperProcessInner {
 
         let send_result = {
             let mut io = self.io.lock().unwrap();
-            write_pause(&mut io.stdin, id).and_then(|()| io.stdin.flush())
+            write_message(&mut io.stdin, &HelperRequest::Pause { id })
+                .and_then(|()| io.stdin.flush())
         };
 
         if let Err(err) = send_result {
@@ -390,7 +384,7 @@ impl HelperProcessInner {
         self.signal(libc::SIGCONT, "resume");
         let send_result = {
             let mut io = self.io.lock().unwrap();
-            write_resume(&mut io.stdin).and_then(|()| io.stdin.flush())
+            write_message(&mut io.stdin, &HelperRequest::Resume).and_then(|()| io.stdin.flush())
         };
         if let Err(err) = send_result {
             self.stats.jit_helper_resume_failures.fetch_add(1, Ordering::Relaxed);
@@ -578,10 +572,6 @@ struct HelperTimings {
     codegen: u64,
 }
 
-fn write_init<W: Write + ?Sized>(w: &mut BufWriter<W>, init: &HelperInit) -> std::io::Result<()> {
-    write_message(w, &HelperRequest::Init(init.clone()))
-}
-
 fn write_job<W: Write + ?Sized>(
     w: &mut BufWriter<W>,
     id: u64,
@@ -596,14 +586,6 @@ fn write_job<W: Write + ?Sized>(
         bytecode: job.bytecode.to_vec(),
     });
     write_message(w, &req)
-}
-
-fn write_pause<W: Write + ?Sized>(w: &mut BufWriter<W>, id: u64) -> std::io::Result<()> {
-    write_message(w, &HelperRequest::Pause { id })
-}
-
-fn write_resume<W: Write + ?Sized>(w: &mut BufWriter<W>) -> std::io::Result<()> {
-    write_message(w, &HelperRequest::Resume)
 }
 
 enum HelperResponseMessage {
@@ -762,7 +744,7 @@ fn run_jit_helper_stdio() -> eyre::Result<()> {
             HelperWork::Pause { id } => {
                 pause_state.pause();
                 let mut stdout = stdout.lock().unwrap();
-                write_pause_ack(&mut stdout, id)?;
+                write_message(&mut stdout, &HelperResponse::Paused { id })?;
                 stdout.flush()?;
             }
             HelperWork::Resume => {
@@ -831,11 +813,6 @@ fn write_helper_result<W: Write + ?Sized>(
         Err(error) => HelperResponse::Err { id, error, timings },
     };
     write_message(stdout, &response)?;
-    Ok(())
-}
-
-fn write_pause_ack<W: Write + ?Sized>(stdout: &mut BufWriter<W>, id: u64) -> eyre::Result<()> {
-    write_message(stdout, &HelperResponse::Paused { id })?;
     Ok(())
 }
 
@@ -1041,7 +1018,7 @@ mod tests {
         let mut request = Vec::new();
         {
             let mut writer = BufWriter::new(&mut request);
-            write_pause(&mut writer, 42).unwrap();
+            write_message(&mut writer, &HelperRequest::Pause { id: 42 }).unwrap();
             writer.flush().unwrap();
         }
         let mut reader = BufReader::new(request.as_slice());
@@ -1053,7 +1030,7 @@ mod tests {
         let mut response = Vec::new();
         {
             let mut writer = BufWriter::new(&mut response);
-            write_pause_ack(&mut writer, 42).unwrap();
+            write_message(&mut writer, &HelperResponse::Paused { id: 42 }).unwrap();
             writer.flush().unwrap();
         }
         let mut reader = BufReader::new(response.as_slice());

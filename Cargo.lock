@@ -2715,6 +2715,7 @@ dependencies = [
  "colorchoice",
  "evm2",
  "num-bigint 0.5.1",
+ "rmp-serde",
  "serde",
  "serde_json",
  "snapbox",

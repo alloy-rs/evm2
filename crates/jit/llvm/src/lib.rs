@@ -725,10 +725,7 @@ impl EvmLlvmBackend {
         symbols: &[(CString, usize)],
     ) -> Result<(usize, orc::ResourceTracker)> {
         let orc = self.ensure_orc()?;
-        let (addr, tracker) =
-            link_jit_object_in_dylib(orc, orc.jd(), symbol_name, object, symbols)?;
-        orc.loaded_trackers.push(tracker);
-        Ok((addr, orc.loaded_trackers.pop().unwrap()))
+        link_jit_object_in_dylib(orc, orc.jd(), symbol_name, object, symbols)
     }
 
     /// Links a relocatable object into a fresh JITDylib and returns the function address,

@@ -255,7 +255,7 @@ impl GasParams {
         if power.const_is_zero() {
             return 0;
         }
-        self.get(GasId::ExpByte).saturating_mul(power.bit_len().div_ceil(8) as u64)
+        self.get(GasId::ExpByte).saturating_mul(power.byte_len() as u64)
     }
 
     /// Calculates the per-word gas `id` for `len` bytes.

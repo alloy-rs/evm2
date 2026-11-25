@@ -119,7 +119,7 @@ rmp-serde = "1.3"
 rstest = "0.27.0"
 ruint = { version = "1.21.1", default-features = false }
 serde = { version = "1.0", default-features = false }
-serde_json = { version = "1.0", default-features = false }
+serde_json = { version = "1.0.151", default-features = false }
 snapbox = "1.2"
 thiserror = { version = "2.0", default-features = false }
 tikv-jemallocator = { version = "0.7", default-features = false }

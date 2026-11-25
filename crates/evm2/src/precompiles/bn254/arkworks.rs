@@ -73,8 +73,7 @@ impl Bn254Ops for ArkworksOps {
 /// Panics if the input is not at least 32 bytes long.
 #[inline]
 fn read_fq(input_be: &[u8; FQ_LEN]) -> Result<Fq, PrecompileHalt> {
-    let mut input_le = [0u8; FQ_LEN];
-    input_le.copy_from_slice(input_be);
+    let mut input_le = *input_be;
 
     // Reverse in-place to convert from big-endian to little-endian.
     input_le.reverse();
@@ -188,19 +187,12 @@ pub(super) fn encode_g1_point(point: G1Affine) -> [u8; G1_LEN] {
         return output;
     };
 
-    let mut x_bytes = [0u8; FQ_LEN];
-    x.serialize_uncompressed(&mut x_bytes[..]).expect("Failed to serialize x coordinate");
-
-    let mut y_bytes = [0u8; FQ_LEN];
-    y.serialize_uncompressed(&mut y_bytes[..]).expect("Failed to serialize x coordinate");
-
-    // Convert to big endian by reversing the bytes.
-    x_bytes.reverse();
-    y_bytes.reverse();
-
-    // Place x in the first half, y in the second half.
-    output[0..FQ_LEN].copy_from_slice(&x_bytes);
-    output[FQ_LEN..(FQ_LEN * 2)].copy_from_slice(&y_bytes);
+    // Serialize as little endian into each half, then reverse to big endian.
+    let (x_out, y_out) = output.split_at_mut(FQ_LEN);
+    x.serialize_uncompressed(&mut x_out[..]).expect("Failed to serialize x coordinate");
+    y.serialize_uncompressed(&mut y_out[..]).expect("Failed to serialize y coordinate");
+    x_out.reverse();
+    y_out.reverse();
 
     output
 }

@@ -2,7 +2,7 @@
 
 use crate::interpreter::{InstrStop, Result, Word};
 use alloc::{borrow::Cow, vec};
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes};
 use core::hint::cold_path;
 
 /// Returns the number of EVM words needed for `len` bytes.
@@ -80,7 +80,7 @@ impl WordExt for Word {
 
     #[inline]
     fn to_address(&self) -> Address {
-        Address::from_word(B256::from(self.to_be_bytes::<32>()))
+        Address::from_word((*self).into())
     }
 
     #[inline]
@@ -226,9 +226,7 @@ pub fn right_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
     if let Some(data) = data.first_chunk() {
         Cow::Borrowed(data)
     } else {
-        let mut padded = [0; LEN];
-        padded[..data.len()].copy_from_slice(data);
-        Cow::Owned(padded)
+        Cow::Owned(FixedBytes::<LEN>::right_padding_from(data).0)
     }
 }
 
@@ -242,20 +240,6 @@ pub fn right_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
     } else {
         let mut padded = vec![0; len];
         padded[..data.len()].copy_from_slice(data);
-        Cow::Owned(padded)
-    }
-}
-
-/// Left-pads the given slice with zeroes until `LEN`.
-///
-/// Returns the first `LEN` bytes if it does not need padding.
-#[inline]
-pub fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
-    if let Some(data) = data.first_chunk() {
-        Cow::Borrowed(data)
-    } else {
-        let mut padded = [0; LEN];
-        padded[LEN - data.len()..].copy_from_slice(data);
         Cow::Owned(padded)
     }
 }
@@ -391,19 +375,6 @@ mod tests {
         assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
         let padded = right_pad_vec(&data, 8);
-        assert_matches!(padded, Cow::Borrowed(_));
-        assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
-    }
-
-    #[test]
-    fn left_padding() {
-        let data = [1, 2, 3, 4];
-        let padded = left_pad::<8>(&data);
-        assert_matches!(padded, Cow::Owned(_));
-        assert_eq!(padded[..], [0, 0, 0, 0, 1, 2, 3, 4]);
-
-        let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let padded = left_pad::<8>(&data);
         assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
     }

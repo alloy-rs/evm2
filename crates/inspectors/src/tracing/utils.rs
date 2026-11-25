@@ -5,7 +5,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use alloy_primitives::{Bytes, hex};
+use alloy_primitives::{B256, Bytes, hex};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
@@ -122,9 +122,7 @@ pub(crate) fn convert_memory(data: &[u8]) -> Vec<String> {
         memory.push(hex::encode_prefixed(chunk));
     }
     if !remainder.is_empty() {
-        let mut last_chunk = [0u8; 32];
-        last_chunk[..remainder.len()].copy_from_slice(remainder);
-        memory.push(hex::encode_prefixed(last_chunk));
+        memory.push(hex::encode_prefixed(B256::right_padding_from(remainder)));
     }
     memory
 }

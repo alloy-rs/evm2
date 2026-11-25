@@ -1,6 +1,8 @@
 //! Geth tests
 
 mod consistency;
+#[cfg(feature = "serde")]
+mod raw_struct_logs;
 mod refund_counter;
 mod runtime_oog;
 
@@ -3620,4 +3622,42 @@ fn debug_inspector_limits_halt_steps_and_call_inputs() {
             .set_behavior(TraceLimitBehavior::Halt);
         assert_eq!(run(Some(limits)), !halts, "{options}");
     }
+}
+
+#[test]
+fn debug_inspector_recorded_bytes_sums_mux_tracers() {
+    // The CALL passes one byte of input.
+    let code = hex!("5f5f60015f5f5f5af100");
+    let account = address!("1000000000000000000000000000000000000001");
+    let recorded = |options| {
+        let opts = serde_json::from_value(options).unwrap();
+        let mut inspector = DebugInspector::new(opts).unwrap();
+        let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+            db.insert_account_info(
+                &account,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(code.to_vec().into())),
+                    ..Default::default()
+                },
+            );
+        });
+        let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+        evm.inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(account),
+            ..Default::default()
+        })
+        .unwrap();
+        drop(evm);
+        inspector.recorded_bytes()
+    };
+    let call = recorded(json!({"tracer": "callTracer"}));
+    let erc7562 = recorded(json!({"tracer": "erc7562Tracer"}));
+    assert!(call > 0 && erc7562 > 0, "{call} {erc7562}");
+    let mux = recorded(json!({
+        "tracer": "muxTracer",
+        "tracerConfig": {"callTracer": {}, "erc7562Tracer": {}},
+    }));
+    assert_eq!(mux, call + erc7562);
+    assert_eq!(recorded(json!({"tracer": "noopTracer"})), 0);
 }
