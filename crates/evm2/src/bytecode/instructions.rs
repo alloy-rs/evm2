@@ -115,7 +115,7 @@ impl FusedIterator for Instructions<'_> {}
 mod tests {
     use super::*;
     use crate::bytecode::analyze_legacy;
-    use alloc::{string::ToString, vec::Vec};
+    use alloc::{string::ToString, vec, vec::Vec};
 
     fn decode(code: &[u8], spec_id: SpecId) -> Vec<(usize, u8, Vec<u8>)> {
         Instructions::new(code, spec_id)
