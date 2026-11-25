@@ -80,7 +80,7 @@ impl WordExt for Word {
 
     #[inline]
     fn to_address(&self) -> Address {
-        Address::from_word(B256::from(self.to_be_bytes::<32>()))
+        Address::from_word((*self).into())
     }
 
     #[inline]

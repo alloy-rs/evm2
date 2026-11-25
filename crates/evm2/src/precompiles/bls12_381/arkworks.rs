@@ -150,12 +150,8 @@ fn encode_g1_point(input: &G1Affine) -> [u8; G1_LENGTH] {
         return output; // Point at infinity, return all zeros
     };
 
-    let x_encoded = encode_fp(&x);
-    let y_encoded = encode_fp(&y);
-
-    // Copy the encoded values to the output
-    output[..FP_LENGTH].copy_from_slice(&x_encoded);
-    output[FP_LENGTH..].copy_from_slice(&y_encoded);
+    output[..FP_LENGTH].copy_from_slice(&encode_fp(&x));
+    output[FP_LENGTH..].copy_from_slice(&encode_fp(&y));
 
     output
 }
@@ -209,15 +205,11 @@ fn encode_g2_point(input: &G2Affine) -> [u8; G2_LENGTH] {
         return output; // Point at infinity, return all zeros
     };
 
-    let x_c0_encoded = encode_fp(&x.c0);
-    let x_c1_encoded = encode_fp(&x.c1);
-    let y_c0_encoded = encode_fp(&y.c0);
-    let y_c1_encoded = encode_fp(&y.c1);
-
-    output[..FP_LENGTH].copy_from_slice(&x_c0_encoded);
-    output[FP_LENGTH..2 * FP_LENGTH].copy_from_slice(&x_c1_encoded);
-    output[2 * FP_LENGTH..3 * FP_LENGTH].copy_from_slice(&y_c0_encoded);
-    output[3 * FP_LENGTH..4 * FP_LENGTH].copy_from_slice(&y_c1_encoded);
+    for (chunk, fp) in
+        output.as_chunks_mut::<FP_LENGTH>().0.iter_mut().zip([x.c0, x.c1, y.c0, y.c1])
+    {
+        *chunk = encode_fp(&fp);
+    }
 
     output
 }
