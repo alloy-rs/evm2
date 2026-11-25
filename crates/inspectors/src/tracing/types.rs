@@ -306,6 +306,10 @@ pub struct CallTraceNode {
     pub logs: Vec<CallLog>,
     /// Ordering of child calls and logs
     pub ordering: Vec<TraceMemberOrder>,
+    /// The message destination when it differs from the execution address implied by the trace.
+    /// An inspector can redirect a message on entry or override the returned CREATE address.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub execution_address_override: Option<Address>,
 }
 
 impl CallTraceNode {
@@ -313,7 +317,13 @@ impl CallTraceNode {
     ///
     /// See `Inspector::call` impl of [TracingInspector](crate::tracing::TracingInspector)
     pub const fn execution_address(&self) -> Address {
-        if self.trace.kind.is_delegate() { self.trace.caller } else { self.trace.address }
+        if let Some(address) = self.execution_address_override {
+            address
+        } else if self.trace.kind.is_delegate() {
+            self.trace.caller
+        } else {
+            self.trace.address
+        }
     }
 
     /// Iterates over steps in execution order, pairing each step with the child it called.
@@ -773,10 +783,7 @@ impl CallTraceStep {
     /// CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE, CREATE2
     #[inline]
     pub(crate) const fn is_call_like_op(&self) -> bool {
-        matches!(
-            self.op.get(),
-            op::CALL | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CALLCODE | op::CREATE2
-        )
+        is_call_like(self.op)
     }
 
     // Reverts are control flow; only exceptional halts populate a step error.
@@ -860,6 +867,14 @@ impl CallTraceStepExtra {
             && self.decoded.is_none();
         (!empty).then(|| Box::new(self))
     }
+}
+
+/// Whether the geth struct logger follows a child message started by this opcode.
+pub(super) const fn is_call_like(op: OpCode) -> bool {
+    matches!(
+        op.get(),
+        op::CALL | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CALLCODE | op::CREATE2
+    )
 }
 
 /// The deltas a [`CallTraceStep`] produced, as reported by parity's `vmTrace`.
