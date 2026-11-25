@@ -43,7 +43,8 @@ pub struct Version {
     /// default is [`MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM`] (`2^32 - 1`). Without EIP-8037 this field
     /// is unused and [`tx_gas_limit_cap`](Self::tx_gas_limit_cap) bounds `tx.gas` instead.
     pub tx_total_gas_cap: u64,
-    /// Hard memory limit in bytes. Defaults to 100 MiB.
+    /// Hard memory limit in bytes for each call frame, not for the whole transaction. Defaults to
+    /// 100 MiB.
     ///
     /// Frame output ranges are `u32`, so
     /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) clamps a larger
