@@ -414,8 +414,9 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use crate::interpreter::op;
+    use crate::{evm::bal::BalCodeChange, interpreter::op};
     use alloc::format;
+    use alloy_eip7928::{BlockAccessIndex, CodeChange};
     use alloy_primitives::{Address, Bytes};
     use std::hash::{BuildHasher, RandomState};
 
@@ -546,6 +547,21 @@ mod tests {
             let bytecode = Bytecode::from_stored(bytes.clone());
             assert_eq!(bytecode.kind(), BytecodeKind::Legacy);
             assert_eq!(bytecode.original_bytes(), bytes);
+        }
+    }
+
+    #[test]
+    fn bal_conversion_seeds_the_original_code_hash() {
+        for raw in [
+            Bytes::new(),
+            Bytes::from_static(&[op::PUSH1, 0x01]),
+            Bytecode::new_eip7702(Address::with_last_byte(1)).original_bytes(),
+        ] {
+            let expected = keccak256(&raw);
+            let change = CodeChange::new(BlockAccessIndex::new(1), raw);
+            let (hash, bytecode) = BalCodeChange::try_from(&change).unwrap().code;
+            assert_eq!(hash, expected);
+            assert_eq!(bytecode.inner().hash.get(), Some(&expected));
         }
     }
 

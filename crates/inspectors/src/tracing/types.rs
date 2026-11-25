@@ -731,12 +731,15 @@ impl CallTraceStep {
         depth: u64,
         stack: Option<Vec<U256>>,
     ) -> StructLog {
+        // A step that halts exceptionally costs 0, like geth and ethereum/execution-apis#986: the
+        // attempted cost depends on where each client detects the failure.
+        let halted = self.is_error();
         StructLog {
             depth,
             error: self.as_error(),
             gas: self.gas_remaining,
-            gas_cost: self.gas_cost,
-            state_gas_cost: self.state_gas_cost(),
+            gas_cost: if halted { 0 } else { self.gas_cost },
+            state_gas_cost: self.state_gas_cost().filter(|_| !halted),
             state_gas_reservoir: self.state_gas_reservoir,
             op: if self.op.is_valid() {
                 self.op.as_str().into()

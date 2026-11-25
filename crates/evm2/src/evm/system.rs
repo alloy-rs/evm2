@@ -23,6 +23,7 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
 #[cfg(feature = "async")]
 use core::future::Future;
+use core::mem::DropGuard;
 
 /// Caller address used by execution-layer system calls.
 pub const SYSTEM_ADDRESS: Address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
@@ -124,10 +125,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let result = if self.inspect_system_calls {
             self.execute_system_call(tx)
         } else {
+            // Restores the inspector also when the call unwinds, so a borrowed inspector's scope
+            // still finds it installed.
             let inspector = self.inspector.take();
-            let result = self.execute_system_call(tx);
-            self.inspector = inspector;
-            result
+            let mut guard = DropGuard::new((&mut *self, inspector), |(evm, inspector)| {
+                evm.inspector = inspector
+            });
+            guard.0.execute_system_call(tx)
         };
         match result {
             Ok(outcome) => self.finish_executed_tx(outcome),
