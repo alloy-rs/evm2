@@ -48,7 +48,15 @@ pub(super) fn remove_g2_padding(input: &[u8]) -> Result<[&[u8; FP_LENGTH]; 4], P
 pub(super) fn pad_g1_point(unpadded: &[u8]) -> [u8; PADDED_G1_LENGTH] {
     assert_eq!(unpadded.len(), G1_LENGTH, "Invalid unpadded G1 point length");
 
-    pad_fps(unpadded)
+    let mut padded = [0u8; PADDED_G1_LENGTH];
+
+    // Copy each field element (x, y) with padding
+    for i in 0..2 {
+        padded[i * PADDED_FP_LENGTH + FP_PAD_BY..(i + 1) * PADDED_FP_LENGTH]
+            .copy_from_slice(&unpadded[i * FP_LENGTH..(i + 1) * FP_LENGTH]);
+    }
+
+    padded
 }
 
 /// Pads an unpadded G2 point (192 bytes) to the EVM-compatible format (256 bytes).
@@ -58,18 +66,14 @@ pub(super) fn pad_g1_point(unpadded: &[u8]) -> [u8; PADDED_G1_LENGTH] {
 pub(super) fn pad_g2_point(unpadded: &[u8]) -> [u8; PADDED_G2_LENGTH] {
     assert_eq!(unpadded.len(), 4 * FP_LENGTH, "Invalid unpadded G2 point length");
 
-    pad_fps(unpadded)
-}
+    let mut padded = [0u8; PADDED_G2_LENGTH];
 
-/// Copies each field element of `unpadded` into its own `PADDED_FP_LENGTH` chunk of the result,
-/// after `FP_PAD_BY` zero bytes.
-fn pad_fps<const PADDED_LEN: usize>(unpadded: &[u8]) -> [u8; PADDED_LEN] {
-    let mut padded = [0u8; PADDED_LEN];
-    for (padded, fp) in
-        padded.chunks_exact_mut(PADDED_FP_LENGTH).zip(unpadded.chunks_exact(FP_LENGTH))
-    {
-        padded[FP_PAD_BY..].copy_from_slice(fp);
+    // Copy each field element (x.c0, x.c1, y.c0, y.c1) with padding
+    for i in 0..4 {
+        padded[i * PADDED_FP_LENGTH + FP_PAD_BY..(i + 1) * PADDED_FP_LENGTH]
+            .copy_from_slice(&unpadded[i * FP_LENGTH..(i + 1) * FP_LENGTH]);
     }
+
     padded
 }
 
