@@ -9,14 +9,12 @@
 use super::{Evm, ExecutedTx, TxResult, TxResultExt};
 #[cfg(feature = "async")]
 use super::{SendEvmRef, r#async};
-#[cfg(feature = "async")]
-use crate::registry::HandlerError;
 use crate::{
     EvmTypes,
     env::TxEnvExt,
     ethereum::{execute_initial_frame, gas_spent_breakdown, prepare_initial_frame},
     interpreter::GasTracker,
-    registry::HandlerResult,
+    registry::{HandlerError, HandlerResult},
     version::{EvmFeatures, GasId},
 };
 use alloc::vec::Vec;
@@ -117,6 +115,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// [`SystemTx::gas_limit`] gas, then finalize and return an executed transaction handle. A
     /// successful call reports its raw gas refund, without the EIP-3529 cap.
     ///
+    /// The call is still bound by [`Version::max_gas_limit`](crate::Version::max_gas_limit): a gas
+    /// limit above it, including the EIP-8037 reservoir, fails with
+    /// [`HandlerError::TxGasLimitGreaterThanCap`] before execution.
+    ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
     ///
@@ -166,7 +168,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             0
         };
-        // The call's total budget is `gas_limit + reservoir` and must fit in a `u64`.
+        // The call's total budget is `gas_limit + reservoir`; it must stay within the hard gas cap
+        // and fit in a `u64`.
+        let total_gas_limit = gas_limit.saturating_add(reservoir);
+        let cap = self.version().max_gas_limit;
+        if total_gas_limit > cap {
+            return Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: total_gas_limit, cap });
+        }
         let gas_limit = gas_limit.min(u64::MAX - reservoir);
         let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
         let frame = prepare_initial_frame(
@@ -253,13 +261,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, Inspector, Precompiles, SpecId,
+        BaseEvmTypes, ExecutionConfig, Inspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         env::BlockEnvExt,
         evm::{AccountInfo, InMemoryDB},
         interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileResult},
-        registry::{HandlerError, TxRegistry},
+        registry::TxRegistry,
         utils::address_to_word,
     };
 
@@ -507,6 +515,37 @@ mod tests {
         assert_eq!(result.state_gas_spent(), 0);
     }
 
+    #[rstest::rstest]
+    fn system_call_rejects_gas_limit_above_max_gas_limit(
+        #[values(SpecId::OSAKA, SpecId::AMSTERDAM)] spec: SpecId,
+    ) {
+        let mut version = Version::new(spec);
+        // The EIP-8037 reservoir counts toward the cap.
+        let reservoir = if version.feature(EvmFeatures::EIP8037) {
+            version.gas_params.get(GasId::SstoreSetState) * SYSTEM_MAX_SSTORES_PER_CALL
+        } else {
+            0
+        };
+        let cap = reservoir + 1_000_000;
+        version.max_gas_limit = cap;
+        let mut evm = TestEvm::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(spec),
+        );
+
+        let tx = SystemTx::new(Address::repeat_byte(0x42), Bytes::new());
+        let result = evm.system_call(tx.clone().with_gas_limit(1_000_001));
+        assert_eq!(
+            result.map(ExecutedTx::discard).unwrap_err(),
+            HandlerError::TxGasLimitGreaterThanCap { gas_limit: cap + 1, cap }
+        );
+        assert!(evm.system_call(tx.with_gas_limit(1_000_000)).is_ok());
+    }
+
     #[test]
     fn system_call_exhausts_configured_gas_limit() {
         let contract = Address::repeat_byte(0x42);
@@ -582,7 +621,10 @@ mod tests {
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
-        let mut evm = TestEvm::new(
+        let mut version = Version::new(SpecId::AMSTERDAM);
+        version.max_gas_limit = u64::MAX;
+        let mut evm = TestEvm::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::AMSTERDAM, version),
             SpecId::AMSTERDAM,
             BlockEnvExt::default(),
             TxRegistry::new(),
