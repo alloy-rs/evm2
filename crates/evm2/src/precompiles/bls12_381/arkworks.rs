@@ -29,8 +29,7 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 fn read_fp(input_be: &[u8]) -> Result<Fq, PrecompileHalt> {
     assert_eq!(input_be.len(), FP_LENGTH, "input must be {FP_LENGTH} bytes");
 
-    let mut input_le = [0u8; FP_LENGTH];
-    input_le.copy_from_slice(input_be);
+    let mut input_le = *input_be.as_array::<FP_LENGTH>().unwrap();
 
     // Reverse in-place to convert from big-endian to little-endian.
     input_le.reverse();

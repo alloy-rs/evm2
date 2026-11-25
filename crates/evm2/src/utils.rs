@@ -2,7 +2,7 @@
 
 use crate::interpreter::{InstrStop, Result, Word};
 use alloc::{borrow::Cow, vec};
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes};
 use core::hint::cold_path;
 
 /// Returns the number of EVM words needed for `len` bytes.
@@ -226,9 +226,7 @@ pub fn right_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
     if let Some(data) = data.first_chunk() {
         Cow::Borrowed(data)
     } else {
-        let mut padded = [0; LEN];
-        padded[..data.len()].copy_from_slice(data);
-        Cow::Owned(padded)
+        Cow::Owned(FixedBytes::<LEN>::right_padding_from(data).0)
     }
 }
 
@@ -254,9 +252,7 @@ pub fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
     if let Some(data) = data.first_chunk() {
         Cow::Borrowed(data)
     } else {
-        let mut padded = [0; LEN];
-        padded[LEN - data.len()..].copy_from_slice(data);
-        Cow::Owned(padded)
+        Cow::Owned(FixedBytes::<LEN>::left_padding_from(data).0)
     }
 }
 
@@ -299,11 +295,7 @@ pub fn read_word_padded(data: &[u8], offset: usize) -> B256 {
         // A fixed-size read for the common in-bounds case avoids a `memcpy` call.
         Some(rest) => match rest.first_chunk() {
             Some(chunk) => B256::new(*chunk),
-            None => {
-                let mut word = B256::ZERO;
-                word[..rest.len()].copy_from_slice(rest);
-                word
-            }
+            None => B256::right_padding_from(rest),
         },
         None => B256::ZERO,
     }

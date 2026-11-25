@@ -4,7 +4,7 @@
 use crate::{
     interpreter::GasTracker,
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult, eip7823},
-    utils::{b256_to_word, left_pad, left_pad_vec_be, read_word_padded, right_pad_vec},
+    utils::{b256_to_word, left_pad_vec_be, read_word_padded, right_pad_vec},
 };
 use alloc::{vec, vec::Vec};
 use alloy_primitives::{Bytes, U256, uint};
@@ -222,8 +222,7 @@ fn run_inner(
         // zeroes.
         let right_padded_highp = read_word_padded(input, base_len);
         // If exp_len is less then 32 bytes get only exp_len bytes and do left padding.
-        let out = left_pad::<32>(&right_padded_highp[..exp_highp_len]);
-        U256::from_be_bytes(out.into_owned())
+        U256::from_be_slice(&right_padded_highp[..exp_highp_len])
     };
 
     // Check if we have enough gas.

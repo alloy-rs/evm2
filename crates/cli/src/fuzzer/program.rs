@@ -1,5 +1,5 @@
 use crate::fuzzer::{features::FuzzFeatures, precompile, rng::Gen};
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use evm2::{BaseEvmTypes, OpcodeConfig, SpecId, interpreter::op};
 
 #[derive(Default)]
@@ -618,9 +618,7 @@ impl Program {
     }
 
     fn push_bytes_word(&mut self, bytes: &[u8]) {
-        let mut word = [0; 32];
-        word[..bytes.len()].copy_from_slice(bytes);
-        self.push_word(U256::from_be_bytes(word));
+        self.push_word(B256::right_padding_from(bytes).into());
     }
 
     fn push_word(&mut self, value: U256) {

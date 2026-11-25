@@ -370,9 +370,10 @@ fn generate_access_list(rng: &mut Gen, accounts: &[CaseAccount], list: &mut Acce
 }
 
 fn versioned_hash(rng: &mut Gen) -> B256 {
-    let mut hash = rng.bytes(32);
+    let mut hash = B256::ZERO;
+    rng.fill_bytes(hash.as_mut_slice());
     hash[0] = 0x01;
-    B256::from_slice(&hash)
+    hash
 }
 
 fn generate_eip7702_authorization_list(rng: &mut Gen, list: &mut Vec<SignedAuthorization>) {
