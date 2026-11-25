@@ -283,7 +283,11 @@ pub fn read_word_padded(data: &[u8], offset: usize) -> B256 {
         // A fixed-size read for the common in-bounds case avoids a `memcpy` call.
         Some(rest) => match rest.first_chunk() {
             Some(chunk) => B256::new(*chunk),
-            None => B256::right_padding_from(rest),
+            None => {
+                let mut word = B256::ZERO;
+                word[..rest.len()].copy_from_slice(rest);
+                word
+            }
         },
         None => B256::ZERO,
     }
