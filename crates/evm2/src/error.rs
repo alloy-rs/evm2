@@ -115,6 +115,9 @@ pub enum ExecutionError {
     /// An owned, classified database error.
     #[error(transparent)]
     Database(#[from] DatabaseError),
+    /// A frame that could pay for a memory expansion was stopped by the memory limit.
+    #[error("memory limit exceeded")]
+    MemoryLimit,
     /// An unrecoverable precompile or execution failure.
     #[error("{0}")]
     Fatal(#[source] AnyError),

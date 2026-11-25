@@ -23,6 +23,9 @@ pub enum HandlerError {
     /// Database error propagated as a transaction handler failure.
     #[error("database error: {0}")]
     Database(#[source] DatabaseError),
+    /// A frame that could pay for a memory expansion was stopped by the memory limit.
+    #[error("memory limit exceeded")]
+    MemoryLimit,
     /// Unrecoverable execution error.
     #[error("fatal error: {0}")]
     Fatal(#[source] AnyError),
@@ -173,6 +176,7 @@ impl From<ExecutionError> for HandlerError {
     fn from(error: ExecutionError) -> Self {
         match error {
             ExecutionError::Database(error) => Self::Database(error),
+            ExecutionError::MemoryLimit => Self::MemoryLimit,
             ExecutionError::Fatal(error) => Self::Fatal(error),
         }
     }

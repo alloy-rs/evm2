@@ -1876,6 +1876,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 self.state.rollback(checkpoint, self.features);
                 return Err(error.into());
             }
+            Err(PrecompileError::MemoryLimit) => {
+                self.state.rollback(checkpoint, self.features);
+                return Err(ExecutionError::MemoryLimit);
+            }
             Err(PrecompileError::Fatal(error)) => {
                 self.state.rollback(checkpoint, self.features);
                 return Err(ExecutionError::Fatal(error));
@@ -5884,5 +5888,73 @@ mod tests {
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output[..], [0xaa; 32]);
+    }
+    #[test]
+    fn memory_limit_aborts_the_transaction_only_when_the_frame_can_pay() {
+        #[derive(Default)]
+        struct Stops(Vec<InstrStop>);
+
+        impl Inspector<BaseEvmTypes> for Stops {
+            fn call_end(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                self.0.push(result.stop);
+            }
+        }
+
+        // The child grows memory to 64 KiB + 1 byte, one byte past the frame limit, which costs
+        // about 14.3K gas. The parent ignores the result of the call.
+        let child_address = Address::repeat_byte(0x22);
+        let child = [op::PUSH1, 1, op::PUSH3, 0x01, 0x00, 0x00, op::MSTORE8, op::STOP];
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &child_address,
+            AccountInfo::default().with_code(legacy_bytecode(child)),
+        );
+        let parent = |child_gas: u16| {
+            let mut code = vec![op::PUSH0; 5];
+            push_address(&mut code, &child_address);
+            code.extend([op::PUSH2, (child_gas >> 8) as u8, child_gas as u8]);
+            code.extend([op::CALL, op::POP, op::STOP]);
+            code
+        };
+        let mut version = Version::new(SpecId::CANCUN);
+        version.memory_limit = 64 * 1024;
+
+        for (child_gas, expected) in [
+            // The child can pay for the expansion, so the limit aborts the whole transaction.
+            (50_000, Err(ExecutionError::MemoryLimit)),
+            // The child cannot pay, so it runs out of gas as it would without a limit.
+            (10_000, Ok(vec![InstrStop::MemoryOOG, InstrStop::Stop])),
+        ] {
+            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
+                SpecId::CANCUN,
+                BlockEnv::<BaseEvmTypes>::default(),
+                ethereum_tx_registry(SpecId::CANCUN),
+                database.clone(),
+                Precompiles::base(SpecId::CANCUN),
+            );
+            evm.set_inspector(Stops::default());
+            let mut message = MessageExt {
+                gas_limit: 1_000_000,
+                code: legacy_bytecode(parent(child_gas)),
+                ..Default::default()
+            };
+
+            let result = Host::execute_message(&mut evm, &mut message);
+
+            let stops = evm.clear_inspector_as::<Stops>().unwrap().0;
+            match expected {
+                Err(error) => assert_eq!(result.unwrap_err(), error),
+                Ok(expected) => {
+                    assert_eq!(result.unwrap().stop, InstrStop::Stop);
+                    assert_eq!(stops, expected);
+                }
+            }
+        }
     }
 }

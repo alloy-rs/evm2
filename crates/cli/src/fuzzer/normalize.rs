@@ -182,6 +182,7 @@ impl From<HandlerError> for FuzzError {
                 Self::Transaction(InvalidTransaction::TxGasLimitGreaterThanCap { gas_limit, cap })
             }
             error @ (HandlerError::Database(_)
+            | HandlerError::MemoryLimit
             | HandlerError::Fatal(_)
             | HandlerError::External(_)
             | HandlerError::WrongTransactionType { .. }
