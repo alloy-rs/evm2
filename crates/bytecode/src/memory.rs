@@ -11,10 +11,7 @@ impl OpCode {
     /// size can be zero. The result is `None` for any other opcode, if the stack is too short, or
     /// if an input does not fit a `usize`; the opcode fails without writing in the last two cases.
     pub fn memory_write_range(self, stack: &[U256]) -> Option<(usize, usize)> {
-        let peek = |index: usize| {
-            let item = stack.get(stack.len().checked_sub(index + 1)?)?;
-            usize::try_from(*item).ok()
-        };
+        let peek = |index: usize| usize::try_from(*stack.iter().rev().nth(index)?).ok();
         match self.get() {
             op::MSTORE => Some((peek(0)?, 32)),
             op::MSTORE8 => Some((peek(0)?, 1)),

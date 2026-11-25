@@ -5,7 +5,7 @@ use crate::{
     eip8024::{decode_pair, decode_single},
     opcode::{OpCode, op},
 };
-use alloy_primitives::{U256, hex};
+use alloy_primitives::U256;
 use core::{fmt, iter::FusedIterator};
 
 /// A decoded instruction: an opcode byte and its immediate data.
@@ -42,10 +42,8 @@ impl<'a> Instruction<'a> {
             opcode @ op::PUSH1..=op::PUSH32 => (opcode - op::PUSH0) as usize,
             _ => return None,
         };
-        let mut word = [0; 32];
-        let len = self.immediate.len().min(size);
-        word[..len].copy_from_slice(&self.immediate[..len]);
-        Some(U256::from_be_slice(&word[..size]))
+        let immediate = self.immediate.get(..size).unwrap_or(self.immediate);
+        Some(U256::from_be_slice(immediate) << (8 * (size - immediate.len())))
     }
 
     /// Returns the number of stack items the instruction pops and pushes, or `None` if it is a
@@ -79,15 +77,14 @@ impl<'a> Instruction<'a> {
             // An immediate that the end of the code cuts off reads as zero.
             let imm = immediate.first().copied().unwrap_or(0);
             let enabled = opcode.is_enabled(spec_id);
-            match (opcode.get(), immediate) {
-                (op::DUPN | op::SWAPN, _) if enabled && let Some(n) = decode_single(imm) => {
+            match opcode.get() {
+                op::DUPN | op::SWAPN if enabled && let Some(n) = decode_single(imm) => {
                     write!(f, " {n}")
                 }
-                (op::EXCHANGE, _) if enabled && let Some((n, m)) = decode_pair(imm) => {
+                op::EXCHANGE if enabled && let Some((n, m)) = decode_pair(imm) => {
                     write!(f, " {n}, {m}")
                 }
-                (_, []) => Ok(()),
-                (_, immediate) => write!(f, " {}", hex::encode_prefixed(immediate)),
+                _ => write_immediate(f, immediate),
             }
         })
     }
@@ -95,15 +92,22 @@ impl<'a> Instruction<'a> {
 
 impl fmt::Display for Instruction<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.opcode.is_valid() {
-            true => f.write_str(self.opcode.as_str())?,
-            false => write!(f, "UNKNOWN(0x{:02x})", self.opcode.get())?,
+        if self.opcode.is_valid() {
+            f.write_str(self.opcode.as_str())?;
+        } else {
+            write!(f, "UNKNOWN(0x{:02x})", self.opcode.get())?;
         }
-        if !self.immediate.is_empty() {
-            write!(f, " {}", hex::encode_prefixed(self.immediate))?;
-        }
-        Ok(())
+        write_immediate(f, self.immediate)
     }
+}
+
+/// Writes ` 0x` and the bytes in hex, or nothing if there are no bytes.
+fn write_immediate(f: &mut fmt::Formatter<'_>, immediate: &[u8]) -> fmt::Result {
+    if immediate.is_empty() {
+        return Ok(());
+    }
+    f.write_str(" 0x")?;
+    immediate.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
 }
 
 /// An iterator over the instructions of a bytecode.
@@ -345,6 +349,7 @@ mod tests {
         // The code ends inside the immediate: the missing bytes are zeros after the present ones.
         assert_eq!(value(&[op::PUSH2, 0x12]), Some(U256::from(0x1200)));
         assert_eq!(value(&[op::PUSH2]), Some(U256::ZERO));
+        assert_eq!(value(&[op::PUSH32]), Some(U256::ZERO));
         assert_eq!(value(&[op::PUSH3, 0xaa, 0xbb]), Some(U256::from(0xaabb00)));
         assert_eq!(value(&[op::PUSH32, 0xff]), Some(U256::from(0xff) << 248));
         let mut full = [0xab; 33];

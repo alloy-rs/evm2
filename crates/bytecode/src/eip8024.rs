@@ -25,7 +25,7 @@ pub const fn decode_pair(x: u8) -> Option<(u8, u8)> {
 /// Returns `None` if the value is outside the valid range.
 pub fn encode_single(n: u8) -> Option<u8> {
     let x = n.wrapping_sub(145);
-    if decode_single(x) == Some(n) { Some(x) } else { None }
+    (decode_single(x) == Some(n)).then_some(x)
 }
 
 /// Encodes a pair of stack indices into an EXCHANGE immediate byte.
@@ -42,7 +42,7 @@ pub fn encode_pair(n: u8, m: u8) -> Option<u8> {
         }
         let k = q as u16 * 16 + r as u16;
         let x = (k as u8) ^ 143;
-        if decode_pair(x) == Some((n, m)) { Some(x) } else { None }
+        (decode_pair(x) == Some((n, m))).then_some(x)
     };
 
     // q < r: n = q+1, m = r+1. q >= r: n = r+1, m = 29-q.
@@ -52,26 +52,21 @@ pub fn encode_pair(n: u8, m: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     #[test]
     fn encode_decode_single_roundtrip() {
         // Every valid byte encodes back to itself, and every encodable index decodes back.
-        let mut valid = 0;
-        for x in 0..=255u8 {
-            if let Some(n) = decode_single(x) {
-                valid += 1;
-                assert_eq!(encode_single(n), Some(x), "x={x}, n={n}");
-            }
+        let decoded = (0..=255u8).filter_map(|x| Some((x, decode_single(x)?))).collect::<Vec<_>>();
+        assert_eq!(decoded.len(), 91 + 128);
+        for &(x, n) in &decoded {
+            assert_eq!(encode_single(n), Some(x), "x={x}, n={n}");
         }
-        assert_eq!(valid, 91 + 128);
-        let mut encodable = 0;
-        for n in 0..=255u8 {
-            if let Some(x) = encode_single(n) {
-                encodable += 1;
-                assert_eq!(decode_single(x), Some(n), "n={n}, x={x}");
-            }
+        let encoded = (0..=255u8).filter_map(|n| Some((encode_single(n)?, n))).collect::<Vec<_>>();
+        for &(x, n) in &encoded {
+            assert_eq!(decode_single(x), Some(n), "n={n}, x={x}");
         }
-        assert_eq!(encodable, valid);
+        assert_eq!(encoded.len(), decoded.len());
         // Out-of-range: values in [236,255] ∪ [0,16] have no valid encoding.
         assert_eq!(encode_single(0), None);
         assert_eq!(encode_single(16), None);
@@ -84,25 +79,19 @@ mod tests {
     #[test]
     fn encode_decode_pair_roundtrip() {
         // Every valid byte encodes back to itself, so no two bytes decode to the same pair.
-        let mut valid = 0;
-        for x in 0..=255u8 {
-            if let Some((n, m)) = decode_pair(x) {
-                valid += 1;
-                assert_eq!(encode_pair(n, m), Some(x), "x={x}, (n,m)=({n},{m})");
-            }
+        let decoded = (0..=255u8).filter_map(|x| Some((x, decode_pair(x)?))).collect::<Vec<_>>();
+        assert_eq!(decoded.len(), 82 + 128);
+        for &(x, (n, m)) in &decoded {
+            assert_eq!(encode_pair(n, m), Some(x), "x={x}, (n,m)=({n},{m})");
         }
-        assert_eq!(valid, 82 + 128);
         // Every encodable pair decodes back, and exactly the decoded pairs are encodable.
-        let mut encodable = 0;
-        for n in 0..=255u8 {
-            for m in 0..=255u8 {
-                if let Some(x) = encode_pair(n, m) {
-                    encodable += 1;
-                    assert_eq!(decode_pair(x), Some((n, m)), "(n,m)=({n},{m}), x={x}");
-                }
-            }
+        let pairs = (0..=255u8).flat_map(|n| (0..=255u8).map(move |m| (n, m)));
+        let encoded =
+            pairs.filter_map(|(n, m)| Some((encode_pair(n, m)?, (n, m)))).collect::<Vec<_>>();
+        for &(x, pair) in &encoded {
+            assert_eq!(decode_pair(x), Some(pair), "pair={pair:?}, x={x}");
         }
-        assert_eq!(encodable, valid);
+        assert_eq!(encoded.len(), decoded.len());
         // Pairs that the layouts split on.
         assert_eq!(encode_pair(1, 17), Some(79));
         // Zero indices are invalid.
