@@ -111,6 +111,27 @@ mod tests {
     }
 
     #[test]
+    fn mstore_past_the_memory_limit_without_gas_is_out_of_memory() {
+        let mut version = Version::new(SpecId::OSAKA);
+        version.memory_limit = 64;
+        let config = ExecutionConfig::<TestTypes>::for_spec_and_version(SpecId::OSAKA, version);
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, Word::from(64));
+        code.push(op::MSTORE);
+        code.push(op::STOP);
+
+        let message =
+            MessageExt { gas_limit: 12, code: legacy_bytecode(code), ..MessageExt::default() };
+        let mut interp = Interpreter::<TestTypes>::new(&message);
+        let mut host = TestHost { execution_config: config, ..TestHost::default() };
+        let err = interp.run(&mut host).unwrap();
+
+        assert_matches!(err, InstrStop::MemoryOOG);
+        assert_eq!(interp.memory().len(), 0);
+    }
+
+    #[test]
     fn mstore_respects_version_memory_gas_params() {
         let mut version = Version::new(SpecId::OSAKA);
         version.gas_params[GasId::MemoryLinearCost] = 9;
