@@ -626,12 +626,11 @@ impl StepSnapshot {
     /// Records everything about a step that must be captured before the opcode executes.
     pub(crate) fn record(&mut self, step: PreStep<'_>) {
         let PreStep { pc, op, immediate, gas_remaining, stack, memory } = step;
-        let state = self;
-        state.pc = pc;
-        state.op = op;
-        state.gas_remaining = gas_remaining;
-        state.stack.record(op, immediate, stack);
-        state.memory.record(op, stack, memory);
+        self.pc = pc;
+        self.op = op;
+        self.gas_remaining = gas_remaining;
+        self.stack.record(op, immediate, stack);
+        self.memory.record(op, stack, memory);
     }
 }
 
@@ -697,7 +696,7 @@ impl OpcodeNames {
                 })
                 .collect()
         });
-        names[op as usize].clone()
+        names[usize::from(op)].clone()
     }
 }
 
@@ -729,7 +728,7 @@ impl StackView {
             opcode::EXCHANGE => {
                 decode_pair(immediate).map_or(0, |(n, m)| usize::from(n.max(m)) + 1)
             }
-            _ => OpCode::new(op).map_or(0, |op| op.inputs() as usize),
+            _ => OpCode::new(op).map_or(0, |op| usize::from(op.inputs())),
         }
         .min(stack.len());
         self.saved.clear();
@@ -874,7 +873,7 @@ fn build_step_stack_object(state: Shared<StepLogState>, ctx: &mut Context) -> Js
 fn build_step_memory_object(state: Shared<StepLogState>, ctx: &mut Context) -> JsResult<JsObject> {
     let obj = JsObject::with_object_proto(ctx.intrinsics());
     let length = state_fn(ctx, state.clone(), 0, |state, _, _| {
-        Ok(JsValue::from(state.borrow().memory.len() as u64))
+        Ok(JsValue::from(state.borrow().memory.len()))
     });
     let slice = state_fn(ctx, state.clone(), 2, |state, args, ctx| {
         let begin = to_int64(args.get_or_undefined(0), ctx)?;
@@ -1204,9 +1203,7 @@ mod tests {
                 "(
                     function(db, addr) {return db.exists(addr) }
             )
-        "
-                .to_string()
-                .as_bytes(),
+        ",
             ))
             .unwrap();
         assert!(result.is_callable());
@@ -1255,9 +1252,7 @@ mod tests {
                  setup: function(db) {this.db = db;},
                  result: function(addr) {return this.db.exists(addr) }
             })
-        "
-                .to_string()
-                .as_bytes(),
+        ",
             ))
             .unwrap();
 
@@ -1402,9 +1397,7 @@ mod tests {
 
         let eval = context
             .eval(Source::from_bytes(
-                r#"({data: [], fault: function(log) {}, step: function(log) { this.data.push({ value: log.stack.peek(2) }) }, result: function() { return this.data; }})"#
-                .to_string()
-                .as_bytes(),
+                r#"({data: [], fault: function(log) {}, step: function(log) { this.data.push({ value: log.stack.peek(2) }) }, result: function() { return this.data; }})"#,
             ))
             .unwrap();
 
@@ -1475,9 +1468,7 @@ mod tests {
             return this.retVal;
         },
    }
-)"#
-                .to_string()
-                .as_bytes(),
+)"#,
             ))
             .unwrap();
 

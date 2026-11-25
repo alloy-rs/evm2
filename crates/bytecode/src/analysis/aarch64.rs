@@ -37,7 +37,7 @@ impl Entry for uint8x16_t {
     #[inline]
     #[target_feature(enable = "neon")]
     unsafe fn offset(self) -> usize {
-        vgetq_lane_u8::<0>(self) as usize
+        usize::from(vgetq_lane_u8::<0>(self))
     }
 }
 

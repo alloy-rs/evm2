@@ -39,7 +39,7 @@ impl<'a> Instruction<'a> {
     pub fn push_value(&self) -> Option<U256> {
         let size = match self.opcode.get() {
             op::PUSH0 => return Some(U256::ZERO),
-            opcode @ op::PUSH1..=op::PUSH32 => (opcode - op::PUSH0) as usize,
+            opcode @ op::PUSH1..=op::PUSH32 => usize::from(opcode - op::PUSH0),
             _ => return None,
         };
         let immediate = self.immediate.get(..size).unwrap_or(self.immediate);
@@ -146,7 +146,7 @@ impl<'a> Iterator for Instructions<'a> {
         let &opcode = self.code.get(pc)?;
         // The length of the immediate data, and whether the instruction takes it.
         let (imm_len, takes) = match opcode {
-            op::PUSH1..=op::PUSH32 => ((opcode - op::PUSH0) as usize, true),
+            op::PUSH1..=op::PUSH32 => (usize::from(opcode - op::PUSH0), true),
             op::DUPN | op::SWAPN | op::EXCHANGE if self.eip8024 => {
                 let valid = self.code.get(pc + 1).is_none_or(|&imm| match opcode {
                     op::EXCHANGE => decode_pair(imm).is_some(),

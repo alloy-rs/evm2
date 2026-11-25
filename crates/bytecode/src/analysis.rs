@@ -45,7 +45,7 @@ fn analyze_scalar(code: &[u8], table: &mut [u8], pc: usize) {
             if push_offset < 32 {
                 // A trailing PUSH can advance past the bytecode allocation.
                 // `wrapping_add` keeps that offset computation defined.
-                iterator = iterator.wrapping_add(push_offset as usize + 2);
+                iterator = iterator.wrapping_add(usize::from(push_offset) + 2);
             } else {
                 // SAFETY: Iterator access range is checked in the while loop.
                 iterator = unsafe { iterator.add(1) };
@@ -172,7 +172,7 @@ mod tests {
                 table[pc / 8] |= 1 << (pc % 8);
             }
             let opcode = OpCode::new_or_unknown(last);
-            pc += 1 + if opcode.is_push() { opcode.immediate_size() as usize } else { 0 };
+            pc += 1 + if opcode.is_push() { usize::from(opcode.immediate_size()) } else { 0 };
         }
         table
     }

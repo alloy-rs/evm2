@@ -121,7 +121,7 @@ impl<T: EvmTypesHost> Precompiles<T> {
     /// Returns the underlying precompile map.
     #[inline]
     pub fn as_map(&self) -> &PrecompileMap<T> {
-        self.map.as_ref()
+        &self.map
     }
 
     /// Returns the underlying precompile map mutably.
@@ -137,7 +137,7 @@ impl<T: EvmTypesHost> Precompiles<T> {
 impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
     #[inline]
     fn addresses(&self) -> Vec<Address> {
-        self.map.as_ref().addresses().collect()
+        self.map.addresses().collect()
     }
 
     #[inline]
@@ -148,17 +148,14 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
     #[inline]
     fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
         self.map
-            .as_ref()
             .addresses()
-            .filter_map(|address| {
-                Some((address, self.map.as_ref().get_data(&address)?.id().clone()))
-            })
+            .filter_map(|address| Some((address, self.map.get_data(&address)?.id().clone())))
             .collect()
     }
 
     #[inline]
     fn contains(&self, address: &Address) -> bool {
-        self.map.as_ref().contains(address)
+        self.map.contains(address)
     }
 
     fn move_precompiles(
@@ -181,7 +178,7 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
-        let precompile = self.map.as_ref().get_data(&message.call_target)?;
+        let precompile = self.map.get_data(&message.call_target)?;
         Some(precompile.execute(evm, message, gas))
     }
 }
@@ -251,9 +248,7 @@ fn shared_base_precompiles<T: EvmTypesHost>() -> &'static (dyn Any + Send + Sync
 fn base_precompiles<T: EvmTypesHost>(spec: SpecId) -> PrecompileMap<T> {
     let mut precompiles = PrecompileMap::with_capacity(32);
 
-    {
-        precompiles.extend([SECP256K1_ECRECOVER(), SHA256(), RIPEMD160(), IDENTITY()]);
-    }
+    precompiles.extend([SECP256K1_ECRECOVER(), SHA256(), RIPEMD160(), IDENTITY()]);
 
     if spec.enables(SpecId::BYZANTIUM) {
         precompiles.extend([
@@ -274,11 +269,11 @@ fn base_precompiles<T: EvmTypesHost>(spec: SpecId) -> PrecompileMap<T> {
     }
 
     if spec.enables(SpecId::BERLIN) {
-        precompiles.extend([MODEXP_BERLIN()]);
+        precompiles.insert(MODEXP_BERLIN());
     }
 
     if spec.enables(SpecId::CANCUN) {
-        precompiles.extend([KZG_POINT_EVALUATION()]);
+        precompiles.insert(KZG_POINT_EVALUATION());
     }
 
     if spec.enables(SpecId::PRAGUE) {

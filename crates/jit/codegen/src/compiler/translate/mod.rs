@@ -1290,18 +1290,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         if expected_top < self.vstack.live_range().start {
             let inst = self.current_inst.unwrap();
             // Walk backward to find the section head for diagnostic context.
-            let mut head = inst;
-            for i in (0..inst.index()).rev() {
-                let idx = Inst::new(i);
-                let d = self.bytecode.inst(idx);
-                if d.is_dead_code() {
-                    continue;
-                }
-                if d.is_stack_section_head() {
-                    head = idx;
-                    break;
-                }
-            }
+            let head = (0..inst.index())
+                .rev()
+                .map(Inst::new)
+                .find(|&idx| {
+                    let d = self.bytecode.inst(idx);
+                    !d.is_dead_code() && d.is_stack_section_head()
+                })
+                .unwrap_or(inst);
             // Dump the section from head to current inst.
             let mut section_dump = String::new();
             for i in head.index()..=inst.index() {
@@ -1932,14 +1928,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         if section.known_size < section.required_size {
             return false;
         }
-        let mut has_memory_access = false;
-        for (offset, len) in self.bytecode.const_memory_accesses(inst).into_iter().flatten() {
-            has_memory_access = true;
-            if offset.is_none() || len.is_none() {
-                return false;
-            }
-        }
-        has_memory_access
+        let mut accesses =
+            self.bytecode.const_memory_accesses(inst).into_iter().flatten().peekable();
+        accesses.peek().is_some() && accesses.all(|(offset, len)| offset.is_some() && len.is_some())
     }
 
     fn build_memory_addr(&mut self, offset: B::Value) -> B::Value {
@@ -2035,8 +2026,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         } else {
             self.create_block_after(target, "return")
         };
-        let then_block = if is_failure { exit_block } else { target };
-        let else_block = if is_failure { target } else { exit_block };
+        let (then_block, else_block) =
+            if is_failure { (exit_block, target) } else { (target, exit_block) };
         self.bcx.brif_cold(cond, then_block, else_block, is_failure);
 
         if (is_failure && self.failure_block.is_none())

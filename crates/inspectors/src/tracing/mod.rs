@@ -477,7 +477,7 @@ impl TracingInspector {
                 {
                     return Some(memory.clone());
                 }
-                let bytes = interp.memory().slice(0, interp.memory().len());
+                let bytes = interp.memory().as_slice();
                 self.budget.reserve(bytes.len()).then(|| RecordedMemory::new(bytes))
             })
             .flatten();
@@ -652,15 +652,10 @@ impl TracingInspector {
         if self.config.record_stack_snapshots.is_all()
             || self.config.record_stack_snapshots.is_pushes()
         {
-            let outputs = if step.op.is_valid() { step.op.outputs() as usize } else { 0 };
+            let outputs = if step.op.is_valid() { usize::from(step.op.outputs()) } else { 0 };
             let stack = interp.stack();
-            step.push_stack = Some(
-                stack
-                    .as_slice()
-                    .get(stack.len().saturating_sub(outputs)..)
-                    .unwrap_or_default()
-                    .into(),
-            );
+            let stack = stack.as_slice();
+            step.push_stack = Some(stack[stack.len().saturating_sub(outputs)..].into());
         }
 
         // A call or create step is charged once its message starts, which includes the gas
@@ -683,7 +678,7 @@ impl TracingInspector {
         }
 
         // set the status
-        step.status = interp.result().err();
+        step.status = result.err();
 
         if step.status.is_some_and(|status| status.is_halt()) {
             return;
@@ -711,10 +706,7 @@ impl TracingInspector {
                 {
                     range.end = range.start + range.len().min(interp.return_data().len());
                 }
-                delta.record_memory_write(
-                    interp.memory().slice(0, interp.memory().len()),
-                    &mut self.budget,
-                );
+                delta.record_memory_write(interp.memory().as_slice(), &mut self.budget);
             }
         }
     }

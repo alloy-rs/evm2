@@ -103,7 +103,7 @@ impl OpCode {
     /// Returns true if the opcode is a `PUSH1..=PUSH32` instruction.
     #[inline]
     pub const fn is_push(self) -> bool {
-        self.0 >= PUSH1 && self.0 <= PUSH32
+        matches!(self.0, PUSH1..=PUSH32)
     }
 
     /// Returns the raw opcode byte.
@@ -232,11 +232,10 @@ impl OpCode {
 impl fmt::Display for OpCode {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let n = self.get();
         if let Some(val) = OPCODE_INFO[self.as_usize()] {
             f.write_str(val.name())
         } else {
-            write!(f, "UNKNOWN(0x{n:02X})")
+            write!(f, "UNKNOWN(0x{:02X})", self.get())
         }
     }
 }

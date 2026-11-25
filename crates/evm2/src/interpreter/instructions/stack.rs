@@ -93,7 +93,7 @@ mod tests {
         let mut code = vec![op::PUSH0; StackMut::CAPACITY];
         let interp = run(RunConfig::new(code.clone()));
         assert_matches!(interp.err, InstrStop::Stop);
-        code.extend([op::PUSH0]);
+        code.push(op::PUSH0);
         let interp = run(RunConfig::new(code));
         assert_matches!(interp.err, InstrStop::StackOverflow);
 

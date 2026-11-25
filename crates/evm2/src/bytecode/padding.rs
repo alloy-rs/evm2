@@ -1,7 +1,6 @@
 //! Legacy bytecode padding.
 
 use crate::interpreter::op;
-use alloc::vec::Vec;
 use alloy_primitives::Bytes;
 
 /// Maximum PUSH immediate length plus a terminating STOP.
@@ -16,18 +15,12 @@ pub(super) fn pad_legacy(bytecode: Bytes) -> Bytes {
         return bytecode;
     }
 
-    let padded_len = bytecode.len() + PADDING;
     match bytecode.0.try_into_mut() {
         Ok(mut bytecode) => {
-            bytecode.resize(padded_len, 0);
+            bytecode.extend_from_slice(&[0; PADDING]);
             bytecode.freeze().into()
         }
-        Err(bytecode) => {
-            let mut padded = Vec::with_capacity(padded_len);
-            padded.extend_from_slice(&bytecode);
-            padded.resize(padded_len, 0);
-            padded.into()
-        }
+        Err(bytecode) => [&bytecode[..], &[0; PADDING]].concat().into(),
     }
 }
 
@@ -35,7 +28,7 @@ pub(super) fn pad_legacy(bytecode: Bytes) -> Bytes {
 mod tests {
     use super::*;
     use crate::bytecode::analyze_legacy;
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
 
     #[test]
     fn test_bytecode_ends_with_stop_still_padded() {

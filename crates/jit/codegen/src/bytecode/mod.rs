@@ -511,10 +511,7 @@ impl<'a> Bytecode<'a> {
     #[instrument(name = "dce", level = "debug", skip_all)]
     #[inline(never)]
     fn mark_dead_code(&mut self) {
-        loop {
-            if !self.mark_dead_code_once() {
-                break;
-            }
+        while self.mark_dead_code_once() {
             self.recompute_has_dynamic_jumps();
             self.recompute_reachable_jumpdests();
         }
@@ -835,13 +832,14 @@ impl<'a> Bytecode<'a> {
             if entry.total == 0 {
                 continue;
             }
-            let name = OpCode::new(opcode as u8)
-                .map_or_else(|| format!("0x{opcode:02x}"), |o| o.as_str().to_string());
+            let name = OpCode::new(opcode as u8).map_or_else(
+                || Cow::Owned(format!("0x{opcode:02x}")),
+                |o| Cow::Borrowed(o.as_str()),
+            );
             let all_pct = entry.all_const as f64 / entry.total as f64 * 100.0;
             let _ = write!(
                 buf,
                 "\n  {name:<16} 0x{opcode:02x}, {total} occ, {inputs} inputs, all_const={ac}/{total} ({all_pct:.0}%)",
-                opcode = opcode,
                 total = entry.total,
                 inputs = entry.inputs,
                 ac = entry.all_const,
@@ -868,19 +866,10 @@ impl<'a> Bytecode<'a> {
     /// Collects IR statistics: instruction counts and block size distribution.
     fn ir_stats(&self) -> IrStats {
         let total = self.insts.len();
-        let mut live = 0usize;
-        let mut noops = 0usize;
-        let mut dead = 0usize;
-        for (_inst, data) in self.iter_all_insts() {
-            if data.is_dead_code() {
-                dead += 1;
-            } else {
-                live += 1;
-                if data.flags.contains(InstFlags::NOOP) {
-                    noops += 1;
-                }
-            }
-        }
+        let dead = self.iter_all_insts().filter(|(_, data)| data.is_dead_code()).count();
+        let live = total - dead;
+        let noops =
+            self.iter_insts().filter(|(_, data)| data.flags.contains(InstFlags::NOOP)).count();
 
         let mut lens: Vec<usize> = self.cfg.blocks.iter().map(|data| data.insts().len()).collect();
         let n = lens.len();
@@ -889,7 +878,7 @@ impl<'a> Bytecode<'a> {
         let block_max = lens.last().copied().unwrap_or(0);
         let sum: usize = lens.iter().sum();
         let block_avg = if n > 0 { sum as f64 / n as f64 } else { 0.0 };
-        let block_median = if n > 0 { lens[n / 2] } else { 0 };
+        let block_median = lens.get(n / 2).copied().unwrap_or(0);
 
         IrStats {
             total,

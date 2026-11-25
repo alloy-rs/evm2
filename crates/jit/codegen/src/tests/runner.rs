@@ -82,7 +82,8 @@ pub fn def_env() -> DefEnv {
 
 /// Memory gas calculation: `num_words * 3 + num_words**2 / 512`.
 pub fn memory_gas_cost(num_words: usize) -> u64 {
-    (num_words as u64) * 3 + (num_words as u64) * (num_words as u64) / 512
+    let num_words = num_words as u64;
+    num_words * 3 + num_words * num_words / 512
 }
 
 pub struct TestCase<'a> {
@@ -194,11 +195,9 @@ pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
 
 pub fn def_storage() -> &'static U256Map<U256> {
     DEF_STORAGE.get_or_init(|| {
-        let mut map = HashMap::default();
-        map.insert(U256::ZERO, U256::ONE);
-        map.insert(U256::ONE, U256::from(2));
-        map.insert(U256::from(69), U256::from(42));
-        map
+        [(U256::ZERO, U256::ONE), (U256::ONE, U256::from(2)), (U256::from(69), U256::from(42))]
+            .into_iter()
+            .collect()
     })
 }
 
@@ -349,22 +348,21 @@ impl HostState {
             U256::from(200),
             U256::from(0xff),
         ];
-        let mut storage = HashMap::default();
-        for key in keys {
-            if let Some(value) = evm.state().get_storage(&DEF_ADDR, &key)
-                && !value.is_zero()
-            {
-                storage.insert(key, value);
-            }
-        }
+        let storage = keys
+            .into_iter()
+            .filter_map(|key| {
+                let value = evm.state().get_storage(&DEF_ADDR, &key)?;
+                (!value.is_zero()).then_some((key, value))
+            })
+            .collect();
 
-        let mut transient_storage = HashMap::default();
-        for key in keys {
-            let value = evm.state_mut().tload(&DEF_ADDR, &key);
-            if !value.is_zero() {
-                transient_storage.insert(key, value);
-            }
-        }
+        let transient_storage = keys
+            .into_iter()
+            .filter_map(|key| {
+                let value = evm.state_mut().tload(&DEF_ADDR, &key);
+                (!value.is_zero()).then_some((key, value))
+            })
+            .collect();
 
         Self { storage, transient_storage, logs: evm.logs().to_vec() }
     }
@@ -447,11 +445,8 @@ fn with_evm_context_and_host_modified<
 }
 
 pub fn set_test_dump<B: Backend>(compiler: &mut EvmCompiler<B>, module_path: &str) {
-    let root =
-        Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().parent().unwrap();
-    let mut dump_path = root.to_path_buf();
-    dump_path.push("target");
-    dump_path.push("tests_dump");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
+    let mut dump_path = root.join("target").join("tests_dump");
     // Skip `evm2_jit::tests`.
     dump_path.extend(module_path.split("::").skip(2));
     dump_path.push(format!("{:?}", compiler.opt_level()));

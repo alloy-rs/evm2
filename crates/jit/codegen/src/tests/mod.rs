@@ -16,6 +16,7 @@ use evm2::{
     interpreter::{InstrStop, op},
 };
 use evm2_jit_builtins::gas;
+use std::fmt::Write;
 
 /// Opcode gas cost of `base` plus `per_word` for each 32-byte word of `len`.
 const fn word_cost(base: u64, per_word: u64, len: u64) -> Option<u64> {
@@ -315,11 +316,7 @@ tests! {
                 let mut code = [0u8; 21];
                 code[0] = op::PUSH1; code[1] = 1;   // bottom = 1
                 // 16 zeros on top
-                let mut i = 2;
-                while i < 18 {
-                    code[i] = op::PUSH0;
-                    i += 1;
-                }
+                code[2..18].fill(op::PUSH0);
                 code[18] = op::DUPN;
                 code[19] = 0x80; // n=17
                 code
@@ -341,11 +338,7 @@ tests! {
                 let mut code = [0u8; 23];
                 code[0] = op::PUSH1; code[1] = 1;   // bottom = 1
                 // 16 zeros on top
-                let mut i = 2;
-                while i < 18 {
-                    code[i] = op::PUSH0;
-                    i += 1;
-                }
+                code[2..18].fill(op::PUSH0);
                 code[18] = op::PUSH1; code[19] = 2; // top = 2
                 code[20] = op::SWAPN;
                 code[21] = 0x80; // n=17
@@ -437,11 +430,7 @@ tests! {
         dupn_truncated_eof(@raw {
             bytecode: &{
                 let mut code = [0u8; 18];
-                let mut i = 0;
-                while i < 17 {
-                    code[i] = op::PUSH0;
-                    i += 1;
-                }
+                code[..17].fill(op::PUSH0);
                 code[17] = op::DUPN; // no immediate byte
                 code
             },
@@ -455,11 +444,7 @@ tests! {
         swapn_truncated_eof(@raw {
             bytecode: &{
                 let mut code = [0u8; 19];
-                let mut i = 0;
-                while i < 18 {
-                    code[i] = op::PUSH0;
-                    i += 1;
-                }
+                code[..18].fill(op::PUSH0);
                 code[18] = op::SWAPN; // no immediate byte
                 code
             },
@@ -1437,13 +1422,7 @@ tests! {
                 code[i + 5] = op::EXCHANGE;
                 code[i + 6] = 0x8b;
                 code[i + 7] = op::PC;
-                i += 8;
-                let mut pops = 0;
-                while pops < 33 {
-                    code[i] = op::POP;
-                    i += 1;
-                    pops += 1;
-                }
+                code[i + 8..].fill(op::POP);
                 code
             },
             spec_id: SpecId::AMSTERDAM,
@@ -3678,9 +3657,7 @@ fn push_const_or_load(code: &mut Vec<u8>, value: U256, is_const: bool, offset: u
         code.push(op::PUSH32);
         code.extend_from_slice(&value.to_be_bytes::<32>());
     } else {
-        code.push(op::PUSH1);
-        code.push(offset);
-        code.push(op::MLOAD);
+        code.extend([op::PUSH1, offset, op::MLOAD]);
     }
 }
 
@@ -3833,20 +3810,24 @@ fn range_jump_table(index: u8) -> String {
 fn binary_choice_chain(stages: usize) -> String {
     let mut s = String::from("PUSH %done\n");
     for i in 1..=stages {
-        s += &format!(
+        write!(
+            s,
             "PUSH1 0x{i:02x} CALLDATALOAD PUSH1 0xf8 SHR PUSH %b{i} JUMPI\n\
              PUSH %A{i} PUSH %j{i} JUMP\n\
              b{i}:\n JUMPDEST PUSH %B{i}\n\
              j{i}:\n JUMPDEST\n"
-        );
+        )
+        .unwrap();
     }
     s += "JUMP\n";
     for i in 1..=stages {
-        s += &format!(
+        write!(
+            s,
             "A{i}:\n JUMPDEST PUSH0 MLOAD PUSH1 0x{i:02x} ADD PUSH0 MSTORE JUMP\n\
              B{i}:\n JUMPDEST PUSH0 MLOAD PUSH1 0x{:02x} ADD PUSH0 MSTORE JUMP\n",
             16 * i
-        );
+        )
+        .unwrap();
     }
     s += "done:\n JUMPDEST PUSH1 0x20 PUSH0 RETURN\n";
     s
