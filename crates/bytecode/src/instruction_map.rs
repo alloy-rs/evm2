@@ -1,7 +1,7 @@
 //! Map between program counters and instruction counters.
 
 use crate::{Instructions, SpecId};
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 /// A map between the program counter and the instruction counter of each instruction.
 ///
@@ -12,6 +12,10 @@ use alloc::vec::Vec;
 pub struct InstructionMap {
     /// The program counter of every instruction, in order.
     pcs: Vec<u32>,
+    /// One bit per byte of the code: whether an instruction starts there.
+    starts: Vec<u64>,
+    /// The number of instructions that start before each word of `starts`.
+    ranks: Vec<u32>,
 }
 
 impl InstructionMap {
@@ -25,7 +29,19 @@ impl InstructionMap {
         let mut pcs =
             Instructions::new(code, spec_id).map(|inst| inst.pc as u32).collect::<Vec<_>>();
         pcs.shrink_to_fit();
-        Self { pcs }
+        let mut starts = vec![0u64; code.len().div_ceil(64)];
+        for &pc in &pcs {
+            starts[pc as usize / 64] |= 1 << (pc % 64);
+        }
+        let ranks = starts
+            .iter()
+            .scan(0, |rank, word| {
+                let before = *rank;
+                *rank += word.count_ones();
+                Some(before)
+            })
+            .collect();
+        Self { pcs, starts, ranks }
     }
 
     /// Returns the number of instructions.
@@ -49,7 +65,10 @@ impl InstructionMap {
     /// Returns the instruction counter of the instruction that starts at `pc`.
     #[inline]
     pub fn ic(&self, pc: usize) -> Option<usize> {
-        self.pcs.binary_search(&u32::try_from(pc).ok()?).ok()
+        let word = *self.starts.get(pc / 64)?;
+        let bit = pc % 64;
+        (word >> bit & 1 != 0)
+            .then(|| self.ranks[pc / 64] as usize + (word & ((1 << bit) - 1)).count_ones() as usize)
     }
 
     /// Returns an iterator over the `(instruction counter, program counter)` pairs.
@@ -63,6 +82,7 @@ impl InstructionMap {
 mod tests {
     use super::*;
     use crate::opcode::op;
+    const SPEC: SpecId = SpecId::OSAKA;
 
     #[test]
     fn maps_both_ways() {
@@ -81,6 +101,27 @@ mod tests {
         for pc in [1, 2, 5, 8, 9, usize::MAX] {
             assert_eq!(map.ic(pc), None, "{pc}");
         }
+    }
+
+    #[test]
+    fn lookups_across_words() {
+        // Instructions of every length, so that starts fall on and between the 64-bit words.
+        let mut code = Vec::new();
+        for i in 0..400u32 {
+            let push = op::PUSH0 + (i % 33) as u8;
+            code.push(if i % 3 == 0 { push } else { op::ADD });
+            if i % 3 == 0 {
+                code.extend((0..push - op::PUSH0).map(|_| 0xee));
+            }
+        }
+        let map = InstructionMap::new(&code, SPEC);
+        let starts = Instructions::new(&code, SPEC).map(|inst| inst.pc).collect::<Vec<_>>();
+        assert_eq!(map.len(), starts.len());
+        for (ic, &pc) in starts.iter().enumerate() {
+            assert_eq!((map.pc(ic), map.ic(pc)), (Some(pc), Some(ic)));
+        }
+        let found = (0..code.len() + 200).filter_map(|pc| map.ic(pc)).collect::<Vec<_>>();
+        assert_eq!(found, (0..starts.len()).collect::<Vec<_>>());
     }
 
     #[test]

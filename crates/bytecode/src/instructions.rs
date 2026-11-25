@@ -36,14 +36,17 @@ impl<'a> Instruction<'a> {
     /// The immediate data is read as the EVM reads it: bytes that the end of the bytecode cuts
     /// off are zeros on the right, so `PUSH2 0x12` at the end is `0x1200`. `PUSH0` is `Some(0)`
     /// whether or not the spec enables it; use [`OpCode::is_enabled`] to tell.
+    #[inline]
     pub fn push_value(&self) -> Option<U256> {
-        let size = match self.opcode.get() {
-            op::PUSH0 => return Some(U256::ZERO),
-            opcode @ op::PUSH1..=op::PUSH32 => usize::from(opcode - op::PUSH0),
-            _ => return None,
-        };
+        let opcode = self.opcode.get();
+        if !(op::PUSH0..=op::PUSH32).contains(&opcode) {
+            return None;
+        }
+        let size = usize::from(opcode - op::PUSH0);
         let immediate = self.immediate.get(..size).unwrap_or(self.immediate);
-        Some(U256::from_be_slice(immediate) << (8 * (size - immediate.len())))
+        let value = U256::from_be_slice(immediate);
+        // Only a PUSH that the end of the code cuts short needs the zeros on the right.
+        Some(if immediate.len() == size { value } else { value << (8 * (size - immediate.len())) })
     }
 
     /// Returns the number of stack items the instruction pops and pushes, or `None` if it is a
@@ -123,7 +126,9 @@ fn write_immediate(f: &mut fmt::Formatter<'_>, immediate: &[u8]) -> fmt::Result 
 /// - Every other byte is an instruction without immediate data.
 #[derive(Clone, Debug)]
 pub struct Instructions<'a> {
-    code: &'a [u8],
+    /// The bytes from the next instruction on.
+    rest: &'a [u8],
+    /// The offset of the next instruction.
     pc: usize,
     eip8024: bool,
 }
@@ -133,7 +138,7 @@ impl<'a> Instructions<'a> {
     #[inline]
     pub const fn new(code: &'a [u8], spec_id: SpecId) -> Self {
         let eip8024 = OpCode::new_or_unknown(op::DUPN).is_enabled(spec_id);
-        Self { code, pc: 0, eip8024 }
+        Self { rest: code, pc: 0, eip8024 }
     }
 }
 
@@ -142,33 +147,42 @@ impl<'a> Iterator for Instructions<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
+        let (&opcode, rest) = self.rest.split_first()?;
         let pc = self.pc;
-        let &opcode = self.code.get(pc)?;
         // The length of the immediate data, and whether the instruction takes it.
         let (imm_len, takes) = match opcode {
             op::PUSH1..=op::PUSH32 => (usize::from(opcode - op::PUSH0), true),
             op::DUPN | op::SWAPN | op::EXCHANGE if self.eip8024 => {
-                let valid = self.code.get(pc + 1).is_none_or(|&imm| match opcode {
+                let valid = rest.first().is_none_or(|&imm| match opcode {
                     op::EXCHANGE => decode_pair(imm).is_some(),
                     _ => decode_single(imm).is_some(),
                 });
                 (1, valid)
             }
-            _ => (0, true),
+            _ => {
+                self.rest = rest;
+                self.pc += 1;
+                return Some(Instruction {
+                    pc,
+                    opcode: OpCode::new_or_unknown(opcode),
+                    immediate: &[],
+                });
+            }
         };
-        let end = self.code.len().min(pc + 1 + imm_len);
-        self.pc = if takes { end } else { pc + 1 };
-        Some(Instruction {
-            pc,
-            opcode: OpCode::new_or_unknown(opcode),
-            immediate: &self.code[pc + 1..end],
-        })
+        let immediate = &rest[..imm_len.min(rest.len())];
+        if takes {
+            self.rest = &rest[immediate.len()..];
+            self.pc += 1 + immediate.len();
+        } else {
+            self.rest = rest;
+            self.pc += 1;
+        }
+        Some(Instruction { pc, opcode: OpCode::new_or_unknown(opcode), immediate })
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.code.len() - self.pc;
-        (len.min(1), Some(len))
+        (self.rest.len().min(1), Some(self.rest.len()))
     }
 }
 
