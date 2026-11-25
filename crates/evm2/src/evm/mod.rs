@@ -4017,6 +4017,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn with_gas_params_support_panic_keeps_old_config() {
         let mut evm = read_only_evm();
         let general = evm.version().gas_params;
@@ -4043,6 +4044,7 @@ mod tests {
     #[case(GasId::MaxRefundQuotient)]
     #[case(GasId::MemoryQuadraticReduction)]
     #[case(GasId::CallStipendReduction)]
+    #[cfg(feature = "std")]
     fn with_gas_params_rejects_zero_divisor(#[case] divisor: GasId) {
         let mut evm = read_only_evm();
         let general = evm.version().gas_params;
@@ -4060,6 +4062,7 @@ mod tests {
     #[rstest::rstest]
     #[case(false)]
     #[case(true)]
+    #[cfg(feature = "std")]
     fn with_gas_params_restores_without_support_callback(#[case] unwind: bool) {
         let mut evm = read_only_evm();
         let general = evm.version().gas_params;
@@ -4144,6 +4147,7 @@ mod tests {
     #[rstest::rstest]
     #[case(false)]
     #[case(true)]
+    #[cfg(feature = "std")]
     fn with_gas_params_rejects_inspector_hooks(#[case] halted: bool) {
         struct GasSettingInspector;
         impl Inspector<BaseEvmTypes> for GasSettingInspector {
@@ -4182,6 +4186,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn with_gas_params_rejects_top_level_precompile() {
         let mut evm = read_only_evm();
         evm.set_precompiles(precompiles_with([test_precompile(TEST_PRECOMPILE, |host, _, _| {
