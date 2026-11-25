@@ -7,7 +7,6 @@ use crate::tracing::{
     limits::TraceBudget,
     step_refund_counter, storage_change,
     types::is_call_like,
-    utils::step_cost,
 };
 use alloc::{boxed::Box, collections::BTreeMap, format, string::String, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, U256, hex, map::AddressMap};
@@ -360,26 +359,29 @@ impl RawStructLogInspector {
         let state_gas_spent = interp.gas().state_gas_spent();
         match mem::take(&mut self.step) {
             StepState::Recording(step) => {
-                let charged =
-                    step.gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill());
-                let cost = match (step.message_cost, result) {
-                    (Some(cost), result) if result != Err(InstrStop::ReentrancySentryOOG) => cost,
-                    _ => step_cost(result, step.gas, charged),
+                // A step that halts exceptionally costs 0, like a typed struct log.
+                let (cost, state_cost) = if result.is_err_and(InstrStop::is_halt) {
+                    (0, None)
+                } else {
+                    let charged = step
+                        .gas_before
+                        .saturating_sub(interp.gas().remaining_excluding_state_spill());
+                    (step.message_cost.unwrap_or(charged), step.state_gas_cost(state_gas_spent))
                 };
-                self.write_log(&step, cost, step.state_gas_cost(state_gas_spent), result.err());
+                self.write_log(&step, cost, state_cost, result.err());
             }
             StepState::Skipped => {}
             StepState::None => {
                 let Some(open) = self.open_steps.pop() else { return };
-                let state_cost = open.step.state_gas_cost(state_gas_spent);
+                let halted = result.is_err_and(InstrStop::is_halt);
+                let state_cost = open.step.state_gas_cost(state_gas_spent).filter(|_| !halted);
                 let error = result.err().filter(|status| status.is_halt()).and_then(error_json);
-                if state_cost.is_none() && error.is_none() {
+                if state_cost.is_none() && error.is_none() && !halted {
                     return;
                 }
-                // The sentry rejects the instruction before charging it, even if a custom
-                // instruction started a message first.
-                let cost =
-                    if result == Err(InstrStop::ReentrancySentryOOG) { 0 } else { open.cost };
+                // A step that halts exceptionally costs 0, like a typed struct log. This includes
+                // the reentrancy sentry, which rejects the instruction before charging it.
+                let cost = if halted { 0 } else { open.cost };
                 let added = self.patches.replace(open.fields, |patch| {
                     let mut fields = ArrayBuf::<HEAD_CAPACITY>::new();
                     open.step.write_cost_and_depth(&mut fields, cost, state_cost);
