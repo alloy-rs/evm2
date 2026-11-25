@@ -165,9 +165,7 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
         let original = (self.warm.is_none() && moves.iter().any(|(source, dest)| source != dest))
             .then(|| self.map.clone());
         self.as_map_mut().move_precompiles(moves.iter().copied())?;
-        if original.is_some() {
-            self.warm = original;
-        }
+        self.warm = original.or(self.warm.take());
         Ok(())
     }
 

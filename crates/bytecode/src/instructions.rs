@@ -173,9 +173,9 @@ impl<'a> Iterator for Instructions<'a> {
                 });
             }
         };
-        let immediate = &rest[..imm_len.min(rest.len())];
+        let (immediate, after) = rest.split_at(imm_len.min(rest.len()));
         if takes {
-            self.rest = &rest[immediate.len()..];
+            self.rest = after;
             self.pc += 1 + immediate.len();
         } else {
             self.rest = rest;

@@ -173,7 +173,7 @@ pub static DEF_OPINFOS: std::sync::LazyLock<&'static [OpcodeInfo; 256]> =
     std::sync::LazyLock::new(|| op_info_map(DEF_SPEC));
 
 pub const DEF_GAS_LIMIT: u64 = 100_000;
-pub const DEF_GAS_LIMIT_U256: U256 = U256::from_le_slice(&DEF_GAS_LIMIT.to_le_bytes());
+pub const DEF_GAS_LIMIT_U256: U256 = U256::from_limbs([DEF_GAS_LIMIT, 0, 0, 0]);
 
 /// Default code address.
 pub const DEF_ADDR: Address = Address::repeat_byte(0xba);
@@ -189,9 +189,19 @@ pub const DEF_BN: U256 = uint!(500_U256);
 
 pub const RETURN_WHAT_INTERPRETER_SAYS: InstrStop = InstrStop::PrecompileError;
 pub const STACK_WHAT_INTERPRETER_SAYS: &[U256] =
-    &[U256::from_be_slice(&GAS_WHAT_INTERPRETER_SAYS.to_be_bytes())];
+    &[U256::from_limbs([GAS_WHAT_INTERPRETER_SAYS, 0, 0, 0])];
 pub const MEMORY_WHAT_INTERPRETER_SAYS: &[u8] = &GAS_WHAT_INTERPRETER_SAYS.to_be_bytes();
 pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
+
+/// Storage keys that are prewarmed and snapshotted.
+const HOST_KEYS: [U256; 6] = [
+    U256::ZERO,
+    U256::ONE,
+    U256::from_limbs([69, 0, 0, 0]),
+    U256::from_limbs([70, 0, 0, 0]),
+    U256::from_limbs([200, 0, 0, 0]),
+    U256::from_limbs([0xff, 0, 0, 0]),
+];
 
 pub fn def_storage() -> &'static U256Map<U256> {
     DEF_STORAGE.get_or_init(|| {
@@ -340,15 +350,7 @@ pub struct HostState {
 
 impl HostState {
     fn from_evm(evm: &mut Evm<'_, BaseEvmTypes>) -> Self {
-        let keys = [
-            U256::ZERO,
-            U256::ONE,
-            U256::from(69),
-            U256::from(70),
-            U256::from(200),
-            U256::from(0xff),
-        ];
-        let storage = keys
+        let storage = HOST_KEYS
             .into_iter()
             .filter_map(|key| {
                 let value = evm.state().get_storage(&DEF_ADDR, &key)?;
@@ -356,7 +358,7 @@ impl HostState {
             })
             .collect();
 
-        let transient_storage = keys
+        let transient_storage = HOST_KEYS
             .into_iter()
             .filter_map(|key| {
                 let value = evm.state_mut().tload(&DEF_ADDR, &key);
@@ -381,9 +383,7 @@ fn prepare_host(spec_id: SpecId) -> Evm<'static, BaseEvmTypes> {
     {
         evm.state_mut().prewarm(&address);
     }
-    for key in
-        [U256::ZERO, U256::ONE, U256::from(69), U256::from(70), U256::from(200), U256::from(0xff)]
-    {
+    for key in HOST_KEYS {
         evm.state_mut().prewarm_storage_slot(&DEF_ADDR, key);
     }
     evm

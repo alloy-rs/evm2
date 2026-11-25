@@ -40,6 +40,11 @@ impl Bytecode<'_> {
         ));
         lines.push((String::new(), String::new()));
 
+        let write_target = |text: &mut String, t| match self.target_block(t) {
+            Some(b) => write!(text, " %{b}").unwrap(),
+            None => write!(text, " %inst{t}").unwrap(),
+        };
+
         for (bid, block) in self.cfg.blocks.iter_enumerated() {
             // Blank line between blocks.
             if lines.last().is_some_and(|(t, c)| !t.is_empty() || !c.is_empty()) {
@@ -93,18 +98,11 @@ impl Bytecode<'_> {
                             if i > 0 {
                                 text.push(',');
                             }
-                            match self.target_block(t) {
-                                Some(b) => write!(text, " %{b}").unwrap(),
-                                None => write!(text, " %inst{t}").unwrap(),
-                            }
+                            write_target(&mut text, t);
                         }
                     }
                 } else if data.is_static_jump() {
-                    let target = data.static_jump_target();
-                    match self.target_block(target) {
-                        Some(b) => write!(text, " %{b}").unwrap(),
-                        None => write!(text, " %inst{target}").unwrap(),
-                    }
+                    write_target(&mut text, data.static_jump_target());
                 } else if data.is_jump() {
                     text.push_str(" %dynamic");
                 }
@@ -480,8 +478,10 @@ fn abbreviate_hex(s: &str) -> Cow<'_, str> {
     let prefix = &hex[..2];
     let run_len = hex
         .as_bytes()
-        .chunks(2)
-        .take_while(|chunk| chunk.len() == 2 && *chunk == prefix.as_bytes())
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .take_while(|chunk| *chunk == prefix.as_bytes())
         .count();
     if run_len < 4 {
         return Cow::Borrowed(s);

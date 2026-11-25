@@ -278,9 +278,7 @@ mod tests {
         assert_eq!(interp.stack().len(), 18);
         assert_eq!(interp.stack()[17], Word::ONE);
         assert_eq!(interp.stack()[0], Word::ONE);
-        for i in 1..17 {
-            assert_eq!(interp.stack()[i], 0);
-        }
+        assert_eq!(interp.stack()[1..17], [Word::ZERO; 16]);
 
         let mut code = Vec::new();
         for value in 0..145 {
@@ -303,9 +301,7 @@ mod tests {
         assert_eq!(interp.stack().len(), 18);
         assert_eq!(interp.stack()[17], Word::ONE);
         assert_eq!(interp.stack()[0], Word::from(2));
-        for i in 1..17 {
-            assert_eq!(interp.stack()[i], 0);
-        }
+        assert_eq!(interp.stack()[1..17], [Word::ZERO; 16]);
 
         let mut code = Vec::new();
         for value in 0..145 {

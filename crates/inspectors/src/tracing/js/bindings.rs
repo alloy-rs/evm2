@@ -28,6 +28,7 @@ use boa_engine::{
 use boa_gc::{Finalize, Trace, empty_trace};
 use core::{
     cell::{OnceCell, Ref, RefCell, RefMut},
+    fmt::Debug,
     mem::DropGuard,
     ops::Range,
 };
@@ -170,8 +171,7 @@ impl ReusableStepLog {
                 .borrow()
                 .error
                 .as_ref()
-                .map(|error| JsValue::from(js_string!(error.as_str())))
-                .unwrap_or_else(JsValue::undefined))
+                .map_or_else(JsValue::undefined, |error| js_string!(error.as_str()).into()))
         });
 
         object.set(js_string!("getPC"), get_pc, false, ctx)?;
@@ -390,8 +390,7 @@ impl ReusableFrameResult {
                 .borrow()
                 .error
                 .as_ref()
-                .map(|error| JsValue::from(js_string!(error.as_str())))
-                .unwrap_or_else(JsValue::undefined))
+                .map_or_else(JsValue::undefined, |error| js_string!(error.as_str()).into()))
         });
 
         object.set(js_string!("getGasUsed"), get_gas_used, false, ctx)?;
@@ -439,12 +438,12 @@ impl ReusableEvmDb {
         let get_balance = state_fn(ctx, state.clone(), 1, |state, args, ctx| {
             let address = address_from_value(args.get_or_undefined(0).clone(), ctx)?;
             let acc = state.borrow_mut().read_basic(address)?;
-            Ok(to_bigint(acc.map(|acc| acc.balance).unwrap_or_default()))
+            Ok(to_bigint(acc.map_or_default(|acc| acc.balance)))
         });
         let get_nonce = state_fn(ctx, state.clone(), 1, |state, args, ctx| {
             let address = address_from_value(args.get_or_undefined(0).clone(), ctx)?;
             let acc = state.borrow_mut().read_basic(address)?;
-            Ok(JsValue::from(acc.map(|acc| acc.nonce).unwrap_or_default()))
+            Ok(JsValue::from(acc.map_or_default(|acc| acc.nonce)))
         });
         let get_code = state_fn(ctx, state.clone(), 1, |state, args, ctx| {
             let address = address_from_value(args.get_or_undefined(0).clone(), ctx)?;
@@ -594,22 +593,20 @@ impl EvmDbState {
     }
 
     fn read_basic(&mut self, address: Address) -> JsResult<Option<AccountInfo>> {
-        self.active()?.read_basic(&address).map_err(|err| {
-            JsNativeError::error().with_message(format!("database read failed: {err:?}")).into()
-        })
+        self.active()?.read_basic(&address).map_err(db_error)
     }
 
     fn read_code(&mut self, address: Address) -> JsResult<Bytes> {
-        self.active()?.read_code(&address).map(|code| code.original_bytes()).map_err(|err| {
-            JsNativeError::error().with_message(format!("database read failed: {err:?}")).into()
-        })
+        self.active()?.read_code(&address).map(|code| code.original_bytes()).map_err(db_error)
     }
 
     fn read_state(&mut self, address: Address, slot: B256) -> JsResult<U256> {
-        self.active()?.read_state(&address, &slot.into()).map_err(|err| {
-            JsNativeError::error().with_message(format!("database read failed: {err:?}")).into()
-        })
+        self.active()?.read_state(&address, &slot.into()).map_err(db_error)
     }
+}
+
+fn db_error(err: impl Debug) -> JsError {
+    JsNativeError::error().with_message(format!("database read failed: {err:?}")).into()
 }
 
 /// Pre-execution data retained independently for each active call depth.
@@ -728,7 +725,7 @@ impl StackView {
             opcode::EXCHANGE => {
                 decode_pair(immediate).map_or(0, |(n, m)| usize::from(n.max(m)) + 1)
             }
-            _ => OpCode::new(op).map_or(0, |op| usize::from(op.inputs())),
+            _ => usize::from(OpCode::new_or_unknown(op).inputs()),
         }
         .min(stack.len());
         self.saved.clear();
@@ -750,7 +747,7 @@ impl StackView {
             if idx < saved {
                 Some(self.saved[saved - 1 - idx])
             } else {
-                (idx < self.len).then(|| post.get(self.len - 1 - idx).copied()).flatten()
+                self.len.checked_sub(idx.saturating_add(1)).and_then(|i| post.get(i).copied())
             }
         });
         item.ok_or_else(|| {
@@ -805,14 +802,15 @@ impl MemoryView {
         let Some(post) = self.post else {
             return Err(type_error("tracer accessed memory outside of a callback".to_string()));
         };
-        let patch = self.patch_offset..self.patch_offset + self.patch.len();
         Ok(AlignedVec::from_iter(
             0,
             range.map(|i| {
                 if i >= self.len {
                     0
-                } else if patch.contains(&i) {
-                    self.patch[i - self.patch_offset]
+                } else if let Some(&b) =
+                    i.checked_sub(self.patch_offset).and_then(|j| self.patch.get(j))
+                {
+                    b
                 } else {
                     post.get(i).copied().unwrap_or_default()
                 }

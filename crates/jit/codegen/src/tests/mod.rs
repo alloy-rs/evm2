@@ -84,7 +84,9 @@ const MSTORE_THEN_STOP: [u8; 8] =
 
 /// Returns `n` copies of [`FALL_THROUGH`] followed by `tail`.
 fn fall_through_then(n: usize, tail: &[u8]) -> Vec<u8> {
-    [&FALL_THROUGH.repeat(n)[..], tail].concat()
+    let mut code = FALL_THROUGH.repeat(n);
+    code.extend_from_slice(tail);
+    code
 }
 
 const I256_MIN: U256 = U256::from_limbs([
@@ -312,15 +314,8 @@ tests! {
 
         // DUPN 0x80: decode_single(0x80) = 17, duplicates 17th stack item.
         dupn(@raw {
-            bytecode: &{
-                let mut code = [0u8; 21];
-                code[0] = op::PUSH1; code[1] = 1;   // bottom = 1
-                // 16 zeros on top
-                code[2..18].fill(op::PUSH0);
-                code[18] = op::DUPN;
-                code[19] = 0x80; // n=17
-                code
-            },
+            // bottom = 1, 16 zeros on top, n=17.
+            bytecode: &[&[op::PUSH1, 1][..], &[op::PUSH0; 16], &[op::DUPN, 0x80, op::STOP]].concat(),
             spec_id: SpecId::AMSTERDAM,
             expected_stack: &{
                 let mut s = [U256::ZERO; 18];
@@ -334,16 +329,13 @@ tests! {
 
         // SWAPN 0x80: decode_single(0x80) = 17, swaps top with 17th item.
         swapn(@raw {
-            bytecode: &{
-                let mut code = [0u8; 23];
-                code[0] = op::PUSH1; code[1] = 1;   // bottom = 1
-                // 16 zeros on top
-                code[2..18].fill(op::PUSH0);
-                code[18] = op::PUSH1; code[19] = 2; // top = 2
-                code[20] = op::SWAPN;
-                code[21] = 0x80; // n=17
-                code
-            },
+            // bottom = 1, 16 zeros on top, top = 2, n=17.
+            bytecode: &[
+                &[op::PUSH1, 1][..],
+                &[op::PUSH0; 16],
+                &[op::PUSH1, 2, op::SWAPN, 0x80, op::STOP],
+            ]
+            .concat(),
             spec_id: SpecId::AMSTERDAM,
             expected_stack: &{
                 let mut s = [U256::ZERO; 18];
@@ -428,12 +420,8 @@ tests! {
         // Truncated trailing DUPN at EOF: immediate byte missing, zero-padded to 0x00.
         // decode_single(0) = 145, so this is DUPN(145) with only 17 items on stack → overflow.
         dupn_truncated_eof(@raw {
-            bytecode: &{
-                let mut code = [0u8; 18];
-                code[..17].fill(op::PUSH0);
-                code[17] = op::DUPN; // no immediate byte
-                code
-            },
+            // No immediate byte.
+            bytecode: &[&[op::PUSH0; 17][..], &[op::DUPN]].concat(),
             spec_id: SpecId::AMSTERDAM,
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
@@ -442,12 +430,8 @@ tests! {
         // Truncated trailing SWAPN at EOF: immediate byte missing, zero-padded to 0x00.
         // decode_single(0) = 145, so this is SWAPN(145) with only 18 items on stack → overflow.
         swapn_truncated_eof(@raw {
-            bytecode: &{
-                let mut code = [0u8; 19];
-                code[..18].fill(op::PUSH0);
-                code[18] = op::SWAPN; // no immediate byte
-                code
-            },
+            // No immediate byte.
+            bytecode: &[&[op::PUSH0; 18][..], &[op::SWAPN]].concat(),
             spec_id: SpecId::AMSTERDAM,
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
@@ -1404,27 +1388,12 @@ tests! {
             expected_gas: 2 + 2 + 3 + 2 + 2 + 2,
         }),
         pc_after_dupn_swapn_exchange(@raw {
-            bytecode: &{
-                let mut code = [0u8; 101];
-                let mut i = 0;
-                let mut value = 0;
-                while value <= 29 {
-                    code[i] = op::PUSH1;
-                    code[i + 1] = value;
-                    i += 2;
-                    value += 1;
-                }
-                code[i] = op::PC;
-                code[i + 1] = op::DUPN;
-                code[i + 2] = 0x80;
-                code[i + 3] = op::SWAPN;
-                code[i + 4] = 0x81;
-                code[i + 5] = op::EXCHANGE;
-                code[i + 6] = 0x8b;
-                code[i + 7] = op::PC;
-                code[i + 8..].fill(op::POP);
-                code
-            },
+            bytecode: &[
+                &(0..30).flat_map(|value| [op::PUSH1, value]).collect::<Vec<_>>()[..],
+                &[op::PC, op::DUPN, 0x80, op::SWAPN, 0x81, op::EXCHANGE, 0x8b, op::PC],
+                &[op::POP; 33],
+            ]
+            .concat(),
             spec_id: SpecId::AMSTERDAM,
             inspect_stack: Some(false),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
@@ -1951,9 +1920,8 @@ tests! {
             // bytecode: &[op::PUSH1, 64, op::PUSH0, op::PUSH0, op::PUSH20, OTHER_ADDR, op::EXTCODECOPY],
             bytecode: &hex!("6040 5f 5f 736969696969696969696969696969696969696969 3c"),
             expected_memory: &{
-                let mut mem = [0; 64];
-                let code = def_codemap()[&OTHER_ADDR].original_bytes();
-                mem[..code.len()].copy_from_slice(&code);
+                let mut mem = def_codemap()[&OTHER_ADDR].original_bytes().to_vec();
+                mem.resize(64, 0);
                 mem
             },
             expected_gas: 3 + 2 + 2 + 3 + (100 + 12),
@@ -2104,12 +2072,7 @@ tests! {
             expected_return: InstrStop::InvalidOperandOOG,
         }),
         mload_const_offset_too_large(@raw {
-            bytecode: &[
-                &[op::PUSH9][..],
-                &0x1_0000_0000_0000_0000_U256.to_be_bytes::<32>()[23..],
-                &[op::MLOAD][..],
-            ]
-            .concat(),
+            bytecode: &[op::PUSH9, 1, 0, 0, 0, 0, 0, 0, 0, 0, op::MLOAD],
             expected_return: InstrStop::InvalidOperandOOG,
         }),
         mstore1(@raw {

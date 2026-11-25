@@ -1,14 +1,11 @@
 //! EVM tracing inspectors.
 
-use crate::{
-    opcode::immediate_size,
-    tracing::{
-        types::{
-            CallKind, CallTraceNode, CallTraceStepExtra, RecordedMemory, SelfdestructTrace,
-            StepDelta, StorageChange, StorageChangeReason, TraceMemberOrder,
-        },
-        utils::step_cost,
+use crate::tracing::{
+    types::{
+        CallKind, CallTraceNode, CallTraceStepExtra, RecordedMemory, SelfdestructTrace, StepDelta,
+        StorageChange, StorageChangeReason, TraceMemberOrder,
     },
+    utils::step_cost,
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
@@ -488,8 +485,8 @@ impl TracingInspector {
             Some(interp.stack().as_slice().into())
         } else if self.config.record_stack_snapshots.is_top() {
             let stack = interp.stack();
-            let top = stack.as_slice().last().map(core::slice::from_ref).unwrap_or_default();
-            Some(top.into())
+            let stack = stack.as_slice();
+            Some(stack[stack.len().saturating_sub(1)..].into())
         } else {
             None
         };
@@ -504,7 +501,7 @@ impl TracingInspector {
 
         let mut immediate_bytes = None;
         if self.config.record_immediate_bytes {
-            let size = usize::from(immediate_size(op.get()));
+            let size = usize::from(op.immediate_size());
             if size != 0 {
                 let pc = interp.pc() + 1;
                 let bytes = interp.original_bytecode_slice().get(pc..pc + size).unwrap_or_default();
@@ -584,15 +581,12 @@ impl TracingInspector {
         } else {
             0
         };
-        let push_words = if (snapshots.is_all() || snapshots.is_pushes()) && op.is_valid() {
-            usize::from(op.outputs())
-        } else {
-            0
-        };
+        let push_words =
+            if snapshots.is_all() || snapshots.is_pushes() { usize::from(op.outputs()) } else { 0 };
         // The state gas cost is only known in `step_end`, so every EIP-8037 step may need it.
         let has_extra = (self.config.record_returndata_snapshots
             && !interp.return_data().is_empty())
-            || (self.config.record_immediate_bytes && immediate_size(op.get()) != 0)
+            || (self.config.record_immediate_bytes && op.immediate_size() != 0)
             || interp.version().feature(EvmFeatures::EIP8037);
         let extra = if has_extra { size_of::<CallTraceStepExtra>() } else { 0 };
         let delta = if self.config.record_step_deltas { size_of::<StepDelta>() } else { 0 };
@@ -652,7 +646,7 @@ impl TracingInspector {
         if self.config.record_stack_snapshots.is_all()
             || self.config.record_stack_snapshots.is_pushes()
         {
-            let outputs = if step.op.is_valid() { usize::from(step.op.outputs()) } else { 0 };
+            let outputs = usize::from(step.op.outputs());
             let stack = interp.stack();
             let stack = stack.as_slice();
             step.push_stack = Some(stack[stack.len().saturating_sub(outputs)..].into());
@@ -715,9 +709,7 @@ impl TracingInspector {
 impl<T: EvmTypes> Inspector<T> for TracingInspector {
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        if self.spec_id.is_none() {
-            self.spec_id = Some(interp.spec());
-        }
+        self.spec_id.get_or_insert_with(|| interp.spec());
         self.features = interp.version().features;
         if self.config.record_bytecode {
             self.last_trace().trace.bytecode = Some(interp.original_bytecode());
@@ -778,9 +770,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        if self.spec_id.is_none() {
-            self.spec_id = Some(interp.spec());
-        }
+        self.spec_id.get_or_insert_with(|| interp.spec());
         self.features = interp.version().features;
         self.finish_step_charge(interp, 0);
 
@@ -840,9 +830,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        if self.spec_id.is_none() {
-            self.spec_id = Some(interp.spec());
-        }
+        self.spec_id.get_or_insert_with(|| interp.spec());
         self.features = interp.version().features;
         self.finish_step_charge(interp, message.gas_limit);
 

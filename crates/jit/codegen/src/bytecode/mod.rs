@@ -30,8 +30,7 @@ pub(crate) use interner::Interner;
 mod info;
 pub use info::*;
 
-mod opcode;
-pub use opcode::*;
+pub use evm2::interpreter::instructions::{decode_pair, decode_single, encode_pair, encode_single};
 
 /// Implements `Display` for a nonmax index type using a format string.
 macro_rules! impl_index_display {
@@ -595,15 +594,10 @@ impl<'a> Bytecode<'a> {
     pub(crate) fn get_imm(&self, inst: Inst) -> Option<&[u8]> {
         let data = self.inst(inst);
         let imm_len = data.imm_len() as usize;
-        if imm_len == 0 {
-            return None;
-        }
-        let start = self.pc(inst) as usize + 1;
-        let end = (start + imm_len).min(self.code.len());
-        if start >= end {
-            return None;
-        }
-        Some(&self.code[start..end])
+        self.code
+            .get(self.pc(inst) as usize + 1..)
+            .map(|rest| &rest[..imm_len.min(rest.len())])
+            .filter(|imm| !imm.is_empty())
     }
 
     /// Returns the program counter (offset into the original bytecode) of the given instruction.
@@ -617,12 +611,6 @@ impl<'a> Bytecode<'a> {
     pub(crate) fn get_push_value(&self, data: &InstData) -> U256 {
         debug_assert!(matches!(data.opcode, op::PUSH0..=op::PUSH32));
         data.imm().get(&self.u256_interner.borrow())
-    }
-
-    /// Returns the length of the original bytecode in bytes.
-    #[inline]
-    pub(crate) fn codesize(&self) -> usize {
-        self.code.len()
     }
 
     /// Returns `true` if the given program counter is a valid jump destination.
@@ -1006,13 +994,17 @@ impl InstData {
     /// Note that this may not be a valid instruction.
     #[inline]
     fn new(opcode: u8) -> Self {
-        Self { opcode, stack_io: stack_io(opcode), ..Default::default() }
+        Self {
+            opcode,
+            stack_io: OpCode::new_or_unknown(opcode).input_output(),
+            ..Default::default()
+        }
     }
 
     /// Returns the length of the immediate data of this instruction.
     #[inline]
     pub(crate) const fn imm_len(&self) -> u8 {
-        min_imm_len(self.opcode)
+        OpCode::new_or_unknown(self.opcode).immediate_size()
     }
 
     /// Returns the number of input and output stack elements of this instruction.
@@ -1209,9 +1201,9 @@ impl InstData {
     #[inline]
     pub(crate) const fn is_diverging(&self) -> bool {
         (self.opcode == op::JUMP && self.flags.contains(InstFlags::INVALID_JUMP))
-            || self.flags.contains(InstFlags::DISABLED)
-            || self.flags.contains(InstFlags::UNKNOWN)
-            || self.flags.contains(InstFlags::INVALID_IMMEDIATE)
+            || self.flags.intersects(
+                InstFlags::DISABLED.union(InstFlags::UNKNOWN).union(InstFlags::INVALID_IMMEDIATE),
+            )
             || matches!(
                 self.opcode,
                 op::STOP | op::RETURN | op::REVERT | op::INVALID | op::SELFDESTRUCT

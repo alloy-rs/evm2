@@ -1,6 +1,5 @@
 //! Legacy bytecode padding.
 
-use crate::interpreter::op;
 use alloy_primitives::Bytes;
 
 /// Maximum PUSH immediate length plus a terminating STOP.
@@ -8,9 +7,6 @@ const PADDING: usize = 33;
 
 /// Appends zero padding unless the bytecode already ends with 33 zeros.
 pub(super) fn pad_legacy(bytecode: Bytes) -> Bytes {
-    if bytecode.is_empty() {
-        return Bytes::from_static(&[op::STOP]);
-    }
     if bytecode.ends_with(&[0; PADDING]) {
         return bytecode;
     }
@@ -27,7 +23,7 @@ pub(super) fn pad_legacy(bytecode: Bytes) -> Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::analyze_legacy;
+    use crate::{bytecode::analyze_legacy, interpreter::op};
     use alloc::{vec, vec::Vec};
 
     #[test]
