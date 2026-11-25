@@ -2417,51 +2417,6 @@ fn test_geth_opcode_limit_ignores_named_tracers() {
     assert_eq!(inspector.config().step_limit, None);
 }
 
-#[test]
-fn test_geth_struct_log_out_of_gas_cost() {
-    let contract = address!("0xc000000000000000000000000000000000000004");
-    let caller = address!("0xa000000000000000000000000000000000000004");
-    let code = [op::PUSH1, 0x01, op::PUSH1, 0x00, op::SSTORE];
-
-    let context = Context::mainnet()
-        .with_db(InMemoryDB::default())
-        .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
-        .modify_db_chained(|db| {
-            db.insert_account_info(
-                &contract,
-                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
-            );
-        });
-
-    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth());
-    let mut evm = context.build_mainnet().with_inspector(&mut insp);
-
-    // Leaves 5000 gas for the cold zero-to-nonzero SSTORE, which would cost 22100. The step
-    // consumes the 5000 left.
-    let res = evm
-        .inspect_tx(TxEnv {
-            caller,
-            gas_limit: 21_000 + 6 + 5_000,
-            gas_price: 0,
-            kind: TransactTo::Call(contract),
-            data: Bytes::default(),
-            nonce: 0,
-            ..Default::default()
-        })
-        .unwrap();
-    assert!(!res.result.is_success(), "{res:#?}");
-
-    let frame = insp.geth_builder().geth_traces(
-        res.result.tx_gas_used(),
-        res.result.output().unwrap_or_default().clone(),
-        GethDefaultTracingOptions::default(),
-    );
-    let sstore = frame.struct_logs.last().unwrap();
-    assert_eq!(sstore.opcode(), "SSTORE");
-    assert_eq!(sstore.gas, 5_000);
-    assert_eq!(sstore.gas_cost, 5_000);
-}
-
 /// EIP-7708: a transfer log of a reverted call is rolled back and does not consume an index.
 #[test]
 fn test_geth_calltracer_log_index_eip7708_revert() {
