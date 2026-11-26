@@ -436,10 +436,10 @@ pub(crate) fn slice(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResul
 
     if start < 0 || start > end || end > buf.len() as i64 {
         Err(JsError::from_native(JsNativeError::error().with_message(format!(
-            "Tracer accessed out of bound memory: available {}, start {}, end {}",
+            "Tracer accessed out of bound memory: available {}, offset {}, size {}",
             buf.len(),
             start,
-            end
+            end.wrapping_sub(start)
         ))))
     } else {
         to_uint8_array_value(buf[start as usize..end as usize].iter().copied(), ctx)
@@ -790,19 +790,39 @@ mod tests {
     }
 
     #[test]
-    fn slice_rejects_negative_bounds() {
+    fn slice_bounds_follow_geth() {
         let mut ctx = Context::default();
         register_builtins(&mut ctx).unwrap();
 
-        let result = ctx.eval(Source::from_bytes(b"toHex(slice([1, 2, 3, 4], 1, 3))")).unwrap();
-        assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), "0x0203");
+        // Bounds go through Go's float to `int64` conversion: fractions truncate, NaN is 0.
+        for (script, expected) in [
+            ("toHex(slice([1, 2, 3, 4], 1, 3))", "0x0203"),
+            ("toHex(slice([1, 2, 3, 4], 1.9, 3.9))", "0x0203"),
+            ("toHex(slice([1, 2, 3, 4], 1n, 3n))", "0x0203"),
+            ("toHex(slice([1, 2, 3, 4], NaN, 2))", "0x0102"),
+        ] {
+            let result = ctx.eval(Source::from_bytes(script)).unwrap();
+            assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), expected);
+        }
 
         // Geth interrupts the tracer for a negative start or end, as for any other bound.
-        for script in ["slice([1, 2, 3, 4], -1, 2)", "slice([1, 2, 3, 4], -2, -1)"] {
+        for (script, expected) in [
+            ("slice([1, 2, 3, 4], -1, 2)", "available 4, offset -1, size 3"),
+            ("slice([1, 2, 3, 4], -2, -1)", "available 4, offset -2, size 1"),
+            ("slice([1, 2, 3, 4], 3, 2)", "available 4, offset 3, size -1"),
+            ("slice([1, 2, 3, 4], 0, 5)", "available 4, offset 0, size 5"),
+            ("slice([1, 2, 3, 4], 1, NaN)", "available 4, offset 1, size -1"),
+            ("slice([1, 2, 3, 4], 0, 1e30)", "available 4, offset 0, size -9223372036854775808"),
+            (
+                "slice([1, 2, 3, 4], -1e30, 2)",
+                "available 4, offset -9223372036854775808, size -9223372036854775806",
+            ),
+        ] {
             let err = ctx.eval(Source::from_bytes(script)).unwrap_err();
-            assert!(
-                err.to_string().contains("Tracer accessed out of bound memory: available 4"),
-                "{script}: {err}"
+            assert_eq!(
+                err.as_native().unwrap().message(),
+                format!("Tracer accessed out of bound memory: {expected}"),
+                "{script}"
             );
         }
     }
