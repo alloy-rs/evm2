@@ -374,17 +374,11 @@ fn test_geth_jstracer_call_step_cost_and_depth() {
     // to the child: 2600 for a cold account, 100 for a warm one or a precompile.
     let cold_call = 2600 + 0xffff;
     let warm_call = 100 + 0xffff;
-    // A create step costs its base, then forwards all but 1/64 of the remaining gas. The base is
-    // 32000 plus 2 per initcode word, and CREATE2 adds 6 per word to hash the initcode.
-    let mut create_costs = Vec::new();
+    // A create step costs 32000 plus 2 per initcode word, and CREATE2 adds 6 per word to hash the
+    // initcode. Unlike a call, it does not cost the gas it forwards.
+    let (create, create2) = (32002, 32008);
     for event in events.as_array_mut().unwrap().iter_mut().filter(|event| event[2].is_u64()) {
-        let gas = event[2].take().as_u64().unwrap();
-        let base = match event[0].as_str() {
-            Some("CREATE") => 32002,
-            Some("CREATE2") => 32008,
-            _ => continue,
-        };
-        create_costs.push(gas - (gas - base) / 64);
+        event[2].take();
     }
     assert_eq!(
         events,
@@ -403,10 +397,10 @@ fn test_geth_jstracer_call_step_cost_and_depth() {
             ["enter", "STATICCALL"],
             ["fault", 2],
             ["exit"],
-            ["CREATE", 1, null, create_costs[0], "1d"],
+            ["CREATE", 1, null, create, "1d"],
             ["enter", "CREATE"],
             ["exit"],
-            ["CREATE2", 1, null, create_costs[1], "1d"],
+            ["CREATE2", 1, null, create2, "1d"],
             ["enter", "CREATE2"],
             ["exit"],
             ["DELEGATECALL", 1, null, warm_call, "1111"],
@@ -708,5 +702,61 @@ fn test_geth_exceptional_halt_costs_zero() {
                 trace => panic!("unexpected trace: {trace:?}"),
             }
         }
+    }
+}
+
+/// A create step costs the same in the JS tracer and in the struct logs: the gas forwarded to the
+/// child is left out, as in go-ethereum, where `opCreate` forwards it after the tracer hook.
+#[test]
+fn test_geth_jstracer_create_step_cost_excludes_forwarded_gas() {
+    let target = address!("0000000000000000000000000000000001000000");
+    let tracer = r#"{
+        events: [],
+        step: function(log) {
+            var op = log.op.toString();
+            if (op == "CREATE" || op == "CREATE2") this.events.push([op, log.getCost()]);
+        },
+        fault: function() {},
+        result: function() { return this.events; }
+    }"#;
+    // CREATE(0, 0, 0), POP, CREATE2(0, 0, 0, 0), POP, STOP, with empty initcode. The gas limit
+    // exceeds the transaction gas cap, so on Amsterdam the reservoir pays the state gas.
+    let code = hex!("5f5f5ff05060005f5f5ff55000");
+    for spec in [SpecId::CANCUN, SpecId::AMSTERDAM] {
+        let mut costs = Vec::new();
+        for opts in [GethDebugTracingOptions::default(), GethDebugTracingOptions::js_tracer(tracer)]
+        {
+            let mut db = InMemoryDB::default();
+            let code = Some(Bytecode::new_raw(code.to_vec().into()));
+            db.insert_account_info(&target, AccountInfo { code, ..Default::default() });
+            let mut inspector = DebugInspector::new(opts).unwrap();
+            let mut evm = Context::mainnet()
+                .modify_cfg_chained(|cfg| cfg.spec = spec)
+                .with_db(db)
+                .build_mainnet()
+                .with_inspector(&mut inspector);
+            let tx = TxEnv {
+                gas_limit: 20_000_000,
+                kind: TransactTo::Call(target),
+                ..Default::default()
+            };
+            let res = evm.inspect_tx(tx).unwrap();
+            assert!(res.result.is_success(), "{res:#?}");
+            let (ctx, inspector) = evm.ctx_inspector();
+            let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+            match inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap() {
+                GethTrace::Default(frame) => costs.push(json!(
+                    frame
+                        .struct_logs
+                        .iter()
+                        .filter(|log| log.op == "CREATE" || log.op == "CREATE2")
+                        .map(|log| (log.op.to_string(), log.gas_cost))
+                        .collect::<Vec<_>>()
+                )),
+                GethTrace::JS(events) => costs.push(events),
+                trace => panic!("unexpected trace: {trace:?}"),
+            }
+        }
+        assert_eq!(costs[0], costs[1], "{spec:?}");
     }
 }
