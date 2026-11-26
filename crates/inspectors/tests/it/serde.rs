@@ -31,3 +31,13 @@ fn call_trace_serializes_as_flat_structs() {
         assert_eq!(serde_json::to_string(&value).unwrap(), json);
     }
 }
+
+/// An opcode that no fork defines keeps its byte when a step is deserialized.
+#[test]
+fn undefined_opcode_survives_a_round_trip() {
+    let step =
+        EMPTY_STEP.replace(r#""op":0,"op_naming":"Table""#, r#""op":12,"op_naming":"Undefined""#);
+    let value = serde_json::from_str::<CallTraceStep>(&step).unwrap();
+    assert_eq!(value.op.get(), 12);
+    assert_eq!(serde_json::to_string(&value).unwrap(), step);
+}
