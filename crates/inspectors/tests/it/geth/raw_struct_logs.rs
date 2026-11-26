@@ -349,17 +349,12 @@ fn raw_struct_logs_omit_an_empty_state_gas_reservoir() {
 
 #[test]
 fn struct_logs_name_opcodes_by_fork() {
-    let specs = [
-        SpecId::LONDON,
-        SpecId::MERGE,
-        SpecId::SHANGHAI,
-        SpecId::CANCUN,
-        SpecId::PRAGUE,
-        SpecId::OSAKA,
-        SpecId::AMSTERDAM,
-    ];
+    let specs = (0..).map_while(SpecId::try_from_u32).collect::<Vec<_>>();
     // An opcode, the fork that defines it and its name there.
     for (opcode, since, name) in [
+        (op::DELEGATECALL, SpecId::HOMESTEAD, "DELEGATECALL"),
+        (op::SHL, SpecId::PETERSBURG, "SHL"),
+        (op::CHAINID, SpecId::ISTANBUL, "CHAINID"),
         (op::PUSH0, SpecId::SHANGHAI, "PUSH0"),
         (op::CLZ, SpecId::OSAKA, "CLZ"),
         (op::SLOTNUM, SpecId::AMSTERDAM, "SLOTNUM"),
@@ -367,7 +362,7 @@ fn struct_logs_name_opcodes_by_fork() {
         (op::SWAPN, SpecId::AMSTERDAM, "SWAPN"),
         (op::EXCHANGE, SpecId::AMSTERDAM, "EXCHANGE"),
     ] {
-        for spec in specs {
+        for &spec in &specs {
             let trace = assert_modes_match(&db_with(vec![opcode]), spec, &call_contract(), true);
             let expected = if spec.enables(since) {
                 name.into()

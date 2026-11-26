@@ -279,7 +279,7 @@ impl RawStructLogInspector {
         }
 
         let op = OpCode::new_or_unknown(interp.opcode());
-        let op_naming = OpNaming::new::<T>(interp.spec(), op);
+        let op_naming = OpNaming::new(interp, op);
         let refund = step_refund_counter(interp);
         let gas = interp.gas();
         let mut step = RecordingStep {
@@ -492,13 +492,13 @@ impl RawStructLogInspector {
         head.bytes(b"{\"pc\":");
         head.u64(step.pc);
         head.bytes(b",\"op\":\"");
-        match step.op_naming.name(step.op) {
-            Some(_) if step.op_naming == OpNaming::Table => {
+        match step.op_naming {
+            OpNaming::Table if step.op.is_valid() => {
                 let (name, len) = &OPCODE_NAMES[usize::from(step.op.get())];
                 head.padded(name, usize::from(*len));
             }
-            Some(name) => head.bytes(name.as_bytes()),
-            None => head.bytes(format!("opcode {:#x} not defined", step.op.get()).as_bytes()),
+            OpNaming::PrevRandao => head.bytes(b"PREVRANDAO"),
+            _ => head.bytes(format!("opcode {:#x} not defined", step.op.get()).as_bytes()),
         }
         head.bytes(b"\",\"gas\":");
         head.u64(step.gas);

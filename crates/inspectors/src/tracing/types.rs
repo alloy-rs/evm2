@@ -19,9 +19,9 @@ use alloy_rpc_types_trace::{
 };
 use core::ops::Range;
 use evm2::{
-    EvmTypesHost, OpcodeConfig, SpecId,
+    EvmFeatures, EvmTypesHost,
     interpreter::{
-        InstrStop, MessageKind,
+        Host, InstrStop, Interpreter, MessageKind,
         opcode::{OpCode, op},
     },
 };
@@ -875,11 +875,10 @@ impl CallTraceStepExtra {
 }
 
 /// How the fork of a block names an opcode in a struct log.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OpNaming {
     /// The opcode has the name of the opcode table.
-    #[default]
     Table,
     /// The opcode is `PREVRANDAO`, which [EIP-4399](https://eips.ethereum.org/EIPS/eip-4399)
     /// renames from `DIFFICULTY` at Paris.
@@ -889,11 +888,12 @@ pub enum OpNaming {
 }
 
 impl OpNaming {
-    /// Returns how `spec` names `op`.
-    pub(crate) fn new<T: EvmTypesHost>(spec: SpecId, op: OpCode) -> Self {
-        if op.get() != op::INVALID && !OpcodeConfig::<T>::base_for_spec(spec).is_defined(op.get()) {
+    /// Returns how the fork that `interp` runs names `op`.
+    pub(crate) fn new<T: EvmTypesHost>(interp: &mut Interpreter<'_, '_, T>, op: OpCode) -> Self {
+        let defined = interp.host().execution_config().opcode_config().is_defined(op.get());
+        if op.get() != op::INVALID && !defined {
             Self::Undefined
-        } else if op.get() == op::DIFFICULTY && spec.enables(SpecId::MERGE) {
+        } else if op.get() == op::DIFFICULTY && interp.version().feature(EvmFeatures::EIP4399) {
             Self::PrevRandao
         } else {
             Self::Table

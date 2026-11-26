@@ -533,7 +533,7 @@ impl TracingInspector {
             // A larger `pc` needs more than 4 GiB of bytecode.
             pc: u32::try_from(interp.pc()).unwrap_or(u32::MAX),
             op,
-            op_naming: OpNaming::new::<T>(interp.spec(), op),
+            op_naming: OpNaming::new(interp, op),
             stack,
             memory,
             gas_remaining: interp.gas().remaining(),
