@@ -249,9 +249,9 @@ impl InternalBlockExecutionError {
 pub fn map_handler_error(error: HandlerError) -> BlockExecutionError {
     match error {
         HandlerError::Database(error) => map_database_error(error),
-        HandlerError::MemoryLimit
-        | HandlerError::Fatal(_)
-        | HandlerError::WrongTransactionType { .. } => BlockExecutionError::other(error),
+        HandlerError::Fatal(_) | HandlerError::WrongTransactionType { .. } => {
+            BlockExecutionError::other(error)
+        }
         error => BlockValidationError::other(error).into(),
     }
 }

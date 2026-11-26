@@ -76,8 +76,7 @@ pub enum InstrStop {
     OutOfGas = 0x20,
     /// Out of gas error encountered during memory expansion.
     MemoryOOG,
-    /// A frame that could pay for a memory expansion was stopped by the memory limit. Execution
-    /// reports it as [`ExecutionError::MemoryLimit`](crate::ExecutionError::MemoryLimit).
+    /// The memory limit of the EVM has been exceeded.
     MemoryLimitOOG,
     /// Out of gas error encountered during the execution of a precompiled contract.
     PrecompileOOG,
@@ -154,23 +153,23 @@ impl InstrStop {
         !self.is_success() && !self.is_frame_revert()
     }
 
-    /// Returns whether execution ran out of gas.
+    /// Returns whether execution ran out of gas or exceeded the memory limit.
     #[inline]
     pub const fn is_out_of_gas(self) -> bool {
         matches!(
             self,
             Self::OutOfGas
                 | Self::MemoryOOG
+                | Self::MemoryLimitOOG
                 | Self::PrecompileOOG
                 | Self::InvalidOperandOOG
                 | Self::ReentrancySentryOOG
         )
     }
 
-    /// Returns whether execution hit a fatal host/extension boundary error or the memory limit,
-    /// which abort the transaction instead of halting a frame.
+    /// Returns whether execution hit a fatal host/extension boundary error.
     #[inline]
     pub const fn is_fatal(self) -> bool {
-        matches!(self, Self::FatalExternalError | Self::MemoryLimitOOG)
+        matches!(self, Self::FatalExternalError)
     }
 }

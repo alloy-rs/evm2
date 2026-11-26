@@ -100,7 +100,6 @@ impl TryFrom<HandlerError> for EthInvalidTxError {
     fn try_from(error: HandlerError) -> Result<Self, Self::Error> {
         match error {
             HandlerError::Database(_)
-            | HandlerError::MemoryLimit
             | HandlerError::Fatal(_)
             | HandlerError::WrongTransactionType { .. } => Err(error),
             HandlerError::External(_)

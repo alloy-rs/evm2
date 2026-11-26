@@ -42,7 +42,7 @@ pub fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
 #[cfg(test)]
 mod tests {
     use crate::{
-        ExecutionConfig, ExecutionError, SpecId, Version,
+        ExecutionConfig, SpecId, Version,
         interpreter::{InstrStop, Interpreter, MessageExt, Word, op},
         test_utils::{RunConfig, TestHost, TestTypes, legacy_bytecode, push, run, run_stack},
         version::GasId,
@@ -104,9 +104,9 @@ mod tests {
             MessageExt { gas_limit: 10_000, code: legacy_bytecode(code), ..MessageExt::default() };
         let mut interp = Interpreter::<TestTypes>::new(&message);
         let mut host = TestHost { execution_config: config, ..TestHost::default() };
-        let err = interp.run(&mut host).unwrap_err();
+        let err = interp.run(&mut host).unwrap();
 
-        assert_eq!(err, ExecutionError::MemoryLimit);
+        assert_matches!(err, InstrStop::MemoryLimitOOG);
         assert_eq!(interp.memory().len(), 0);
     }
 

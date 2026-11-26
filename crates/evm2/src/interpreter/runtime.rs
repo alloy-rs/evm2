@@ -472,9 +472,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         if let Some(error) = self.take_error() {
             return Err(error);
         }
-        if stop == InstrStop::MemoryLimitOOG {
-            return Err(ExecutionError::MemoryLimit);
-        }
         if stop.is_fatal() {
             return Err(ExecutionError::Fatal(
                 "interpreter returned a fatal stop without an error".into(),

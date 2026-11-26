@@ -115,9 +115,6 @@ impl From<crate::interpreter::InstrStop> for PrecompileError {
     #[inline]
     fn from(x: crate::interpreter::InstrStop) -> Self {
         debug_assert!(x.is_halt());
-        if x == crate::interpreter::InstrStop::MemoryLimitOOG {
-            return Self::MemoryLimit;
-        }
         if x.is_fatal() {
             return Self::Fatal("fatal external error".into());
         }
@@ -137,9 +134,6 @@ pub enum PrecompileError {
     /// Precompile halted with a non-fatal reason.
     #[error("{0}")]
     Halt(#[from] PrecompileHalt),
-    /// A frame that could pay for a memory expansion was stopped by the memory limit.
-    #[error("memory limit exceeded")]
-    MemoryLimit,
     /// Unrecoverable error that halts EVM execution.
     #[error("fatal: {0}")]
     Fatal(AnyError),
@@ -156,7 +150,7 @@ impl PrecompileError {
     /// For database failures, [`DatabaseError::is_fatal`] distinguishes internal failures
     /// from invalid execution input.
     pub const fn is_fatal(&self) -> bool {
-        matches!(self, Self::Fatal(_) | Self::Database(_) | Self::MemoryLimit)
+        matches!(self, Self::Fatal(_) | Self::Database(_))
     }
 
     /// Returns the halt reason, if this is a halt error.
@@ -200,7 +194,6 @@ impl From<crate::ExecutionError> for PrecompileError {
     fn from(error: crate::ExecutionError) -> Self {
         match error {
             crate::ExecutionError::Database(error) => Self::Database(error),
-            crate::ExecutionError::MemoryLimit => Self::MemoryLimit,
             crate::ExecutionError::Fatal(error) => Self::Fatal(error),
         }
     }
