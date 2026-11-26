@@ -20,6 +20,8 @@ mod opcode;
 mod otterscan;
 #[cfg(feature = "std")]
 mod parity;
+#[cfg(feature = "serde")]
+mod serde;
 #[cfg(feature = "std")]
 mod stack;
 #[cfg(feature = "js-tracer")]

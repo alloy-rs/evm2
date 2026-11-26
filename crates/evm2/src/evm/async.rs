@@ -124,14 +124,6 @@ impl CurrentFiber {
     }
 }
 
-struct ResetCurrentFiber(Option<NonNull<CurrentFiber>>);
-
-impl Drop for ResetCurrentFiber {
-    fn drop(&mut self) {
-        CURRENT.set(self.0);
-    }
-}
-
 /// Runs `func` on a native fiber and awaits its completion.
 ///
 /// Synchronous code running inside `func` may call [`block_on_current`] to wait for async host
@@ -298,7 +290,7 @@ impl<'a, R> FiberFuture<'a, R> {
             };
             let current = NonNull::from(&mut current);
             CURRENT.set(Some(current));
-            let _reset = ResetCurrentFiber(previous);
+            let _reset = core::mem::DropGuard::new(previous, |previous| CURRENT.set(previous));
             Ok(func())
         };
         // SAFETY: The coroutine is stored inside `FiberFuture<'a, R>`, which is tied to the

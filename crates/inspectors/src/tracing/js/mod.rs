@@ -436,15 +436,11 @@ impl JsInspector {
         contract: Contract,
         kind: CallKind,
         gas_limit: u64,
-        frame_refund: i64,
     ) -> &CallStackItem {
         if self.call_stack.is_empty() {
             self.root_depth = depth;
         }
-        let enclosing_refund =
-            self.call_stack.last().map_or(0, |parent| parent.enclosing_refund + frame_refund);
-        let call =
-            CallStackItem { id: self.next_call_id, contract, kind, gas_limit, enclosing_refund };
+        let call = CallStackItem { id: self.next_call_id, contract, kind, gas_limit };
         self.next_call_id += 1;
         self.call_stack.push(call);
         self.active_call()
@@ -567,11 +563,12 @@ impl JsInspector {
         } else {
             interp.gas().refunded()
         };
-        let refund = call.enclosing_refund + frame_refund;
+        let refund = interp.host().tx_refunded(frame_refund);
         debug_assert!(refund >= 0, "transaction-wide refund counter went negative: {refund}");
-        // An out-of-gas step consumes the whole remainder it started with.
-        let cost = if interp.result().is_err_and(InstrStop::is_out_of_gas) {
-            pending.instruction.gas
+        // Like geth, the hook that reports an exceptional halt sees cost 0, while a `step` before
+        // a `fault` sees the opcode's cost.
+        let cost = if error.is_some() && interp.result().is_err_and(InstrStop::is_halt) {
+            0
         } else {
             interp.gas().spent().saturating_sub(pending.gas_spent_before)
         };
@@ -695,7 +692,9 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return;
         }
         let result = interp.result().err();
-        let is_fault = result.is_some_and(|stop| should_fault(stop, pending.instruction.op));
+        // A failed stack check leaves the stack as the opcode found it.
+        let is_fault = result
+            .is_some_and(|stop| should_fault(stop, pending.instruction.op, interp.stack().len()));
         let error = result.and_then(|stop| utils::fmt_error_msg(stop, TraceStyle::Geth));
         if self.step_fn.is_some() {
             self.invoke_step_hook(interp, false, if is_fault { None } else { error.clone() });
@@ -738,7 +737,6 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             },
             message.kind.into(),
             message.gas_limit,
-            interp.gas().refunded(),
         );
 
         if self.can_call_enter() {
@@ -801,7 +799,6 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             },
             message.kind.into(),
             message.gas_limit,
-            interp.gas().refunded(),
         );
 
         if self.can_call_enter() {
@@ -1014,8 +1011,6 @@ struct CallStackItem {
     contract: Contract,
     kind: CallKind,
     gas_limit: u64,
-    /// Child refunds merge into the parent only on success.
-    enclosing_refund: i64,
 }
 
 /// Error variants that can occur during JavaScript inspection.
@@ -1062,10 +1057,16 @@ struct FaultStep {
 }
 
 // Geth reports validation failures through step; execution failures also invoke fault.
-const fn should_fault(stop: InstrStop, opcode: u8) -> bool {
+const fn should_fault(stop: InstrStop, opcode: u8, stack_len: usize) -> bool {
     match stop {
-        InstrStop::StackUnderflow
-        | InstrStop::StackOverflow
+        // Geth checks only the jump table minimum up front; a deeper item named by the
+        // immediate underflows while the opcode runs.
+        InstrStop::StackUnderflow => match opcode {
+            op::DUPN => stack_len >= 1,
+            op::SWAPN | op::EXCHANGE => stack_len >= 2,
+            _ => false,
+        },
+        InstrStop::StackOverflow
         | InstrStop::CreateInitCodeSizeLimit
         | InstrStop::CallNotAllowedInsideStatic => false,
         // LOG and TSTORE check write protection during execution, unlike these opcodes.

@@ -180,10 +180,7 @@ impl TracingInspectorConfig {
         Self {
             // The limit counts bytes of JSON, and a struct log takes at least that many, so the
             // trace never needs more steps.
-            step_limit: config
-                .limit
-                .filter(|limit| *limit != 0)
-                .and_then(|limit| NonZeroU64::new(limit / MIN_STRUCT_LOG_JSON_LEN + 1)),
+            step_limit: geth_step_limit(config),
             record_memory_snapshots: config.is_memory_enabled(),
             record_stack_snapshots: if config.disable_stack.unwrap_or_default() {
                 StackSnapshotType::None
@@ -438,6 +435,14 @@ impl TraceStyle {
     pub(crate) const fn is_parity(self) -> bool {
         matches!(self, Self::Parity)
     }
+}
+
+/// The typed recorder's capture limit includes steps in frames omitted from the final output.
+pub(super) fn geth_step_limit(config: &GethDefaultTracingOptions) -> Option<NonZeroU64> {
+    config
+        .limit
+        .filter(|limit| *limit != 0)
+        .and_then(|limit| NonZeroU64::new(limit / MIN_STRUCT_LOG_JSON_LEN + 1))
 }
 
 #[cfg(test)]
