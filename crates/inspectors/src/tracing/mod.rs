@@ -4,8 +4,8 @@ use crate::{
     opcode::immediate_size,
     tracing::{
         types::{
-            CallKind, CallTraceNode, CallTraceStepExtra, RecordedMemory, SelfdestructTrace,
-            StepDelta, StorageChange, StorageChangeReason, TraceMemberOrder,
+            CallKind, CallTraceNode, CallTraceStepExtra, OpNaming, RecordedMemory,
+            SelfdestructTrace, StepDelta, StorageChange, StorageChangeReason, TraceMemberOrder,
         },
         utils::step_cost,
     },
@@ -533,6 +533,7 @@ impl TracingInspector {
             // A larger `pc` needs more than 4 GiB of bytecode.
             pc: u32::try_from(interp.pc()).unwrap_or(u32::MAX),
             op,
+            op_naming: OpNaming::new::<T>(interp.spec(), op),
             stack,
             memory,
             gas_remaining: interp.gas().remaining(),

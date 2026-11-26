@@ -10,6 +10,7 @@ fn test_step(pc: u32, op: u8) -> CallTraceStep {
     CallTraceStep {
         pc,
         op: OpCode::new_or_unknown(op),
+        op_naming: Default::default(),
         stack: Some(vec![U256::from(pc)].into_boxed_slice()),
         push_stack: None,
         memory: None,

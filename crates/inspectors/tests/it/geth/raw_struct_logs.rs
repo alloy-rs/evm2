@@ -348,6 +348,45 @@ fn raw_struct_logs_omit_an_empty_state_gas_reservoir() {
 }
 
 #[test]
+fn struct_logs_name_opcodes_by_fork() {
+    let specs = [
+        SpecId::LONDON,
+        SpecId::MERGE,
+        SpecId::SHANGHAI,
+        SpecId::CANCUN,
+        SpecId::PRAGUE,
+        SpecId::OSAKA,
+        SpecId::AMSTERDAM,
+    ];
+    // An opcode, the fork that defines it and its name there.
+    for (opcode, since, name) in [
+        (op::PUSH0, SpecId::SHANGHAI, "PUSH0"),
+        (op::CLZ, SpecId::OSAKA, "CLZ"),
+        (op::SLOTNUM, SpecId::AMSTERDAM, "SLOTNUM"),
+        (op::DUPN, SpecId::AMSTERDAM, "DUPN"),
+        (op::SWAPN, SpecId::AMSTERDAM, "SWAPN"),
+        (op::EXCHANGE, SpecId::AMSTERDAM, "EXCHANGE"),
+    ] {
+        for spec in specs {
+            let trace = assert_modes_match(&db_with(vec![opcode]), spec, &call_contract(), true);
+            let expected = if spec.enables(since) {
+                name.into()
+            } else {
+                format!("opcode {opcode:#x} not defined")
+            };
+            assert_eq!(trace["structLogs"][0]["op"], expected, "{spec:?} {opcode:#x}");
+        }
+    }
+    // `PREVRANDAO` replaces `DIFFICULTY` at Paris.
+    for spec in specs {
+        let trace =
+            assert_modes_match(&db_with(vec![op::DIFFICULTY]), spec, &call_contract(), true);
+        let expected = if spec.enables(SpecId::MERGE) { "PREVRANDAO" } else { "DIFFICULTY" };
+        assert_eq!(trace["structLogs"][0]["op"], expected, "{spec:?}");
+    }
+}
+
+#[test]
 fn raw_struct_logs_are_reset_by_fuse() {
     let db = db_with(busy_code());
     let opts = GethDebugTracingOptions::default();
