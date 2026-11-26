@@ -389,12 +389,11 @@ impl TracingInspector {
 
         // The parent's call or create step is the one waiting for its `step_end`. A step that got
         // no hook, as the opcode filter allows, left no pending step in the parent.
-        let parent_step_omitted = self.config.record_steps
-            && parent.is_some_and(|parent| {
-                self.step_stack
-                    .last()
-                    .is_none_or(|step| step.trace_idx != parent || step.step_idx == usize::MAX)
-            });
+        let parent_step_omitted = parent.is_some_and(|parent| {
+            self.step_stack
+                .last()
+                .is_none_or(|step| step.trace_idx != parent || step.step_idx == usize::MAX)
+        });
 
         let trace_idx = self.traces.push_trace(
             parent,
