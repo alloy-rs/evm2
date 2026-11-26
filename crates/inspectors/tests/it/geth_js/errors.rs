@@ -12,16 +12,17 @@ fn execute(
     code: &[u8],
     gas_limit: u64,
 ) -> (Result<Value, JsInspectorError>, ResultAndState) {
-    execute_with_child(script, code, &hex!("600160005500"), gas_limit)
+    execute_with_child(SpecId::CANCUN, script, code, &hex!("600160005500"), gas_limit)
 }
 
 fn execute_with_child(
+    spec: SpecId,
     script: &str,
     code: &[u8],
     child: &[u8],
     gas_limit: u64,
 ) -> (Result<Value, JsInspectorError>, ResultAndState) {
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     for (address, code, balance) in [
         (Address::ZERO, &[][..], U256::from(1e18)),
         (TARGET, code, U256::from(5)),
@@ -38,7 +39,7 @@ fn execute_with_child(
     }
     let inspector = JsInspector::new(script.into(), Value::Null).unwrap();
     let mut evm = Context::mainnet()
-        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .modify_cfg_chained(|cfg| cfg.spec = spec)
         .with_db(db)
         .build_mainnet_with_inspector(inspector);
     let tx = TxEnv { kind: TransactTo::Call(TARGET), gas_limit, ..Default::default() };
@@ -70,8 +71,9 @@ fn error_events_tracer(has_step: bool) -> String {
 #[test]
 fn faults_follow_steps_and_preserve_instruction_metadata() {
     let script = "{e:[],step:function(l){this.e.push(['step',l.getPC(),l.op.toString(),l.getError()||null])},fault:function(l){this.e.push(['fault',l.getPC(),l.op.toString(),l.getError()])},result:function(c){return [this.e,c.error||null]}}";
-    for (code, gas_limit, expected) in [
+    for (spec, code, gas_limit, expected) in [
         (
+            SpecId::CANCUN,
             &hex!("60ff56")[..],
             1_000_000,
             json!([
@@ -84,15 +86,87 @@ fn faults_follow_steps_and_preserve_instruction_metadata() {
             ]),
         ),
         (
+            SpecId::CANCUN,
             &hex!("01")[..],
             1_000_000,
             json!([[["step", 0, "ADD", "stack underflow"]], "stack underflow"]),
         ),
-        (&hex!("6001")[..], 21_002, json!([[["step", 0, "PUSH1", "out of gas"]], "out of gas"])),
+        (
+            SpecId::CANCUN,
+            &hex!("6001")[..],
+            21_002,
+            json!([[["step", 0, "PUSH1", "out of gas"]], "out of gas"]),
+        ),
+        // Only past geth's jump table minimum (DUPN 1, SWAPN and EXCHANGE 2) is it a fault.
+        (
+            SpecId::AMSTERDAM,
+            &hex!("30e626")[..],
+            1_000_000,
+            json!([
+                [
+                    ["step", 0, "ADDRESS", null],
+                    ["step", 1, "DUPN", null],
+                    ["fault", 1, "DUPN", "stack underflow"]
+                ],
+                "stack underflow"
+            ]),
+        ),
+        (
+            SpecId::AMSTERDAM,
+            &hex!("3030e700")[..],
+            1_000_000,
+            json!([
+                [
+                    ["step", 0, "ADDRESS", null],
+                    ["step", 1, "ADDRESS", null],
+                    ["step", 2, "SWAPN", null],
+                    ["fault", 2, "SWAPN", "stack underflow"]
+                ],
+                "stack underflow"
+            ]),
+        ),
+        (
+            SpecId::AMSTERDAM,
+            &hex!("3030e800")[..],
+            1_000_000,
+            json!([
+                [
+                    ["step", 0, "ADDRESS", null],
+                    ["step", 1, "ADDRESS", null],
+                    ["step", 2, "EXCHANGE", null],
+                    ["fault", 2, "EXCHANGE", "stack underflow"]
+                ],
+                "stack underflow"
+            ]),
+        ),
+        (
+            SpecId::AMSTERDAM,
+            &hex!("e600")[..],
+            1_000_000,
+            json!([[["step", 0, "DUPN", "stack underflow"]], "stack underflow"]),
+        ),
+        (
+            SpecId::AMSTERDAM,
+            &hex!("30e700")[..],
+            1_000_000,
+            json!([
+                [["step", 0, "ADDRESS", null], ["step", 1, "SWAPN", "stack underflow"]],
+                "stack underflow"
+            ]),
+        ),
+        (
+            SpecId::AMSTERDAM,
+            &hex!("30e800")[..],
+            1_000_000,
+            json!([
+                [["step", 0, "ADDRESS", null], ["step", 1, "EXCHANGE", "stack underflow"]],
+                "stack underflow"
+            ]),
+        ),
     ] {
-        let (actual, result) = execute(script, code, gas_limit);
+        let (actual, result) = execute_with_child(spec, script, code, &[], gas_limit);
         assert!(!result.result.is_success());
-        assert_eq!(actual.unwrap(), expected);
+        assert_eq!(actual.unwrap(), expected, "{}", hex::encode(code));
     }
     // Geth fills the log in its step hook, so a tracer without `step` sees an empty one.
     let fault_only = "{e:[],fault:function(l){this.e.push([l.getPC(),l.op.toString(),l.getCost(),l.getDepth(),l.stack.length(),l.memory.length(),l.getError()])},result:function(){return this.e}}";
@@ -125,9 +199,8 @@ fn oversized_initcode_is_reported_by_step() {
 
 #[test]
 fn static_write_errors_follow_the_opcode_validation_stage() {
-    let mut parent = hex!("600060006000600073").to_vec();
-    parent.extend_from_slice(CHILD.as_slice());
-    parent.extend_from_slice(&hex!("61fffffa00"));
+    let parent =
+        [&hex!("600060006000600073")[..], CHILD.as_slice(), &hex!("61fffffa00")[..]].concat();
     for (child, opcode, callback) in [
         (&hex!("6000600055")[..], "SSTORE", "step"),
         (&hex!("600060006000f0")[..], "CREATE", "step"),
@@ -139,7 +212,8 @@ fn static_write_errors_follow_the_opcode_validation_stage() {
     ] {
         for has_step in [true, false] {
             let script = error_events_tracer(has_step);
-            let (output, result) = execute_with_child(&script, &parent, child, 1_000_000);
+            let (output, result) =
+                execute_with_child(SpecId::CANCUN, &script, &parent, child, 1_000_000);
             assert!(result.result.is_success());
             assert_eq!(
                 output.unwrap(),
@@ -159,18 +233,21 @@ fn static_write_errors_follow_the_opcode_validation_stage() {
 
 #[test]
 fn hook_errors_preserve_execution() {
-    let mut call = hex!("6000600060006000600073").to_vec();
-    call.extend_from_slice(CHILD.as_slice());
-    call.extend_from_slice(&hex!("61fffff150600160015500"));
+    let call = [
+        &hex!("6000600060006000600073")[..],
+        CHILD.as_slice(),
+        &hex!("61fffff150600160015500")[..],
+    ]
+    .concat();
     let baseline = "{fault:function(){},result:function(){return 42}}";
     for hook in ["step", "enter", "exit", "fault"] {
         let child = if hook == "fault" { &hex!("60ff56")[..] } else { &hex!("600160005500")[..] };
-        let (_, expected) = execute_with_child(baseline, &call, child, 1_000_000);
+        let (_, expected) = execute_with_child(SpecId::CANCUN, baseline, &call, child, 1_000_000);
         assert!(expected.result.is_success());
         let script = format!(
             "{{enter:function(){{}},exit:function(){{}},fault:function(){{}},result:function(){{return 42}},{hook}:function(){{let e=new AggregateError([], 'boom');e.errors.length=4294967295;throw e}}}}"
         );
-        let (output, actual) = execute_with_child(&script, &call, child, 1_000_000);
+        let (output, actual) = execute_with_child(SpecId::CANCUN, &script, &call, child, 1_000_000);
         assert_eq!(
             error_message(output.unwrap_err()),
             format!("AggregateError: boom    in server-side tracer function '{hook}'")
@@ -182,9 +259,8 @@ fn hook_errors_preserve_execution() {
 
 #[test]
 fn call_step_errors_preserve_execution() {
-    let mut call = hex!("6000600060006000600073").to_vec();
-    call.extend_from_slice(CHILD.as_slice());
-    call.extend_from_slice(&hex!("61fffff100"));
+    let call =
+        [&hex!("6000600060006000600073")[..], CHILD.as_slice(), &hex!("61fffff100")[..]].concat();
     let baseline = "{fault:function(){},result:function(){return 42}}";
     let script = "{fault:function(){},result:function(){return 42},step:function(l){var o=l.op.toString();if(o=='CALL'||o=='CREATE')throw new Error('boom')}}";
     // The step ends before the child runs, which must still run with the gas it was given.

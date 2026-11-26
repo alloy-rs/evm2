@@ -6,7 +6,7 @@ use crate::tracing::{
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, vec, vec::Vec};
 use alloy_primitives::{
     Address, B256, Bytes, U256,
-    map::{AddressSet, HashMap},
+    map::{AddressMap, AddressSet, HashMap},
 };
 use alloy_rpc_types_trace::geth::{
     AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode, GethDefaultTracingOptions,
@@ -31,36 +31,27 @@ pub(crate) const MIN_STRUCT_LOG_JSON_LEN: u64 = 48;
 ///
 /// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/eth/tracers/logger/logger.go#L145-L155>
 fn struct_log_json_len(log: &StructLog) -> usize {
-    const fn digits(value: u64) -> usize {
-        match value.checked_ilog10() {
-            Some(log) => log as usize + 1,
-            None => 1,
-        }
-    }
-    // The quoted `0x`-prefixed minimal hex of a word.
-    fn word(value: &U256) -> usize {
-        2 + 2 + value.bit_len().div_ceil(4).max(1)
-    }
     // The quoted `0x`-prefixed hex of a 32-byte hash.
     const HASH: usize = 2 + 2 + 64;
 
-    // `{"pc":`, `,"op":"`, `","gas":`, `,"gasCost":`, `,"depth":` and `}`.
-    let mut len = 6 + digits(log.pc) + 7 + log.op.len() + 1 + 7 + digits(log.gas);
-    len += 11 + digits(log.gas_cost) + 9 + digits(log.depth) + 1;
-    // The fields after EIP-8037 that evm2 adds to the struct log: `,"stateGasCost":` and
-    // `,"stateGasReservoir":`.
+    let mut len = struct_log_header_len(
+        log.pc,
+        log.op.len(),
+        log.gas,
+        log.gas_cost,
+        log.depth,
+        log.state_gas_reservoir,
+        log.refund_counter.unwrap_or_default(),
+    );
     if let Some(cost) = log.state_gas_cost {
         len += 16 + usize::from(cost < 0) + digits(cost.unsigned_abs());
-    }
-    if let Some(reservoir) = log.state_gas_reservoir {
-        len += 21 + digits(reservoir);
     }
     if let Some(error) = log.error.as_ref().filter(|error| !error.is_empty()) {
         let escaped = error.bytes().filter(|byte| matches!(byte, b'<' | b'>' | b'&')).count();
         len += 10 + error.len() + 5 * escaped + 1;
     }
     if let Some(stack) = &log.stack {
-        len += 10 + stack.iter().map(word).sum::<usize>() + stack.len().saturating_sub(1) + 1;
+        len += struct_log_stack_len(stack);
     }
     if let Some(return_data) = log.return_data.as_ref().filter(|data| !data.is_empty()) {
         len += 15 + 2 + 2 * return_data.len() + 1;
@@ -72,10 +63,42 @@ fn struct_log_json_len(log: &StructLog) -> usize {
     if let Some(storage) = log.storage.as_ref().filter(|storage| !storage.is_empty()) {
         len += 12 + storage.len() * (HASH + 1 + HASH) + storage.len().saturating_sub(1) + 1;
     }
-    if let Some(refund) = log.refund_counter.filter(|refund| *refund != 0) {
+    len
+}
+
+/// Size of the scalar fields and braces shared by raw and typed struct logs.
+pub(crate) const fn struct_log_header_len(
+    pc: u64,
+    opcode_len: usize,
+    gas: u64,
+    cost: u64,
+    depth: u64,
+    reservoir: Option<u64>,
+    refund: u64,
+) -> usize {
+    // `{"pc":`, `,"op":"`, `","gas":`, `,"gasCost":`, `,"depth":` and `}`.
+    let mut len = 6 + digits(pc) + 7 + opcode_len + 1 + 7 + digits(gas);
+    len += 11 + digits(cost) + 9 + digits(depth) + 1;
+    if let Some(reservoir) = reservoir {
+        len += 21 + digits(reservoir);
+    }
+    if refund != 0 {
         len += 10 + digits(refund);
     }
     len
+}
+
+/// Size of the stack field, including the key, quotes, hex prefixes and separators.
+pub(crate) fn struct_log_stack_len(stack: &[U256]) -> usize {
+    let words = stack.iter().map(|value| 4 + value.bit_len().div_ceil(4).max(1)).sum::<usize>();
+    10 + words + stack.len().saturating_sub(1) + 1
+}
+
+const fn digits(value: u64) -> usize {
+    match value.checked_ilog10() {
+        Some(log) => log as usize + 1,
+        None => 1,
+    }
 }
 
 /// A frame awaiting tree assembly, with visibility inherited by children in the forward pass.
@@ -141,7 +164,7 @@ impl<'a> GethTraceBuilder<'a> {
         &self,
         main_trace_node: &CallTraceNode,
         opts: &GethDefaultTracingOptions,
-        storage: &mut HashMap<Address, BTreeMap<B256, B256>>,
+        storage: &mut AddressMap<BTreeMap<B256, B256>>,
         struct_logs: &mut Vec<StructLog>,
         mut stacks: Option<&mut [StackSnapshots]>,
     ) {
@@ -188,8 +211,8 @@ impl<'a> GethTraceBuilder<'a> {
                 log.storage = Some(contract_storage.clone());
             }
 
-            if opts.is_return_data_enabled() && !step.returndata.is_empty() {
-                log.return_data = Some(step.returndata.clone());
+            if opts.is_return_data_enabled() && !step.returndata().is_empty() {
+                log.return_data = Some(step.returndata().clone());
             }
 
             // Add step to geth trace
@@ -569,7 +592,7 @@ mod tests {
     use evm2::{
         AccountInfo, DatabaseError,
         bytecode::Bytecode,
-        evm::{CacheDB, DbResult, DynDatabase, EmptyDB},
+        evm::{DbResult, DynDatabase, InMemoryDB},
         interpreter::{InstrStop, Word, op},
     };
 
@@ -687,11 +710,11 @@ mod tests {
         state.insert_account(
             prefunded_addr,
             Some(AccountInfo::default().with_balance(U256::from(10))),
-            Some(AccountInfo::default().with_balance(U256::from(1)).with_nonce(1)),
+            Some(AccountInfo::default().with_balance(U256::ONE).with_nonce(1)),
         );
         state.insert_account(empty_addr, None, Some(AccountInfo::default().with_nonce(1)));
 
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &prefunded_addr,
             AccountInfo::default().with_balance(U256::from(10)),
@@ -725,7 +748,7 @@ mod tests {
 
         state.insert_account(address, None, Some(account));
 
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         let builder = GethTraceBuilder::new(Vec::new());
         let frame = builder.geth_prestate_diff_traces(&state, &mut db, true, false).unwrap();
 
@@ -765,7 +788,7 @@ mod tests {
         let nonce_account = Address::with_last_byte(4);
         let contract = Address::with_last_byte(5);
         let code = Bytecode::new_legacy(Bytes::from_static(&[0x00]));
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(&empty_beneficiary, AccountInfo::default());
         db.insert_account_info(
             &funded_beneficiary,
@@ -779,7 +802,7 @@ mod tests {
             state.insert_account(
                 address,
                 None,
-                Some(AccountInfo::default().with_balance(U256::from(1))),
+                Some(AccountInfo::default().with_balance(U256::ONE)),
             );
         }
         // An account emptied by execution must retain its original prestate.

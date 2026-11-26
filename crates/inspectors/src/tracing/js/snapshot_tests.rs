@@ -1,14 +1,13 @@
 //! Compare reconstructed JS step data with snapshots captured before interpreter execution.
 
-use super::*;
-use alloy_consensus::TxLegacy;
+use super::{interrupt_tests::transaction, *};
 use alloy_primitives::hex;
 use evm2::{
-    BaseEvmTypes, ExecutionConfig, Precompiles, SpecId, Version,
+    BaseEvmTypes, Precompiles, SpecId,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
-    ethereum::{TxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo, CacheDB, EmptyDB},
+    ethereum::ethereum_tx_registry,
+    evm::{AccountInfo, InMemoryDB},
     interpreter::Host,
 };
 use serde_json::{Value, json};
@@ -73,9 +72,9 @@ impl Inspector<BaseEvmTypes> for SnapshotInspector {
     }
 }
 
-fn compare(code: Bytes, child: Option<Bytes>, initial_call_depth: u16) -> Vec<Value> {
+fn compare(code: Bytes, child: Option<Bytes>, initial_call_depth: u16, spec: SpecId) -> Vec<Value> {
     let address = Address::repeat_byte(0x11);
-    let mut db = CacheDB::new(EmptyDB::default());
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &address,
         AccountInfo { code: Some(Bytecode::new_legacy(code.clone())), ..Default::default() },
@@ -101,25 +100,16 @@ fn compare(code: Bytes, child: Option<Bytes>, initial_call_depth: u16) -> Vec<Va
         pending: Vec::new(),
         expected: Vec::new(),
     };
-    let mut version = Version::new(SpecId::CANCUN);
-    version.initial_call_depth = initial_call_depth;
-    let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-        ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
-        SpecId::CANCUN,
+    let mut evm = Evm::<BaseEvmTypes>::new(
+        spec,
         evm2::env::BlockEnvExt::default(),
-        ethereum_tx_registry(SpecId::CANCUN),
+        ethereum_tx_registry(spec),
         db,
-        Precompiles::base(SpecId::CANCUN),
+        Precompiles::base(spec),
     );
+    evm.set_initial_call_depth(initial_call_depth);
     evm.set_inspector(inspector);
-    let tx = Recovered::new_unchecked(
-        TxEnvelope::Legacy(TxLegacy {
-            gas_limit: 1_000_000,
-            to: TxKind::Call(address),
-            ..Default::default()
-        }),
-        Address::ZERO,
-    );
+    let tx = transaction(TxKind::Call(address));
     let res = evm.transact(&tx).unwrap().detach();
     let mut inspector = evm.clear_inspector_as::<SnapshotInspector>().unwrap();
     let block = *evm.block_env();
@@ -140,7 +130,7 @@ fn reconstructed_steps_match_all_opcode_bytes() {
             code.extend_from_slice(&[op::PUSH1, value]);
         }
         code.extend_from_slice(&[opcode, op::STOP]);
-        compare(code.into(), None, 0);
+        compare(code.into(), None, 0, SpecId::CANCUN);
     }
 }
 
@@ -163,7 +153,7 @@ fn parent_snapshot_survives_calls_and_return_data() {
             parent.push(op::STOP);
             let mut child = hex!("60aa60005260206000").to_vec();
             child.push(stop);
-            let steps = compare(parent.into(), Some(child.into()), 0);
+            let steps = compare(parent.into(), Some(child.into()), 0, SpecId::CANCUN);
             assert!(steps.iter().any(|step| step[3] == 2), "child must execute");
         }
     }
@@ -179,7 +169,7 @@ fn parent_snapshot_survives_create() {
         }
         code.extend_from_slice(&hex!("600a60166000"));
         code.extend_from_slice(&[opcode, op::POP, op::STOP]);
-        let steps = compare(code.into(), None, 0);
+        let steps = compare(code.into(), None, 0, SpecId::CANCUN);
         assert!(steps.iter().any(|step| step[3] == 2), "initcode must execute");
     }
 }
@@ -188,9 +178,9 @@ fn parent_snapshot_survives_create() {
 fn nested_root_steps_keep_visible_depth() {
     let parent = hex!("5f5f5f5f5f7322222222222222222222222222222222222222225af100");
     let child = Bytes::from_static(&[op::STOP]);
-    let root_steps = compare(parent.into(), Some(child.clone()), 0);
+    let root_steps = compare(parent.into(), Some(child.clone()), 0, SpecId::CANCUN);
     for depth in [0, 7, u16::MAX - CALL_DEPTH_LIMIT - 1] {
-        let steps = compare(parent.into(), Some(child.clone()), depth);
+        let steps = compare(parent.into(), Some(child.clone()), depth, SpecId::CANCUN);
         let depths = steps.iter().map(|step| step[3].as_u64().unwrap()).collect::<Vec<_>>();
         let depth = u64::from(depth);
         let mut expected = vec![depth + 1; 8];
@@ -202,5 +192,33 @@ fn nested_root_steps_keep_visible_depth() {
             step[3] = json!(step[3].as_u64().unwrap() + depth);
         }
         assert_eq!(steps, shifted);
+    }
+}
+
+/// `DUPN`, `SWAPN` and `EXCHANGE` touch the stack items their immediate selects, not the ones their
+/// opcode-table entry declares.
+#[test]
+fn reconstructed_steps_match_stack_immediates() {
+    let cases: &[&[u8]] = &[
+        &[op::DUPN, 0x80],
+        &[op::SWAPN, 0x80],
+        &[op::SWAPN, 0x90],
+        // An invalid immediate, then one that underflows the stack.
+        &[op::SWAPN, 0x5b],
+        &[op::SWAPN, 0x00],
+        &[op::EXCHANGE, 0x8e],
+        &[op::EXCHANGE, 0x51],
+        &[op::EXCHANGE, 0xff],
+        &[op::EXCHANGE, 0x52],
+        // The interpreter reads the zero padding past the end of the code as the immediate.
+        &[op::EXCHANGE],
+    ];
+    for case in cases {
+        let mut code = Vec::new();
+        for value in 0..40u8 {
+            code.extend_from_slice(&[op::PUSH1, value]);
+        }
+        code.extend_from_slice(case);
+        compare(code.into(), None, 0, SpecId::AMSTERDAM);
     }
 }

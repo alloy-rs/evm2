@@ -10,9 +10,13 @@ mod aarch64;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod x86;
 
-/// Analyzes the original bytecode to produce a jump table.
+/// Analyzes the original, unpadded legacy bytecode to produce its jump table.
+///
+/// A `JUMPDEST` byte is a valid jump destination unless it is part of the data of a
+/// `PUSH1..=PUSH32` instruction. This applies to every fork: the immediates of
+/// `DUPN`/`SWAPN`/`EXCHANGE` are scanned as if they were opcodes.
 #[inline]
-pub(super) fn analyze_legacy(bytecode: &[u8]) -> JumpTable {
+pub fn analyze_legacy(bytecode: &[u8]) -> JumpTable {
     let mut jumps = JumpTable::new(bytecode.len());
     let table = jumps.as_mut_slice();
     let pc = analyze_simd(bytecode, table);
@@ -463,7 +467,7 @@ mod tests {
 
     #[test]
     fn padding_releases_shared_input() {
-        let raw = Bytes::copy_from_slice(&[op::PUSH32]);
+        let raw = Bytes::from([op::PUSH32]);
         let padded = pad_legacy(raw.clone());
         assert!(raw.is_unique());
         assert_ne!(padded.as_ptr(), raw.as_ptr());

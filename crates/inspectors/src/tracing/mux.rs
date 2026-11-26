@@ -1,5 +1,5 @@
 use crate::tracing::{
-    DebugInspector, DebugInspectorError, FourByteInspector, TracingInspector,
+    DebugInspector, DebugInspectorError, FourByteInspector, TraceLimits, TracingInspector,
     TracingInspectorConfig, TransactionContext, utils::transaction_info,
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -11,7 +11,7 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    DatabaseError, EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
+    DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, TxResultWithState,
     env::BlockEnv,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
@@ -89,8 +89,7 @@ impl MuxInspector {
                     let flatcall_config =
                         tracer_config.unwrap_or_default().into_flat_call_config()?;
 
-                    inspector_config
-                        .merge(TracingInspectorConfig::from_flat_call_config(&flatcall_config));
+                    inspector_config.merge(TracingInspectorConfig::default_parity());
                     configs.push((builtin, TraceConfig::FlatCall(flatcall_config)));
                 }
                 GethDebugBuiltInTracerType::MuxTracer
@@ -141,8 +140,27 @@ impl MuxInspector {
         })
     }
 
+    /// Applies the limits to the shared recording and to each nested tracer, see
+    /// [`DebugInspector::set_limits`]. Each of them has its own budget.
+    pub fn set_limits(&mut self, limits: TraceLimits) {
+        if let Some(inspector) = &mut self.tracing {
+            inspector.set_limits(limits);
+        }
+        for (_, child) in &mut self.children {
+            child.set_limits(limits);
+        }
+    }
+
+    /// Returns the bytes the shared recording and the nested tracers counted against their
+    /// limits, see [`DebugInspector::recorded_bytes`].
+    pub(crate) fn recorded_bytes(&self) -> usize {
+        let shared = self.tracing.as_ref().map_or(0, TracingInspector::recorded_bytes);
+        shared + self.children.iter().map(|(_, child)| child.recorded_bytes()).sum::<usize>()
+    }
+
     /// Prepares the inspector for executing the next transaction. This removes any state from the
-    /// previous transaction.
+    /// previous transaction, except the global state of JavaScript tracers, see
+    /// [`DebugInspector::fuse`].
     pub fn fuse(&mut self) -> Result<(), Error> {
         if let Some(inspector) = &mut self.four_byte {
             core::mem::take(inspector);
@@ -177,9 +195,6 @@ impl MuxInspector {
     }
 
     /// Try converting this [MuxInspector] into a [MuxFrame].
-    ///
-    /// Call traces recover the transaction root when runtime gas charging halts before evm2
-    /// invokes the call/create hooks. Recovered roots report `out of gas`.
     pub fn try_into_mux_frame<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         result: &TxResultWithState<T>,
@@ -189,7 +204,6 @@ impl MuxInspector {
         db: &mut dyn DynDatabase,
     ) -> Result<MuxFrame, Error> {
         if let Some(inspector) = &mut self.tracing {
-            inspector.recover_runtime_oog_root(tx, &result.result);
             inspector.set_transaction_gas_limit(tx.gas_limit());
             inspector.set_transaction_caller(tx.signer());
         }
@@ -219,11 +233,11 @@ impl MuxInspector {
                         continue;
                     }
                 }
-                TraceConfig::FlatCall(_flatcall_config) => {
+                TraceConfig::FlatCall(flatcall_config) => {
                     if let Some(inspector) = &self.tracing {
                         inspector
                             .clone()
-                            .into_parity_builder()
+                            .into_flat_call_builder(flatcall_config)
                             .with_transaction_gas_used(result.result.tx_gas_used())
                             .into_localized_transaction_traces(tx_info)
                             .into()
@@ -281,6 +295,18 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         fan_out!(self.initialize_interp(interp));
+    }
+
+    #[inline]
+    fn inspector_config(&self) -> InspectorConfig {
+        let children =
+            self.children.iter().map(|(_, child)| Inspector::<T>::inspector_config(child));
+        let four_byte = self.four_byte.iter().map(Inspector::<T>::inspector_config);
+        let tracing = self.tracing.iter().map(Inspector::<T>::inspector_config);
+        children
+            .chain(four_byte)
+            .chain(tracing)
+            .fold(InspectorConfig::without_steps(), InspectorConfig::union)
     }
 
     #[inline]

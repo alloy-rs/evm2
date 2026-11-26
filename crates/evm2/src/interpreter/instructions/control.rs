@@ -208,7 +208,7 @@ mod tests {
 
         let interp = run(RunConfig::new([op::JUMPDEST, op::PC, op::STOP]));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::from(1)]);
+        assert_eq!(interp.stack(), [Word::ONE]);
     }
 
     #[test]
@@ -257,10 +257,10 @@ mod tests {
         assert_matches!(interp.err, InstrStop::Return);
         assert_eq!(interp.output(), [0xab, 0, 0]);
 
-        let interp = run_stack([Word::from(0), Word::MAX], op::RETURN);
+        let interp = run_stack([Word::ZERO, Word::MAX], op::RETURN);
         assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
 
-        let interp = run_stack([Word::from(u32::MAX), Word::from(1)], op::RETURN);
+        let interp = run_stack([Word::from(u32::MAX), Word::ONE], op::RETURN);
         assert_matches!(interp.err, InstrStop::MemoryLimitOOG);
     }
 
@@ -287,10 +287,10 @@ mod tests {
         assert_matches!(interp.err, InstrStop::Revert);
         assert_eq!(interp.output(), [0xcd, 0]);
 
-        let interp = run_stack([Word::from(0), Word::MAX], op::REVERT);
+        let interp = run_stack([Word::ZERO, Word::MAX], op::REVERT);
         assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
 
-        let interp = run_stack([Word::from(u32::MAX), Word::from(1)], op::REVERT);
+        let interp = run_stack([Word::from(u32::MAX), Word::ONE], op::REVERT);
         assert_matches!(interp.err, InstrStop::MemoryLimitOOG);
     }
 }

@@ -5,14 +5,14 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use alloy_primitives::{Bytes, hex};
+use alloy_primitives::{B256, Bytes, hex};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
     AccountInfo, EvmTypesHost,
     env::BlockEnv,
     evm::{DbResult, DynDatabase},
-    interpreter::InstrStop,
+    interpreter::{InstrStop, Result},
 };
 
 /// Converts a non successful [`InstrStop`] to an error message.
@@ -122,9 +122,7 @@ pub(crate) fn convert_memory(data: &[u8]) -> Vec<String> {
         memory.push(hex::encode_prefixed(chunk));
     }
     if !remainder.is_empty() {
-        let mut last_chunk = [0u8; 32];
-        last_chunk[..remainder.len()].copy_from_slice(remainder);
-        memory.push(hex::encode_prefixed(last_chunk));
+        memory.push(hex::encode_prefixed(B256::right_padding_from(remainder)));
     }
     memory
 }
@@ -184,6 +182,19 @@ pub(crate) fn transaction_info<T: EvmTypesHost>(
         block_number: Some(block_env.number.saturating_to()),
         base_fee: Some(block_env.basefee.saturating_to()),
         ..Default::default()
+    }
+}
+
+/// Returns the gas cost of a step that stopped with `result`.
+///
+/// A step that ran out of gas costs the whole `gas_remaining` it started with, except the
+/// reentrancy sentry, which rejects SSTORE before charging any gas and costs 0. Any other step
+/// costs what it `charged`.
+pub(crate) const fn step_cost(result: Result, gas_remaining: u64, charged: u64) -> u64 {
+    match result {
+        Err(InstrStop::ReentrancySentryOOG) => 0,
+        Err(stop) if stop.is_out_of_gas() => gas_remaining,
+        _ => charged,
     }
 }
 
@@ -279,7 +290,7 @@ mod tests {
             "0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000214661696c656420746f2076657269667920424950333232207369676e617475726500000000000000000000000000000000000000000000000000000000000000"
         );
         let reason = maybe_revert_reason(&err[..]).unwrap();
-        assert_eq!(reason, "Failed to verify BIP322 signature".to_string());
+        assert_eq!(reason, "Failed to verify BIP322 signature");
     }
 
     #[test]

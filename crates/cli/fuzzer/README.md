@@ -27,7 +27,7 @@ Force an evm2 dispatch backend with `EVM2_DISPATCH_BACKEND`:
 EVM2_DISPATCH_BACKEND=packed cargo run -q -p evm2-cli -- fuzzer --duration 1m -j 0
 ```
 
-Accepted backends are `auto`, `tco`, `packed`, `single_return`, and `unpacked`.
+Accepted backends are `auto`, `tco`, `packed`, and `unpacked`.
 
 ## Corpus and replay
 
@@ -54,19 +54,6 @@ Minimize a reproducing case:
 ```sh
 cargo run -q -p evm2-cli -- fuzzer minimize crates/cli/fuzzer/corpus/failures/case-....json
 ```
-
-Import the `evm-protobuf-fuzzer` corpus as replayable JSON cases:
-
-```sh
-./scripts/import_evm_protobuf_corpus.py \
-  /path/to/corp-evm-protobuf-fuzzer.tar.xz \
-  --output tmp/evm-protobuf-import --clean
-cargo run -q -p evm2-cli -- fuzzer corpus tmp/evm-protobuf-import
-```
-
-The import is intentionally lossy where the fuzzer case format has no field for
-the original data, such as block coinbase, difficulty, and excess blob gas. Such
-cases are tagged in `features`.
 
 ## Coverage report
 

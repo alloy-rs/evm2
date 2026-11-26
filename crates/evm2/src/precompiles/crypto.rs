@@ -6,14 +6,15 @@ use crate::{
     },
 };
 use alloc::{boxed::Box, vec::Vec};
+use alloy_primitives::B256;
 use core::fmt::Debug;
+use sha2::Digest;
 
 /// Crypto operations trait for precompiles.
 pub trait Crypto: Send + Sync + Debug {
     /// Compute SHA-256 hash
     #[inline]
     fn sha256(&self, input: &[u8]) -> [u8; 32] {
-        use sha2::Digest;
         let output = sha2::Sha256::digest(input);
         output.into()
     }
@@ -21,13 +22,7 @@ pub trait Crypto: Send + Sync + Debug {
     /// Compute RIPEMD-160 hash
     #[inline]
     fn ripemd160(&self, input: &[u8]) -> [u8; 32] {
-        use ripemd::Digest;
-        let mut hasher = ripemd::Ripemd160::new();
-        hasher.update(input);
-
-        let mut output = [0u8; 32];
-        output[12..].copy_from_slice(&hasher.finalize());
-        output
+        B256::left_padding_from(&ripemd::Ripemd160::digest(input)).0
     }
 
     /// BN254 elliptic curve addition.

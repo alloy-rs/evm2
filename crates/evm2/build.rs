@@ -3,9 +3,7 @@
 use std::{ffi::OsString, process::Command};
 
 fn main() {
-    for cfg in
-        ["cranelift", "dispatch_packed", "dispatch_single_return", "dispatch_unpacked", "tco"]
-    {
+    for cfg in ["cranelift", "dispatch_packed", "dispatch_unpacked", "tco"] {
         println!("cargo:rustc-check-cfg=cfg({cfg})");
     }
     println!("cargo:rerun-if-changed=build.rs");
@@ -23,7 +21,6 @@ fn main() {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
         DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
         DispatchBackend::Packed => println!("cargo:rustc-cfg=dispatch_packed"),
-        DispatchBackend::SingleReturn => println!("cargo:rustc-cfg=dispatch_single_return"),
         DispatchBackend::Unpacked => println!("cargo:rustc-cfg=dispatch_unpacked"),
     }
 }
@@ -32,7 +29,6 @@ enum DispatchBackend {
     Auto,
     Tco,
     Packed,
-    SingleReturn,
     Unpacked,
 }
 
@@ -46,27 +42,20 @@ impl DispatchBackend {
             "" | "auto" => Self::Auto,
             "tco" => Self::Tco,
             "packed" => Self::Packed,
-            "single_return" | "single-return" => Self::SingleReturn,
             "unpacked" => Self::Unpacked,
             _ => panic!(
-                "invalid EVM2_DISPATCH_BACKEND={value:?}; expected auto, tco, packed, single_return, or unpacked"
+                "invalid EVM2_DISPATCH_BACKEND={value:?}; expected auto, tco, packed, or unpacked"
             ),
         }
     }
 
     fn resolve(self, is_wasm: bool, target_pointer_width: Option<u32>, no_tco: bool) -> Self {
         match self {
-            Self::Auto => {
-                if is_wasm {
-                    Self::SingleReturn
-                } else if !no_tco && rustc_is_nightly() {
-                    Self::Tco
-                } else if target_pointer_width == Some(64) {
-                    Self::Packed
-                } else {
-                    Self::Unpacked
-                }
+            // `rust-preserve-none` passes arguments on the stack on 32-bit targets.
+            Self::Auto if !is_wasm && target_pointer_width == Some(64) => {
+                if !no_tco && rustc_is_nightly() { Self::Tco } else { Self::Packed }
             }
+            Self::Auto => Self::Unpacked,
             concrete => concrete,
         }
     }

@@ -91,8 +91,8 @@ const FIBONACCI_CODE: &[u8] = &[
 ];
 
 fn fibonacci_rust(n: u16) -> U256 {
-    let mut a = U256::from(0);
-    let mut b = U256::from(1);
+    let mut a = U256::ZERO;
+    let mut b = U256::ONE;
     for _ in 0..n {
         let tmp = a;
         a = b;

@@ -72,7 +72,7 @@ fn read_scalar_canonical(bytes: &[u8; 32]) -> Result<Fr, PrecompileHalt> {
     // Check if the field element is canonical by serializing back and comparing
     let bytes_roundtrip = fr.into_bigint().to_bytes_be();
 
-    if bytes_roundtrip.as_slice() != bytes {
+    if bytes_roundtrip != bytes {
         return Err(PrecompileHalt::NonCanonicalFp);
     }
 

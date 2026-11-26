@@ -236,7 +236,7 @@ impl JsonlWriter<'_> {
                 line["error"] = json!(error);
                 self.line(line);
             }
-            if op == op::SELFDESTRUCT && node.trace.selfdestruct_address.is_some() {
+            if op == op::SELFDESTRUCT && node.trace.selfdestruct_address().is_some() {
                 // The logger reports a selfdestruct as a call frame that ends at once.
                 self.line(json!({ "output": "", "gasUsed": "0x0" }));
             }

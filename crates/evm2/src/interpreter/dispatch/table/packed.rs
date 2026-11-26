@@ -73,7 +73,7 @@ impl super::DispatchGas for RemainingGas {
         dynamic_gas: bool,
     ) {
         if dynamic_gas {
-            state.gas_mut().set_remaining(self.get());
+            sync_loop_state(state, *self);
         }
     }
 

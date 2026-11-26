@@ -30,7 +30,7 @@ impl Gen {
     }
 
     pub(crate) fn one_in(&mut self, n: usize) -> bool {
-        self.rng.random_range(..n) == 0
+        self.range(n) == 0
     }
 
     pub(crate) fn pick<T: Copy>(&mut self, values: &[T]) -> T {

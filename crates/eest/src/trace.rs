@@ -14,7 +14,7 @@
 use alloy_primitives::{B256, Bytes, U256};
 use evm2::{
     EvmTypesHost, Inspector,
-    interpreter::{Interpreter, Message, MessageResult, opcode::OpCode},
+    interpreter::{InstrStop, Interpreter, Message, MessageResult, opcode::OpCode},
 };
 use serde_json::json;
 use std::io::{self, Write};
@@ -65,7 +65,12 @@ impl<W: Write> Eip3155Tracer<W> {
         let Some(step) = self.pending.take() else {
             return;
         };
-        let gas_cost = step.gas.saturating_sub(interp.gas().remaining());
+        // An out-of-gas step consumes the whole remainder it started with.
+        let gas_cost = if interp.result().is_err_and(InstrStop::is_out_of_gas) {
+            step.gas
+        } else {
+            step.gas.saturating_sub(interp.gas().remaining())
+        };
         self.emit(&step, gas_cost);
     }
 

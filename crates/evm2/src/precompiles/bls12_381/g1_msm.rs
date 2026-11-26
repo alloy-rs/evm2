@@ -57,13 +57,13 @@ mod test {
     use super::*;
     use crate::precompiles::kzg_point_evaluation::RETURN_VALUE;
     use alloc::vec::Vec;
-    use alloy_primitives::{Bytes, U256, hex};
+    use alloy_primitives::{U256, bytes, hex};
 
     #[test]
     fn bls_g1multiexp_g1_not_on_curve_but_in_subgroup() {
-        let input = Bytes::from(hex!(
+        let input = bytes!(
             "000000000000000000000000000000000a2833e497b38ee3ca5c62828bf4887a9f940c9e426c7890a759c20f248c23a7210d2432f4c98a514e524b5184a0ddac00000000000000000000000000000000150772d56bf9509469f9ebcd6e47570429fd31b0e262b66d512e245c38ec37255529f2271fd70066473e393a8bead0c30000000000000000000000000000000000000000000000000000000000000000"
-        ));
+        );
         let fail = run(&input, &mut GasTracker::new(G1_MSM_BASE_GAS_FEE));
         assert_eq!(
             fail.err().and_then(|e| e.as_halt().cloned()),
@@ -100,14 +100,14 @@ mod test {
 
         let scalars = [
             U256::ZERO,
-            U256::from(1),
+            U256::ONE,
             U256::from(2),
-            r - U256::from(1),
+            r - U256::ONE,
             r,
-            r + U256::from(1),
+            r + U256::ONE,
             r * U256::from(2),
-            r * U256::from(2) + U256::from(1),
-            U256::from(1) << 255,
+            r * U256::from(2) + U256::ONE,
+            U256::ONE << 255,
             U256::MAX,
         ];
         for scalar in scalars {
@@ -127,21 +127,15 @@ mod test {
                 (&non_subgroup, PrecompileHalt::Bls12381G1NotInSubgroup),
             ] {
                 assert_eq!(msm(&[(bad, scalar)]), Err(Some(err.clone())));
-                assert_eq!(msm(&[(&point, U256::from(1)), (bad, scalar)]), Err(Some(err.clone())));
-                assert_eq!(msm(&[(&point, scalar), (bad, U256::from(1))]), Err(Some(err)));
+                assert_eq!(msm(&[(&point, U256::ONE), (bad, scalar)]), Err(Some(err.clone())));
+                assert_eq!(msm(&[(&point, scalar), (bad, U256::ONE)]), Err(Some(err)));
             }
         }
 
-        assert_eq!(msm(&[(&point, U256::from(1))]), Ok(point.to_vec()));
+        assert_eq!(msm(&[(&point, U256::ONE)]), Ok(point.to_vec()));
         assert_eq!(msm(&[(&point, r), (&point, r * U256::from(2))]), Ok(infinity.to_vec()));
-        assert_eq!(
-            msm(&[(&point, r - U256::from(1)), (&point, U256::from(1))]),
-            Ok(infinity.to_vec())
-        );
-        assert_eq!(
-            msm(&[(&point, r - U256::from(1)), (&point, U256::from(2))]),
-            Ok(point.to_vec())
-        );
+        assert_eq!(msm(&[(&point, r - U256::ONE), (&point, U256::ONE)]), Ok(infinity.to_vec()));
+        assert_eq!(msm(&[(&point, r - U256::ONE), (&point, U256::from(2))]), Ok(point.to_vec()));
 
         // Many pairs with scalars just below `r` (bit 254 set) sum to `-n(n+1)/2 * P`.
         let pairs = (0..64u64).map(|i| (&point, r - U256::from(1 + i))).collect::<Vec<_>>();

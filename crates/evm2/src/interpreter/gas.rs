@@ -160,7 +160,7 @@ impl GasTracker {
     /// Creates a gas tracker with `limit` execution gas.
     #[inline]
     pub const fn new(limit: u64) -> Self {
-        Self::from_parts(limit, limit, 0)
+        Self::new_with_execution_gas_and_reservoir(limit, 0)
     }
 
     /// Creates a gas tracker with execution gas and a state gas reservoir.
@@ -349,7 +349,7 @@ impl GasTracker {
     #[inline]
     pub fn spend_state(&mut self, cost: u64) -> Result {
         if self.reservoir >= cost {
-            self.state_gas_spent = self.state_gas_spent.saturating_add(cost as i64);
+            self.add_state_gas_spent(cost as i64);
             self.reservoir -= cost;
             return Ok(());
         }
@@ -357,8 +357,8 @@ impl GasTracker {
         let spill = cost - self.reservoir;
 
         self.spend(spill)?;
-        self.state_gas_spent = self.state_gas_spent.saturating_add(cost as i64);
-        self.state_gas_spilled = self.state_gas_spilled.saturating_add(spill);
+        self.add_state_gas_spent(cost as i64);
+        self.add_state_gas_spilled(spill);
         self.reservoir = 0;
         Ok(())
     }
@@ -394,7 +394,7 @@ impl GasTracker {
             .reservoir
             .saturating_add_signed(self.state_gas_spent)
             .saturating_sub(self.state_gas_spilled);
-        self.remaining = self.remaining.saturating_add(self.state_gas_spilled);
+        self.remaining = self.remaining_excluding_state_spill();
         self.state_gas_spent = 0;
         self.state_gas_spilled = 0;
     }
@@ -959,11 +959,11 @@ mod tests {
     fn sibling_refill_restores_parent_regular_gas() {
         const STATE_GAS: u64 = 200;
         const CHILD_GAS: u64 = 500;
-        let mut parent = GasTracker::from_parts(1_000, 1_000, 0);
+        let mut parent = GasTracker::new(1_000);
 
         // A's state creation spills into execution gas and is merged into P.
         parent.spend(CHILD_GAS).unwrap();
-        let mut child_a = GasTracker::from_parts(CHILD_GAS, CHILD_GAS, 0);
+        let mut child_a = GasTracker::new(CHILD_GAS);
         child_a.spend_state(STATE_GAS).unwrap();
         child_a.settle_gas(InstrStop::Stop);
         parent.merge_child_gas(child_a, InstrStop::Stop);
@@ -974,7 +974,8 @@ mod tests {
 
         // B clears A's slot, with no local spill counter to restore.
         parent.spend(CHILD_GAS).unwrap();
-        let mut child_b = GasTracker::from_parts(CHILD_GAS, CHILD_GAS, parent.reservoir());
+        let mut child_b =
+            GasTracker::new_with_execution_gas_and_reservoir(CHILD_GAS, parent.reservoir());
         child_b.refill_reservoir(STATE_GAS);
         assert_eq!(child_b.reservoir(), STATE_GAS);
         assert_eq!(child_b.state_gas_spilled(), 0);

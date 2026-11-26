@@ -29,8 +29,7 @@ pub struct TxResultExt<E = ()> {
     pub total_gas_spent: u64,
     /// State gas consumed by the transaction (EIP-8037): storage creation, account creation, code
     /// deposit, the top-level create's initial state gas, and the EIP-7702 per-authorization
-    /// state gas, net of the EIP-7702 per-authorization state-gas refund. Zero when EIP-8037 is
-    /// disabled.
+    /// state gas. Zero when EIP-8037 is disabled.
     pub state_gas_spent: u64,
     /// Gas refund (capped per EIP-3529), before the EIP-7623 floor adjustment.
     pub refunded: u64,
@@ -216,11 +215,8 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     }
 
     #[inline]
-    fn take_result(&mut self) -> TxResult<T> {
-        match self.result.take() {
-            Some(result) => result,
-            None => unreachable!("executed transaction result was already taken"),
-        }
+    const fn take_result(&mut self) -> TxResult<T> {
+        self.result.take().expect("executed transaction result was already taken")
     }
 
     #[inline]

@@ -137,18 +137,26 @@ pub(crate) fn build_recovered_tx(
     fields: TxFields,
     signer: TxSigner,
 ) -> Result<RecoveredTxEnvelope, TxBuildError> {
-    let tx = build_typed_tx(fields)?;
-    let caller = match signer {
-        TxSigner::Fixture(caller) => caller,
-        TxSigner::Signature { signature, spec } => {
-            recover_sender(&signature, tx.signature_hash(), spec)?
-        }
-    };
+    let tx = consensus_tx(fields)?;
+    let caller = tx_caller(&tx, signer)?;
     Ok(recovered_envelope(tx, caller))
 }
 
+/// Builds a fixture transaction like [`build_recovered_tx`], also returning it signed with
+/// `signature` as a consensus envelope.
+pub(crate) fn build_signed_recovered_tx(
+    fields: TxFields,
+    signer: TxSigner,
+    signature: Signature,
+) -> Result<(RecoveredTxEnvelope, EthereumTxEnvelope<TxEip4844>), TxBuildError> {
+    let tx = consensus_tx(fields)?;
+    let caller = tx_caller(&tx, signer)?;
+    let signed = tx.clone().into_signed(signature).into();
+    Ok((recovered_envelope(tx, caller), signed))
+}
+
 /// Builds an unsigned consensus transaction from common fixture fields.
-pub fn build_typed_tx(fields: TxFields) -> Result<TypedTransaction, TxBuildError> {
+pub fn consensus_tx(fields: TxFields) -> Result<TypedTransaction, TxBuildError> {
     let mut request = TransactionRequest::default()
         .gas_limit(fields.gas_limit)
         .nonce(fields.nonce)
@@ -204,6 +212,15 @@ pub fn build_typed_tx(fields: TxFields) -> Result<TypedTransaction, TxBuildError
     }
 
     request.build_consensus_tx().map_err(|err| TxBuildError::BuildTransaction(err.error))
+}
+
+fn tx_caller(tx: &TypedTransaction, signer: TxSigner) -> Result<Address, TxBuildError> {
+    Ok(match signer {
+        TxSigner::Fixture(caller) => caller,
+        TxSigner::Signature { signature, spec } => {
+            recover_sender(&signature, tx.signature_hash(), spec)?
+        }
+    })
 }
 
 /// Decodes an EIP-2718 signed transaction and recovers its sender.

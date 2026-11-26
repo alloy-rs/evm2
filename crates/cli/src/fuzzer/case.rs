@@ -12,7 +12,10 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::IndexMap};
+use alloy_primitives::{
+    Address, B256, Bytes, TxKind, U256,
+    map::{IndexMap, U256IndexMap},
+};
 use evm2::{
     SpecId,
     env::{BlockEnv, BlockEnvExt},
@@ -27,12 +30,11 @@ use secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
 use serde::{Deserialize, Serialize};
 use std::{fmt, sync::OnceLock};
 
-pub(crate) const CALLER: Address = Address::new([0x10; 20]);
-pub(crate) const TARGET: Address = Address::new([0x20; 20]);
-pub(crate) const BENEFICIARY: Address = Address::new([0x30; 20]);
+pub(crate) const CALLER: Address = Address::repeat_byte(0x10);
+pub(crate) const TARGET: Address = Address::repeat_byte(0x20);
+pub(crate) const BENEFICIARY: Address = Address::repeat_byte(0x30);
 const CALLER_BALANCE: U256 = U256::from_limbs([0, 0, 1, 0]);
-const EIP7702_DELEGATED_TARGET: Address =
-    Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
+const EIP7702_DELEGATED_TARGET: Address = Address::with_last_byte(6);
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct EvmCase {
@@ -50,6 +52,14 @@ pub(crate) struct EvmCase {
 impl EvmCase {
     pub(crate) fn txs(&self) -> impl Iterator<Item = &CaseTx> {
         core::iter::once(&self.tx).chain(self.extra_txs.iter())
+    }
+
+    /// Rejects cases the generator never emits and the backends would convert differently.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(tx) = self.txs().find(|tx| tx.creates && !tx.kind.supports_create()) {
+            return Err(format!("{} transactions cannot create contracts", tx.kind));
+        }
+        Ok(())
     }
 }
 
@@ -69,7 +79,7 @@ impl Default for CaseGenerator {
             fixed_eip7702_authority(),
             EIP7702_DELEGATED_TARGET,
             Address::ZERO,
-            Address::new([0xff; 20]),
+            Address::repeat_byte(0xff),
         ];
         address_pool.extend((1..=10).map(Address::with_last_byte));
         let mut call_pool =
@@ -130,15 +140,9 @@ impl CaseGenerator {
         if address_pool.len() != 7 + 10 + extra_accounts + precompile::targets().len() + 3 {
             address_pool.truncate(7 + 10);
             call_pool.truncate(precompile::targets().len() + 3 + 4);
-            for account in &accounts[2..] {
-                address_pool.push(account.address);
-            }
-            for precompile in precompile::targets() {
-                address_pool.push(precompile.address());
-            }
-            for account in &accounts[2..] {
-                call_pool.push(account.address);
-            }
+            address_pool.extend(accounts[2..].iter().map(|account| account.address));
+            address_pool.extend(precompile::targets().iter().map(|target| target.address()));
+            call_pool.extend(accounts[2..].iter().map(|account| account.address));
             for i in 0..3 {
                 let address = Address::with_last_byte(0x80 + i);
                 address_pool.push(address);
@@ -180,15 +184,10 @@ pub(crate) struct CaseBlock {
 
 fn tiny_callee_code(rng: &mut Gen, spec: SpecId) -> Bytes {
     match rng.range(7) {
-        0 => [op::STOP].into_iter().collect::<Vec<_>>().into(),
-        1 => [op::PUSH1, 0, op::PUSH1, 0, op::RETURN].into_iter().collect::<Vec<_>>().into(),
-        2 if spec.enables(SpecId::BYZANTIUM) => {
-            [op::PUSH1, 0, op::PUSH1, 0, op::REVERT].into_iter().collect::<Vec<_>>().into()
-        }
-        3 => [op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP]
-            .into_iter()
-            .collect::<Vec<_>>()
-            .into(),
+        0 => [op::STOP].into(),
+        1 => [op::PUSH1, 0, op::PUSH1, 0, op::RETURN].into(),
+        2 if spec.enables(SpecId::BYZANTIUM) => [op::PUSH1, 0, op::PUSH1, 0, op::REVERT].into(),
+        3 => [op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP].into(),
         4 => returning_callee_code(op::RETURN),
         5 if spec.enables(SpecId::BYZANTIUM) => returning_callee_code(op::REVERT),
         _ => {
@@ -209,14 +208,11 @@ fn returning_callee_code(stop: u8) -> Bytes {
 fn creation_input(rng: &mut Gen, spec: SpecId) -> Bytes {
     match rng.range(5) {
         0 => Bytes::new(),
-        1 => [op::PUSH1, 0, op::PUSH1, 0, op::MSTORE8, op::PUSH1, 1, op::PUSH1, 0, op::RETURN]
-            .into_iter()
-            .collect::<Vec<_>>()
-            .into(),
-        2 => returning_callee_code(op::RETURN),
-        3 if spec.enables(SpecId::BYZANTIUM) => {
-            [op::PUSH1, 0, op::PUSH1, 0, op::REVERT].into_iter().collect::<Vec<_>>().into()
+        1 => {
+            [op::PUSH1, 0, op::PUSH1, 0, op::MSTORE8, op::PUSH1, 1, op::PUSH1, 0, op::RETURN].into()
         }
+        2 => returning_callee_code(op::RETURN),
+        3 if spec.enables(SpecId::BYZANTIUM) => [op::PUSH1, 0, op::PUSH1, 0, op::REVERT].into(),
         _ => {
             let len = rng.range_inclusive(1, 32);
             rng.bytes(len).into()
@@ -315,7 +311,7 @@ impl FuzzTxKind {
         }
     }
 
-    const fn supports_create(self) -> bool {
+    pub(crate) const fn supports_create(self) -> bool {
         matches!(self, Self::Legacy | Self::Eip2930 | Self::Eip1559)
     }
 
@@ -359,18 +355,19 @@ fn generate_access_list(rng: &mut Gen, accounts: &[CaseAccount], list: &mut Acce
         item.address = account.address;
         item.storage_keys.clear();
         for key in account.storage.keys().take(rng.range_inclusive(0, 3)) {
-            item.storage_keys.push(B256::from(key.to_be_bytes::<32>()));
+            item.storage_keys.push(B256::from(*key));
         }
         if item.storage_keys.is_empty() && rng.one_in(2) {
-            item.storage_keys.push(B256::from(rng.biased_word().to_be_bytes::<32>()));
+            item.storage_keys.push(B256::from(rng.biased_word()));
         }
     }
 }
 
 fn versioned_hash(rng: &mut Gen) -> B256 {
-    let mut hash = rng.bytes(32);
+    let mut hash = B256::ZERO;
+    rng.fill_bytes(hash.as_mut_slice());
     hash[0] = 0x01;
-    B256::from_slice(&hash)
+    hash
 }
 
 fn generate_eip7702_authorization_list(rng: &mut Gen, list: &mut Vec<SignedAuthorization>) {
@@ -391,12 +388,12 @@ fn generate_eip7702_authorization(rng: &mut Gen) -> SignedAuthorization {
             nonce: 1,
         }),
         3 => signed_eip7702_auth(Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             address: rng.pick(&[EIP7702_DELEGATED_TARGET, TARGET, Address::with_last_byte(8)]),
             nonce: 1,
         }),
         4 => signed_eip7702_auth(Authorization {
-            chain_id: rng.pick(&[U256::from(1), U256::from(2)]),
+            chain_id: rng.pick(&[U256::ONE, U256::from(2)]),
             address: EIP7702_DELEGATED_TARGET,
             nonce: rng.pick(&[0, 2, u64::MAX]),
         }),
@@ -431,7 +428,7 @@ fn add_eip7702_accounts<'a>(
             if auth.y_parity() > 1 {
                 features.insert(FuzzFeatures::EIP7702_AUTH_BAD_SIGNATURE);
             }
-            if auth.chain_id() != &U256::ZERO && auth.chain_id() != &U256::from(1) {
+            if auth.chain_id() != &U256::ZERO && auth.chain_id() != &U256::ONE {
                 features.insert(FuzzFeatures::EIP7702_AUTH_BAD_CHAIN);
             }
             if auth.nonce() != 1 {
@@ -514,7 +511,7 @@ pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
     static AUTH: OnceLock<SignedAuthorization> = OnceLock::new();
     AUTH.get_or_init(|| {
         signed_eip7702_auth(Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             address: EIP7702_DELEGATED_TARGET,
             nonce: 1,
         })
@@ -650,21 +647,18 @@ impl CaseTx {
                 self.caller,
             ),
             FuzzTxKind::Eip7702 => Recovered::new_unchecked(
-                TxEnvelope::Eip7702(
-                    TxEip7702 {
-                        chain_id: 1,
-                        nonce: self.nonce,
-                        gas_limit: self.gas_limit,
-                        max_fee_per_gas: self.gas_price,
-                        max_priority_fee_per_gas: 0,
-                        to: self.target,
-                        value: self.value,
-                        access_list: self.access_list.clone(),
-                        authorization_list: self.eip7702_authorization_list(),
-                        input: self.input.clone(),
-                    }
-                    .into(),
-                ),
+                TxEnvelope::from(TxEip7702 {
+                    chain_id: 1,
+                    nonce: self.nonce,
+                    gas_limit: self.gas_limit,
+                    max_fee_per_gas: self.gas_price,
+                    max_priority_fee_per_gas: 0,
+                    to: self.target,
+                    value: self.value,
+                    access_list: self.access_list.clone(),
+                    authorization_list: self.eip7702_authorization_list(),
+                    input: self.input.clone(),
+                }),
                 self.caller,
             ),
         }
@@ -727,7 +721,7 @@ impl CaseTx {
                 FuzzTxKind::Legacy | FuzzTxKind::Eip2930 => None,
             },
             blob_hashes: self.blob_hashes.clone(),
-            max_fee_per_blob_gas: if self.kind == FuzzTxKind::Eip4844 { 1 } else { 0 },
+            max_fee_per_blob_gas: u128::from(self.kind == FuzzTxKind::Eip4844),
             ..RevmTxEnv::default()
         }
     }
@@ -739,7 +733,7 @@ pub(crate) struct CaseAccount {
     pub(crate) balance: U256,
     pub(crate) nonce: u64,
     pub(crate) code: Bytes,
-    pub(crate) storage: IndexMap<U256, U256>,
+    pub(crate) storage: U256IndexMap<U256>,
 }
 
 mod spec_serde {
@@ -790,5 +784,24 @@ mod tests {
             assert_eq!(decoded, case, "seed {seed}");
             assert_eq!(serde_json::to_vec(&decoded).unwrap(), json, "seed {seed}");
         }
+    }
+
+    #[test]
+    fn validate_rejects_creates_for_non_creating_tx_kinds() {
+        let mut case = EvmCase::default();
+        case.tx.creates = true;
+        case.extra_txs.push(CaseTx { kind: FuzzTxKind::Eip7702, ..CaseTx::default() });
+        assert_eq!(case.validate(), Ok(()));
+        case.extra_txs[0].creates = true;
+        assert_eq!(
+            case.validate(),
+            Err("eip7702 transactions cannot create contracts".to_string())
+        );
+        case.extra_txs.clear();
+        case.tx.kind = FuzzTxKind::Eip4844;
+        assert_eq!(
+            case.validate(),
+            Err("eip4844 transactions cannot create contracts".to_string())
+        );
     }
 }

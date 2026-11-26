@@ -2,7 +2,7 @@ use crate::{
     BaseEvmConfig, EvmConfig, EvmTypesHost, SpecId,
     interpreter::{
         instructions as instr, op,
-        private::{Instruction, InstructionImplFn},
+        private::{Instruction, InstructionFlags, InstructionImplFn},
     },
 };
 use core::fmt;
@@ -26,8 +26,7 @@ pub struct OpcodeConfig<T: EvmTypesHost> {
 
 pub(crate) struct InstructionInfo<T: EvmTypesHost> {
     pub(crate) instr: InstructionImplFn<T>,
-    #[allow(dead_code)]
-    pub(crate) dynamic_gas: bool,
+    pub(crate) flags: InstructionFlags,
 }
 
 impl<T: EvmTypesHost> fmt::Debug for OpcodeConfig<T> {
@@ -162,7 +161,7 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         assert!(opcode != op::INVALID, "INVALID opcode cannot be overridden");
         self.set_static_gas(opcode, gas);
         self.instruction_sets[opcode as usize] += 1;
-        if self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS) {
+        if self.instruction_impls.set(opcode, I::execute, I::FLAGS) {
             self.bump_revision(opcode);
         }
     }
@@ -242,24 +241,25 @@ impl StaticGasTable {
 
 struct InstructionImplTable<T: EvmTypesHost> {
     instrs: [Option<InstructionImplFn<T>>; 256],
-    dynamic_gas: [bool; 256],
+    flags: [InstructionFlags; 256],
 }
 
 impl<T: EvmTypesHost> InstructionImplTable<T> {
     /// Creates an empty instruction implementation table.
     #[inline]
     const fn empty() -> Self {
-        Self { instrs: [None; 256], dynamic_gas: [false; 256] }
+        Self { instrs: [None; 256], flags: [InstructionFlags::empty(); 256] }
     }
 
     /// Returns the instruction implementation for `opcode`.
     #[inline(always)]
     const fn get(&self, opcode: u8) -> InstructionInfo<T> {
         match self.instrs[opcode as usize] {
-            Some(instr) => {
-                InstructionInfo { instr, dynamic_gas: self.dynamic_gas[opcode as usize] }
-            }
-            None => InstructionInfo { instr: instr::invalid::<T>::execute, dynamic_gas: false },
+            Some(instr) => InstructionInfo { instr, flags: self.flags[opcode as usize] },
+            None => InstructionInfo {
+                instr: instr::invalid::<T>::execute,
+                flags: InstructionFlags::empty(),
+            },
         }
     }
 
@@ -271,10 +271,15 @@ impl<T: EvmTypesHost> InstructionImplTable<T> {
 
     /// Sets the instruction implementation for `opcode`.
     #[inline(always)]
-    const fn set(&mut self, opcode: u8, instr: InstructionImplFn<T>, dynamic_gas: bool) -> bool {
+    const fn set(
+        &mut self,
+        opcode: u8,
+        instr: InstructionImplFn<T>,
+        flags: InstructionFlags,
+    ) -> bool {
         let index = opcode as usize;
         self.instrs[index] = Some(instr);
-        self.dynamic_gas[index] = dynamic_gas;
+        self.flags[index] = flags;
         true
     }
 }

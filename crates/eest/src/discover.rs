@@ -1,3 +1,4 @@
+use crate::fixture_io::has_extension;
 use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
@@ -47,6 +48,5 @@ fn should_walk_entry(entry: &DirEntry, should_descend: fn(&Path) -> bool) -> boo
 }
 
 fn is_json_test(path: &Path) -> bool {
-    path.file_name().is_none_or(|name| name != "index.json")
-        && path.extension().is_some_and(|ext| ext == "json")
+    path.file_name().is_none_or(|name| name != "index.json") && has_extension(path, "json")
 }

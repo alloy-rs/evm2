@@ -40,9 +40,10 @@ impl PreparedBench {
             panic!("{} benchmark transaction must execute: {err:?}", self.name)
         });
         assert!(
-            result.status,
+            result.is_success(),
             "{} benchmark transaction must succeed: {:?}",
-            self.name, result.stop
+            self.name,
+            result.stop
         );
     }
 
@@ -80,5 +81,5 @@ impl Runner {
 }
 
 fn new_evm(spec: SpecId, block: BlockEnv, db: InMemoryDB) -> BenchEvm {
-    Evm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
+    BenchEvm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
 }

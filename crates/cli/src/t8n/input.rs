@@ -8,7 +8,7 @@ use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rpc_types_eth::AccessList;
 use evm2::{SpecId, ethereum::RecoveredTxEnvelope};
 use evm2_eest::{
-    TestAuthorization, TxFields, build_typed_tx, recover_address, recovered_envelope,
+    TestAuthorization, TxFields, consensus_tx, recover_address, recovered_envelope,
     signed_authorizations,
 };
 use secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
@@ -164,7 +164,7 @@ impl TxJson {
         };
         let nonce = u64::try_from(self.nonce).map_err(|_| "nonce overflows u64")?;
         let kind = TxKind::from(self.to);
-        let typed = build_typed_tx(TxFields {
+        let typed = consensus_tx(TxFields {
             tx_type: Some(tx_type),
             kind,
             data: self.input.clone(),

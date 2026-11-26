@@ -31,7 +31,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, ExecutionError, Inspector, TxResultWithState,
     env::BlockEnv,
-    evm::DynDatabase,
+    evm::{DynDatabase, PrewarmSet},
     interpreter::{InstrStop, Interpreter, Message, MessageKind, MessageResult, opcode::op},
 };
 
@@ -335,7 +335,7 @@ impl JsInspector {
         let mut output_bytes = None;
         let mut error = None;
 
-        if result.status {
+        if result.is_success() {
             output_bytes = Some(result.output.clone());
         } else if result.stop.is_frame_revert() {
             error = Some("execution reverted".to_string());
@@ -352,7 +352,7 @@ impl JsInspector {
             }
         });
 
-        let base_fee = block.basefee.try_into().unwrap_or(u64::MAX);
+        let base_fee = block.basefee.saturating_to::<u64>();
         let gas_tip = tx.effective_tip_per_gas(base_fee).unwrap_or_default();
 
         let ctx = JsEvmContext {
@@ -368,7 +368,7 @@ impl JsInspector {
             gas_used: result.tx_gas_used(),
             gas_price: U256::from(gas_tip),
             value: tx.value(),
-            block: block.number.try_into().unwrap_or(u64::MAX),
+            block: block.number.saturating_to::<u64>(),
             coinbase: block.beneficiary,
             output: output_bytes.unwrap_or_default(),
             transaction_ctx: self.transaction_context,
@@ -436,15 +436,11 @@ impl JsInspector {
         contract: Contract,
         kind: CallKind,
         gas_limit: u64,
-        frame_refund: i64,
     ) -> &CallStackItem {
         if self.call_stack.is_empty() {
             self.root_depth = depth;
         }
-        let enclosing_refund =
-            self.call_stack.last().map_or(0, |parent| parent.enclosing_refund + frame_refund);
-        let call =
-            CallStackItem { id: self.next_call_id, contract, kind, gas_limit, enclosing_refund };
+        let call = CallStackItem { id: self.next_call_id, contract, kind, gas_limit };
         self.next_call_id += 1;
         self.call_stack.push(call);
         self.active_call()
@@ -453,7 +449,9 @@ impl JsInspector {
     /// Sets the active precompiles read by `isPrecompiled`.
     fn register_precompiles<T: EvmTypes>(&mut self, host: &Evm<'_, T>) {
         if !self.precompiles.is_set() {
-            self.precompiles.set(host.precompiles().addresses());
+            let mut precompiles = PrewarmSet::new();
+            host.precompiles().warm_addresses(&mut precompiles);
+            self.precompiles.set(precompiles);
         }
     }
 
@@ -565,10 +563,17 @@ impl JsInspector {
         } else {
             interp.gas().refunded()
         };
-        let refund = call.enclosing_refund + frame_refund;
+        let refund = interp.host().tx_refunded(frame_refund);
         debug_assert!(refund >= 0, "transaction-wide refund counter went negative: {refund}");
+        // Like geth, the hook that reports an exceptional halt sees cost 0, while a `step` before
+        // a `fault` sees the opcode's cost.
+        let cost = if error.is_some() && interp.result().is_err_and(InstrStop::is_halt) {
+            0
+        } else {
+            interp.gas().spent().saturating_sub(pending.gas_spent_before)
+        };
         let info = StepInfo {
-            cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
+            cost,
             refund: refund.max(0) as u64,
             // Geth reports the depth starting at 1 for the top-level call.
             depth: u64::from(depth) + 1,
@@ -663,6 +668,11 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             pending.snapshot.record(PreStep {
                 pc: pending.instruction.pc,
                 op: pending.instruction.op,
+                immediate: interp
+                    .original_bytecode_slice()
+                    .get(interp.pc() + 1)
+                    .copied()
+                    .unwrap_or_default(),
                 gas_remaining: pending.instruction.gas,
                 stack: interp.stack().as_slice(),
                 memory: interp.memory().as_slice(),
@@ -682,7 +692,9 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return;
         }
         let result = interp.result().err();
-        let is_fault = result.is_some_and(|stop| should_fault(stop, pending.instruction.op));
+        // A failed stack check leaves the stack as the opcode found it.
+        let is_fault = result
+            .is_some_and(|stop| should_fault(stop, pending.instruction.op, interp.stack().len()));
         let error = result.and_then(|stop| utils::fmt_error_msg(stop, TraceStyle::Geth));
         if self.step_fn.is_some() {
             self.invoke_step_hook(interp, false, if is_fault { None } else { error.clone() });
@@ -717,10 +729,14 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
 
         self.push_call(
             message.depth,
-            Contract { caller, contract, value: message.value, input: message.input.clone() },
+            Contract {
+                caller,
+                contract,
+                value: message.value,
+                input: message.input.to_bytes(interp.memory()),
+            },
             message.kind.into(),
             message.gas_limit,
-            interp.gas().refunded(),
         );
 
         if self.can_call_enter() {
@@ -779,11 +795,10 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 caller: message.caller,
                 contract: message.destination,
                 value: message.value,
-                input: message.input.clone(),
+                input: message.input.to_bytes(interp.memory()),
             },
             message.kind.into(),
             message.gas_limit,
-            interp.gas().refunded(),
         );
 
         if self.can_call_enter() {
@@ -996,8 +1011,6 @@ struct CallStackItem {
     contract: Contract,
     kind: CallKind,
     gas_limit: u64,
-    /// Child refunds merge into the parent only on success.
-    enclosing_refund: i64,
 }
 
 /// Error variants that can occur during JavaScript inspection.
@@ -1044,10 +1057,16 @@ struct FaultStep {
 }
 
 // Geth reports validation failures through step; execution failures also invoke fault.
-const fn should_fault(stop: InstrStop, opcode: u8) -> bool {
+const fn should_fault(stop: InstrStop, opcode: u8, stack_len: usize) -> bool {
     match stop {
-        InstrStop::StackUnderflow
-        | InstrStop::StackOverflow
+        // Geth checks only the jump table minimum up front; a deeper item named by the
+        // immediate underflows while the opcode runs.
+        InstrStop::StackUnderflow => match opcode {
+            op::DUPN => stack_len >= 1,
+            op::SWAPN | op::EXCHANGE => stack_len >= 2,
+            _ => false,
+        },
+        InstrStop::StackOverflow
         | InstrStop::CreateInitCodeSizeLimit
         | InstrStop::CallNotAllowedInsideStatic => false,
         // LOG and TSTORE check write protection during execution, unlike these opcodes.
@@ -1122,7 +1141,7 @@ fn with_message_suffix(err: JsError, suffix: &str, ctx: &mut Context) -> JsError
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{interrupt_tests::transaction, *};
     use alloc::{string::ToString, vec, vec::Vec};
     use alloy_consensus::{TxEip1559, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
@@ -1131,7 +1150,7 @@ mod tests {
         BaseEvmTypes, Evm, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         ethereum::{TxEnvelope, ethereum_tx_registry, intrinsic_and_floor_gas},
-        evm::{AccountInfo, CacheDB, EmptyDB},
+        evm::{AccountInfo, InMemoryDB},
         interpreter::{Host, op},
     };
     use serde_json::json;
@@ -1260,7 +1279,9 @@ mod tests {
             result: function() { return this.before; }
         }"#;
         let mut insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
-        insp.precompiles.set([Address::with_last_byte(1)]);
+        let mut precompiles = PrewarmSet::new();
+        precompiles.warm(&Address::with_last_byte(1));
+        insp.precompiles.set(precompiles);
         insp.fuse().unwrap();
         assert_eq!(try_run_tx(insp, None, true, U256::ZERO, legacy_tx(0)).unwrap(), json!(false));
     }
@@ -1295,7 +1316,7 @@ mod tests {
         tx: TxEnvelope,
     ) -> Result<serde_json::Value, JsInspectorError> {
         let addr = Address::repeat_byte(0x01);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
 
         // Insert the caller
         db.insert_account_info(
@@ -1308,7 +1329,7 @@ mod tests {
             AccountInfo {
                 code: Some(Bytecode::new_legacy(
                     /* PUSH1 1, PUSH1 1, STOP */
-                    contract.unwrap_or_else(|| hex!("6001600100").into()),
+                    contract.unwrap_or(bytes!("6001600100")),
                 )),
                 ..Default::default()
             },
@@ -1326,7 +1347,7 @@ mod tests {
         let tx = Recovered::new_unchecked(tx, Address::ZERO);
         let res = evm.transact(&tx).expect("pass without error").detach();
 
-        assert_eq!(res.result.status, success);
+        assert_eq!(res.result.is_success(), success);
         let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
         let block = *evm.block_env();
         inspector.json_result(&res, &tx, &block, evm.database_mut())
@@ -1816,7 +1837,7 @@ mod tests {
             result: function() { return this.count; }
         }"#;
         let addr = Address::repeat_byte(0x01);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &Address::ZERO,
             AccountInfo { balance: U256::from(1e18), ..Default::default() },
@@ -1824,7 +1845,7 @@ mod tests {
         db.insert_account_info(
             &addr,
             AccountInfo {
-                code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
+                code: Some(Bytecode::new_legacy(bytes!("6001600100"))),
                 ..Default::default()
             },
         );
@@ -1837,18 +1858,11 @@ mod tests {
             db,
             Precompiles::base(SpecId::CANCUN),
         );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_limit: 1_000_000,
-                to: TxKind::Call(addr),
-                ..Default::default()
-            }),
-            Address::ZERO,
-        );
+        let tx = transaction(TxKind::Call(addr));
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
-            assert!(res.result.status);
+            assert!(res.result.is_success());
             inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
             let block = *evm.block_env();
             assert_eq!(
@@ -1894,7 +1908,7 @@ mod tests {
             bytecode.extend_from_slice(&hex!("61fffff150")); // PUSH2 gas, CALL, POP
         }
         bytecode.push(0x00);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             &addr,
             AccountInfo { code: Some(Bytecode::new_legacy(bytecode.into())), ..Default::default() },
@@ -1902,7 +1916,7 @@ mod tests {
         db.insert_account_info(
             &child,
             AccountInfo {
-                code: Some(Bytecode::new_legacy(hex!("600100").into())),
+                code: Some(Bytecode::new_legacy(bytes!("600100"))),
                 ..Default::default()
             },
         );
@@ -1914,18 +1928,11 @@ mod tests {
             db,
             Precompiles::base(SpecId::CANCUN),
         );
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_limit: 1_000_000,
-                to: TxKind::Call(addr),
-                ..Default::default()
-            }),
-            Address::ZERO,
-        );
+        let tx = transaction(TxKind::Call(addr));
         for _ in 0..3 {
             evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
-            assert!(res.result.status);
+            assert!(res.result.is_success());
             inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
             let block = *evm.block_env();
             assert_eq!(
@@ -2015,7 +2022,7 @@ mod tests {
         ] {
             let caller = Address::repeat_byte(0xaa);
             let nonce = 7;
-            let mut db = CacheDB::new(EmptyDB::default());
+            let mut db = InMemoryDB::default();
             db.insert_account_info(&caller, AccountInfo { nonce, ..AccountInfo::default() });
             let script = r#"{
                 fault: function() {},
@@ -2074,7 +2081,7 @@ mod tests {
             this.r=[a[0],a[32],capped.length,log.memory.slice(2**40,2**40).length,error];
         },fault:function(){},result:function(){return this.r}}"#;
         assert_eq!(
-            run_trace(tracer, Some(hex!("60ff60005300").into()), true),
+            run_trace(tracer, Some(bytes!("60ff60005300")), true),
             json!([255, 0, 1024 * 1024, 0, "TypeError"])
         );
     }

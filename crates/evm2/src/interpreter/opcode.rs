@@ -200,7 +200,7 @@ impl fmt::Display for OpCode {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let n = self.get();
-        if let Some(val) = OPCODE_INFO[n as usize] {
+        if let Some(val) = OPCODE_INFO[self.as_usize()] {
             f.write_str(val.name())
         } else {
             write!(f, "UNKNOWN(0x{n:02X})")
@@ -650,6 +650,6 @@ mod tests {
         assert_eq!(OpCode::SWAP16.input_output(), (17, 17));
         assert!(OpCode::RETURN.info().is_terminating());
         assert!(!OpCode::ADD.info().is_terminating());
-        assert_eq!(OpCode::new_or_unknown(0x0C).info().name(), "UNKNOWN");
+        assert_eq!(OpCode::new_or_unknown(0x0C).as_str(), "UNKNOWN");
     }
 }

@@ -57,7 +57,7 @@ pub use state::{
     insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
 };
 pub use tx::{
-    AccessListItem, TestAuthorization, TxBuildError, TxFields, build_typed_tx, recover_address,
+    AccessListItem, TestAuthorization, TxBuildError, TxFields, consensus_tx, recover_address,
     recovered_envelope, signed_authorizations,
 };
 pub use types::{

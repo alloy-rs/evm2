@@ -28,7 +28,7 @@ use boa_engine::{
 use boa_gc::{Finalize, Trace, empty_trace};
 use core::{
     cell::{OnceCell, Ref, RefCell, RefMut},
-    marker::PhantomData,
+    mem::DropGuard,
     ops::Range,
 };
 use evm2::{
@@ -36,6 +36,7 @@ use evm2::{
     evm::{AccountInfo, DbResult, DynDatabase, PendingState, State},
     interpreter::{
         Word,
+        instructions::{decode_pair, decode_single},
         opcode::{
             OpCode, op as opcode,
             op::{PUSH0, PUSH32},
@@ -111,7 +112,7 @@ fn state_fn<T: 'static>(
     .build()
 }
 
-fn type_error(message: String) -> JsError {
+pub(crate) fn type_error(message: String) -> JsError {
     JsError::from_native(JsNativeError::typ().with_message(message))
 }
 
@@ -224,7 +225,18 @@ impl ReusableStepLog {
             }
         }
 
-        let _scope = StepScope { state: &self.state, snapshot };
+        // Revokes the JS log object's access to the interpreter's stack and memory.
+        let _scope = DropGuard::new((&self.state, snapshot), |(state, snapshot)| {
+            let mut state = state.borrow_mut();
+            state.stack.post = None;
+            state.memory.post = None;
+            // Keep the last scalar fields available through retained log objects, while
+            // returning the reusable stack/memory buffers to their call depth.
+            snapshot.pc = state.pc;
+            snapshot.op = state.op;
+            snapshot.gas_remaining = state.gas_remaining;
+            core::mem::swap(&mut state.snapshot, snapshot);
+        });
         f()
     }
 
@@ -240,6 +252,8 @@ pub(crate) struct PreStep<'a> {
     pub(crate) pc: u64,
     /// Opcode to be executed
     pub(crate) op: u8,
+    /// Byte after the opcode, or 0 if the bytecode ends there
+    pub(crate) immediate: u8,
     /// Remaining gas before step execution
     pub(crate) gas_remaining: u64,
     /// Stack before step execution
@@ -253,7 +267,7 @@ pub(crate) struct PreStep<'a> {
 pub(crate) struct StepInfo<'a> {
     /// Gas cost of step execution
     pub(crate) cost: u64,
-    /// Execution refund, excluding EIP-7702 authorization refunds.
+    /// Transaction-wide refund counter, including the pre-Amsterdam EIP-7702 authorization refund.
     pub(crate) refund: u64,
     /// Call depth
     pub(crate) depth: u64,
@@ -286,28 +300,6 @@ impl Default for StepInfo<'_> {
             input: &NO_INPUT,
             call_id: 0,
         }
-    }
-}
-
-/// Revokes the JS log object's access to the interpreter's stack and memory when dropped.
-#[derive(Debug)]
-#[must_use]
-struct StepScope<'a> {
-    state: &'a Shared<StepLogState>,
-    snapshot: &'a mut StepSnapshot,
-}
-
-impl Drop for StepScope<'_> {
-    fn drop(&mut self) {
-        let mut state = self.state.borrow_mut();
-        state.stack.post = None;
-        state.memory.post = None;
-        // Keep the last scalar fields available through retained log objects, while returning
-        // the reusable stack/memory buffers to their call depth.
-        self.snapshot.pc = state.pc;
-        self.snapshot.op = state.op;
-        self.snapshot.gas_remaining = state.gas_remaining;
-        core::mem::swap(&mut state.snapshot, self.snapshot);
     }
 }
 
@@ -493,7 +485,7 @@ impl ReusableEvmDb {
     /// Access is revoked on return or unwind; callers cannot retain or forget the guard.
     fn with_scope<'a, R>(&'a self, reader: &'a mut dyn EvmDbReader, f: impl FnOnce() -> R) -> R {
         assert!(self.state.borrow().reader.is_none(), "database scope is already active");
-        // SAFETY: The reader is borrowed throughout f, and DbScope clears the reference on
+        // SAFETY: The reader is borrowed throughout f, and the guard clears the reference on
         // return or unwind before the reader or any of its borrowed inputs can be dropped.
         let reader = unsafe {
             core::mem::transmute::<
@@ -502,27 +494,13 @@ impl ReusableEvmDb {
             >(reader)
         };
         self.state.borrow_mut().reader = Some(reader);
-        let _scope = DbScope { state: &self.state, _borrow: PhantomData };
+        // Revokes the JS database object's access to the state and database.
+        let _scope = DropGuard::new(&self.state, |state| state.borrow_mut().reader = None);
         f()
     }
 
     pub(crate) fn value(&self) -> JsValue {
         self.object.clone().into()
-    }
-}
-
-/// Revokes the JS database object's access to the state and database when dropped.
-#[derive(Debug)]
-#[must_use]
-struct DbScope<'a> {
-    state: &'a Shared<EvmDbState>,
-    _borrow: PhantomData<&'a mut dyn EvmDbReader>,
-}
-
-impl Drop for DbScope<'_> {
-    fn drop(&mut self) {
-        let mut state = self.state.borrow_mut();
-        state.reader = None;
     }
 }
 
@@ -647,12 +625,12 @@ pub(crate) struct StepSnapshot {
 impl StepSnapshot {
     /// Records everything about a step that must be captured before the opcode executes.
     pub(crate) fn record(&mut self, step: PreStep<'_>) {
-        let PreStep { pc, op, gas_remaining, stack, memory } = step;
+        let PreStep { pc, op, immediate, gas_remaining, stack, memory } = step;
         let state = self;
         state.pc = pc;
         state.op = op;
         state.gas_remaining = gas_remaining;
-        state.stack.record(op, stack);
+        state.stack.record(op, immediate, stack);
         state.memory.record(op, stack, memory);
     }
 }
@@ -729,6 +707,9 @@ impl OpcodeNames {
 /// An opcode only touches its top `inputs` items, so the pre-execution stack is the post-execution
 /// stack below those items followed by the saved inputs. This holds for halted opcodes too, which
 /// pop at most `inputs` items.
+///
+/// SWAPN and EXCHANGE declare no inputs but swap items at depths decoded from their immediate, so
+/// they save every item down to the deepest one they touch.
 #[derive(Debug, Default)]
 struct StackView {
     /// Pre-execution length.
@@ -740,9 +721,17 @@ struct StackView {
 }
 
 impl StackView {
-    fn record(&mut self, op: u8, stack: &[U256]) {
+    fn record(&mut self, op: u8, immediate: u8, stack: &[U256]) {
         self.len = stack.len();
-        let inputs = OpCode::new(op).map_or(0, |op| op.inputs() as usize).min(stack.len());
+        let inputs = match op {
+            // An invalid immediate halts the opcode before it touches the stack.
+            opcode::SWAPN => decode_single(immediate).map_or(0, |n| usize::from(n) + 1),
+            opcode::EXCHANGE => {
+                decode_pair(immediate).map_or(0, |(n, m)| usize::from(n.max(m)) + 1)
+            }
+            _ => OpCode::new(op).map_or(0, |op| op.inputs() as usize),
+        }
+        .min(stack.len());
         self.saved.clear();
         self.saved.extend_from_slice(&stack[stack.len() - inputs..]);
     }
@@ -842,7 +831,7 @@ fn memory_write_range(op: u8, stack: &[U256]) -> Option<(usize, usize)> {
     let peek = |n: usize| stack.len().checked_sub(n + 1).map(|i| stack[i]);
     let (offset, size) = match op {
         opcode::MSTORE => (peek(0)?, U256::from(32)),
-        opcode::MSTORE8 => (peek(0)?, U256::from(1)),
+        opcode::MSTORE8 => (peek(0)?, U256::ONE),
         opcode::MCOPY | opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY => {
             (peek(0)?, peek(2)?)
         }
@@ -1118,7 +1107,8 @@ mod tests {
     use alloc::vec;
     use boa_engine::{Source, object::builtins::JsUint8Array};
     use core::convert::Infallible;
-    use evm2::evm::{CacheDB, Database, Db, EmptyDB};
+    use evm2::evm::{Database, Db, InMemoryDB};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     /// Records and enters a step with the given pre- and post-execution stack.
     fn with_step<'a, R>(
@@ -1130,7 +1120,14 @@ mod tests {
         f: impl FnOnce() -> R,
     ) -> R {
         let mut snapshot = StepSnapshot::default();
-        snapshot.record(PreStep { pc: 0, op, gas_remaining: 0, stack, memory: &memory.borrow() });
+        snapshot.record(PreStep {
+            pc: 0,
+            op,
+            immediate: 0,
+            gas_remaining: 0,
+            stack,
+            memory: &memory.borrow(),
+        });
         log.with_scope(
             &mut snapshot,
             stack,
@@ -1237,7 +1234,7 @@ mod tests {
 
         let f = result.as_callable().unwrap();
 
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         let state = PendingState::default();
         let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
         {
@@ -1290,7 +1287,7 @@ mod tests {
         let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
         let setup_fn = obj.get(js_string!("setup"), &mut context).unwrap().as_object().unwrap();
 
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         let state = PendingState::default();
         {
             let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
@@ -1525,8 +1522,6 @@ mod tests {
 
     #[test]
     fn test_scopes_revoke_access_on_return_error_and_unwind() {
-        use std::panic::{AssertUnwindSafe, catch_unwind};
-
         let mut ctx = Context::default();
         register_builtins(&mut ctx).unwrap();
         let log = ReusableStepLog::new(&mut ctx, OpcodeNames::new()).unwrap();
@@ -1539,7 +1534,7 @@ mod tests {
             let memory = RefCell::new(vec![7u8; 32]);
             let contract = Contract::default();
             let state = PendingState::default();
-            let mut database = CacheDB::new(EmptyDB::default());
+            let mut database = InMemoryDB::default();
             let result = catch_unwind(AssertUnwindSafe(|| {
                 db.with_changes_scope(&state, &mut database, || {
                     with_step(&log, opcode::STOP, &stack, &memory, &contract, || {
@@ -1581,18 +1576,18 @@ mod tests {
     #[test]
     fn test_stack_view_reconstructs_pre_execution_stack() {
         // SWAP1 touches the top two items, DUP1 one item, ADD two items
-        let pre = [U256::from(1), U256::from(2), U256::from(3)];
+        let pre = [U256::ONE, U256::from(2), U256::from(3)];
         for (op, post) in [
-            (opcode::SWAP1, vec![U256::from(1), U256::from(3), U256::from(2)]),
-            (opcode::DUP1, vec![U256::from(1), U256::from(2), U256::from(3), U256::from(3)]),
-            (opcode::ADD, vec![U256::from(1), U256::from(5)]),
-            (opcode::POP, vec![U256::from(1), U256::from(2)]),
+            (opcode::SWAP1, vec![U256::ONE, U256::from(3), U256::from(2)]),
+            (opcode::DUP1, vec![U256::ONE, U256::from(2), U256::from(3), U256::from(3)]),
+            (opcode::ADD, vec![U256::ONE, U256::from(5)]),
+            (opcode::POP, vec![U256::ONE, U256::from(2)]),
             // halted before pushing, e.g. out of gas after popping the inputs
-            (opcode::MSTORE, vec![U256::from(1)]),
+            (opcode::MSTORE, vec![U256::ONE]),
             (opcode::STOP, pre.to_vec()),
         ] {
             let mut view = StackView::default();
-            view.record(op, &pre);
+            view.record(op, 0, &pre);
             let post: &'static [U256] = post.leak();
             view.post = Some(post);
             assert_eq!(view.len(), 3);
@@ -1619,7 +1614,7 @@ mod tests {
         view.post = Some(post.leak());
 
         assert_eq!(view.len(), 64);
-        assert_eq!(view.bytes(0..64).unwrap().as_slice(), pre.as_slice());
+        assert_eq!(view.bytes(0..64).unwrap().as_slice(), pre);
         assert_eq!(view.bytes(10..20).unwrap().as_slice(), &pre[10..20]);
 
         // writes beyond the pre-execution length only expand memory
@@ -1637,7 +1632,7 @@ mod tests {
         let mut view = MemoryView::default();
         view.record(
             opcode::EXTCODECOPY,
-            &[U256::from(2), U256::ZERO, U256::from(4), U256::from(1)],
+            &[U256::from(2), U256::ZERO, U256::from(4), U256::ONE],
             &pre,
         );
         assert_eq!(view.patch_offset, 4);

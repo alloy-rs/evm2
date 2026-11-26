@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, U256};
 use alloy_rpc_types_trace::otterscan::{InternalOperation, OperationType};
 use evm2::{
-    EvmTypesHost, Inspector,
+    EvmTypesHost, Inspector, InspectorConfig,
     interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 
@@ -32,8 +32,8 @@ impl InternalOperationsInspector {
         self.operations
     }
 
-    fn on_operation<T: EvmTypesHost>(&mut self, message: &Message<T>, initial_call_depth: u16) {
-        if message.depth == initial_call_depth {
+    fn on_operation<T: EvmTypesHost>(&mut self, message: &Message<T>) {
+        if message.depth == 0 {
             return;
         }
         let r#type = match message.kind {
@@ -52,21 +52,25 @@ impl InternalOperationsInspector {
 }
 
 impl<T: EvmTypesHost> Inspector<T> for InternalOperationsInspector {
+    fn inspector_config(&self) -> InspectorConfig {
+        InspectorConfig::without_steps()
+    }
+
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_operation::<T>(message, interp.version().initial_call_depth);
+        self.on_operation::<T>(message);
         None
     }
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_operation::<T>(message, interp.version().initial_call_depth);
+        self.on_operation::<T>(message);
         None
     }
 

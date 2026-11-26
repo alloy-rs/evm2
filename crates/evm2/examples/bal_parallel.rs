@@ -73,7 +73,7 @@ fn main() {
         for (i, handle) in handles.into_iter().enumerate() {
             let TxResultWithState { result, pending_state: pending, .. } =
                 handle.join().expect("worker thread panicked");
-            assert!(result.status);
+            assert!(result.is_success());
 
             // The pending state still carries the change-set that persistence
             // consumers (e.g. reth) stream to the database through a
@@ -109,7 +109,7 @@ fn build_bal(transactions: &[RecoveredTxEnvelope]) -> Bal {
     for tx in transactions {
         evm.state_mut().bump_bal_index();
         let result = evm.transact(tx).expect("transaction should execute").commit();
-        assert!(result.status);
+        assert!(result.is_success());
     }
     evm.state_mut().take_bal_builder().expect("builder was enabled")
 }

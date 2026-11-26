@@ -1,5 +1,8 @@
 use crate::fuzzer::case::EvmCase;
-use alloy_primitives::{Address, B256, U256, keccak256, map::HashMap};
+use alloy_primitives::{
+    Address, B256, U256, keccak256,
+    map::{AddressMap, HashMap},
+};
 use core::convert::Infallible;
 use evm2::evm::{AccountChangeRef, StateChangeSink, StorageChange, registry::HandlerError};
 use revm::{
@@ -32,7 +35,7 @@ impl Outcome {
             kind: last.kind,
             gas_used: last.gas_used,
             output: last.output.clone(),
-            logs: receipts.iter().flat_map(|receipt| receipt.logs.clone()).collect(),
+            logs: receipts.iter().flat_map(|receipt| receipt.logs.iter()).cloned().collect(),
             state: last.state.clone(),
             error: last.error.clone(),
             receipts,
@@ -95,7 +98,7 @@ impl fmt::Display for FuzzOutcomeKind {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CanonicalState {
-    pub(crate) accounts: HashMap<Address, Option<CanonicalAccount>>,
+    pub(crate) accounts: AddressMap<Option<CanonicalAccount>>,
     pub(crate) storage: HashMap<(Address, U256), U256>,
 }
 
@@ -244,7 +247,7 @@ impl StateChangeSink for CanonicalState {
 
 pub(crate) fn state_from_revm(
     state: &revm::state::EvmState,
-    original_accounts: &HashMap<Address, CanonicalAccount>,
+    original_accounts: &AddressMap<CanonicalAccount>,
 ) -> CanonicalState {
     let mut canonical = CanonicalState::default();
     for (&address, account) in state {
@@ -295,10 +298,7 @@ pub(crate) fn state_from_revm(
     canonical
 }
 
-pub(crate) fn canonical_accounts(
-    case: &EvmCase,
-    accounts: &mut HashMap<Address, CanonicalAccount>,
-) {
+pub(crate) fn canonical_accounts(case: &EvmCase, accounts: &mut AddressMap<CanonicalAccount>) {
     accounts.clear();
     accounts.extend(case.accounts.iter().map(|account| {
         (
@@ -313,7 +313,7 @@ pub(crate) fn canonical_accounts(
 }
 
 pub(crate) fn apply_account_changes(
-    accounts: &mut HashMap<Address, CanonicalAccount>,
+    accounts: &mut AddressMap<CanonicalAccount>,
     state: &CanonicalState,
 ) {
     for (&address, account) in &state.accounts {

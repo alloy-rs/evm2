@@ -21,7 +21,7 @@ fn step_costs(code: &[u8], balance: u64, gas_limit: u64) -> (Vec<u64>, Vec<Optio
     let inspector = inspect(TracingInspectorConfig::all());
     let steps = &inspector.traces().nodes()[0].trace.steps;
     let costs = steps.iter().map(|step| step.gas_cost).collect::<Vec<_>>();
-    let state_costs = steps.iter().map(|step| step.state_gas_cost).collect();
+    let state_costs = steps.iter().map(|step| step.state_gas_cost()).collect();
     for config in [
         TracingInspectorConfig::parity_vm_trace(),
         TracingInspectorConfig::parity_vm_trace().set_step_deltas(false),

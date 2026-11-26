@@ -3,6 +3,7 @@ use colorchoice::ColorChoice;
 use evm2_inspectors::tracing::{TraceWriter, TraceWriterConfig, TracingInspector};
 
 pub use crate::compat::*;
+pub(crate) use evm2::utils::u64_to_address as a;
 
 pub fn write_traces(tracer: &TracingInspector) -> String {
     write_traces_with(tracer, TraceWriterConfig::new().color_choice(ColorChoice::Never))

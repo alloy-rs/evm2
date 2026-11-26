@@ -10,9 +10,7 @@ pub(crate) struct PrecompileTarget {
 
 impl PrecompileTarget {
     pub(crate) fn address(self) -> Address {
-        let mut bytes = [0; 20];
-        bytes[18..].copy_from_slice(&self.number.to_be_bytes());
-        Address::new(bytes)
+        Address::left_padding_from(&self.number.to_be_bytes())
     }
 
     pub(crate) const fn feature(self) -> FuzzFeatures {
@@ -86,12 +84,11 @@ pub(crate) fn target_for_address(address: Address) -> Option<PrecompileTarget> {
 
 pub(crate) fn random_target(rng: &mut Gen, spec: SpecId) -> PrecompileTarget {
     let include_future = rng.one_in(20);
-    let mut candidates = Vec::new();
-    for target in PRECOMPILES {
-        if target.is_enabled(spec) || include_future {
-            candidates.push(*target);
-        }
-    }
+    let candidates = PRECOMPILES
+        .iter()
+        .filter(|target| target.is_enabled(spec) || include_future)
+        .copied()
+        .collect::<Vec<_>>();
     rng.pick(&candidates)
 }
 

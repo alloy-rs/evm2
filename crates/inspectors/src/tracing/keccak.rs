@@ -10,10 +10,13 @@
 //! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
 
 use crate::tracing::{TraceLimits, limits::TraceBudget};
-use alloc::{borrow::Cow, vec};
-use alloy_primitives::{B256, Bytes, hex, keccak256, map::HashMap};
+use alloc::{borrow::Cow, vec::Vec};
+use alloy_primitives::{
+    Bytes, hex, keccak256,
+    map::{B256Map, HashMap},
+};
 use evm2::{
-    EvmTypes, Inspector,
+    EvmTypes, Inspector, InspectorConfig, OpcodeSet,
     interpreter::{Interpreter, opcode::op},
 };
 use serde_json::Value;
@@ -38,7 +41,7 @@ pub struct LimitExceeded;
 #[derive(Clone, Debug)]
 pub struct Keccak256PreimageInspector {
     /// The map of hash to preimage.
-    inner: HashMap<B256, Bytes>,
+    inner: B256Map<Bytes>,
     /// The bytes of the recorded preimages.
     budget: TraceBudget,
 }
@@ -50,8 +53,8 @@ impl Default for Keccak256PreimageInspector {
 }
 
 impl Keccak256PreimageInspector {
-    /// Returns an inspector that records preimages up to the given limits, which default to
-    /// [`DEFAULT_MAX_RECORDED_BYTES`].
+    /// Returns an inspector that records preimages up to the given limits.
+    /// [`Default`] caps recorded bytes at [`DEFAULT_MAX_RECORDED_BYTES`].
     pub fn new(limits: TraceLimits) -> Self {
         Self { inner: HashMap::default(), budget: TraceBudget { limits, ..Default::default() } }
     }
@@ -87,6 +90,10 @@ impl Keccak256PreimageInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for Keccak256PreimageInspector {
+    fn inspector_config(&self) -> InspectorConfig {
+        InspectorConfig::new().with_steps([op::KECCAK256].into_iter().collect::<OpcodeSet>())
+    }
+
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if interp.opcode() != op::KECCAK256 || self.budget.exceeded() {
             return;
@@ -94,7 +101,7 @@ impl<T: EvmTypes> Inspector<T> for Keccak256PreimageInspector {
         // The stack can be too small if the operation is about to fail.
         let &[.., length, offset] = interp.stack().as_slice() else { return };
         // The operands are truncated to 64 bits.
-        let (offset, length) = (offset.as_limbs()[0], length.as_limbs()[0]);
+        let (offset, length) = (offset.wrapping_to::<u64>(), length.wrapping_to::<u64>());
         let memory = interp.memory().as_slice();
         if let Some(preimage) = memory_copy_padded(memory, offset, length) {
             let hash = keccak256(&preimage);
@@ -117,9 +124,8 @@ pub(crate) fn memory_copy_padded(memory: &[u8], offset: u64, size: u64) -> Optio
     if let Some(preimage) = memory.get(offset as usize..end as usize) {
         return Some(Cow::Borrowed(preimage));
     }
-    let mut preimage = vec![0; size as usize];
-    if let Some(overlap) = memory.get(offset as usize..) {
-        preimage[..overlap.len()].copy_from_slice(overlap);
-    }
+    let mut preimage = Vec::with_capacity(size as usize);
+    preimage.extend_from_slice(memory.get(offset as usize..).unwrap_or_default());
+    preimage.resize(size as usize, 0);
     Some(Cow::Owned(preimage))
 }

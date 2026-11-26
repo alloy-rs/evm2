@@ -1,10 +1,11 @@
 use crate::utils::{
-    AccountInfo, CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv, inspect_deploy_contract,
-    write_traces, write_traces_with,
+    AccountInfo, Context, SpecId, TransactTo, TxEnv, inspect_deploy_contract, write_traces,
+    write_traces_with,
 };
 use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex};
 use alloy_sol_types::{SolCall, sol};
 use colorchoice::ColorChoice;
+use evm2::evm::InMemoryDB;
 use evm2_inspectors::tracing::{
     TraceWriterConfig, TracingInspector, TracingInspectorConfig,
     types::{DecodedCallData, DecodedInternalCall, DecodedTraceStep},
@@ -23,7 +24,7 @@ fn test_trace_printing() {
     let base_path = &Path::new(OUT_DIR).join("test_trace_printing");
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .build_mainnet_with_inspector(TracingInspector::new(TracingInspectorConfig::all()));
 
     //let address = evm.deploy(CREATION_CODE.parse().unwrap(), &mut tracer).unwrap();
@@ -92,7 +93,7 @@ fn deploy_fail() {
     let base_path = &Path::new(OUT_DIR).join("deploy_fail");
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .build_mainnet_with_inspector(TracingInspector::new(TracingInspectorConfig::all()));
 
     inspect_deploy_contract(
@@ -195,34 +196,34 @@ fn patch_traces(patch: usize, t: &mut TracingInspector) {
             }
             5 => decoded.return_data = Some("69".to_string()),
             6 => {
-                node.trace.steps[0].decoded = Some(Box::new(DecodedTraceStep::Line(
+                *node.trace.steps[0].decoded_mut() = DecodedTraceStep::Line(
                     "[sload] 0x0000000000000000000000000000000000000000000000000000000000000045"
                         .to_string(),
-                )));
+                );
             }
             7 if node.trace.depth == 2 => {
-                node.trace.steps[30].decoded = Some(Box::new(DecodedTraceStep::InternalCall(
+                *node.trace.steps[30].decoded_mut() = DecodedTraceStep::InternalCall(
                     DecodedInternalCall {
                         func_name: "Counter::_nest3Internal".to_string(),
                         args: Some(vec!["arg1".to_string(), "arg2".to_string(), "3".to_string()]),
                         return_data: Some(vec!["ret1".to_string()]),
                     },
                     89,
-                )));
-                node.trace.steps[87].decoded =
-                    Some(Box::new(DecodedTraceStep::Line("[mstore]".to_string())));
-                node.trace.steps[90].decoded =
-                    Some(Box::new(DecodedTraceStep::Line("[before_return]".to_string())));
+                );
+                *node.trace.steps[87].decoded_mut() =
+                    DecodedTraceStep::Line("[mstore]".to_string());
+                *node.trace.steps[90].decoded_mut() =
+                    DecodedTraceStep::Line("[before_return]".to_string());
             }
             7 if node.trace.depth == 0 => {
-                node.trace.steps[10].decoded = Some(Box::new(DecodedTraceStep::InternalCall(
+                *node.trace.steps[10].decoded_mut() = DecodedTraceStep::InternalCall(
                     DecodedInternalCall {
                         func_name: "Counter::_nest1".to_string(),
                         args: Some(vec![]),
                         return_data: Some(vec!["ret1".to_string(), "ret2".to_string()]),
                     },
                     150,
-                )));
+                );
             }
             _ => continue,
         }
@@ -312,8 +313,8 @@ fn test_receive_vs_fallback_empty_calldata() {
         "00"   // Runtime code: STOP
     );
 
-    let caller = address!("0x0000000000000000000000000000000000000001");
-    let mut db = CacheDB::new(EmptyDB::default());
+    let caller = Address::with_last_byte(1);
+    let mut db = InMemoryDB::default();
     db.insert_account_info(
         &caller,
         AccountInfo { balance: U256::from(1_000_000), ..Default::default() },
@@ -334,7 +335,7 @@ fn test_receive_vs_fallback_empty_calldata() {
             TxEnv::builder()
                 .caller(caller)
                 .data(bytes!()) // Empty calldata.
-                .value(U256::from(1)) // Nonzero value.
+                .value(U256::ONE) // Nonzero value.
                 .kind(TransactTo::Call(address))
                 .gas_priority_fee(None)
                 .nonce(1)
@@ -366,7 +367,7 @@ fn test_fallback_short_calldata() {
     );
 
     let mut evm = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .build_mainnet_with_inspector(TracingInspector::new(TracingInspectorConfig::all()));
 
     let address = inspect_deploy_contract(&mut evm, initcode, Address::default(), SpecId::CANCUN)

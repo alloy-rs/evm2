@@ -37,7 +37,11 @@ fn main() {
     let executed = evm
         .system_call(SystemTx::new(PRE_SYSTEM_CONTRACT, word(0xbeef)))
         .expect("pre-block system call should execute");
-    assert!(executed.result().status, "pre-block system call failed: {:?}", executed.result());
+    assert!(
+        executed.result().is_success(),
+        "pre-block system call failed: {:?}",
+        executed.result()
+    );
     let _ = executed.commit();
 
     // Transaction 0 is recorded at index 1: a plain value transfer to ALICE.
@@ -45,7 +49,7 @@ fn main() {
     assert_eq!(evm.state_mut().bal_index(), idx(1));
     let tx0 = transfer(CALLER, ALICE, 1_000_000, 0);
     let result = evm.transact(&tx0).expect("transaction 0 should execute").commit();
-    assert!(result.status, "transaction 0 failed: {result:?}");
+    assert!(result.is_success(), "transaction 0 failed: {result:?}");
 
     // Transaction 1 is recorded at index 2: a call that stores 42 at slot 5.
     evm.state_mut().bump_bal_index();
@@ -61,7 +65,7 @@ fn main() {
         CALLER,
     );
     let result = evm.transact(&tx1).expect("transaction 1 should execute").commit();
-    assert!(result.status);
+    assert!(result.is_success());
 
     // The post-block transition is recorded at the final index 3. A system call
     // commits through the same path as a transaction; block rewards and withdrawals,
@@ -72,7 +76,7 @@ fn main() {
     let executed = evm
         .system_call(SystemTx::new(POST_SYSTEM_CONTRACT, word(0x22)))
         .expect("post-block system call should execute");
-    assert!(executed.result().status);
+    assert!(executed.result().is_success());
     let _ = executed.commit();
 
     // Take the built BAL. Writes carry the block access index they happened at.
