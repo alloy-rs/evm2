@@ -318,7 +318,7 @@ impl RawStructLogInspector {
                 step.gas,
                 0,
                 step.depth,
-                step.state_gas_reservoir,
+                step.reported_reservoir(),
                 step.refund,
             );
             len += stack.map_or(0, struct_log_stack_len);
@@ -730,6 +730,13 @@ impl RecordingStep {
         let cost = state_gas_spent.saturating_sub(self.state_gas_spent);
         if self.state_gas_reservoir.is_some() && cost != 0 { Some(cost) } else { None }
     }
+
+    /// Returns the state gas reservoir the struct log reports, which omits an empty one like a
+    /// typed struct log.
+    fn reported_reservoir(&self) -> Option<u64> {
+        self.state_gas_reservoir.filter(|reservoir| *reservoir != 0)
+    }
+
     fn write_cost_and_depth(
         &self,
         head: &mut ArrayBuf<HEAD_CAPACITY>,
@@ -741,7 +748,7 @@ impl RecordingStep {
             head.bytes(STATE_GAS_COST_KEY);
             head.i64(cost);
         }
-        if let Some(reservoir) = self.state_gas_reservoir {
+        if let Some(reservoir) = self.reported_reservoir() {
             head.bytes(b",\"stateGasReservoir\":");
             head.u64(reservoir);
         }

@@ -750,7 +750,8 @@ impl CallTraceStep {
             gas: self.gas_remaining,
             gas_cost: if halted { 0 } else { self.gas_cost },
             state_gas_cost: self.state_gas_cost().filter(|_| !halted),
-            state_gas_reservoir: self.state_gas_reservoir,
+            // Like geth and ethereum/execution-apis#852, an empty reservoir is omitted.
+            state_gas_reservoir: self.state_gas_reservoir.filter(|reservoir| *reservoir != 0),
             op: if self.op.is_valid() {
                 self.op.as_str().into()
             } else {

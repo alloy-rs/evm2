@@ -291,7 +291,7 @@ fn raw_struct_logs_match_typed_struct_logs_with_state_gas() {
     }
 
     let logs = trace["structLogs"].as_array().unwrap();
-    assert!(logs.iter().all(|log| log.get("stateGasReservoir").is_some()));
+    assert!(logs.iter().all(|log| log.get("stateGasReservoir") != Some(&json!(0))));
     // A call reports none of the state its callee creates, which the callee's SSTORE reports.
     let calls = logs_of(&trace, "CALL");
     assert_eq!(calls.len(), 5);
@@ -328,6 +328,23 @@ fn raw_struct_logs_report_state_gas_charged_before_a_failed_message() {
         // The message fails and the step's charge is refilled, but the step reports the charge.
         assert_eq!(state_gas_cost(logs_of(&trace, op)[0]), Some(ACCOUNT_STATE_GAS), "{op}");
     }
+}
+#[test]
+fn raw_struct_logs_omit_an_empty_state_gas_reservoir() {
+    // Two new slots: the reservoir pays for the first, and the second drains it.
+    let code = hex!("6001600055600160015500").to_vec();
+    // The gas above the 2^24 transaction gas cap fills the reservoir.
+    let tx = TxEnv { gas_limit: 16_777_216 + 100_000, ..call_contract() };
+    let trace = assert_modes_match(&db_with(code), SpecId::AMSTERDAM, &tx, true);
+    let reservoirs: Vec<_> = trace["structLogs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|log| log.get("stateGasReservoir").and_then(Value::as_u64))
+        .collect();
+    let left = Some(100_000 - 64 * 1_530);
+    let full = Some(100_000);
+    assert_eq!(reservoirs, [full, full, full, left, left, left, None]);
 }
 
 #[test]
