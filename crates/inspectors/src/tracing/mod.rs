@@ -564,7 +564,7 @@ impl TracingInspector {
             step_idx,
             gas_before: interp.gas().remaining_excluding_state_spill(),
             state_gas_spent: interp.gas().state_gas_spent(),
-            gas_after_charge: None,
+            after_charge: None,
         });
 
         if self.config.record_step_deltas {
@@ -617,7 +617,7 @@ impl TracingInspector {
             + (stack_words + push_words) * size_of::<U256>()
     }
 
-    /// Records the gas a call or create step has charged, when its message starts.
+    /// Records the gas and state gas a call or create step has charged, when its message starts.
     ///
     /// Invoked on [Inspector::call] and [Inspector::create], where the parent has charged the step,
     /// including the gas forwarded to the child, and the child has not returned any gas yet. A
@@ -625,11 +625,14 @@ impl TracingInspector {
     /// give back.
     fn finish_step_charge<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>, forwarded: u64) {
         // The step's own message is the first one it starts; a precompile may start more.
-        if let Some(PendingStep::Recorded { gas_after_charge, .. }) = self.step_stack.last_mut()
-            && gas_after_charge.is_none()
+        if let Some(PendingStep::Recorded { after_charge, .. }) = self.step_stack.last_mut()
+            && after_charge.is_none()
         {
-            *gas_after_charge =
-                Some(interp.gas().remaining_excluding_state_spill().saturating_add(forwarded));
+            let gas = interp.gas();
+            *after_charge = Some(ChargedGas {
+                gas: gas.remaining_excluding_state_spill().saturating_add(forwarded),
+                state_gas_spent: gas.state_gas_spent(),
+            });
         }
     }
 
@@ -643,7 +646,7 @@ impl TracingInspector {
             step_idx,
             gas_before,
             state_gas_spent,
-            gas_after_charge,
+            after_charge,
         }) = self.step_stack.pop()
         else {
             return;
@@ -680,9 +683,9 @@ impl TracingInspector {
         // forwarded by a call and excludes it for a create. Any other step is charged when it
         // ends. State gas that spills into the remaining gas is not part of the cost.
         let result = interp.result();
-        step.gas_cost = match gas_after_charge {
+        step.gas_cost = match after_charge {
             Some(after) if result != Err(InstrStop::ReentrancySentryOOG) => {
-                gas_before.saturating_sub(after)
+                gas_before.saturating_sub(after.gas)
             }
             _ => step_cost(
                 result,
@@ -690,7 +693,12 @@ impl TracingInspector {
                 gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill()),
             ),
         };
-        let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(state_gas_spent);
+        // The state gas cost of a call or create step leaves out the state gas of its child and
+        // the refill of its own charge when the child fails, like geth and
+        // ethereum/execution-apis#852.
+        let state_gas_after = after_charge
+            .map_or_else(|| interp.gas().state_gas_spent(), |after| after.state_gas_spent);
+        let state_gas_delta = state_gas_after.saturating_sub(state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
             step.extra.get_or_insert_default().state_gas_cost = Some(state_gas_delta);
         }
@@ -1041,10 +1049,20 @@ enum PendingStep {
         gas_before: u64,
         /// The state gas spent when the step started.
         state_gas_spent: i64,
-        /// The same measure once a call or create step charged everything it charges before its
+        /// The same measures once a call or create step charged everything it charges before its
         /// message starts.
-        gas_after_charge: Option<u64>,
+        after_charge: Option<ChargedGas>,
     },
+}
+
+/// The gas measures of a [`PendingStep`] once a call or create step charged everything it
+/// charges before its message starts.
+#[derive(Clone, Copy, Debug)]
+struct ChargedGas {
+    /// The remaining gas plus spilled state gas, with the gas forwarded to a call given back.
+    gas: u64,
+    /// The state gas spent.
+    state_gas_spent: i64,
 }
 
 #[cfg(test)]
