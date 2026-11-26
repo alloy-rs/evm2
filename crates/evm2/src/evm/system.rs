@@ -6,7 +6,7 @@
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
 //! and produces no state changes.
 
-use super::{Evm, ExecutedTx, ScopedInspector, TxResult, TxResultExt};
+use super::{Evm, ExecutedTx, TxResult, TxResultExt};
 #[cfg(feature = "async")]
 use super::{SendEvmRef, r#async};
 #[cfg(feature = "async")]
