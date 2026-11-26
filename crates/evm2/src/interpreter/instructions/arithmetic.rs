@@ -19,7 +19,7 @@ pub fn sub([a, b]: [Word]) -> out {
 
 #[instruction]
 pub fn div([a, b]: [Word]) -> out {
-    out.write(if b.is_zero() { Word::ZERO } else { a.wrapping_div(*b) });
+    out.write(a.checked_div(*b).unwrap_or_default());
 }
 
 #[instruction]
@@ -29,7 +29,7 @@ pub fn sdiv([a, b]: [Word]) -> out {
 
 #[instruction]
 pub fn rem([a, b]: [Word]) -> out {
-    out.write(if b.is_zero() { Word::ZERO } else { a.wrapping_rem(*b) });
+    out.write(a.checked_rem(*b).unwrap_or_default());
 }
 
 #[instruction]

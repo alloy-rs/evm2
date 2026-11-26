@@ -162,21 +162,9 @@ thread_local! {
     static OBJ_CAPTURE: Cell<*mut Option<Vec<u8>>> = const { Cell::new(std::ptr::null_mut()) };
 }
 
-/// RAII guard that arms the thread-local object capture for the duration of a JIT commit.
-struct ScopedObjCapture {
-    prev: *mut Option<Vec<u8>>,
-}
-
-impl ScopedObjCapture {
-    fn install(slot: &mut Option<Vec<u8>>) -> Self {
-        Self { prev: OBJ_CAPTURE.replace(slot as *mut _) }
-    }
-}
-
-impl Drop for ScopedObjCapture {
-    fn drop(&mut self) {
-        OBJ_CAPTURE.set(self.prev);
-    }
+/// Arms the thread-local object capture until the returned guard is dropped.
+fn scoped_obj_capture(slot: &mut Option<Vec<u8>>) -> impl Drop + use<> {
+    std::mem::DropGuard::new(OBJ_CAPTURE.replace(slot as *mut _), |prev| OBJ_CAPTURE.set(prev))
 }
 
 fn obj_capture_transform(obj: &[u8]) -> Result<Option<Vec<u8>>, String> {
@@ -737,10 +725,7 @@ impl EvmLlvmBackend {
         symbols: &[(CString, usize)],
     ) -> Result<(usize, orc::ResourceTracker)> {
         let orc = self.ensure_orc()?;
-        let (addr, tracker) =
-            link_jit_object_in_dylib(orc, orc.jd(), symbol_name, object, symbols)?;
-        orc.loaded_trackers.push(tracker);
-        Ok((addr, orc.loaded_trackers.pop().unwrap()))
+        link_jit_object_in_dylib(orc, orc.jd(), symbol_name, object, symbols)
     }
 
     /// Links a relocatable object into a fresh JITDylib and returns the function address,
@@ -1013,7 +998,7 @@ impl Backend for EvmLlvmBackend {
         // add_module_with_rt just registers the module, actual compilation happens
         // in lookup_in when the symbol is first requested.
         let mut captured = None;
-        let _guard = ScopedObjCapture::install(&mut captured);
+        let _guard = scoped_obj_capture(&mut captured);
         let addr = orc.global.jit.lookup_in(orc.jd(), &name).map_err(error_msg);
         drop(_guard);
         let compiled = addr.is_ok();

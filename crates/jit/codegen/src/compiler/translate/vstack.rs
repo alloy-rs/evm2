@@ -86,6 +86,11 @@ impl<T: Copy> VStack<T> {
         self.top_offset - 1 - depth as i32
     }
 
+    /// Returns the index of the slot at the given section-relative offset, if it is tracked.
+    fn slot_index(&self, offset: i32) -> Option<usize> {
+        usize::try_from(offset - self.base_offset).ok().filter(|&idx| idx < self.slots.len())
+    }
+
     fn idx(&self, offset: i32) -> usize {
         let idx = offset - self.base_offset;
         debug_assert!(
@@ -109,11 +114,7 @@ impl<T: Copy> VStack<T> {
     /// Returns the slot state at the given section-relative offset.
     /// Returns `VSlot::Materialized` if the offset is outside the tracked range.
     pub(super) fn get_at_offset(&self, offset: i32) -> VSlot<T> {
-        let idx = offset - self.base_offset;
-        if idx < 0 || idx as usize >= self.slots.len() {
-            return VSlot::Materialized(None);
-        }
-        self.slots[idx as usize].unwrap_or(VSlot::Materialized(None))
+        self.slot_index(offset).and_then(|idx| self.slots[idx]).unwrap_or(VSlot::Materialized(None))
     }
 
     /// Sets a slot to virtual at the given operand depth.
@@ -172,15 +173,9 @@ impl<T: Copy> VStack<T> {
     /// Offsets outside the tracked range are silently skipped (they are already materialized
     /// by the previous section or not yet live).
     pub(super) fn pending_stores(&self, range: Range<i32>) -> impl Iterator<Item = (i32, T)> + '_ {
-        range.filter_map(|off| {
-            let idx = off - self.base_offset;
-            if idx < 0 || idx as usize >= self.slots.len() {
-                return None;
-            }
-            match self.slots.get(idx as usize)?.as_ref()? {
-                VSlot::Virtual(v) => Some((off, *v)),
-                VSlot::Materialized(_) => None,
-            }
+        range.filter_map(|off| match self.slots[self.slot_index(off)?].as_ref()? {
+            VSlot::Virtual(v) => Some((off, *v)),
+            VSlot::Materialized(_) => None,
         })
     }
 
@@ -213,11 +208,9 @@ impl<T: Copy> VStack<T> {
 
     fn map_range(&mut self, range: Range<i32>, f: impl Fn(VSlot<T>) -> VSlot<T>) {
         for off in range {
-            let idx = off - self.base_offset;
-            if idx < 0 || idx as usize >= self.slots.len() {
-                continue;
-            }
-            if let Some(slot) = &mut self.slots[idx as usize] {
+            if let Some(idx) = self.slot_index(off)
+                && let Some(slot) = &mut self.slots[idx]
+            {
                 *slot = f(*slot);
             }
         }

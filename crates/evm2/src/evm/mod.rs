@@ -248,12 +248,20 @@ pub struct Evm<'a, T: EvmTypesHost> {
     /// This is passed to the inspector call and create hooks as the parent frame.
     #[derive_where(skip)]
     current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
+    /// The number of frames suspended below a transaction dispatched from inside a running one.
+    #[derive_where(skip)]
+    suspended_frames: u32,
     /// The number of frames this EVM has entered, which numbers the frame it enters next.
     #[derive_where(skip)]
     frames_entered: u64,
     /// The checkpoint the currently running interpreter frame rolls back to if it fails.
     #[derive_where(skip)]
     frame_checkpoint: Option<StateCheckpoint>,
+    /// The refund the transaction accumulated outside the currently running interpreter frame:
+    /// the refund counters of the frames below it, plus refunds granted before execution.
+    ///
+    /// Only maintained while an inspector is installed; see [`Self::tx_refunded`].
+    enclosing_refund: i64,
     #[derive_where(skip)]
     running: bool,
     #[cfg(feature = "async")]
@@ -382,8 +390,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_runner: None,
             runner_supported: false,
             current_frame: None,
+            suspended_frames: 0,
             frames_entered: 0,
             frame_checkpoint: None,
+            enclosing_refund: 0,
             running: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
@@ -454,7 +464,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     const fn enter_execution(&mut self) -> ExecutionGuard<'_, 'a, T> {
         let was_running = self.running;
         self.running = true;
-        ExecutionGuard { evm: self, was_running }
+        ExecutionGuard {
+            evm: self,
+            was_running,
+            refund_on_exit: None,
+            frame_on_exit: None,
+            suspends_frame: false,
+        }
     }
 
     /// Returns the transaction handler registry.
@@ -892,6 +908,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Replaces the precompile provider.
+    ///
+    /// A `Box<dyn PrecompileProvider<T>>` with no extra bounds is stored as is, so
+    /// [`Self::precompiles_as`] sees the boxed provider's concrete type.
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.set_boxed_precompiles(boxed_precompile_provider(precompiles));
@@ -984,6 +1003,26 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.feature(EvmFeatures::LOG_COLLECTION) || self.inspector.is_some()
     }
 
+    /// Returns the transaction-wide refund counter, given the refund counter of the running
+    /// interpreter frame.
+    ///
+    /// A frame counts only its own refunds and those of its finished children, so a child frame
+    /// starts at zero and its counter can be negative. The transaction-wide counter adds the
+    /// counters of the frames below the running one and the refunds granted before execution, such
+    /// as the pre-Amsterdam EIP-7702 authorization refund. It is maintained only while an
+    /// inspector is installed, and every hook of a frame, [`Inspector::initialize_interp`]
+    /// included, reads it with that frame's counter.
+    #[inline]
+    pub const fn tx_refunded(&self, frame_refunded: i64) -> i64 {
+        self.enclosing_refund.saturating_add(frame_refunded)
+    }
+
+    /// Records a refund granted before the first frame runs, for [`Self::tx_refunded`].
+    #[inline]
+    pub(crate) const fn set_pre_execution_refund(&mut self, refund: i64) {
+        self.enclosing_refund = refund;
+    }
+
     /// Notifies the inspector and records an emitted log if [`EvmFeatures::LOG_COLLECTION`] is
     /// enabled.
     #[inline]
@@ -1018,6 +1057,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Sets the active execution inspector.
+    ///
+    /// A `Box<dyn Inspector<T>>` with no extra bounds is stored as is, so
+    /// [`Self::clear_inspector_as`] sees the boxed inspector's concrete type.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.set_boxed_inspector(boxed_inspector(inspector));
@@ -1099,7 +1141,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_initial_call_depth(&mut self, depth: u16) {
         assert!(
-            self.current_frame.is_none(),
+            self.current_frame.is_none() && self.suspended_frames == 0,
             "initial call depth cannot be modified while a frame is running"
         );
         assert!(
@@ -1180,16 +1222,23 @@ impl<'a, T: EvmTypesHost> InspectorSlot<'a, T> {
         match self {
             Self::Owned(inspector) => &mut **inspector,
             // SAFETY: A borrowed pointer is only installed by `ScopedInspector`, which holds the
-            // inspector's `&mut` borrow and removes the pointer before that borrow ends, so the
-            // pointee is live and not otherwise borrowed for as long as the slot holds it.
+            // inspector's `&mut` borrow and removes the pointer before that borrow ends, or
+            // aborts if the EVM holding it was moved away, so the pointee is live and not
+            // otherwise borrowed for as long as the slot holds it.
             Self::Borrowed(inspector) => unsafe { inspector.as_mut() },
         }
     }
 }
 
 /// Installs a borrowed inspector in an [`Evm`] and restores the previous slot on drop.
+///
+/// Handlers and hooks get `&mut Evm`, so they can move the running EVM out, such as with
+/// [`core::mem::replace`], and keep it past the call. The moved EVM still holds the borrowed
+/// pointer, which `Drop` cannot reach, so `Drop` aborts the process when the EVM it installed the
+/// inspector in no longer holds it.
 struct ScopedInspector<'scope, 'a, T: EvmTypesHost> {
     evm: &'scope mut Evm<'a, T>,
+    inspector: NonNull<dyn Inspector<T>>,
     previous: Option<InspectorSlot<'a, T>>,
     completed: bool,
 }
@@ -1202,39 +1251,76 @@ impl<'scope, 'a, T: EvmTypesHost> ScopedInspector<'scope, 'a, T> {
         // only touches the EVM from handlers and hooks, which run with `running` set, where
         // every inspector setter and `inspector_mut` panic, while `inspector` and the other
         // readers skip a borrowed slot. `Drop` removes the pointer before this call returns or
-        // unwinds, which ends the `inspector` borrow.
+        // unwinds, which ends the `inspector` borrow, and aborts if a handler or hook moved the
+        // EVM holding the pointer out of `evm`.
         let inspector = unsafe {
             core::mem::transmute::<NonNull<dyn Inspector<T> + '_>, NonNull<dyn Inspector<T>>>(
                 NonNull::from(inspector),
             )
         };
         let previous = evm.inspector.replace(InspectorSlot::Borrowed(inspector));
-        Self { evm, previous, completed: false }
+        Self { evm, inspector, previous, completed: false }
     }
 }
 
 impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
     #[inline]
     fn drop(&mut self) {
+        let installed = matches!(
+            self.evm.inspector,
+            Some(InspectorSlot::Borrowed(inspector))
+                if inspector.cast::<()>() == self.inspector.cast::<()>()
+        );
+        if !installed {
+            moved_borrowed_inspector();
+        }
         self.evm.inspector = self.previous.take();
         // A panic unwinding out of a frame skips its cleanup, which would leave this pointing at
         // a dropped interpreter.
         self.evm.current_frame = None;
+        self.evm.enclosing_refund = 0;
         if !self.completed {
             self.evm.state.clear_transaction_state();
         }
     }
 }
 
+/// Aborts the process: an EVM moved out of [`Evm::transact_with_inspector`] still points at the
+/// borrowed inspector, which is about to be released. A panic would not do, since the moved EVM
+/// can outlive a caught unwind.
+#[cold]
+#[inline(never)]
+fn moved_borrowed_inspector() -> ! {
+    const MESSAGE: &str =
+        "an EVM holding a borrowed inspector was moved out of `Evm::transact_with_inspector`";
+    // A panic while another one unwinds aborts, also without `std`.
+    let _abort = core::mem::DropGuard::new((), |()| panic!("{MESSAGE}"));
+    panic!("{MESSAGE}");
+}
+
 struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
     evm: &'guard mut Evm<'evm, T>,
     was_running: bool,
+    /// The value of the enclosing refund counter to restore when the guard ends, also by
+    /// unwinding.
+    refund_on_exit: Option<i64>,
+    /// The frame to make current again when the guard ends, also by unwinding.
+    frame_on_exit: Option<Option<NonNull<Interpreter<'static, 'static, T>>>>,
+    /// Whether the guard's transaction suspended a frame, see [`Evm::suspended_frames`].
+    suspends_frame: bool,
 }
 
 impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     #[inline]
     fn drop(&mut self) {
         self.evm.running = self.was_running;
+        if let Some(refund) = self.refund_on_exit {
+            self.evm.enclosing_refund = refund;
+        }
+        if let Some(frame) = self.frame_on_exit {
+            self.evm.current_frame = frame;
+        }
+        self.evm.suspended_frames -= u32::from(self.suspends_frame);
     }
 }
 
@@ -1312,7 +1398,18 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[inline]
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let guard = self.enter_execution();
+        // A transaction dispatched from inside a running one, such as from an inspector hook,
+        // starts with its own refund counter and no enclosing frame, and gives both back.
+        let nested = self.running;
+        let outer_refund = self.enclosing_refund;
+        let outer_frame = self.current_frame.take();
+        let suspends_frame = nested && outer_frame.is_some();
+        self.suspended_frames += u32::from(suspends_frame);
+        self.enclosing_refund = 0;
+        let mut guard = self.enter_execution();
+        guard.refund_on_exit = Some(if nested { outer_refund } else { 0 });
+        guard.frame_on_exit = nested.then_some(outer_frame);
+        guard.suspends_frame = suspends_frame;
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
         if result.is_err() {
@@ -1574,32 +1671,43 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
-        let nested = message.depth > self.initial_call_depth;
-        // A too-deep create fails on depth alone, without reading the creator.
-        let info = if message.depth <= self.max_call_depth() && (message.value > 0 || nested) {
-            self.state.account_info_untracked(&message.caller)?
+        let initial_call_depth = self.initial_call_depth;
+        let max_depth = self.max_call_depth();
+        if message.depth > initial_call_depth && message.depth <= max_depth {
+            // A nested creator is loaded already: check it and bump its nonce through one handle.
+            let mut caller = self.state.account(&message.caller)?;
+            if let Some(stop) = create_preaccess_failure(
+                caller.balance(),
+                caller.nonce(),
+                message.value,
+                message.depth,
+                initial_call_depth,
+            ) {
+                return Err(stop.into());
+            }
+            caller.bump_nonce();
         } else {
-            None
-        };
-        let (balance, nonce) = info.as_ref().map_or((Word::ZERO, 0), |i| (i.balance, i.nonce));
-        if let Some(stop) = create_preaccess_failure(
-            balance,
-            nonce,
-            message.value,
-            message.depth,
-            self.initial_call_depth,
-        ) {
-            return Err(stop.into());
+            // A too-deep create fails on depth alone, without reading the creator.
+            let info = if message.depth <= max_depth && message.value > 0 {
+                self.state.account_info_untracked(&message.caller)?
+            } else {
+                None
+            };
+            let (balance, nonce) = info.as_ref().map_or((Word::ZERO, 0), |i| (i.balance, i.nonce));
+            if let Some(stop) = create_preaccess_failure(
+                balance,
+                nonce,
+                message.value,
+                message.depth,
+                initial_call_depth,
+            ) {
+                return Err(stop.into());
+            }
         }
 
         // `destination` already holds the contract address (derived when the message was
         // constructed); warm it before running the initcode.
         self.state.account(&message.destination)?.warm();
-
-        if nested && let Err(code) = self.state.account(&message.caller).map(|mut a| a.bump_nonce())
-        {
-            return Err(code.into());
-        }
 
         Ok(())
     }
@@ -1840,7 +1948,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         &mut self,
         message: &'frame Message<T>,
     ) -> Result<InstrStop, ExecutionError> {
-        let guard = self.enter_execution();
+        let mut guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
         if let Some((range, frame)) = message.input.borrowed_range() {
@@ -1859,6 +1967,17 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
+        // Messages sent from the initialize hook must see the refunds of every frame below them.
+        if guard.evm.active_inspector().is_some() {
+            let enclosing_refund = guard.evm.enclosing_refund;
+            guard.refund_on_exit = Some(enclosing_refund);
+            guard.frame_on_exit = Some(prev_frame);
+            if let Some(parent) = prev_frame {
+                // SAFETY: The parent frame is suspended on this call stack while this frame runs.
+                guard.evm.enclosing_refund =
+                    enclosing_refund.saturating_add(unsafe { parent.as_ref() }.gas().refunded());
+            }
+        }
         guard.evm.inspect_initialize_interp(interp_ref);
         let inspector = guard.evm.active_inspector().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
@@ -2086,6 +2205,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         &mut self,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
+        if self.current_frame.is_none() {
+            self.interpreter_pool.trim();
+        }
         let checkpoint = self.state.checkpoint();
         let result = if self.inspector.is_some() {
             self.execute_message_inspected(message, None)
@@ -2566,6 +2688,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tx_refunded_saturates() {
+        let mut evm = lifecycle_evm();
+        evm.set_pre_execution_refund(1);
+        assert_eq!(evm.tx_refunded(i64::MAX), i64::MAX);
+        assert_eq!(evm.tx_refunded(-3), -2);
+    }
+
     fn lifecycle_evm() -> Evm<'static, BaseEvmTypes> {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
@@ -3036,6 +3166,16 @@ mod tests {
     }
 
     #[test]
+    fn set_precompiles_with_boxed_provider_downcasts_to_the_inner_provider() {
+        let mut evm = lifecycle_evm();
+        let boxed: Box<dyn PrecompileProvider<BaseEvmTypes>> = Box::new(precompiles_with([]));
+
+        evm.set_precompiles(boxed);
+
+        assert!(evm.precompiles_as::<Precompiles>().is_some());
+    }
+
+    #[test]
     fn take_precompiles_preserves_provider_and_can_be_restored() {
         let mut evm = lifecycle_evm();
         let original_ids = evm.precompiles().precompile_ids();
@@ -3072,6 +3212,145 @@ mod tests {
     #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
     fn set_precompiles_panics_during_execution() {
         run_precompile_access(PrecompileAccess::Set);
+    }
+
+    /// A precompile provider that keeps an EVM a handler moved out of the host.
+    struct StashedEvm<'a>(core::cell::RefCell<Option<Evm<'a, BaseEvmTypes>>>);
+
+    impl PrecompileProvider<BaseEvmTypes> for StashedEvm<'_> {
+        fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+            Vec::new()
+        }
+
+        fn contains(&self, _address: &Address) -> bool {
+            false
+        }
+
+        fn move_precompiles(
+            &mut self,
+            moves: &[(Address, Address)],
+        ) -> Result<(), crate::precompiles::MovePrecompileError> {
+            <crate::evm::precompile::NoPrecompiles as PrecompileProvider<BaseEvmTypes>>::move_precompiles(
+                &mut Default::default(),
+                moves,
+            )
+        }
+
+        fn execute(
+            &mut self,
+            _evm: &mut Evm<'_, BaseEvmTypes>,
+            _message: &Message<BaseEvmTypes>,
+            _gas: &mut GasTracker,
+        ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+            None
+        }
+    }
+
+    /// Runs a transaction with a borrowed inspector whose handler moves the running EVM out of the
+    /// host and keeps it, then uses the moved EVM after the inspector is dropped.
+    fn move_evm_out_of_borrowed_inspector_call() {
+        struct HeapInspector(Vec<u8>);
+
+        impl Inspector<BaseEvmTypes> for HeapInspector {
+            fn log(&mut self, _log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+                self.0.push(self.0[0]);
+            }
+        }
+
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    let moved = core::mem::replace(req.host, lifecycle_evm());
+                    req.host.set_precompiles(StashedEvm(core::cell::RefCell::new(Some(moved))));
+                    Ok(TxResultExt { status: true, ..TxResultExt::default() })
+                },
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let tx = test_tx(0);
+        {
+            let mut inspector = HeapInspector(vec![1; 64]);
+            let _ = evm.transact_with_inspector(&tx, &mut inspector);
+        }
+        let stash = evm.precompiles_as::<StashedEvm<'static>>().expect("handler stashed the EVM");
+        if let Some(moved) = stash.0.borrow_mut().as_mut() {
+            moved.log(Log::new_unchecked(LIFECYCLE_ACCOUNT, vec![], Bytes::new()));
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[cfg_attr(miri, ignore = "spawns a process")]
+    fn moving_evm_out_of_borrowed_inspector_call_aborts() {
+        const CHILD: &str = "EVM2_TEST_MOVE_EVM_OUT_OF_BORROWED_INSPECTOR_CALL";
+        if std::env::var_os(CHILD).is_some() {
+            move_evm_out_of_borrowed_inspector_call();
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "evm::tests::moving_evm_out_of_borrowed_inspector_call_aborts",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stderr = std::string::String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "the moved EVM was not caught: {stderr}");
+        assert!(stderr.contains("was moved out of `Evm::transact_with_inspector`"), "{stderr}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(output.status.signal(), Some(6), "expected an abort: {stderr}");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn panic_in_nested_system_call_unwinds_out_of_borrowed_inspector_call() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    let _ = req
+                        .host
+                        .system_call(super::system::SystemTx::new(TEST_PRECOMPILE, Bytes::new()));
+                    Ok(TxResultExt { status: true, ..TxResultExt::default() })
+                },
+            ),
+        );
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |_, _, _| {
+            panic!("system call panicked")
+        })]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            precompiles,
+        );
+        let tx = test_tx(0);
+        let mut inspector = NoopInspector::default();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact_with_inspector(&tx, &mut inspector);
+        }));
+
+        assert!(result.is_err());
+        assert!(evm.inspector().is_none());
     }
 
     #[derive(Clone, Copy)]
@@ -3144,6 +3423,23 @@ mod tests {
         };
 
         let _ = evm.run_interpreter(&message);
+    }
+
+    #[test]
+    fn set_inspector_with_boxed_inspector_downcasts_to_the_inner_inspector() {
+        struct HeapInspector(Vec<u8>);
+
+        impl Inspector<BaseEvmTypes> for HeapInspector {}
+
+        let mut evm = lifecycle_evm();
+        let inspector = Box::new(HeapInspector(vec![1]));
+        let ptr = &raw const *inspector;
+
+        evm.set_inspector(inspector as Box<dyn Inspector<BaseEvmTypes>>);
+
+        let inspector = evm.clear_inspector_as::<HeapInspector>().unwrap();
+        assert_eq!(&raw const *inspector, ptr);
+        assert_eq!(inspector.0, [1]);
     }
 
     #[test]
@@ -5119,6 +5415,140 @@ mod tests {
         let previous = evm.clear_inspector_as::<CallCounter>().unwrap();
         assert_eq!(previous.calls, 1);
         assert_eq!(panicking.calls, 1);
+    }
+
+    #[test]
+    fn nested_dispatch_keeps_the_outer_pre_execution_refund() {
+        let mut evm = scoped_inspector_evm();
+        evm.running = true;
+        evm.set_pre_execution_refund(5);
+
+        let _ = evm.call_tx(&test_tx(0));
+
+        assert_eq!(evm.tx_refunded(0), 5);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn nested_transaction_cannot_change_the_initial_call_depth_below_a_frame() {
+        struct NestingInspector;
+
+        impl Inspector<BaseEvmTypes> for NestingInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let host = interp.host();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = host.call_tx(&test_tx(1));
+                }));
+                assert!(result.is_err());
+            }
+        }
+
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    if req.tx.nonce == 1 {
+                        req.host.set_initial_call_depth(1);
+                        return Ok(TxResultExt::default());
+                    }
+                    let mut message = MessageExt {
+                        code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+                        ..MessageExt::default()
+                    };
+                    Host::execute_message(req.host, &mut message)?;
+                    Ok(TxResultExt::default())
+                },
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(NestingInspector);
+
+        let _ = evm.call_tx(&test_tx(0)).unwrap();
+
+        assert_eq!(evm.initial_call_depth(), 0);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn panicking_handler_does_not_leak_its_pre_execution_refund() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| -> HandlerResult<TxResult> {
+                    req.host.set_pre_execution_refund(7);
+                    panic!("handler panic");
+                },
+            ),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.call_tx(&test_tx(0));
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(evm.tx_refunded(0), 0);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn caught_panic_in_a_hook_message_does_not_leave_a_dangling_frame() {
+        #[derive(Default)]
+        struct CatchNestedInit {
+            inits: usize,
+        }
+
+        impl Inspector<BaseEvmTypes> for CatchNestedInit {
+            fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                self.inits += 1;
+                if self.inits == 1 {
+                    panic!("initialize panicked");
+                }
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 0 {
+                    let mut child = MessageExt {
+                        code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+                        depth: message.depth + 1,
+                        ..MessageExt::default()
+                    };
+                    let host = interp.host();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let _ = Host::execute_message(host, &mut child);
+                    }));
+                }
+                None
+            }
+        }
+
+        let mut evm = scoped_inspector_evm();
+        evm.set_inspector(CatchNestedInit::default());
+
+        let result = evm.call_tx(&test_tx(0));
+
+        assert!(result.is_ok());
+        assert!(evm.current_frame.is_none());
     }
 
     #[cfg(feature = "std")]

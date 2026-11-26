@@ -4,12 +4,10 @@
 use crate::{
     interpreter::GasTracker,
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult, eip7823},
-    utils::{b256_to_word, left_pad, left_pad_vec_be, read_word_padded, right_pad_vec},
+    utils::{b256_to_word, left_pad_vec_be, read_word_padded, right_pad_vec},
 };
-#[cfg(feature = "gmp")]
-use alloc::vec;
-use alloc::vec::Vec;
-use alloy_primitives::{Bytes, U256, uint};
+use alloc::{vec, vec::Vec};
+use alloy_primitives::{B256, Bytes, U256, uint};
 use core::cmp::{max, min};
 
 /// Well-known prime moduli for [`fermat_inverse`].
@@ -171,16 +169,12 @@ pub fn run_osaka(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 
 /// Calculate the iteration count for the modexp precompile.
 pub(crate) fn calculate_iteration_count(exp_length: u64, exp_highp: &U256, multiplier: u64) -> u64 {
-    let mut iteration_count: u64 = 0;
-
-    if exp_length <= 32 && exp_highp.is_zero() {
-        iteration_count = 0;
-    } else if exp_length <= 32 {
-        iteration_count = exp_highp.bit_len() as u64 - 1;
-    } else if exp_length > 32 {
-        iteration_count = (multiplier.saturating_mul(exp_length - 32))
-            .saturating_add(max(1, exp_highp.bit_len() as u64) - 1);
-    }
+    let high_bits = (exp_highp.bit_len() as u64).saturating_sub(1);
+    let iteration_count = if exp_length <= 32 {
+        high_bits
+    } else {
+        multiplier.saturating_mul(exp_length - 32).saturating_add(high_bits)
+    };
 
     max(iteration_count, 1)
 }
@@ -224,8 +218,7 @@ fn run_inner(
         // zeroes.
         let right_padded_highp = read_word_padded(input, base_len);
         // If exp_len is less then 32 bytes get only exp_len bytes and do left padding.
-        let out = left_pad::<32>(&right_padded_highp[..exp_highp_len]);
-        U256::from_be_bytes(out.into_owned())
+        U256::from_be_bytes(B256::left_padding_from(&right_padded_highp[..exp_highp_len]).0)
     };
 
     // Check if we have enough gas.
@@ -243,6 +236,12 @@ fn run_inner(
 
     if base_len == 0 && mod_len == 0 {
         return Ok(PrecompileOutput::new(Bytes::new()));
+    }
+
+    // The modulus is missing from the input, so it is zero and the result is `mod_len` zero bytes.
+    // This needs neither padding nor exponentiation.
+    if input.len() <= base_len.saturating_add(exp_len) {
+        return Ok(PrecompileOutput::new(vec![0; mod_len].into()));
     }
 
     // Padding is needed if the input does not contain all 3 values.
@@ -705,6 +704,39 @@ mod tests {
         // An Osaka length over the limit is out of gas when the gas does not cover its price.
         let lengths = [U256::from(65_536), U256::ONE, U256::ONE];
         assert_eq!(halt(&input(lengths), run_osaka), PrecompileHalt::OutOfGas);
+    }
+
+    #[test]
+    fn missing_modulus_returns_zeros_without_padding() {
+        let header = |lengths: [u64; 3]| {
+            lengths.iter().flat_map(|len| U256::from(*len).to_be_bytes::<32>()).collect::<Vec<_>>()
+        };
+
+        // The header alone declares a 1 TiB exponent. The gas covers it, and the output is the
+        // zero modulus result without allocating the declared lengths.
+        let exp_len = 1u64 << 40;
+        let input = header([1, exp_len, 1]);
+        let byzantium_gas = 8 * (exp_len - 32) / 20;
+        let berlin_gas = 8 * (exp_len - 32) / 3;
+        let mut gas = GasTracker::new(byzantium_gas);
+        let res = run_byzantium(&input, &mut gas).unwrap();
+        assert_eq!(res.bytes(), vec![0]);
+        assert_eq!(gas.spent(), byzantium_gas);
+        let mut gas = GasTracker::new(berlin_gas);
+        let res = run_berlin(&input, &mut gas).unwrap();
+        assert_eq!(res.bytes(), vec![0]);
+        assert_eq!(gas.spent(), berlin_gas);
+
+        // The input ends exactly where the modulus starts.
+        let mut input = header([1, 1, 2]);
+        input.extend([2, 1]);
+        let res = run_berlin(&input, &mut GasTracker::new(100_000)).unwrap();
+        assert_eq!(res.bytes(), vec![0, 0]);
+
+        // The input ends one byte into the modulus, which is 0x0500.
+        input.push(5);
+        let res = run_berlin(&input, &mut GasTracker::new(100_000)).unwrap();
+        assert_eq!(res.bytes(), vec![0, 2]);
     }
 
     #[test]

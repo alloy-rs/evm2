@@ -21,16 +21,9 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 /// Takes a byte slice in Big Endian format and attempts to interpret it as an
 /// elliptic curve field element. Returns an error if the bytes do not form
 /// a valid field element.
-///
-/// # Panics
-///
-/// Panics if the input is not exactly 48 bytes long.
 #[inline]
-fn read_fp(input_be: &[u8]) -> Result<Fq, PrecompileHalt> {
-    assert_eq!(input_be.len(), FP_LENGTH, "input must be {FP_LENGTH} bytes");
-
-    let mut input_le = [0u8; FP_LENGTH];
-    input_le.copy_from_slice(input_be);
+fn read_fp(input_be: &[u8; FP_LENGTH]) -> Result<Fq, PrecompileHalt> {
+    let mut input_le = *input_be;
 
     // Reverse in-place to convert from big-endian to little-endian.
     input_le.reverse();
@@ -157,12 +150,8 @@ fn encode_g1_point(input: &G1Affine) -> [u8; G1_LENGTH] {
         return output; // Point at infinity, return all zeros
     };
 
-    let x_encoded = encode_fp(&x);
-    let y_encoded = encode_fp(&y);
-
-    // Copy the encoded values to the output
-    output[..FP_LENGTH].copy_from_slice(&x_encoded);
-    output[FP_LENGTH..].copy_from_slice(&y_encoded);
+    output[..FP_LENGTH].copy_from_slice(&encode_fp(&x));
+    output[FP_LENGTH..].copy_from_slice(&encode_fp(&y));
 
     output
 }
@@ -216,15 +205,11 @@ fn encode_g2_point(input: &G2Affine) -> [u8; G2_LENGTH] {
         return output; // Point at infinity, return all zeros
     };
 
-    let x_c0_encoded = encode_fp(&x.c0);
-    let x_c1_encoded = encode_fp(&x.c1);
-    let y_c0_encoded = encode_fp(&y.c0);
-    let y_c1_encoded = encode_fp(&y.c1);
-
-    output[..FP_LENGTH].copy_from_slice(&x_c0_encoded);
-    output[FP_LENGTH..2 * FP_LENGTH].copy_from_slice(&x_c1_encoded);
-    output[2 * FP_LENGTH..3 * FP_LENGTH].copy_from_slice(&y_c0_encoded);
-    output[3 * FP_LENGTH..4 * FP_LENGTH].copy_from_slice(&y_c1_encoded);
+    for (chunk, fp) in
+        output.as_chunks_mut::<FP_LENGTH>().0.iter_mut().zip([x.c0, x.c1, y.c0, y.c1])
+    {
+        *chunk = encode_fp(&fp);
+    }
 
     output
 }

@@ -12,7 +12,8 @@ use evm2_inspectors::{
     opcode::OpcodeGasInspector,
     otterscan::InternalOperationsInspector,
     tracing::{
-        TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig, types::CallTrace,
+        TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig,
+        types::{CallTrace, CallTraceStepExtra},
     },
     transfer::TransferInspector,
 };
@@ -205,21 +206,27 @@ fn byte_budget_counts_memory_snapshots() {
 #[test]
 fn byte_budget_covers_immediates_and_memory_deltas() {
     let code = hex!("60015f5200");
-    // The PUSH1 immediate is charged after the first step, the MSTORE delta after the third.
-    for (config, steps, extra) in [
-        (TracingInspectorConfig::none().steps().record_immediate_bytes(), 1, 0),
-        (TracingInspectorConfig::none().steps().set_step_deltas(true), 3, 31),
+    // The PUSH1 immediate is charged after the first step, the MSTORE delta after the third. The
+    // PUSH1 step record also boxes its immediate.
+    for (config, steps, boxed, extra) in [
+        (
+            TracingInspectorConfig::none().steps().record_immediate_bytes(),
+            1,
+            size_of::<CallTraceStepExtra>(),
+            0,
+        ),
+        (TracingInspectorConfig::none().steps().set_step_deltas(true), 3, 0, 31),
     ] {
         let step = step_record_bytes(config);
         let (inspector, completed) = inspect_with_limits(
             &code,
             Bytes::new(),
             config,
-            TraceLimits::default().set_max_recorded_bytes(Some(steps * step + extra)),
+            TraceLimits::default().set_max_recorded_bytes(Some(steps * step + boxed + extra)),
         );
         assert!(completed);
         assert!(inspector.limit_exceeded());
-        assert_eq!(inspector.recorded_bytes(), steps * step);
+        assert_eq!(inspector.recorded_bytes(), steps * step + boxed);
     }
 }
 
@@ -408,11 +415,11 @@ fn nested_roots_match_revm_inspectors() {
                 assert_eq!(nodes[0].children, [1]);
             }
             assert_eq!(nodes[root].parent, root.checked_sub(1));
-            assert_eq!(nodes[root].trace.depth, usize::from(initial_call_depth));
+            assert_eq!(nodes[root].trace.depth, initial_call_depth);
             assert_eq!(nodes[root].trace.data, data);
             assert_eq!(nodes[root].children, [root + 1]);
             assert_eq!(nodes[root + 1].parent, Some(root));
-            assert_eq!(nodes[root + 1].trace.depth, usize::from(initial_call_depth) + 1);
+            assert_eq!(nodes[root + 1].trace.depth, initial_call_depth + 1);
             // A zero budget records no steps, so the struct logs come from an unlimited run.
             let mut tracer = TracingInspector::new(TracingInspectorConfig::default_geth());
             run(&mut tracer);
