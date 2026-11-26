@@ -364,6 +364,9 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
             block_timestamp: u64::try_from(env.current_timestamp).unwrap_or(u64::MAX),
             first_log_index: all_logs.len(),
             blob_base_fee: block.blob_basefee,
+            effective_gas_price: signed
+                .envelope
+                .effective_gas_price(Some(block.basefee.saturating_to())),
             success: result.status,
         };
         output.add_receipt(&receipt, &signed.envelope, &context);

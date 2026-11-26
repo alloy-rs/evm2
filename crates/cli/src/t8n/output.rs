@@ -38,6 +38,7 @@ pub(super) struct ReceiptContext {
     pub(super) block_timestamp: u64,
     pub(super) first_log_index: usize,
     pub(super) blob_base_fee: U256,
+    pub(super) effective_gas_price: u128,
     pub(super) success: bool,
 }
 
@@ -75,6 +76,7 @@ impl Output {
             block_timestamp,
             first_log_index,
             blob_base_fee,
+            effective_gas_price,
             success,
         } = *context;
         let logs = receipt
@@ -111,7 +113,7 @@ impl Output {
             "transactionHash": tx.tx_hash(),
             "contractAddress": contract_address,
             "gasUsed": quantity(gas_used),
-            "effectiveGasPrice": null,
+            "effectiveGasPrice": format!("{effective_gas_price:#x}"),
             "blockHash": BLOCK_HASH,
             "blockNumber": quantity(block_number),
             "transactionIndex": quantity(tx_index as u64),

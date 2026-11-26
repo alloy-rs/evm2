@@ -91,7 +91,7 @@ DATA = ROOT / "crates/cli/testdata/geth-parity"
 
 # go-ethereum master, built from source: it has the Amsterdam fork (glamsterdam-devnet-8).
 GETH_REPO = "https://github.com/ethereum/go-ethereum"
-GETH_SHA = "a0cba163b1f17f6044df84502ff13036dffb5de1"
+GETH_SHA = "bbafd66b66f5e37e877bf1efe3506ad74a6eda98"
 GETH_VERSION = GETH_SHA[:8]
 GO_VERSION = "1.27.3"
 GO_SHA256 = {

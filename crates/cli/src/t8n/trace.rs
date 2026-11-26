@@ -15,7 +15,7 @@ use evm2::{
 };
 use evm2_inspectors::tracing::{DebugInspector, types::CallTraceNode};
 use serde_json::{Value, json};
-use std::{borrow::Cow, collections::HashMap};
+use std::collections::HashMap;
 
 /// How the execution is traced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,8 +156,6 @@ fn jsonl(
         errors,
         logs: frame.struct_logs.iter(),
         opcodes: (0..=u8::MAX).map(|byte| (OpCode::new_or_unknown(byte).as_str(), byte)).collect(),
-        // Only EIP-8037 frames report the execution and state gas split.
-        amsterdam: frame.execution_gas_used.is_some(),
         memory,
         out: String::new(),
     };
@@ -183,7 +181,6 @@ struct JsonlWriter<'a> {
     errors: Vec<Option<String>>,
     logs: std::slice::Iter<'a, StructLog>,
     opcodes: HashMap<&'static str, u8>,
-    amsterdam: bool,
     memory: bool,
     out: String,
 }
@@ -204,38 +201,17 @@ impl JsonlWriter<'_> {
             let memory = step.memory.as_ref().map_or(&[][..], |memory| memory.as_bytes());
             let mut line = step_line(log, memory, &self.opcodes, self.memory);
             let op = step.op.get();
-            let state_gas_oog = self.amsterdam
-                && matches!(op, op::CREATE | op::CREATE2)
-                && create_gas(log, op, memory.len()) <= log.gas.into();
-            let fault = match &log.error {
-                // Stack and gas checks fail before the opcode is logged: one line, with the error.
-                Some(error) if fails_before_logging(error, op, state_gas_oog) => {
-                    line["error"] = json!(error);
-                    None
-                }
-                Some(error) => Some(error.clone()),
-                // A halt of the top frame leaves no step error; its frame error says what failed.
-                None if position == last
-                    && !matches!(op, op::STOP | op::RETURN | op::SELFDESTRUCT) =>
-                {
-                    match &frame_error {
-                        Some(error) if fails_before_logging(error, op, state_gas_oog) => {
-                            line["error"] = json!(error);
-                            None
-                        }
-                        _ => frame_error.clone(),
-                    }
-                }
-                None => None,
-            };
-            self.line(line);
-            if let Some(error) = fault {
-                let memory = fault_memory(log, op, &error, memory);
-                let mut line =
-                    step_line(&fault_log(log, op, &error), &memory, &self.opcodes, self.memory);
+            // A halt of the top frame leaves no step error; its frame error says what failed.
+            let error = log.error.clone().or_else(|| {
+                (position == last
+                    && !matches!(op, op::STOP | op::RETURN | op::REVERT | op::SELFDESTRUCT))
+                .then(|| frame_error.clone())
+                .flatten()
+            });
+            if let Some(error) = error {
                 line["error"] = json!(error);
-                self.line(line);
             }
+            self.line(line);
             if op == op::SELFDESTRUCT && node.trace.selfdestruct_address().is_some() {
                 // The logger reports a selfdestruct as a call frame that ends at once.
                 self.line(json!({ "output": "", "gasUsed": "0x0" }));
@@ -285,6 +261,12 @@ fn step_line(
         "gas": format!("{:#x}", log.gas),
         "gasCost": format!("{:#x}", log.gas_cost),
     });
+    if let Some(cost) = log.state_gas_cost.filter(|cost| *cost != 0) {
+        line["stateGasCost"] = json!(cost);
+    }
+    if let Some(reservoir) = log.state_gas_reservoir.filter(|reservoir| *reservoir != 0) {
+        line["stateGasReservoir"] = json!(format!("{reservoir:#x}"));
+    }
     line["memSize"] = json!(memory.len());
     if with_memory && !memory.is_empty() {
         line["memory"] = json!(format!("0x{}", hex::encode(memory)));
@@ -299,95 +281,4 @@ fn step_line(
     line["refund"] = json!(log.refund_counter.unwrap_or_default());
     line["opName"] = json!(log.op);
     line
-}
-
-/// The gas Amsterdam charges a `CREATE` or `CREATE2` before it runs: the base cost, the memory
-/// expansion and the initcode words (and the hashed words of `CREATE2`). The state gas of the new
-/// account comes after, while the opcode runs. Zero for other opcodes.
-fn create_gas(log: &StructLog, op: u8, memory_len: usize) -> u128 {
-    const BASE: u128 = 12000;
-    let (hashed, Some(stack)) = (op == op::CREATE2, &log.stack) else { return 0 };
-    if !matches!(op, op::CREATE | op::CREATE2) || stack.len() < 3 {
-        return 0;
-    }
-    let (offset, size) = (stack[stack.len() - 2], stack[stack.len() - 3]);
-    if size.is_zero() {
-        return BASE;
-    }
-    let words = |bytes: usize| bytes.div_ceil(32) as u128;
-    let memory_cost = |words: u128| 3 * words + words * words / 512;
-    let end = offset.saturating_add(size).saturating_to::<usize>();
-    let expansion = memory_cost(words(end)).saturating_sub(memory_cost(words(memory_len)));
-    BASE + expansion + words(size.saturating_to::<usize>()) * if hashed { 8 } else { 2 }
-}
-
-/// Whether an opcode with this step error fails in its stack or gas checks, before the logger
-/// sees it. Static call violations fail in the gas calculation, except for `TSTORE` and `LOG`. From
-/// Amsterdam on, a `CREATE` that pays its gas but not its state gas fails while it runs
-/// (`state_gas_oog`).
-fn fails_before_logging(error: &str, op: u8, state_gas_oog: bool) -> bool {
-    // The error is evm2's step error (`StackUnderflow`) or geth's text of a frame error (`stack
-    // underflow`).
-    let error = error.to_ascii_lowercase();
-    if error.contains("oog") || error.contains("outofgas") || error.contains("out of gas") {
-        return !state_gas_oog;
-    }
-    error.contains("stack")
-        || error.contains("initcodesizelimit")
-        || error.contains("max initcode")
-        || (error.contains("static") || error.contains("write protection"))
-            && !matches!(op, op::TSTORE | op::LOG0..=op::LOG4)
-}
-
-/// The memory the JSON logger sees when an opcode fails while it runs: the opcode has grown the
-/// memory it addresses.
-fn fault_memory<'a>(log: &StructLog, op: u8, error: &str, memory: &'a [u8]) -> Cow<'a, [u8]> {
-    let out_of_gas = error.contains("OutOfGas");
-    let Some(stack) = &log.stack else { return Cow::Borrowed(memory) };
-    if error.contains("NotActivated") {
-        return Cow::Borrowed(memory);
-    }
-    let word = |back: usize| stack.len().checked_sub(back).map(|at| stack[at]);
-    // Memory range [offset, offset + size) of the opcodes that fail after growing the memory.
-    let range = match op {
-        op::REVERT | op::LOG0..=op::LOG4 => word(1).zip(word(2)),
-        op::RETURNDATACOPY => word(1).zip(word(3)),
-        op::CREATE | op::CREATE2 if out_of_gas => word(2).zip(word(3)),
-        _ => None,
-    };
-    let Some((offset, size)) = range.filter(|(_, size)| !size.is_zero()) else {
-        return Cow::Borrowed(memory);
-    };
-    let words = offset.saturating_add(size).saturating_to::<usize>().div_ceil(32);
-    // The opcode only reached its failure after paying for the expansion, so a size the gas
-    // cannot cover was never allocated.
-    let cost = |words: usize| 3 * words as u128 + (words as u128 * words as u128) / 512;
-    if words <= memory.len() / 32
-        || cost(words).saturating_sub(cost(memory.len() / 32)) > u128::from(log.gas)
-    {
-        return Cow::Borrowed(memory);
-    }
-    let mut grown = memory.to_vec();
-    grown.resize(words * 32, 0);
-    Cow::Owned(grown)
-}
-
-/// The state the JSON logger sees when an opcode fails while it runs: the opcode has popped its
-/// inputs, and no return data is reported.
-fn fault_log(log: &StructLog, op: u8, error: &str) -> StructLog {
-    let out_of_gas = error.contains("OutOfGas");
-    let mut fault = log.clone();
-    fault.return_data = None;
-    let Some(stack) = &mut fault.stack else { return fault };
-    // An opcode the fork does not have is invalid before it pops anything, and so are the opcodes
-    // that check for a static call first.
-    let pops = match op {
-        _ if error.contains("NotActivated") => 0,
-        op::CREATE | op::CREATE2 if out_of_gas => OpCode::new_or_unknown(op).inputs().into(),
-        op::SSTORE | op::TSTORE | op::CREATE | op::CREATE2 | op::SELFDESTRUCT => 0,
-        op::LOG0..=op::LOG4 => 0,
-        _ => OpCode::new_or_unknown(op).inputs().into(),
-    };
-    stack.truncate(stack.len().saturating_sub(pops));
-    fault
 }
