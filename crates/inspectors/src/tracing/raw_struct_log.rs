@@ -33,8 +33,8 @@ use serde::ser::{Serialize, SerializeStruct, Serializer};
 /// [`DefaultFrame`](alloy_rpc_types_trace::geth::DefaultFrame) of the typed path.
 ///
 /// A struct log is written once its gas cost is known: when the step ends, or when the message
-/// it started begins, so that the struct logs of that message follow it. What only the end of
-/// such a step tells, its state gas cost and its error, is inserted when the frame is taken.
+/// it started begins, so that the struct logs of that message follow it. The state gas cost of
+/// such a step, which a halt at its end drops, and its error are inserted when the frame is taken.
 /// The final byte cutoff uses the completed sizes in execution order.
 ///
 /// The inspector can be reused for multiple transactions by calling [`Self::fuse`] after each.
@@ -286,7 +286,7 @@ impl RawStructLogInspector {
             op,
             gas: gas.remaining(),
             gas_before: gas.remaining_excluding_state_spill(),
-            message_cost: None,
+            message_charge: None,
             depth: u64::from(depth) + 1,
             refund,
             state_gas_spent: gas.state_gas_spent(),
@@ -356,17 +356,18 @@ impl RawStructLogInspector {
     /// Invoked on [`Inspector::step_end`].
     fn end_step<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let result = interp.result();
-        let state_gas_spent = interp.gas().state_gas_spent();
         match mem::take(&mut self.step) {
             StepState::Recording(step) => {
                 // A step that halts exceptionally costs 0, like a typed struct log.
                 let (cost, state_cost) = if result.is_err_and(InstrStop::is_halt) {
                     (0, None)
+                } else if let Some(charge) = step.message_charge {
+                    (charge.cost, charge.state_cost)
                 } else {
-                    let charged = step
-                        .gas_before
-                        .saturating_sub(interp.gas().remaining_excluding_state_spill());
-                    (step.message_cost.unwrap_or(charged), step.state_gas_cost(state_gas_spent))
+                    let gas = interp.gas();
+                    let charged =
+                        step.gas_before.saturating_sub(gas.remaining_excluding_state_spill());
+                    (charged, step.state_gas_cost(gas.state_gas_spent()))
                 };
                 self.write_log(&step, cost, state_cost, result.err());
             }
@@ -374,14 +375,14 @@ impl RawStructLogInspector {
             StepState::None => {
                 let Some(open) = self.open_steps.pop() else { return };
                 let halted = result.is_err_and(InstrStop::is_halt);
-                let state_cost = open.step.state_gas_cost(state_gas_spent).filter(|_| !halted);
+                let state_cost = open.charge.state_cost.filter(|_| !halted);
                 let error = result.err().filter(|status| status.is_halt()).and_then(error_json);
                 if state_cost.is_none() && error.is_none() && !halted {
                     return;
                 }
                 // A step that halts exceptionally costs 0, like a typed struct log. This includes
                 // the reentrancy sentry, which rejects the instruction before charging it.
-                let cost = if halted { 0 } else { open.cost };
+                let cost = if halted { 0 } else { open.charge.cost };
                 let added = self.patches.replace(open.fields, |patch| {
                     let mut fields = ArrayBuf::<HEAD_CAPACITY>::new();
                     open.step.write_cost_and_depth(&mut fields, cost, state_cost);
@@ -426,19 +427,25 @@ impl RawStructLogInspector {
             return;
         }
         if let StepState::Recording(step) = &mut self.step {
-            let after = interp.gas().remaining_excluding_state_spill().saturating_add(forwarded);
-            let cost = step.gas_before.saturating_sub(after);
+            let gas = interp.gas();
+            let after = gas.remaining_excluding_state_spill().saturating_add(forwarded);
+            // The state gas of the message and the refill of the step's charge when the message
+            // fails are not part of the step's state gas cost.
+            let charge = MessageCharge {
+                cost: step.gas_before.saturating_sub(after),
+                state_cost: step.state_gas_cost(gas.state_gas_spent()),
+            };
             if is_call_like(step.op) {
                 let step = *step;
-                if let Some(fields) = self.write_log(&step, cost, None, None) {
-                    self.open_steps.push(OpenStep { step, cost, fields });
+                if let Some(fields) = self.write_log(&step, charge.cost, None, None) {
+                    self.open_steps.push(OpenStep { step, charge, fields });
                     self.step = StepState::None;
                     self.frames.push(Some(message.depth));
                     return;
                 }
                 self.step = StepState::Skipped;
             } else {
-                step.message_cost.get_or_insert(cost);
+                step.message_charge.get_or_insert(charge);
             }
         }
         // A parentless message above depth zero, a native precompile subcall, or a child of
@@ -705,8 +712,8 @@ struct RecordingStep {
     gas: u64,
     /// The remaining gas plus spilled state gas.
     gas_before: u64,
-    /// The gas charged when this step started its first message.
-    message_cost: Option<u64>,
+    /// What this step had charged when it started its first message.
+    message_charge: Option<MessageCharge>,
     depth: u64,
     refund: u64,
     state_gas_spent: i64,
@@ -717,8 +724,8 @@ struct RecordingStep {
 }
 
 impl RecordingStep {
-    /// Returns the net state gas the step has spent, given the state gas spent after it, if the
-    /// fork tracks state gas and the step changed it.
+    /// Returns the net state gas the step has spent, given the state gas spent since it started,
+    /// if the fork tracks state gas and the step changed it.
     const fn state_gas_cost(&self, state_gas_spent: i64) -> Option<i64> {
         let cost = state_gas_spent.saturating_sub(self.state_gas_spent);
         if self.state_gas_reservoir.is_some() && cost != 0 { Some(cost) } else { None }
@@ -750,11 +757,19 @@ impl RecordingStep {
     }
 }
 
+/// What a step had charged when the first message it started began.
+#[derive(Clone, Copy, Debug)]
+struct MessageCharge {
+    cost: u64,
+    /// The state gas cost, if the fork tracks state gas and the step changed it.
+    state_cost: Option<i64>,
+}
+
 /// A step that started a message, until its `step_end` hook.
 #[derive(Clone, Debug)]
 struct OpenStep {
     step: RecordingStep,
-    cost: u64,
+    charge: MessageCharge,
     /// The provisional gas and depth fields in the output.
     fields: Range<usize>,
 }
