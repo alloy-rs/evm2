@@ -378,8 +378,8 @@ impl ParityTraceBuilder {
                                     // Parity counts the gas a creation gives its child in the
                                     // step cost, also when the creation fails its precheck. Geth
                                     // struct logs leave it out, and a call's cost has it already.
-                                    if step.is_create_op()
-                                        && let Some(&idx) = current.children.get(*child)
+                                    if let Some(&idx) = current.children.get(*child)
+                                        && self.nodes[idx].kind().is_any_create()
                                     {
                                         forwarded_gas = self.nodes[idx].trace.gas_limit;
                                     }
