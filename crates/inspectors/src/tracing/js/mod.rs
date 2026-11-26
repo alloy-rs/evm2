@@ -1681,11 +1681,11 @@ mod tests {
         let code = r#"{
             res: [],
             step: function(log) {
-                // Test slicing a hex string
-                var hex = '0xdeadbeefcafe';
-                this.res.push(toHex(slice(hex, 0, 2)));
-                this.res.push(toHex(slice(hex, 2, 4)));
-                this.res.push(toHex(slice(hex, 4, 6)));
+                // Test slicing a byte array
+                var bytes = [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe];
+                this.res.push(toHex(slice(bytes, 0, 2)));
+                this.res.push(toHex(slice(bytes, 2, 4)));
+                this.res.push(toHex(slice(bytes, 4, 6)));
 
                 // Test slicing an array
                 var arr = [0x01, 0x02, 0x03, 0x04, 0x05];
