@@ -790,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn slice_bounds_follow_geth() {
+    fn test_slice_bounds_follow_geth() {
         let mut ctx = Context::default();
         register_builtins(&mut ctx).unwrap();
 
@@ -800,12 +800,15 @@ mod tests {
             ("toHex(slice([1, 2, 3, 4], 1.9, 3.9))", "0x0203"),
             ("toHex(slice([1, 2, 3, 4], 1n, 3n))", "0x0203"),
             ("toHex(slice([1, 2, 3, 4], NaN, 2))", "0x0102"),
+            ("toHex(slice([1, 2, 3, 4], Infinity, Infinity))", "0x"),
+            ("toHex(slice([1, 2, 3, 4], 2, 4))", "0x0304"),
         ] {
             let result = ctx.eval(Source::from_bytes(script)).unwrap();
-            assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), expected);
+            let result = result.to_string(&mut ctx).unwrap().to_std_string().unwrap();
+            assert_eq!(result, expected, "{script}");
         }
 
-        // Geth interrupts the tracer for a negative start or end, as for any other bound.
+        // Geth rejects a negative start or end, as it does any other bad bound.
         for (script, expected) in [
             ("slice([1, 2, 3, 4], -1, 2)", "available 4, offset -1, size 3"),
             ("slice([1, 2, 3, 4], -2, -1)", "available 4, offset -2, size 1"),
