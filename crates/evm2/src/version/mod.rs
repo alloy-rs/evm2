@@ -63,7 +63,8 @@ pub struct Version {
     /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) clamps a larger
     /// limit to [`u32::MAX`], and memory stops growing there.
     pub memory_limit: u64,
-    /// Hard limit in bytes on the memory of all live call frames of a transaction together.
+    /// Hard limit in bytes on the memory and the return data of all live call frames of a
+    /// transaction together.
     ///
     /// A frame that would grow memory past it stops with
     /// [`InstrStop::MemoryLimitOOG`](crate::interpreter::InstrStop::MemoryLimitOOG), as when it

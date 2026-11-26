@@ -1985,7 +1985,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         guard.frame_on_exit = Some(prev_frame);
         if let Some(parent) = prev_frame {
             // SAFETY: The parent frame is suspended on this call stack while this frame runs.
-            let held = unsafe { parent.as_ref() }.memory().live_bytes();
+            let parent = unsafe { parent.as_ref() };
+            let held = parent.memory().live_bytes() + parent.return_data().len() as u64;
             interp_ref.memory_mut().set_suspended_bytes(held);
         }
         // Messages sent from the initialize hook must see the refunds of every frame below them.
@@ -6059,5 +6060,77 @@ mod tests {
         assert!(evm.current_frame.is_none());
         let result = Host::execute_message(&mut evm, &mut message()).unwrap();
         assert_eq!(result.stop, InstrStop::Stop);
+    }
+    #[test]
+    fn suspended_frames_return_data_counts_toward_the_tx_memory_limit() {
+        #[derive(Default)]
+        struct Stops(Vec<(Address, InstrStop)>);
+
+        impl Inspector<BaseEvmTypes> for Stops {
+            fn call_end(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                self.0.push((message.destination, result.stop));
+            }
+        }
+
+        // `returner` returns 40 KiB of data. Two frames each call it, so they hold 40 KiB of return
+        // data while the next frame runs, and the last frame grows memory to 40 KiB, for 120 KiB.
+        let [outer, middle, last, returner] = [0x11, 0x22, 0x33, 0x44].map(Address::repeat_byte);
+        let call = |code: &mut Vec<u8>, address: &Address| {
+            code.extend([op::PUSH0; 5]);
+            push_address(code, address);
+            code.extend([op::GAS, op::CALL, op::POP]);
+        };
+        let mut database = InMemoryDB::default();
+        let mut insert = |address: &Address, code: Vec<u8>| {
+            database.insert_account_info(
+                address,
+                AccountInfo::default().with_code(legacy_bytecode(code)),
+            );
+        };
+        for (address, next) in [(&outer, &middle), (&middle, &last)] {
+            let mut code = Vec::new();
+            call(&mut code, &returner);
+            call(&mut code, next);
+            code.push(op::STOP);
+            insert(address, code);
+        }
+        let grow = [op::PUSH1, 1, op::PUSH2, 0x9f, 0xff, op::MSTORE8];
+        insert(&last, [&grow[..], &[op::STOP]].concat());
+        insert(&returner, [&grow[..], &[op::PUSH2, 0xa0, 0x00, op::PUSH0, op::RETURN]].concat());
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(outer),
+                gas_limit: 5_000_000,
+                ..Default::default()
+            }),
+            Address::repeat_byte(0xaa),
+        );
+
+        for (tx_memory_limit, expected) in
+            [(120 * 1024, InstrStop::Stop), (120 * 1024 - 1, InstrStop::MemoryLimitOOG)]
+        {
+            let mut version = Version::new(SpecId::CANCUN);
+            version.memory_limit = 64 * 1024;
+            version.tx_memory_limit = tx_memory_limit;
+            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
+                SpecId::CANCUN,
+                BlockEnv::<BaseEvmTypes>::default(),
+                ethereum_tx_registry(SpecId::CANCUN),
+                database.clone(),
+                Precompiles::base(SpecId::CANCUN),
+            );
+            let mut stops = Stops::default();
+            let executed = evm.transact_with_inspector(&tx, &mut stops).unwrap();
+            assert!(executed.result().is_success());
+            drop(executed);
+            let last_stop = stops.0.iter().find(|(address, _)| *address == last).unwrap().1;
+            assert_eq!(last_stop, expected);
+        }
     }
 }
