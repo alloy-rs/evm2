@@ -963,7 +963,7 @@ fn build_step_contract_object(
 ///
 /// NaN and infinities become 0, fractions truncate toward zero and values outside the `int64`
 /// range become `i64::MIN`, as Go's float conversion does on amd64.
-fn to_int64(value: &JsValue, ctx: &mut Context) -> JsResult<i64> {
+pub(crate) fn to_int64(value: &JsValue, ctx: &mut Context) -> JsResult<i64> {
     // Boa's `ToNumber` rejects BigInt, but stack-derived tracer values are BigInt. Geth's bigint
     // objects reach goja through their `Number` value, so go through a float as well.
     let number = match value.as_bigint() {
@@ -1238,7 +1238,7 @@ mod tests {
         let state = PendingState::default();
         let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
         {
-            let addr = JsValue::from(js_string!(Address::default().to_string()));
+            let addr = to_uint8_array_value(Address::default(), &mut context).unwrap();
             let db_value = reusable_db.value();
             reusable_db.with_changes_scope(&state, &mut db, || {
                 let res = f.call(&result, &[db_value.clone(), addr.clone()], &mut context).unwrap();
@@ -1252,7 +1252,7 @@ mod tests {
         db.insert_account_info(&addr, Default::default());
 
         {
-            let addr = JsValue::from(js_string!(addr.to_string()));
+            let addr = to_uint8_array_value(addr, &mut context).unwrap();
             let db_value = reusable_db.value();
             reusable_db.with_changes_scope(&state, &mut db, || {
                 let res = f.call(&result, &[db_value.clone(), addr.clone()], &mut context).unwrap();
@@ -1291,7 +1291,7 @@ mod tests {
         let state = PendingState::default();
         {
             let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
-            let addr = JsValue::from(js_string!(Address::default().to_string()));
+            let addr = to_uint8_array_value(Address::default(), &mut context).unwrap();
             reusable_db.with_changes_scope(&state, &mut db, || {
                 let _res = setup_fn
                     .call(&(obj.clone().into()), &[reusable_db.value()], &mut context)
@@ -1299,7 +1299,7 @@ mod tests {
                 assert!(obj.get(js_string!("db"), &mut context).unwrap().is_object());
 
                 let addr = Address::default();
-                let addr = JsValue::from(js_string!(addr.to_string()));
+                let addr = to_uint8_array_value(addr, &mut context).unwrap();
                 let res = result_fn
                     .call(&(obj.clone().into()), core::slice::from_ref(&addr), &mut context)
                     .unwrap();
@@ -1360,8 +1360,8 @@ mod tests {
         let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
         reusable_db.with_changes_scope(&changes, &mut db, || {
             let js_db = reusable_db.value().as_object().unwrap();
-            let js_addr = JsValue::from(js_string!(address.to_string()));
-            let js_slot = JsValue::from(js_string!(B256::from(slot).to_string()));
+            let js_addr = to_uint8_array_value(address, &mut context).unwrap();
+            let js_slot = to_uint8_array_value(B256::from(slot), &mut context).unwrap();
 
             let exists = js_db
                 .get(js_string!("exists"), &mut context)
@@ -1413,6 +1413,19 @@ mod tests {
                 bytes_from_value(state, &mut context).unwrap(),
                 B256::from(value).as_slice()
             );
+
+            // Geth's db methods read their buffers with `allowString` false.
+            let js_hex = JsValue::from(js_string!(address.to_string()));
+            for method in ["exists", "getBalance", "getNonce", "getCode", "getState"] {
+                let err = js_db
+                    .get(js_string!(method), &mut context)
+                    .unwrap()
+                    .as_callable()
+                    .unwrap()
+                    .call(&JsValue::undefined(), &[js_hex.clone(), js_hex.clone()], &mut context)
+                    .unwrap_err();
+                assert_eq!(err.as_native().unwrap().message(), "invalid buffer type", "{method}");
+            }
         });
     }
 
@@ -1539,7 +1552,7 @@ mod tests {
                 db.with_changes_scope(&state, &mut database, || {
                     with_step(&log, opcode::STOP, &stack, &memory, &contract, || {
                         assert!(ctx.eval(Source::from_bytes(
-                            "savedLog.stack.peek(0) === 42n && savedLog.memory.getUint(0) >> 248n === 7n && savedDb.getBalance('00') === 0n"
+                            "savedLog.stack.peek(0) === 42n && savedLog.memory.getUint(0) >> 248n === 7n && savedDb.getBalance([0]) === 0n"
                         )).unwrap().as_boolean().unwrap());
                         match outcome {
                             0 => Ok(JsValue::undefined()),
@@ -1558,7 +1571,7 @@ mod tests {
             drop((stack, memory, state, database));
             // Retained JS objects must not access the now-dropped backing storage.
             for expression in
-                ["savedLog.stack.peek(0)", "savedLog.memory.getUint(0)", "savedDb.getBalance('00')"]
+                ["savedLog.stack.peek(0)", "savedLog.memory.getUint(0)", "savedDb.getBalance([0])"]
             {
                 assert!(ctx.eval(Source::from_bytes(expression)).is_err(), "{expression}");
             }
