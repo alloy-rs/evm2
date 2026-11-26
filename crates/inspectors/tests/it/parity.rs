@@ -16,7 +16,8 @@ use alloy_rpc_types_trace::{
 };
 use evm2::{evm::InMemoryDB, interpreter::opcode::OpCode, utils::address_to_word};
 use evm2_inspectors::tracing::{
-    TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
+    ParityTraceBuilder, PrecompileExclusion, TracingInspector, TracingInspectorConfig,
+    parity::populate_state_diff,
 };
 
 #[test]
@@ -1444,6 +1445,24 @@ fn create_step_without_a_child_leaves_precompile_subtraces_to_calls() {
         |name| trace.ops.iter().find(|op| op.op.as_deref() == Some(name)).unwrap().sub.is_some();
     assert!(!sub("CREATE"));
     assert!(sub("CALL"));
+}
+
+#[test]
+fn create_step_whose_child_is_missing_has_no_subtrace() {
+    // A deserialized arena can order a call its node does not list as a child.
+    let mut nodes = inspect_code(
+        &hex!("5f5f5ff000"),
+        &[],
+        SpecId::PRAGUE,
+        TracingInspectorConfig::parity_vm_trace(),
+    )
+    .into_traces()
+    .into_nodes();
+    nodes[0].children.clear();
+    let trace = ParityTraceBuilder::new(nodes, PrecompileExclusion::ZeroValue).vm_trace();
+    let create = trace.ops.iter().find(|op| op.op.as_deref() == Some("CREATE")).unwrap();
+    assert_eq!(create.cost, 32_000);
+    assert!(create.sub.is_none());
 }
 
 #[test]

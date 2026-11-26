@@ -370,15 +370,18 @@ impl ParityTraceBuilder {
                         let maybe_sub_call = if step.is_call_like_op() && !step.is_error() {
                             match ordering.next_if(|next| {
                                 matches!(next, TraceMemberOrder::Call(child)
-                                    if !self.nodes[current.children[*child]].trace.parent_step_omitted)
+                                if current.children.get(*child).is_none_or(|&idx| {
+                                    !self.nodes[idx].trace.parent_step_omitted
+                                }))
                             }) {
                                 Some(TraceMemberOrder::Call(child)) => {
                                     // Parity counts the gas a creation gives its child in the
                                     // step cost, also when the creation fails its precheck. Geth
                                     // struct logs leave it out, and a call's cost has it already.
-                                    if step.is_create_op() {
-                                        forwarded_gas =
-                                            self.nodes[current.children[*child]].trace.gas_limit;
+                                    if step.is_create_op()
+                                        && let Some(&idx) = current.children.get(*child)
+                                    {
+                                        forwarded_gas = self.nodes[idx].trace.gas_limit;
                                     }
                                     children.get_mut(*child).and_then(Option::take)
                                 }
