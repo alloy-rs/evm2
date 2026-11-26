@@ -126,18 +126,10 @@ impl CurrentFiber {
     }
 }
 
-struct ResetCurrentFiber(Option<NonNull<CurrentFiber>>);
-
-impl Drop for ResetCurrentFiber {
-    fn drop(&mut self) {
-        CURRENT.set(self.0);
-    }
-}
-
 /// Resumes `fiber`, restoring the caller's [`CURRENT`] when it suspends, returns or panics.
 #[inline]
 fn resume_fiber<R>(fiber: &mut EvmFiber<R>, input: Resume) -> CoroutineResult<Yield, Complete<R>> {
-    let _reset = ResetCurrentFiber(CURRENT.get());
+    let _reset = core::mem::DropGuard::new(CURRENT.get(), |previous| CURRENT.set(previous));
     fiber.resume(input)
 }
 

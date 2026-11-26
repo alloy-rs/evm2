@@ -1,6 +1,8 @@
 //! Geth tests
 
 mod consistency;
+#[cfg(feature = "serde")]
+mod raw_struct_logs;
 mod refund_counter;
 mod runtime_oog;
 
@@ -1038,7 +1040,9 @@ fn test_geth_eip8037_fields_follow_fork() {
         if enabled {
             assert!(sstores[0].state_gas_cost.is_some_and(|cost| cost > 0), "{sstores:#?}");
             assert!(sstores[1].state_gas_cost.is_some_and(|cost| cost < 0), "{sstores:#?}");
-            assert!(frame.struct_logs.iter().all(|log| log.state_gas_reservoir.is_some()));
+            // The gas limit is below the transaction gas cap, so the reservoir stays empty and is
+            // omitted.
+            assert!(frame.struct_logs.iter().all(|log| log.state_gas_reservoir.is_none()));
         } else {
             assert!(
                 frame
@@ -2415,51 +2419,6 @@ fn test_geth_opcode_limit_ignores_named_tracers() {
     assert_eq!(inspector.config().step_limit, None);
 }
 
-#[test]
-fn test_geth_struct_log_out_of_gas_cost() {
-    let contract = address!("0xc000000000000000000000000000000000000004");
-    let caller = address!("0xa000000000000000000000000000000000000004");
-    let code = [op::PUSH1, 0x01, op::PUSH1, 0x00, op::SSTORE];
-
-    let context = Context::mainnet()
-        .with_db(InMemoryDB::default())
-        .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
-        .modify_db_chained(|db| {
-            db.insert_account_info(
-                &contract,
-                AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
-            );
-        });
-
-    let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth());
-    let mut evm = context.build_mainnet().with_inspector(&mut insp);
-
-    // Leaves 5000 gas for the cold zero-to-nonzero SSTORE, which would cost 22100. The step
-    // consumes the 5000 left.
-    let res = evm
-        .inspect_tx(TxEnv {
-            caller,
-            gas_limit: 21_000 + 6 + 5_000,
-            gas_price: 0,
-            kind: TransactTo::Call(contract),
-            data: Bytes::default(),
-            nonce: 0,
-            ..Default::default()
-        })
-        .unwrap();
-    assert!(!res.result.is_success(), "{res:#?}");
-
-    let frame = insp.geth_builder().geth_traces(
-        res.result.tx_gas_used(),
-        res.result.output().unwrap_or_default().clone(),
-        GethDefaultTracingOptions::default(),
-    );
-    let sstore = frame.struct_logs.last().unwrap();
-    assert_eq!(sstore.opcode(), "SSTORE");
-    assert_eq!(sstore.gas, 5_000);
-    assert_eq!(sstore.gas_cost, 5_000);
-}
-
 /// EIP-7708: a transfer log of a reverted call is rolled back and does not consume an index.
 #[test]
 fn test_geth_calltracer_log_index_eip7708_revert() {
@@ -3665,4 +3624,42 @@ fn debug_inspector_limits_halt_steps_and_call_inputs() {
             .set_behavior(TraceLimitBehavior::Halt);
         assert_eq!(run(Some(limits)), !halts, "{options}");
     }
+}
+
+#[test]
+fn debug_inspector_recorded_bytes_sums_mux_tracers() {
+    // The CALL passes one byte of input.
+    let code = hex!("5f5f60015f5f5f5af100");
+    let account = address!("1000000000000000000000000000000000000001");
+    let recorded = |options| {
+        let opts = serde_json::from_value(options).unwrap();
+        let mut inspector = DebugInspector::new(opts).unwrap();
+        let context = Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+            db.insert_account_info(
+                &account,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(code.to_vec().into())),
+                    ..Default::default()
+                },
+            );
+        });
+        let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+        evm.inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(account),
+            ..Default::default()
+        })
+        .unwrap();
+        drop(evm);
+        inspector.recorded_bytes()
+    };
+    let call = recorded(json!({"tracer": "callTracer"}));
+    let erc7562 = recorded(json!({"tracer": "erc7562Tracer"}));
+    assert!(call > 0 && erc7562 > 0, "{call} {erc7562}");
+    let mux = recorded(json!({
+        "tracer": "muxTracer",
+        "tracerConfig": {"callTracer": {}, "erc7562Tracer": {}},
+    }));
+    assert_eq!(mux, call + erc7562);
+    assert_eq!(recorded(json!({"tracer": "noopTracer"})), 0);
 }

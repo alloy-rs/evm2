@@ -1188,7 +1188,7 @@ fn sync_compile_wait_times_out() {
     });
     let (_tx, rx) = chan::bounded(1);
 
-    let err = tb.recv_compile_completion(rx).unwrap_err();
+    let err = tb.recv_compile_completion(&rx).unwrap_err();
     assert!(err.to_string().contains("timed out waiting for compilation"));
 }
 

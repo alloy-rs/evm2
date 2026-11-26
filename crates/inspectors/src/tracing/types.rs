@@ -315,6 +315,10 @@ pub struct CallTraceNode {
     pub logs: Vec<CallLog>,
     /// Ordering of child calls and logs
     pub ordering: Vec<TraceMemberOrder>,
+    /// The message destination when it differs from the execution address implied by the trace.
+    /// An inspector can redirect a message on entry or override the returned CREATE address.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub execution_address_override: Option<Address>,
 }
 
 impl CallTraceNode {
@@ -322,7 +326,13 @@ impl CallTraceNode {
     ///
     /// See `Inspector::call` impl of [TracingInspector](crate::tracing::TracingInspector)
     pub const fn execution_address(&self) -> Address {
-        if self.trace.kind.is_delegate() { self.trace.caller } else { self.trace.address }
+        if let Some(address) = self.execution_address_override {
+            address
+        } else if self.trace.kind.is_delegate() {
+            self.trace.caller
+        } else {
+            self.trace.address
+        }
     }
 
     /// Iterates over steps in execution order, pairing each step with the child it called.
@@ -366,7 +376,7 @@ impl CallTraceNode {
 
     /// Returns the call context's 4 byte selector
     pub fn selector(&self) -> Option<FixedBytes<4>> {
-        (self.trace.data.len() >= 4).then(|| FixedBytes::from_slice(&self.trace.data[..4]))
+        self.trace.data.first_chunk().map(|chunk| FixedBytes::new(*chunk))
     }
 
     /// Returns `true` if this trace was a selfdestruct.
@@ -740,13 +750,17 @@ impl CallTraceStep {
         depth: u64,
         stack: Option<Vec<U256>>,
     ) -> StructLog {
+        // A step that halts exceptionally costs 0, like geth and ethereum/execution-apis#986: the
+        // attempted cost depends on where each client detects the failure.
+        let halted = self.is_error();
         StructLog {
             depth,
             error: self.as_error(),
             gas: self.gas_remaining,
-            gas_cost: self.gas_cost,
-            state_gas_cost: self.state_gas_cost(),
-            state_gas_reservoir: self.state_gas_reservoir,
+            gas_cost: if halted { 0 } else { self.gas_cost },
+            state_gas_cost: self.state_gas_cost().filter(|_| !halted),
+            // Like geth and ethereum/execution-apis#852, an empty reservoir is omitted.
+            state_gas_reservoir: self.state_gas_reservoir.filter(|reservoir| *reservoir != 0),
             op: if self.op.is_valid() {
                 self.op.as_str().into()
             } else {
@@ -779,10 +793,7 @@ impl CallTraceStep {
     /// CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE, CREATE2
     #[inline]
     pub(crate) const fn is_call_like_op(&self) -> bool {
-        matches!(
-            self.op.get(),
-            op::CALL | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CALLCODE | op::CREATE2
-        )
+        is_call_like(self.op)
     }
 
     // Reverts are control flow; only exceptional halts populate a step error.
@@ -868,6 +879,14 @@ impl CallTraceStepExtra {
     }
 }
 
+/// Whether the geth struct logger follows a child message started by this opcode.
+pub(super) const fn is_call_like(op: OpCode) -> bool {
+    matches!(
+        op.get(),
+        op::CALL | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CALLCODE | op::CREATE2
+    )
+}
+
 /// The deltas a [`CallTraceStep`] produced, as reported by parity's `vmTrace`.
 ///
 /// Recorded in [`CallTrace::step_deltas`] for the steps that report memory or storage, make a
@@ -951,10 +970,6 @@ pub struct RecordedMemory(pub(crate) Bytes);
 impl RecordedMemory {
     #[inline]
     pub(crate) fn new(mem: &[u8]) -> Self {
-        if mem.is_empty() {
-            return Self(Bytes::new());
-        }
-
         Self(Bytes::copy_from_slice(mem))
     }
 
