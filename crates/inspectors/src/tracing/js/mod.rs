@@ -691,7 +691,8 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         if !core::mem::take(&mut pending.active) {
             return;
         }
-        let result = interp.result().err();
+        // Geth reports REVERT only through the exit hook: its step sees no error and no fault runs.
+        let result = interp.result().err().filter(|stop| !stop.is_revert());
         // A failed stack check leaves the stack as the opcode found it.
         let is_fault = result
             .is_some_and(|stop| should_fault(stop, pending.instruction.op, interp.stack().len()));
@@ -1681,11 +1682,11 @@ mod tests {
         let code = r#"{
             res: [],
             step: function(log) {
-                // Test slicing a hex string
-                var hex = '0xdeadbeefcafe';
-                this.res.push(toHex(slice(hex, 0, 2)));
-                this.res.push(toHex(slice(hex, 2, 4)));
-                this.res.push(toHex(slice(hex, 4, 6)));
+                // Test slicing a byte array
+                var bytes = [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe];
+                this.res.push(toHex(slice(bytes, 0, 2)));
+                this.res.push(toHex(slice(bytes, 2, 4)));
+                this.res.push(toHex(slice(bytes, 4, 6)));
 
                 // Test slicing an array
                 var arr = [0x01, 0x02, 0x03, 0x04, 0x05];
