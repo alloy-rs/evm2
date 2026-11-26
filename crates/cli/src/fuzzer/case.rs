@@ -803,15 +803,18 @@ mod tests {
     fn validate_rejects_creates_for_non_creating_tx_kinds() {
         let mut case = EvmCase::default();
         case.tx.creates = true;
+        case.extra_txs.push(CaseTx { kind: FuzzTxKind::Eip7702, ..CaseTx::default() });
         assert_eq!(case.validate(), Ok(()));
-        case.extra_txs.push(CaseTx {
-            kind: FuzzTxKind::Eip7702,
-            creates: true,
-            ..CaseTx::default()
-        });
+        case.extra_txs[0].creates = true;
         assert_eq!(
             case.validate(),
             Err("eip7702 transactions cannot create contracts".to_string())
+        );
+        case.extra_txs.clear();
+        case.tx.kind = FuzzTxKind::Eip4844;
+        assert_eq!(
+            case.validate(),
+            Err("eip4844 transactions cannot create contracts".to_string())
         );
     }
 }
