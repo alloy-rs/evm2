@@ -401,7 +401,6 @@ fn test_geth_jstracer_call_step_cost_and_depth() {
             ["exit"],
             ["STATICCALL", 1, null, cold_call, "3333"],
             ["enter", "STATICCALL"],
-            ["fault", 2],
             ["exit"],
             ["CREATE", 1, null, create_costs[0], "1d"],
             ["enter", "CREATE"],

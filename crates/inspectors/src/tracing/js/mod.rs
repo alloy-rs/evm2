@@ -691,7 +691,8 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         if !core::mem::take(&mut pending.active) {
             return;
         }
-        let result = interp.result().err();
+        // Geth reports REVERT only through the exit hook: its step sees no error and no fault runs.
+        let result = interp.result().err().filter(|stop| !stop.is_revert());
         // A failed stack check leaves the stack as the opcode found it.
         let is_fault = result
             .is_some_and(|stop| should_fault(stop, pending.instruction.op, interp.stack().len()));
