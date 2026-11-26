@@ -40,6 +40,11 @@ const SOME_GAS: &[u8] = &[op::PUSH2, 0xff, 0xff];
 /// Code that pushes little gas, for a call that loops until it runs out.
 const LITTLE_GAS: &[u8] = &[op::PUSH2, 0x01, 0x00];
 
+/// The state gas of a new storage slot at Amsterdam.
+const SLOT_STATE_GAS: i64 = 64 * 1_530;
+/// The state gas of a new account at Amsterdam.
+const ACCOUNT_STATE_GAS: i64 = 183_600;
+
 /// Returns the code that calls `target` with the gas that `gas` pushes and no input, output or
 /// value, and pops the result.
 fn call(opcode: u8, target: u8, gas: &[u8]) -> Vec<u8> {
@@ -206,6 +211,10 @@ fn logs_of<'a>(trace: &'a Value, op: &str) -> Vec<&'a Value> {
     trace["structLogs"].as_array().unwrap().iter().filter(|log| log["op"] == op).collect()
 }
 
+fn state_gas_cost(log: &Value) -> Option<i64> {
+    log.get("stateGasCost").and_then(Value::as_i64)
+}
+
 #[test]
 fn raw_struct_logs_match_typed_struct_logs() {
     let db = db_with(busy_code());
@@ -283,19 +292,42 @@ fn raw_struct_logs_match_typed_struct_logs_with_state_gas() {
 
     let logs = trace["structLogs"].as_array().unwrap();
     assert!(logs.iter().all(|log| log.get("stateGasReservoir").is_some()));
-    let state_gas_cost = |log: &Value| log.get("stateGasCost").and_then(Value::as_i64);
-    // Both the call to the nested contract and its call to the writer report the state the writer
-    // created. The later calls create none.
+    // A call reports none of the state its callee creates, which the callee's SSTORE reports.
     let calls = logs_of(&trace, "CALL");
     assert_eq!(calls.len(), 5);
-    let costs: Vec<_> =
-        calls.iter().map(|log| (log["depth"].as_u64(), state_gas_cost(log))).collect();
-    assert!(costs[0].1.is_some_and(|cost| cost > 0), "{costs:?}");
-    assert_eq!(costs[1], (Some(2), costs[0].1), "{costs:?}");
-    assert_eq!(costs[2..], [(Some(2), None), (Some(1), None), (Some(1), None)], "{costs:?}");
-    assert!(state_gas_cost(logs_of(&trace, "CREATE")[0]).is_some_and(|cost| cost > 0));
-    let sstores: Vec<_> = logs_of(&trace, "SSTORE").into_iter().map(state_gas_cost).collect();
-    assert!(sstores.iter().any(|cost| cost.is_some_and(|cost| cost < 0)), "{sstores:?}");
+    assert!(calls.iter().all(|log| state_gas_cost(log).is_none()), "{calls:?}");
+    let slot = Some(SLOT_STATE_GAS);
+    let sstores: Vec<_> = logs_of(&trace, "SSTORE")
+        .into_iter()
+        .map(|log| (log["depth"].as_u64(), state_gas_cost(log)))
+        .collect();
+    assert_eq!(
+        sstores,
+        [
+            (Some(1), slot),
+            (Some(3), slot),
+            (Some(2), None),
+            (Some(1), Some(-SLOT_STATE_GAS)),
+            (Some(2), slot),
+        ]
+    );
+    // A create reports the account it creates, but not the slot its init code sets.
+    assert_eq!(state_gas_cost(logs_of(&trace, "CREATE")[0]), Some(ACCOUNT_STATE_GAS));
+}
+
+#[test]
+fn raw_struct_logs_report_state_gas_charged_before_a_failed_message() {
+    // A create whose init code returns more code than a contract may hold.
+    let create = hex!("65620100015ff35f526006601a5ff0505f5000");
+    // A call that sends value this contract does not have to a new account.
+    let call = hex!("5f5f5f5f600160ee5af15000");
+    for (code, op) in [(&create[..], "CREATE"), (&call[..], "CALL")] {
+        let trace =
+            assert_modes_match(&db_with(code.to_vec()), SpecId::AMSTERDAM, &call_contract(), true);
+        assert_eq!(trace["failed"], false, "{op}");
+        // The message fails and the step's charge is refilled, but the step reports the charge.
+        assert_eq!(state_gas_cost(logs_of(&trace, op)[0]), Some(ACCOUNT_STATE_GAS), "{op}");
+    }
 }
 
 #[test]
