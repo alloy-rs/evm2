@@ -191,6 +191,12 @@ impl JitBackend {
             config.host.is_default() || (!config.aot && config.store.is_none()),
             "custom hosts require JIT without an artifact store"
         );
+        eyre::ensure!(config.tuning.channel_capacity != 0, "channel_capacity must be non-zero");
+        eyre::ensure!(
+            config.tuning.max_events_per_drain != 0,
+            "max_events_per_drain must be non-zero"
+        );
+
         let enabled = config.enabled;
         let (tx, rx) = chan::bounded::<Command>(config.tuning.channel_capacity);
         let events = ArrayQueue::new(config.tuning.channel_capacity);

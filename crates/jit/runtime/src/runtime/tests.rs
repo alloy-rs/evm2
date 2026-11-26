@@ -371,6 +371,26 @@ fn aot_out_of_process_is_rejected() {
     assert_eq!(error.to_string(), "AOT mode does not support out-of-process compilation");
 }
 
+#[test]
+fn zero_channel_capacity_is_rejected() {
+    let config = RuntimeConfig {
+        tuning: RuntimeTuning { channel_capacity: 0, ..Default::default() },
+        ..Default::default()
+    };
+    let error = JitBackend::new(config).unwrap_err();
+    assert_eq!(error.to_string(), "channel_capacity must be non-zero");
+}
+
+#[test]
+fn zero_max_events_per_drain_is_rejected() {
+    let config = RuntimeConfig {
+        tuning: RuntimeTuning { max_events_per_drain: 0, ..Default::default() },
+        ..Default::default()
+    };
+    let error = JitBackend::new(config).unwrap_err();
+    assert_eq!(error.to_string(), "max_events_per_drain must be non-zero");
+}
+
 // ===========================================================================
 // Tests: lookup behavior.
 // ===========================================================================
