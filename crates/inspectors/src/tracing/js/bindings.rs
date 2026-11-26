@@ -28,7 +28,7 @@ use boa_engine::{
 use boa_gc::{Finalize, Trace, empty_trace};
 use core::{
     cell::{OnceCell, Ref, RefCell, RefMut},
-    marker::PhantomData,
+    mem::DropGuard,
     ops::Range,
 };
 use evm2::{
@@ -225,7 +225,18 @@ impl ReusableStepLog {
             }
         }
 
-        let _scope = StepScope { state: &self.state, snapshot };
+        // Revokes the JS log object's access to the interpreter's stack and memory.
+        let _scope = DropGuard::new((&self.state, snapshot), |(state, snapshot)| {
+            let mut state = state.borrow_mut();
+            state.stack.post = None;
+            state.memory.post = None;
+            // Keep the last scalar fields available through retained log objects, while
+            // returning the reusable stack/memory buffers to their call depth.
+            snapshot.pc = state.pc;
+            snapshot.op = state.op;
+            snapshot.gas_remaining = state.gas_remaining;
+            core::mem::swap(&mut state.snapshot, snapshot);
+        });
         f()
     }
 
@@ -289,28 +300,6 @@ impl Default for StepInfo<'_> {
             input: &NO_INPUT,
             call_id: 0,
         }
-    }
-}
-
-/// Revokes the JS log object's access to the interpreter's stack and memory when dropped.
-#[derive(Debug)]
-#[must_use]
-struct StepScope<'a> {
-    state: &'a Shared<StepLogState>,
-    snapshot: &'a mut StepSnapshot,
-}
-
-impl Drop for StepScope<'_> {
-    fn drop(&mut self) {
-        let mut state = self.state.borrow_mut();
-        state.stack.post = None;
-        state.memory.post = None;
-        // Keep the last scalar fields available through retained log objects, while returning
-        // the reusable stack/memory buffers to their call depth.
-        self.snapshot.pc = state.pc;
-        self.snapshot.op = state.op;
-        self.snapshot.gas_remaining = state.gas_remaining;
-        core::mem::swap(&mut state.snapshot, self.snapshot);
     }
 }
 
@@ -496,7 +485,7 @@ impl ReusableEvmDb {
     /// Access is revoked on return or unwind; callers cannot retain or forget the guard.
     fn with_scope<'a, R>(&'a self, reader: &'a mut dyn EvmDbReader, f: impl FnOnce() -> R) -> R {
         assert!(self.state.borrow().reader.is_none(), "database scope is already active");
-        // SAFETY: The reader is borrowed throughout f, and DbScope clears the reference on
+        // SAFETY: The reader is borrowed throughout f, and the guard clears the reference on
         // return or unwind before the reader or any of its borrowed inputs can be dropped.
         let reader = unsafe {
             core::mem::transmute::<
@@ -505,27 +494,13 @@ impl ReusableEvmDb {
             >(reader)
         };
         self.state.borrow_mut().reader = Some(reader);
-        let _scope = DbScope { state: &self.state, _borrow: PhantomData };
+        // Revokes the JS database object's access to the state and database.
+        let _scope = DropGuard::new(&self.state, |state| state.borrow_mut().reader = None);
         f()
     }
 
     pub(crate) fn value(&self) -> JsValue {
         self.object.clone().into()
-    }
-}
-
-/// Revokes the JS database object's access to the state and database when dropped.
-#[derive(Debug)]
-#[must_use]
-struct DbScope<'a> {
-    state: &'a Shared<EvmDbState>,
-    _borrow: PhantomData<&'a mut dyn EvmDbReader>,
-}
-
-impl Drop for DbScope<'_> {
-    fn drop(&mut self) {
-        let mut state = self.state.borrow_mut();
-        state.reader = None;
     }
 }
 

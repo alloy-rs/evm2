@@ -1294,13 +1294,7 @@ fn moved_borrowed_inspector() -> ! {
     const MESSAGE: &str =
         "an EVM holding a borrowed inspector was moved out of `Evm::transact_with_inspector`";
     // A panic while another one unwinds aborts, also without `std`.
-    struct Abort;
-    impl Drop for Abort {
-        fn drop(&mut self) {
-            panic!("{MESSAGE}");
-        }
-    }
-    let _abort = Abort;
+    let _abort = core::mem::DropGuard::new((), |()| panic!("{MESSAGE}"));
     panic!("{MESSAGE}");
 }
 
@@ -3320,6 +3314,43 @@ mod tests {
             use std::os::unix::process::ExitStatusExt;
             assert_eq!(output.status.signal(), Some(6), "expected an abort: {stderr}");
         }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn panic_in_nested_system_call_unwinds_out_of_borrowed_inspector_call() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    let _ = req
+                        .host
+                        .system_call(super::system::SystemTx::new(TEST_PRECOMPILE, Bytes::new()));
+                    Ok(TxResultExt { status: true, ..TxResultExt::default() })
+                },
+            ),
+        );
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |_, _, _| {
+            panic!("system call panicked")
+        })]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            precompiles,
+        );
+        let tx = test_tx(0);
+        let mut inspector = NoopInspector::default();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact_with_inspector(&tx, &mut inspector);
+        }));
+
+        assert!(result.is_err());
+        assert!(evm.inspector().is_none());
     }
 
     #[derive(Clone, Copy)]

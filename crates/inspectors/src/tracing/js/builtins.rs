@@ -295,11 +295,8 @@ pub(crate) fn bytes_to_b256(bytes: &[u8]) -> B256 {
 /// Converts a slice of bytes to a fixed-size array.
 ///
 /// If the slice is larger than the array size, it will be trimmed from the left.
-pub(crate) fn bytes_to_fb<const N: usize>(mut bytes: &[u8]) -> FixedBytes<N> {
-    if bytes.len() > N {
-        bytes = &bytes[bytes.len() - N..];
-    }
-    FixedBytes::left_padding_from(bytes)
+pub(crate) fn bytes_to_fb<const N: usize>(bytes: &[u8]) -> FixedBytes<N> {
+    FixedBytes::left_padding_from(&bytes[bytes.len().saturating_sub(N)..])
 }
 
 /// Converts a U256 to a Boa bigint value.

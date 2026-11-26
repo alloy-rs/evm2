@@ -8,8 +8,10 @@ use std::{
 pub(crate) fn read_case(path: &Path) -> Result<EvmCase, String> {
     let contents = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    serde_json::from_str(&contents)
-        .map_err(|err| format!("failed to parse {}: {err}", path.display()))
+    let case = serde_json::from_str::<EvmCase>(&contents)
+        .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
+    case.validate().map_err(|err| format!("invalid case {}: {err}", path.display()))?;
+    Ok(case)
 }
 
 pub(crate) fn write_failure_case(

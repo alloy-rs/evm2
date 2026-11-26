@@ -51,10 +51,7 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 }
 
 pub(crate) fn ecrecover_bytes(sig: &[u8; 64], recid: u8, msg: &[u8; 32]) -> Option<[u8; 32]> {
-    match ecrecover(sig.into(), recid, msg.into()) {
-        Ok(address) => Some(address.0),
-        Err(_) => None,
-    }
+    ecrecover(sig.into(), recid, msg.into()).ok().map(|address| address.0)
 }
 
 // Select the correct implementation based on the enabled features.
