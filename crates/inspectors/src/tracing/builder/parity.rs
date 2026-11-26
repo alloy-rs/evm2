@@ -368,11 +368,9 @@ impl ParityTraceBuilder {
                         }
                         let mut forwarded_gas = 0;
                         let maybe_sub_call = if step.is_call_like_op() && !step.is_error() {
-                            let made_by_step = |child: usize| {
-                                !self.nodes[current.children[child]].trace.parent_step_omitted
-                            };
                             match ordering.next_if(|next| {
-                                matches!(next, TraceMemberOrder::Call(child) if made_by_step(*child))
+                                matches!(next, TraceMemberOrder::Call(child)
+                                    if !self.nodes[current.children[*child]].trace.parent_step_omitted)
                             }) {
                                 Some(TraceMemberOrder::Call(child)) => {
                                     // Parity counts the gas a creation gives its child in the
@@ -446,7 +444,7 @@ impl ParityTraceBuilder {
 
         VmInstruction {
             pc: step.pc as usize,
-            cost: step.gas_cost + forwarded_gas,
+            cost: step.gas_cost.saturating_add(forwarded_gas),
             ex: maybe_execution,
             sub: maybe_sub_call,
             op: Some(step.op.to_string()),
