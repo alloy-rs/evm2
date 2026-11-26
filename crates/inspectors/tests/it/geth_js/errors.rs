@@ -177,6 +177,32 @@ fn faults_follow_steps_and_preserve_instruction_metadata() {
 }
 
 #[test]
+fn revert_is_reported_by_exit_not_fault() {
+    let script = "{e:[],step:function(l){if(l.op.toString()=='REVERT')this.e.push(['step',l.getPC(),l.getError()||null])},fault:function(l){this.e.push(['fault',l.op.toString(),l.getError()])},enter:function(){},exit:function(r){this.e.push(['exit',r.getError(),toHex(r.getOutput())])},result:function(c){return [this.e,c.error||null,toHex(c.output)]}}";
+    // PUSH1 0xaa, PUSH1 0, MSTORE8, PUSH1 1, PUSH1 0, REVERT.
+    let reverting = hex!("60aa60005360016000fd");
+    // Reverting child frame.
+    let parent = [
+        &hex!("60006000600060006000")[..],
+        &hex!("73")[..],
+        CHILD.as_slice(),
+        &hex!("61fffff100")[..],
+    ]
+    .concat();
+    let (actual, result) =
+        execute_with_child(SpecId::CANCUN, script, &parent, &reverting, 1_000_000);
+    assert!(result.result.is_success());
+    assert_eq!(
+        actual.unwrap(),
+        json!([[["step", 9, null], ["exit", "execution reverted", "0xaa"]], null, "0x"])
+    );
+    // Reverting top-level frame.
+    let (actual, result) = execute(script, &reverting, 1_000_000);
+    assert!(!result.result.is_success());
+    assert_eq!(actual.unwrap(), json!([[["step", 9, null]], "execution reverted", "0xaa"]));
+}
+
+#[test]
 fn oversized_initcode_is_reported_by_step() {
     for (code, opcode) in
         [(&hex!("61c00160006000f0")[..], "CREATE"), (&hex!("600061c00160006000f5")[..], "CREATE2")]
