@@ -1725,13 +1725,7 @@ fn cvt_cb_res_t<T>(
 }
 
 fn panic_payload(any: &dyn std::any::Any) -> Option<&str> {
-    if let Some(s) = any.downcast_ref::<&str>() {
-        Some(*s)
-    } else if let Some(s) = any.downcast_ref::<String>() {
-        Some(s.as_str())
-    } else {
-        None
-    }
+    any.downcast_ref::<&str>().copied().or_else(|| any.downcast_ref::<String>().map(String::as_str))
 }
 
 /// Deallocates the vector without running the elements' destructors.

@@ -73,7 +73,10 @@ mod mux;
 pub use mux::{Error as MuxError, MuxInspector};
 
 mod debug;
-pub use debug::{DebugInspector, DebugInspectorError};
+pub use debug::{DebugInspector, DebugInspectorError, DebugTrace, StructLogMode};
+
+mod raw_struct_log;
+pub use raw_struct_log::{RawDefaultFrame, RawStructLogInspector};
 
 /// An inspector that collects call traces.
 ///
@@ -420,9 +423,10 @@ impl TracingInspector {
     /// # Panics
     ///
     /// This expects an existing trace [Self::start_trace_on_call]
-    fn fill_trace_on_call_end<E>(&mut self, result: &MessageResultExt<E>) {
+    fn fill_trace_on_call_end<E>(&mut self, destination: Address, result: &MessageResultExt<E>) {
         let TraceStackEntry { trace_idx, log_count } = self.pop_trace();
-        let trace = &mut self.traces.arena[trace_idx].trace;
+        let node = &mut self.traces.arena[trace_idx];
+        let trace = &mut node.trace;
 
         trace.gas_used = result.gas.spent();
         trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
@@ -438,6 +442,10 @@ impl TracingInspector {
         // overridden it, so it wins over the address recorded when the create started.
         if let Some(address) = result.created_address {
             trace.address = address;
+        }
+        // The exit hook sees the destination after every inspector's entry hook has run.
+        if node.execution_address() != destination {
+            node.execution_address_override = Some(destination);
         }
     }
 
@@ -509,6 +517,8 @@ impl TracingInspector {
             Bytes::new()
         };
 
+        let refunded = step_refund_counter(interp);
+
         let mut immediate_bytes = None;
         if self.config.record_immediate_bytes {
             let size = usize::from(immediate_size(op.get()));
@@ -523,7 +533,7 @@ impl TracingInspector {
 
         // A step that halts on the budget never runs, so it records no access.
         let storage_change = if self.config.record_state_diff && !self.budget.halts() {
-            storage_change(interp, op.get())
+            storage_change(interp, op.get()).map(Box::new)
         } else {
             None
         };
@@ -536,7 +546,7 @@ impl TracingInspector {
             stack,
             memory,
             gas_remaining: interp.gas().remaining(),
-            gas_refund_counter: interp.gas().refunded() as u64,
+            gas_refund_counter: refunded,
             // The state gas cost is populated in `step_end`, and the decoded data never is in
             // `TracingInspector`.
             extra: CallTraceStepExtra { returndata, immediate_bytes, ..Default::default() }.boxed(),
@@ -610,7 +620,7 @@ impl TracingInspector {
             + (stack_words + push_words) * size_of::<U256>()
     }
 
-    /// Records the gas a call or create step has charged, when its message starts.
+    /// Records the gas and state gas a call or create step has charged, when its message starts.
     ///
     /// Invoked on [Inspector::call] and [Inspector::create], where the parent has charged the step,
     /// including the gas forwarded to the child, and the child has not returned any gas yet. A
@@ -619,10 +629,13 @@ impl TracingInspector {
     fn finish_step_charge<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>, forwarded: u64) {
         // The step's own message is the first one it starts; a precompile may start more.
         if let Some(pending) = self.step_stack.last_mut()
-            && pending.gas_after_charge.is_none()
+            && pending.after_charge.is_none()
         {
-            pending.gas_after_charge =
-                Some(interp.gas().remaining_excluding_state_spill().saturating_add(forwarded));
+            let gas = interp.gas();
+            pending.after_charge = Some(ChargedGas {
+                gas: gas.remaining_excluding_state_spill().saturating_add(forwarded),
+                state_gas_spent: gas.state_gas_spent(),
+            });
         }
     }
 
@@ -631,13 +644,8 @@ impl TracingInspector {
     /// Invoked on [Inspector::step_end].
     #[cold]
     fn fill_step_on_step_end<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        let Some(PendingStep {
-            trace_idx,
-            step_idx,
-            gas_before,
-            state_gas_spent,
-            gas_after_charge,
-        }) = self.step_stack.pop()
+        let Some(PendingStep { trace_idx, step_idx, gas_before, state_gas_spent, after_charge }) =
+            self.step_stack.pop()
         else {
             return;
         };
@@ -674,9 +682,9 @@ impl TracingInspector {
         // forwarded by a call and excludes it for a create. Any other step is charged when it
         // ends. State gas that spills into the remaining gas is not part of the cost.
         let result = interp.result();
-        step.gas_cost = match gas_after_charge {
+        step.gas_cost = match after_charge {
             Some(after) if result != Err(InstrStop::ReentrancySentryOOG) => {
-                gas_before.saturating_sub(after)
+                gas_before.saturating_sub(after.gas)
             }
             _ => step_cost(
                 result,
@@ -684,7 +692,12 @@ impl TracingInspector {
                 gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill()),
             ),
         };
-        let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(state_gas_spent);
+        // The state gas cost of a call or create step leaves out the state gas of its child and
+        // the refill of its own charge when the child fails, like geth and
+        // ethereum/execution-apis#852.
+        let state_gas_after = after_charge
+            .map_or_else(|| interp.gas().state_gas_spent(), |after| after.state_gas_spent);
+        let state_gas_delta = state_gas_after.saturating_sub(state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
             step.extra.get_or_insert_default().state_gas_cost = Some(state_gas_delta);
         }
@@ -844,10 +857,10 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn call_end(
         &mut self,
         _interp: &mut Interpreter<'_, '_, T>,
-        _message: &Message<T>,
+        message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        self.fill_trace_on_call_end(result);
+        self.fill_trace_on_call_end(message.destination, result);
     }
 
     fn create(
@@ -885,10 +898,10 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn create_end(
         &mut self,
         _interp: &mut Interpreter<'_, '_, T>,
-        _message: &Message<T>,
+        message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        self.fill_trace_on_call_end(result);
+        self.fill_trace_on_call_end(message.destination, result);
     }
 
     fn selfdestruct(
@@ -957,11 +970,17 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
     }
 }
 
+/// The transaction-wide refund visible at the start of an opcode.
+fn step_refund_counter<T: EvmTypes>(interp: &mut Interpreter<'_, '_, T>) -> u64 {
+    let frame_refunded = interp.gas().refunded();
+    interp.host().tx_refunded(frame_refunded).max(0) as u64
+}
+
 /// Returns the storage access an SLOAD or SSTORE is about to make, read before the opcode runs.
 fn storage_change<T: EvmTypes>(
     interp: &mut Interpreter<'_, '_, T>,
     op: u8,
-) -> Option<Box<StorageChange>> {
+) -> Option<StorageChange> {
     let (key, value, reason) = match (op, interp.stack().as_slice()) {
         (op::SLOAD, [.., key]) => (*key, None, StorageChangeReason::SLOAD),
         (op::SSTORE, [.., value, key]) => (*key, Some(*value), StorageChangeReason::SSTORE),
@@ -970,10 +989,10 @@ fn storage_change<T: EvmTypes>(
     let address = interp.message().destination;
     // A database error leaves the record empty: an opcode that reads the slot fails on it too.
     let current = interp.host().state_mut().storage_slot_untracked(&address, &key).ok()?;
-    Some(Box::new(match value {
+    Some(match value {
         Some(value) => StorageChange { key, value, had_value: Some(current), reason },
         None => StorageChange { key, value: current, had_value: None, reason },
-    }))
+    })
 }
 
 /// Returns the memory range whose contents after execution the opcode reports, derived from its
@@ -1022,15 +1041,25 @@ struct PendingStep {
     gas_before: u64,
     /// The state gas spent when the step started.
     state_gas_spent: i64,
-    /// The same measure once a call or create step charged everything it charges before its
+    /// The same measures once a call or create step charged everything it charges before its
     /// message starts.
-    gas_after_charge: Option<u64>,
+    after_charge: Option<ChargedGas>,
 }
 
 impl PendingStep {
     const fn new(trace_idx: usize, step_idx: usize, gas_before: u64, state_gas_spent: i64) -> Self {
-        Self { trace_idx, step_idx, gas_before, state_gas_spent, gas_after_charge: None }
+        Self { trace_idx, step_idx, gas_before, state_gas_spent, after_charge: None }
     }
+}
+
+/// The gas measures of a [`PendingStep`] once a call or create step charged everything it
+/// charges before its message starts.
+#[derive(Clone, Copy, Debug)]
+struct ChargedGas {
+    /// The remaining gas plus spilled state gas, with the gas forwarded to a call given back.
+    gas: u64,
+    /// The state gas spent.
+    state_gas_spent: i64,
 }
 
 #[cfg(test)]

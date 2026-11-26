@@ -10,7 +10,7 @@
 //! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
 
 use crate::tracing::{TraceLimits, limits::TraceBudget};
-use alloc::{borrow::Cow, vec};
+use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::{
     Bytes, hex, keccak256,
     map::{B256Map, HashMap},
@@ -124,9 +124,8 @@ pub(crate) fn memory_copy_padded(memory: &[u8], offset: u64, size: u64) -> Optio
     if let Some(preimage) = memory.get(offset as usize..end as usize) {
         return Some(Cow::Borrowed(preimage));
     }
-    let mut preimage = vec![0; size as usize];
-    if let Some(overlap) = memory.get(offset as usize..) {
-        preimage[..overlap.len()].copy_from_slice(overlap);
-    }
+    let mut preimage = Vec::with_capacity(size as usize);
+    preimage.extend_from_slice(memory.get(offset as usize..).unwrap_or_default());
+    preimage.resize(size as usize, 0);
     Some(Cow::Owned(preimage))
 }

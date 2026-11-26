@@ -137,6 +137,12 @@ impl Erc7562Inspector {
         self.calls.set_limits(limits);
     }
 
+    /// Returns the bytes of the call inputs counted against the call limits, see
+    /// [`Self::set_call_limits`].
+    pub(crate) const fn recorded_call_bytes(&self) -> usize {
+        self.calls.recorded_bytes()
+    }
+
     /// Returns whether a preimage or a call input was omitted after reaching a byte limit.
     pub const fn limit_exceeded(&self) -> bool {
         self.budget.exceeded() || self.calls.limit_exceeded()
