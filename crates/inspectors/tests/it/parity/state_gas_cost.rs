@@ -193,3 +193,35 @@ fn opcode_gas_of_a_call_leaves_out_its_child_state_gas_spill() {
         }
     }
 }
+
+#[test]
+fn opcode_gas_of_a_create_leaves_out_its_child_state_gas_spill() {
+    // A CREATE whose initcode writes a new slot, then stops, reverts or halts. The CREATE's own
+    // gas is what the struct logger gives it, whether the child's state gas spills past the
+    // reservoir or not.
+    for initcode in [hex!("602a5f5500").as_slice(), &hex!("602a5f555f5ffd"), &hex!("602a5f55fe")] {
+        // PUSHn initcode, PUSH0, MSTORE, then CREATE(0, 32 - len, len).
+        let len = initcode.len() as u8;
+        let mut code = vec![0x5f + len];
+        code.extend_from_slice(initcode);
+        code.extend_from_slice(&[op::PUSH0, op::MSTORE, op::PUSH1, len, op::PUSH1, 32 - len]);
+        code.extend_from_slice(&[op::PUSH0, op::CREATE, op::STOP]);
+        for gas_limit in [1_000_000, FULL_RESERVOIR_GAS_LIMIT] {
+            let config = TracingInspectorConfig::default_geth();
+            let inspector =
+                inspect_funded_code(&code, &[], SpecId::AMSTERDAM, config, 0, gas_limit);
+            let create = inspector.traces().nodes()[0]
+                .trace
+                .steps
+                .iter()
+                .find(|step| step.op.get() == op::CREATE)
+                .unwrap();
+            let mut counter = OpcodeGasInspector::default();
+            drop(run_funded_code(&code, &[], SpecId::AMSTERDAM, &mut counter, 0, gas_limit));
+            let opcode_gas = counter.opcode_gas();
+            let case = format!("initcode {initcode:02x?}, gas limit {gas_limit}");
+            assert_eq!(opcode_gas[&OpCode::new(op::CREATE).unwrap()], create.gas_cost, "{case}");
+            assert_eq!(opcode_gas[&OpCode::new(op::SSTORE).unwrap()], 12_100, "{case}");
+        }
+    }
+}
