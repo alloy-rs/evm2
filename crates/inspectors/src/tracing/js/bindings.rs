@@ -1426,6 +1426,16 @@ mod tests {
                     .unwrap_err();
                 assert_eq!(err.as_native().unwrap().message(), "invalid buffer type", "{method}");
             }
+
+            let js_addr = to_uint8_array_value(address, &mut context).unwrap();
+            let err = js_db
+                .get(js_string!("getState"), &mut context)
+                .unwrap()
+                .as_callable()
+                .unwrap()
+                .call(&JsValue::undefined(), &[js_addr, js_hex], &mut context)
+                .unwrap_err();
+            assert_eq!(err.as_native().unwrap().message(), "invalid buffer type");
         });
     }
 
