@@ -1043,7 +1043,6 @@ mod trace_serde {
         steps: &'a [CallTraceStep],
         step_deltas: &'a [StepDelta],
         decoded: &'a Option<Box<DecodedCallTrace>>,
-        #[serde(skip_serializing_if = "core::ops::Not::not")]
         parent_step_omitted: bool,
     }
 
