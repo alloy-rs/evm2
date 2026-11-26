@@ -368,6 +368,11 @@ impl ParityTraceBuilder {
                         }
                         let mut forwarded_gas = 0;
                         let maybe_sub_call = if step.is_call_like_op() && !step.is_error() {
+                            // A host may log between the step and its child.
+                            while ordering
+                                .next_if(|next| matches!(next, TraceMemberOrder::Log(_)))
+                                .is_some()
+                            {}
                             match ordering.next_if(|next| {
                                 matches!(next, TraceMemberOrder::Call(child)
                                 if current.children.get(*child).is_none_or(|&idx| {

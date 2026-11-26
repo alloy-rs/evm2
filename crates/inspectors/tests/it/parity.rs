@@ -17,7 +17,7 @@ use alloy_rpc_types_trace::{
 use evm2::{evm::InMemoryDB, interpreter::opcode::OpCode, utils::address_to_word};
 use evm2_inspectors::tracing::{
     ParityTraceBuilder, PrecompileExclusion, TracingInspector, TracingInspectorConfig,
-    parity::populate_state_diff,
+    parity::populate_state_diff, types::TraceMemberOrder,
 };
 
 #[test]
@@ -1463,6 +1463,27 @@ fn create_step_whose_child_is_missing_has_no_subtrace() {
     let create = trace.ops.iter().find(|op| op.op.as_deref() == Some("CREATE")).unwrap();
     assert_eq!(create.cost, 32_000);
     assert!(create.sub.is_none());
+}
+
+#[test]
+fn create_step_pairs_with_its_child_across_a_log() {
+    // A host can record a log between a CREATE step and the child it starts.
+    let mut nodes = inspect_code(
+        &hex!("5f5f5ff000"),
+        &[],
+        SpecId::PRAGUE,
+        TracingInspectorConfig::parity_vm_trace(),
+    )
+    .into_traces()
+    .into_nodes();
+    let child_gas = nodes[1].trace.gas_limit;
+    let call =
+        nodes[0].ordering.iter().position(|m| matches!(m, TraceMemberOrder::Call(0))).unwrap();
+    nodes[0].ordering.insert(call, TraceMemberOrder::Log(0));
+    let trace = ParityTraceBuilder::new(nodes, PrecompileExclusion::ZeroValue).vm_trace();
+    let create = trace.ops.iter().find(|op| op.op.as_deref() == Some("CREATE")).unwrap();
+    assert_eq!(create.cost, 32_000 + child_gas);
+    assert!(create.sub.is_some());
 }
 
 #[test]
