@@ -266,6 +266,9 @@ impl BalContext {
     ///
     /// The BAL records an account removed by an earlier transaction as zeroed writes, so an
     /// account that its writes leave empty is absent, as it is after sequential execution.
+    /// This relies on EIP-161 state clearing, which every spec with EIP-7928 BALs (Amsterdam
+    /// onward) includes: a transaction that writes an account and leaves it empty touches it,
+    /// so the account is removed rather than kept as an existing empty account.
     #[inline]
     pub fn populate_bal_account(
         &self,
@@ -275,7 +278,7 @@ impl BalContext {
         let was_present = account.is_some();
         let mut info = account.take().unwrap_or_default();
         let changed = bal_account.populate_account_info(self.bal_index, &mut info);
-        // An account emptied by BAL writes was removed by an earlier transaction.
+        // An account emptied by BAL writes was removed by an earlier transaction (EIP-161).
         if changed && info.is_empty() {
             return;
         }
