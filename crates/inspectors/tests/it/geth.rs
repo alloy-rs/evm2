@@ -1040,7 +1040,9 @@ fn test_geth_eip8037_fields_follow_fork() {
         if enabled {
             assert!(sstores[0].state_gas_cost.is_some_and(|cost| cost > 0), "{sstores:#?}");
             assert!(sstores[1].state_gas_cost.is_some_and(|cost| cost < 0), "{sstores:#?}");
-            assert!(frame.struct_logs.iter().all(|log| log.state_gas_reservoir.is_some()));
+            // The gas limit is below the transaction gas cap, so the reservoir stays empty and is
+            // omitted.
+            assert!(frame.struct_logs.iter().all(|log| log.state_gas_reservoir.is_none()));
         } else {
             assert!(
                 frame

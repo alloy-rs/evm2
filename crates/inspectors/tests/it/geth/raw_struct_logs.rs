@@ -282,7 +282,7 @@ fn raw_struct_logs_match_typed_struct_logs_with_state_gas() {
     }
 
     let logs = trace["structLogs"].as_array().unwrap();
-    assert!(logs.iter().all(|log| log.get("stateGasReservoir").is_some()));
+    assert!(logs.iter().all(|log| log.get("stateGasReservoir") != Some(&json!(0))));
     let state_gas_cost = |log: &Value| log.get("stateGasCost").and_then(Value::as_i64);
     // Both the call to the nested contract and its call to the writer report the state the writer
     // created. The later calls create none.
@@ -296,6 +296,24 @@ fn raw_struct_logs_match_typed_struct_logs_with_state_gas() {
     assert!(state_gas_cost(logs_of(&trace, "CREATE")[0]).is_some_and(|cost| cost > 0));
     let sstores: Vec<_> = logs_of(&trace, "SSTORE").into_iter().map(state_gas_cost).collect();
     assert!(sstores.iter().any(|cost| cost.is_some_and(|cost| cost < 0)), "{sstores:?}");
+}
+
+#[test]
+fn raw_struct_logs_omit_an_empty_state_gas_reservoir() {
+    // Two new slots: the reservoir pays for the first, and the second drains it.
+    let code = hex!("6001600055600160015500").to_vec();
+    // The gas above the 2^24 transaction gas cap fills the reservoir.
+    let tx = TxEnv { gas_limit: 16_777_216 + 100_000, ..call_contract() };
+    let trace = assert_modes_match(&db_with(code), SpecId::AMSTERDAM, &tx, true);
+    let reservoirs: Vec<_> = trace["structLogs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|log| log.get("stateGasReservoir").and_then(Value::as_u64))
+        .collect();
+    let left = Some(100_000 - 64 * 1_530);
+    let full = Some(100_000);
+    assert_eq!(reservoirs, [full, full, full, left, left, left, None]);
 }
 
 #[test]
