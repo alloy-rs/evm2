@@ -238,7 +238,6 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     /// The current instruction being translated.
     current_inst: Option<Inst>,
 
-    // Basic blocks are `None` when outside of a main function.
     /// `dynamic_jump_table` incoming values.
     incoming_dynamic_jumps: Incoming<B>,
     /// The dynamic jump table block where all dynamic jumps branch to.
@@ -247,11 +246,11 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     /// `failure_block` incoming values.
     incoming_failures: Incoming<B>,
     /// The block that all failures branch to.
-    failure_block: Option<B::BasicBlock>,
+    failure_block: B::BasicBlock,
     /// `return_block` incoming values.
     incoming_returns: Incoming<B>,
     /// The return block that all return instructions branch to.
-    return_block: Option<B::BasicBlock>,
+    return_block: B::BasicBlock,
 
     /// Builtins.
     builtins: &'a mut Builtins<B>,
@@ -380,9 +379,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             dynamic_jump_table,
 
             incoming_failures: Vec::new(),
-            failure_block: Some(failure_block),
+            failure_block,
             incoming_returns: Vec::new(),
-            return_block: Some(return_block),
+            return_block,
 
             builtins,
 
@@ -437,7 +436,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         fx.bcx.br(first_inst_block);
 
         // Finalize the failure block.
-        fx.bcx.switch_to_block(fx.failure_block.unwrap());
+        fx.bcx.switch_to_block(fx.failure_block);
         if !fx.incoming_failures.is_empty() {
             // Semantically, the EVM has only one halt; the distinct failure
             // `InstrStop` codes exist purely for debugging and error messages.
@@ -467,7 +466,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
 
         // Finalize the return block.
-        fx.bcx.switch_to_block(fx.return_block.unwrap());
+        fx.bcx.switch_to_block(fx.return_block);
         if !fx.incoming_returns.is_empty() {
             let return_value = fx.bcx.phi(fx.i8_type, &fx.incoming_returns);
             if config.inspect_stack {
@@ -913,7 +912,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.call_fallible_builtin(Builtin::CallDataCopy, &[self.ecx, sp]);
             }
             op::CODESIZE => {
-                let len = self.bcx.iconst(self.word_type, self.bytecode.codesize() as i64);
+                let len = self.bcx.iconst(self.word_type, self.bytecode.code.len() as i64);
                 self.push(len);
             }
             op::CODECOPY => {
@@ -1290,18 +1289,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         if expected_top < self.vstack.live_range().start {
             let inst = self.current_inst.unwrap();
             // Walk backward to find the section head for diagnostic context.
-            let mut head = inst;
-            for i in (0..inst.index()).rev() {
-                let idx = Inst::new(i);
-                let d = self.bytecode.inst(idx);
-                if d.is_dead_code() {
-                    continue;
-                }
-                if d.is_stack_section_head() {
-                    head = idx;
-                    break;
-                }
-            }
+            let head = (0..inst.index())
+                .rev()
+                .map(Inst::new)
+                .find(|&idx| {
+                    let d = self.bytecode.inst(idx);
+                    !d.is_dead_code() && d.is_stack_section_head()
+                })
+                .unwrap_or(inst);
             // Dump the section from head to current inst.
             let mut section_dump = String::new();
             for i in head.index()..=inst.index() {
@@ -1312,7 +1307,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 }
                 let _ = write!(
                     section_dump,
-                    "\n  ic{i} pc={} {:?} io={:?} flags={:?} gas={:?} stack={:?}{}{}",
+                    "\n  ic{i} pc={} {} io={:?} flags={:?} gas={:?} stack={:?}{}{}",
                     self.bytecode.pc(idx),
                     d.to_op(),
                     d.stack_io(),
@@ -1326,7 +1321,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             let head_data = self.bytecode.inst(head);
             panic!(
                 "sync: expected_top={expected_top} < base={}, section_len_offset={}, \
-                 diff={diff}, current_top={current_top}, inst={:?} (ic{})\n\
+                 diff={diff}, current_top={current_top}, inst={} (ic{})\n\
                  section head=ic{}, head_stack_section={:?}, section:{section_dump}",
                 self.vstack.live_range().start,
                 self.section_len_offset,
@@ -1357,7 +1352,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         debug_assert_eq!(
             self.vstack.top_offset(),
             expected_top,
-            "virtual stack sync mismatch after {:?}",
+            "virtual stack sync mismatch after {}",
             self.current_inst().to_op(),
         );
     }
@@ -1560,7 +1555,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let stack_bytes = self.stack_bytes.load(&mut self.bcx, "stack_bytes");
         let word_size = self.bcx.iconst(self.isize_type, WORD_SIZE);
         let len = self.bcx.udiv(stack_bytes, word_size);
-        let ptr = self.stack_len_arg();
+        let ptr = self.bcx.fn_param(2);
         self.bcx.store(len, ptr);
     }
 
@@ -1580,11 +1575,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             let src = self.stack.addr(&mut self.bcx);
             self.bcx.memcpy(dst, src, stack_bytes);
         }
-    }
-
-    /// Returns the stack length argument.
-    fn stack_len_arg(&mut self) -> B::Value {
-        self.bcx.fn_param(2)
     }
 
     /// Returns the stack pointer at the top (`&stack[stack.len]`).
@@ -1786,7 +1776,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             // Other paths can arrive with gas left unchecked, so force a check.
             self.unchecked_gas = GAS_CHECK_THRESHOLD;
         }
-        let cost = self.bytecode.inst(head).gas_section.gas_cost as u64;
+        let cost = u64::from(self.bytecode.inst(head).gas_section.gas_cost);
         if cost != 0 {
             let remaining = self.load_gas_remaining();
             let remaining = self.bcx.isub_imm(remaining, cost as i64);
@@ -1892,8 +1882,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
         let direct_resize_size = self
             .current_inst
-            .map(|inst| self.bytecode.memory_section(inst).direct_resize_size)
-            .unwrap_or_default();
+            .map_or_default(|inst| self.bytecode.memory_section(inst).direct_resize_size);
         // Analysis proved this access always grows memory to exactly `min_size`.
         if direct_resize_size != 0 {
             self.call_fallible_builtin(Builtin::Mresize, &[self.ecx, min_size]);
@@ -1932,14 +1921,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         if section.known_size < section.required_size {
             return false;
         }
-        let mut has_memory_access = false;
-        for (offset, len) in self.bytecode.const_memory_accesses(inst).into_iter().flatten() {
-            has_memory_access = true;
-            if offset.is_none() || len.is_none() {
-                return false;
-            }
-        }
-        has_memory_access
+        let mut accesses =
+            self.bytecode.const_memory_accesses(inst).into_iter().flatten().peekable();
+        accesses.peek().is_some() && accesses.all(|(offset, len)| offset.is_some() && len.is_some())
     }
 
     fn build_memory_addr(&mut self, offset: B::Value) -> B::Value {
@@ -1985,7 +1969,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 let over = self.bcx.iconst(self.i8_type, InstrStop::StackOverflow as i64);
                 self.bcx.select(underflow, under, over)
             };
-            let target = self.build_check_inner(true, cond, ret);
+            let target = self.build_check_inner(cond, ret);
             self.bcx.switch_to_block(target);
         } else if may_underflow {
             let cond = underflow(self);
@@ -2000,12 +1984,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     ///
     /// `if failure_cond { return ret } else { ... }`
     fn build_check(&mut self, failure_cond: B::Value, ret: InstrStop) {
-        self.build_check_imm_inner(true, failure_cond, ret);
-    }
-
-    fn build_check_imm_inner(&mut self, is_failure: bool, cond: B::Value, ret: InstrStop) {
         let ret_value = self.bcx.iconst(self.i8_type, ret as i64);
-        let target = self.build_check_inner(is_failure, cond, ret_value);
+        let target = self.build_check_inner(failure_cond, ret_value);
         if self.config.comments {
             self.add_comment(&format!("check {ret:?}"));
         }
@@ -2013,38 +1993,12 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     #[must_use]
-    fn build_check_inner(
-        &mut self,
-        is_failure: bool,
-        cond: B::Value,
-        ret: B::Value,
-    ) -> B::BasicBlock {
+    fn build_check_inner(&mut self, cond: B::Value, ret: B::Value) -> B::BasicBlock {
         let current_block = self.current_block();
         let target = self.create_block_after(current_block, "contd");
 
-        let exit_block = if is_failure {
-            if let Some(failure_block) = self.failure_block {
-                self.incoming_failures.push((ret, current_block));
-                failure_block
-            } else {
-                self.create_block_after(target, "failure")
-            }
-        } else if let Some(return_block) = self.return_block {
-            self.incoming_returns.push((ret, current_block));
-            return_block
-        } else {
-            self.create_block_after(target, "return")
-        };
-        let then_block = if is_failure { exit_block } else { target };
-        let else_block = if is_failure { target } else { exit_block };
-        self.bcx.brif_cold(cond, then_block, else_block, is_failure);
-
-        if (is_failure && self.failure_block.is_none())
-            || (!is_failure && self.return_block.is_none())
-        {
-            self.bcx.switch_to_block(exit_block);
-            self.bcx.ret(&[ret]);
-        }
+        self.incoming_failures.push((ret, current_block));
+        self.bcx.brif_cold(cond, self.failure_block, target, true);
 
         target
     }
@@ -2063,12 +2017,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         if self.config.inspect_stack {
             self.materialize_live_stack();
         }
-        if let Some(block) = self.failure_block {
-            self.incoming_failures.push((ret, self.bcx.current_block().unwrap()));
-            self.bcx.br(block);
-        } else {
-            self.bcx.ret(&[ret]);
-        }
+        self.incoming_failures.push((ret, self.bcx.current_block().unwrap()));
+        self.bcx.br(self.failure_block);
     }
 
     /// Builds a branch to the return block.
@@ -2090,12 +2040,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     fn build_return_inner(&mut self, ret: B::Value) {
-        if let Some(block) = self.return_block {
-            self.incoming_returns.push((ret, self.bcx.current_block().unwrap()));
-            self.bcx.br(block);
-        } else {
-            self.bcx.ret(&[ret]);
-        }
+        self.incoming_returns.push((ret, self.bcx.current_block().unwrap()));
+        self.bcx.br(self.return_block);
     }
 
     /// Builds the block that dispatches unresolved dynamic jumps to their target.
@@ -2105,10 +2051,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let i32_type = self.bcx.type_int(32);
         let pc = self.bcx.phi(i64_type, &self.incoming_dynamic_jumps);
 
-        // A decoded JUMPDEST is not necessarily a valid jump target: EIP-8024
-        // immediates can desynchronize decoding from the legacy JUMPDEST analysis,
-        // so a `0x5b` masked by the analysis still decodes as an instruction. Only
-        // analysis-valid targets belong in the dispatch table.
+        // Only analysis-valid targets belong in the dispatch table.
         let bytecode = self.bytecode;
         let jumpdests = bytecode
             .iter_insts()
@@ -2173,7 +2116,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     fn add_invalid_jump(&mut self) -> B::BasicBlock {
-        let block = self.failure_block.unwrap();
+        let block = self.failure_block;
         self.incoming_failures.push((
             self.bcx.iconst(self.i8_type, InstrStop::InvalidJump as i64),
             self.bcx.current_block().unwrap(),

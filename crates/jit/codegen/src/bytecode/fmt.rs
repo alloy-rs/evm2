@@ -10,7 +10,7 @@ use std::{borrow::Cow, fmt, fmt::Write, io::IsTerminal};
 impl Bytecode<'_> {
     /// Collects formatted lines and builds the inst-to-line map stored in `self.inst_lines`.
     pub(super) fn collect_lines(&self) -> Vec<(String, String)> {
-        let mut lines: Vec<(String, String)> = Vec::new();
+        let mut lines = Vec::new();
         let mut inst_lines: IndexVec<Inst, u32> = index_vec![0u32; self.insts.len()];
 
         // Compute field widths for aligned ic=/pc= columns.
@@ -40,17 +40,20 @@ impl Bytecode<'_> {
         ));
         lines.push((String::new(), String::new()));
 
+        let write_target = |text: &mut String, t| match self.target_block(t) {
+            Some(b) => write!(text, " %{b}").unwrap(),
+            None => write!(text, " %inst{t}").unwrap(),
+        };
+
         for (bid, block) in self.cfg.blocks.iter_enumerated() {
             // Blank line between blocks.
-            if !lines.is_empty()
-                && lines.last().is_some_and(|(t, c)| !t.is_empty() || !c.is_empty())
-            {
+            if lines.last().is_some_and(|(t, c)| !t.is_empty() || !c.is_empty()) {
                 lines.push((String::new(), String::new()));
             }
 
             // Block header.
             let first = self.inst(block.insts.start);
-            let mut header = format!("{bid}:");
+            let header = format!("{bid}:");
             let mut comment = String::new();
             if first.is_stack_section_head() {
                 write!(
@@ -66,16 +69,12 @@ impl Bytecode<'_> {
             if !comment.is_empty() {
                 comment.push(' ');
             }
-            write!(comment, "predecessors=").unwrap();
+            comment.push_str("predecessors=");
             for (i, pred) in block.preds.iter().enumerate() {
                 if i > 0 {
                     comment.push(',');
                 }
                 write!(comment, "{pred}").unwrap();
-            }
-            // Pad header to align with indented instructions.
-            while header.len() < 2 {
-                header.push(' ');
             }
             lines.push((header, comment));
 
@@ -90,9 +89,7 @@ impl Bytecode<'_> {
                 inst_lines[inst] = lines.len() as u32 + 1;
 
                 // Instruction text.
-                let mut text = String::from("  ");
-                let opcode = self.opcode(inst);
-                write!(text, "{opcode}").unwrap();
+                let mut text = format!("  {}", self.opcode(inst));
                 if data.flags.contains(InstFlags::INVALID_JUMP) {
                     text.push_str(" %invalid");
                 } else if data.flags.contains(InstFlags::MULTI_JUMP) {
@@ -101,26 +98,18 @@ impl Bytecode<'_> {
                             if i > 0 {
                                 text.push(',');
                             }
-                            match self.target_block(t) {
-                                Some(b) => write!(text, " %{b}").unwrap(),
-                                None => write!(text, " %inst{t}").unwrap(),
-                            }
+                            write_target(&mut text, t);
                         }
                     }
                 } else if data.is_static_jump() {
-                    let target = data.static_jump_target();
-                    match self.target_block(target) {
-                        Some(b) => write!(text, " %{b}").unwrap(),
-                        None => write!(text, " %inst{target}").unwrap(),
-                    }
+                    write_target(&mut text, data.static_jump_target());
                 } else if data.is_jump() {
                     text.push_str(" %dynamic");
                 }
 
                 // Comment with ic, pc, and flags/behavior.
-                let mut comment = String::new();
-                write!(comment, "ic={:>ic_width$}", inst.index()).unwrap();
-                write!(comment, " pc={:>pc_width$}", self.pc(inst)).unwrap();
+                let mut comment =
+                    format!("ic={:>ic_width$} pc={:>pc_width$}", inst.index(), self.pc(inst));
                 if !data.gas_section.is_empty() {
                     write!(comment, " gas={}", data.gas_section.gas_cost).unwrap();
                 }
@@ -135,9 +124,6 @@ impl Bytecode<'_> {
                 let flags = data.flags;
                 if flags.contains(InstFlags::NOOP) {
                     comment.push_str(" noop");
-                }
-                if data.is_dead_code() {
-                    comment.push_str(" dead");
                 }
                 if flags.contains(InstFlags::DISABLED) {
                     comment.push_str(" disabled");
@@ -187,7 +173,7 @@ impl Bytecode<'_> {
     /// Builds the plain-text output first, then runs it through the asm
     /// tokenizer and emits colored spans.
     fn display_colored(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let plain = format!("{}", std::fmt::from_fn(|f| self.display_plain(f)));
+        let plain = std::fmt::from_fn(|f| self.display_plain(f)).to_string();
         colorize(f, &plain)
     }
 }
@@ -291,7 +277,7 @@ impl fmt::Debug for Bytecode<'_> {
 impl fmt::Debug for InstData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InstData")
-            .field("opcode", &self.to_op())
+            .field("opcode", &format_args!("{}", self.to_op()))
             .field("flags", &format_args!("{:?}", self.flags))
             .field("data", &self.data)
             .field("gas_section", &self.gas_section)
@@ -384,7 +370,7 @@ impl<'a> Bytecode<'a> {
                 )?;
             }
 
-            write!(w, "\\n")?;
+            w.write_str("\\n")?;
             for inst in block.insts() {
                 let data = self.inst(inst);
                 if data.is_dead_code() {
@@ -399,12 +385,13 @@ impl<'a> Bytecode<'a> {
                     )?;
                 }
                 let opcode = self.opcode(inst);
-                let mut op_str =
+                let op_str =
                     abbreviate_hex(&opcode.to_string()).replace('>', "\\>").replace('<', "\\<");
+                write!(w, "{op_str}")?;
                 if !data.gas_section.is_empty() {
-                    write!(op_str, " [g={}]", data.gas_section.gas_cost).unwrap();
+                    write!(w, " [g={}]", data.gas_section.gas_cost)?;
                 }
-                write!(w, "{op_str}\\l")?;
+                w.write_str("\\l")?;
             }
             writeln!(w, "\"];")?;
         }
@@ -491,8 +478,10 @@ fn abbreviate_hex(s: &str) -> Cow<'_, str> {
     let prefix = &hex[..2];
     let run_len = hex
         .as_bytes()
-        .chunks(2)
-        .take_while(|chunk| chunk.len() == 2 && *chunk == prefix.as_bytes())
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .take_while(|chunk| *chunk == prefix.as_bytes())
         .count();
     if run_len < 4 {
         return Cow::Borrowed(s);

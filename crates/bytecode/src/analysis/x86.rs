@@ -12,7 +12,7 @@
 //! max with the index recovers the offset.
 
 use super::{END_OFFSET, Entry, Kernel, PUSHX, analyze_blocks, lanes, uncarried};
-use crate::interpreter::op;
+use crate::opcode::op;
 
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
@@ -113,7 +113,7 @@ impl Entry for __m128i {
     #[inline]
     #[target_feature(enable = "sse4.1")]
     unsafe fn offset(self) -> usize {
-        (_mm_cvtsi128_si32(self) as u8).wrapping_sub(BIAS as u8) as usize
+        usize::from((_mm_cvtsi128_si32(self) as u8).wrapping_sub(BIAS as u8))
     }
 }
 
@@ -199,7 +199,7 @@ impl Kernel for Sse41x4 {
         // SAFETY: the caller guarantees 64 bytes at `ptr`.
         let ops =
             unsafe { core::array::from_fn::<_, 4, _>(|i| _mm_loadu_si128(ptr.add(i * 16).cast())) };
-        let jumpdests = (0..4).fold(0, |acc, i| acc | (jumpdests16(ops[i]) as u64) << (i * 16));
+        let jumpdests = (0..4).fold(0, |acc, i| acc | u64::from(jumpdests16(ops[i])) << (i * 16));
         let max = _mm_max_epi8(_mm_max_epi8(ops[0], ops[1]), _mm_max_epi8(ops[2], ops[3]));
         if _mm_movemask_epi8(_mm_cmpgt_epi8(max, _mm_set1_epi8(PUSHX))) == 0 {
             return unsafe { uncarried(jumpdests, entry) };
@@ -210,7 +210,7 @@ impl Kernel for Sse41x4 {
             }
             return 0;
         }
-        let starts = (0..4).fold(0, |acc, i| acc | (starts16(ops[i], entry) as u64) << (i * 16));
+        let starts = (0..4).fold(0, |acc, i| acc | u64::from(starts16(ops[i], entry)) << (i * 16));
         starts & jumpdests
     }
 }
@@ -308,7 +308,7 @@ impl Entry for __m512i {
     #[inline]
     #[target_feature(enable = "avx512f")]
     unsafe fn offset(self) -> usize {
-        _mm512_cvtsi512_si32(self) as u8 as usize
+        usize::from(_mm512_cvtsi512_si32(self) as u8)
     }
 }
 
@@ -363,7 +363,7 @@ impl Kernel for Avx512Vbmix2 {
         let jumpdests_b = _mm512_cmpeq_epi8_mask(ops_b, _mm512_set1_epi8(JUMPDEST));
         if _mm512_cmpgt_epi8_mask(_mm512_max_epi8(ops_a, ops_b), _mm512_set1_epi8(PUSHX)) == 0 {
             let jumpdests_a = unsafe { uncarried(jumpdests_a, entry) };
-            return jumpdests_a as u128 | (jumpdests_b as u128) << 64;
+            return u128::from(jumpdests_a) | u128::from(jumpdests_b) << 64;
         }
 
         let a = successors64(ops_a);
@@ -376,7 +376,7 @@ impl Kernel for Avx512Vbmix2 {
         }
         let starts_a = jumpdests_a & starts64(&a, entry_a);
         let starts_b = jumpdests_b & starts64(&b, entry_b);
-        starts_a as u128 | (starts_b as u128) << 64
+        u128::from(starts_a) | u128::from(starts_b) << 64
     }
 }
 
@@ -391,7 +391,7 @@ fn descend64(successors: __m512i, positions: __m512i) -> __m512i {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::analysis::tests::check_simd;
+    use crate::analysis::tests::check_simd;
 
     #[test]
     fn test_sse41() {

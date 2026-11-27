@@ -90,9 +90,10 @@ impl SpecId {
     pub const fn try_from_u32(spec_id: u32) -> Option<Self> {
         if spec_id <= Self::NEXT as u32 {
             // SAFETY: `spec_id` is within the valid variant range.
-            return Some(unsafe { core::mem::transmute::<u32, Self>(spec_id) });
+            Some(unsafe { core::mem::transmute::<u32, Self>(spec_id) })
+        } else {
+            None
         }
-        None
     }
 
     /// Returns the previous specification ID.
@@ -111,13 +112,6 @@ impl SpecId {
     #[inline]
     pub const fn enables(self, other: Self) -> bool {
         self as u32 >= other as u32
-    }
-
-    /// Returns `true` if `other` is enabled in this specification.
-    #[deprecated(note = "use SpecId::enables instead")]
-    #[inline]
-    pub const fn is_enabled_in(self, other: Self) -> bool {
-        self.enables(other)
     }
 }
 
@@ -173,7 +167,7 @@ impl TryFrom<u32> for SpecId {
     type Error = u32;
 
     #[inline]
-    fn try_from(value: u32) -> core::result::Result<Self, Self::Error> {
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
         Self::try_from_u32(value).ok_or(value)
     }
 }

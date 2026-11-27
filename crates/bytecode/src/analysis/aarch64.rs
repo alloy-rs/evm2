@@ -4,7 +4,7 @@
 //! index is out of range, so offsets past the block need no bias.
 
 use super::{END_OFFSET, Entry, Kernel, PUSHX, analyze_blocks, lanes, uncarried};
-use crate::interpreter::op;
+use crate::opcode::op;
 use core::arch::aarch64::*;
 
 // SAFETY: the vector types are plain bytes.
@@ -37,7 +37,7 @@ impl Entry for uint8x16_t {
     #[inline]
     #[target_feature(enable = "neon")]
     unsafe fn offset(self) -> usize {
-        vgetq_lane_u8::<0>(self) as usize
+        usize::from(vgetq_lane_u8::<0>(self))
     }
 }
 

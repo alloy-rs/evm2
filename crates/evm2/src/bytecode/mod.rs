@@ -7,18 +7,18 @@ use crate::{
 };
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
-use analysis::pad_legacy;
 use core::{cmp::Ordering, fmt, hash};
+use padding::pad_legacy;
 use thiserror::Error;
 
-mod analysis;
-mod jump_table;
+mod padding;
 
 #[cfg(feature = "serde")]
 mod serde_impl;
 
-pub use analysis::analyze_legacy;
-pub use jump_table::{JumpTable, JumpTableRef};
+pub use evm2_bytecode::{
+    Instruction, InstructionMap, Instructions, JumpTable, JumpTableRef, analyze_legacy,
+};
 
 /// EIP-7702 decode errors.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -155,10 +155,7 @@ impl Bytecode {
 
     #[inline]
     fn inner(&self) -> &BytecodeInner {
-        match &self.0 {
-            Some(inner) => inner,
-            None => Self::empty_inner(),
-        }
+        self.0.as_deref().unwrap_or_else(|| Self::empty_inner())
     }
 
     /// Creates a new legacy [`Bytecode`] with padding and deferred jump analysis.
@@ -325,17 +322,13 @@ impl Bytecode {
     /// Returns the EIP-7702 delegated address if this is EIP-7702 bytecode.
     #[inline]
     pub fn eip7702_address(&self) -> Option<Address> {
-        if self.is_eip7702() {
-            Some(Address::from_slice(&self.inner().bytecode[3..23]))
-        } else {
-            None
-        }
+        self.is_eip7702().then(|| Address::from_slice(&self.inner().bytecode[3..23]))
     }
 
     /// Returns the legacy jump table, initializing it on first access.
     #[inline]
     pub fn legacy_jump_table(&self) -> Option<&JumpTable> {
-        if self.is_legacy() { Some(self.jump_table()) } else { None }
+        self.is_legacy().then(|| self.jump_table())
     }
 
     #[inline]

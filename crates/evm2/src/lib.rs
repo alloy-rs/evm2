@@ -49,8 +49,7 @@ pub(crate) mod test_utils;
 pub mod version;
 pub use version::{EvmFeatures, OpcodeChange, OpcodeConfig, OpcodeView, Version};
 
-mod spec_id;
-pub use spec_id::{ParseSpecIdError, SpecId};
+pub use evm2_bytecode::{ParseSpecIdError, SpecId, for_each_spec, spec_to_generic};
 
 mod once_lock;
 mod storage_key;

@@ -84,3 +84,7 @@ revm = { workspace = true, features = ["test-types"] }
 [[bench]]
 name = "evm"
 harness = false
+
+[[bench]]
+name = "bytecode"
+harness = false

@@ -5,7 +5,7 @@ use alloy_primitives::{
 };
 use evm2::{
     BaseEvmTypes, Evm, Precompiles,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, Instructions},
     env::{BlockEnv, BlockEnvExt, TxEnv},
     ethereum::ethereum_tx_registry,
     evm::{AccountInfo, InMemoryDB},
@@ -82,7 +82,8 @@ pub fn def_env() -> DefEnv {
 
 /// Memory gas calculation: `num_words * 3 + num_words**2 / 512`.
 pub fn memory_gas_cost(num_words: usize) -> u64 {
-    (num_words as u64) * 3 + (num_words as u64) * (num_words as u64) / 512
+    let num_words = num_words as u64;
+    num_words * 3 + num_words * num_words / 512
 }
 
 pub struct TestCase<'a> {
@@ -126,8 +127,12 @@ impl Default for TestCase<'_> {
 
 impl fmt::Debug for TestCase<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytecode = Instructions::new(self.bytecode, self.spec_id)
+            .map(|inst| inst.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
         f.debug_struct("TestCase")
-            .field("bytecode", &format_bytecode(self.bytecode, self.spec_id))
+            .field("bytecode", &bytecode)
             .field("spec_id", &self.spec_id)
             .field("inspect_stack", &self.inspect_stack)
             .field("modify_message", &self.modify_message.is_some())
@@ -168,7 +173,7 @@ pub static DEF_OPINFOS: std::sync::LazyLock<&'static [OpcodeInfo; 256]> =
     std::sync::LazyLock::new(|| op_info_map(DEF_SPEC));
 
 pub const DEF_GAS_LIMIT: u64 = 100_000;
-pub const DEF_GAS_LIMIT_U256: U256 = U256::from_le_slice(&DEF_GAS_LIMIT.to_le_bytes());
+pub const DEF_GAS_LIMIT_U256: U256 = U256::from_limbs([DEF_GAS_LIMIT, 0, 0, 0]);
 
 /// Default code address.
 pub const DEF_ADDR: Address = Address::repeat_byte(0xba);
@@ -184,17 +189,25 @@ pub const DEF_BN: U256 = uint!(500_U256);
 
 pub const RETURN_WHAT_INTERPRETER_SAYS: InstrStop = InstrStop::PrecompileError;
 pub const STACK_WHAT_INTERPRETER_SAYS: &[U256] =
-    &[U256::from_be_slice(&GAS_WHAT_INTERPRETER_SAYS.to_be_bytes())];
+    &[U256::from_limbs([GAS_WHAT_INTERPRETER_SAYS, 0, 0, 0])];
 pub const MEMORY_WHAT_INTERPRETER_SAYS: &[u8] = &GAS_WHAT_INTERPRETER_SAYS.to_be_bytes();
 pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
 
+/// Storage keys that are prewarmed and snapshotted.
+const HOST_KEYS: [U256; 6] = [
+    U256::ZERO,
+    U256::ONE,
+    U256::from_limbs([69, 0, 0, 0]),
+    U256::from_limbs([70, 0, 0, 0]),
+    U256::from_limbs([200, 0, 0, 0]),
+    U256::from_limbs([0xff, 0, 0, 0]),
+];
+
 pub fn def_storage() -> &'static U256Map<U256> {
     DEF_STORAGE.get_or_init(|| {
-        let mut map = HashMap::default();
-        map.insert(U256::ZERO, U256::ONE);
-        map.insert(U256::ONE, U256::from(2));
-        map.insert(U256::from(69), U256::from(42));
-        map
+        [(U256::ZERO, U256::ONE), (U256::ONE, U256::from(2)), (U256::from(69), U256::from(42))]
+            .into_iter()
+            .collect()
     })
 }
 
@@ -337,30 +350,21 @@ pub struct HostState {
 
 impl HostState {
     fn from_evm(evm: &mut Evm<'_, BaseEvmTypes>) -> Self {
-        let keys = [
-            U256::ZERO,
-            U256::ONE,
-            U256::from(69),
-            U256::from(70),
-            U256::from(200),
-            U256::from(0xff),
-        ];
-        let mut storage = HashMap::default();
-        for key in keys {
-            if let Some(value) = evm.state().get_storage(&DEF_ADDR, &key)
-                && !value.is_zero()
-            {
-                storage.insert(key, value);
-            }
-        }
+        let storage = HOST_KEYS
+            .into_iter()
+            .filter_map(|key| {
+                let value = evm.state().get_storage(&DEF_ADDR, &key)?;
+                (!value.is_zero()).then_some((key, value))
+            })
+            .collect();
 
-        let mut transient_storage = HashMap::default();
-        for key in keys {
-            let value = evm.state_mut().tload(&DEF_ADDR, &key);
-            if !value.is_zero() {
-                transient_storage.insert(key, value);
-            }
-        }
+        let transient_storage = HOST_KEYS
+            .into_iter()
+            .filter_map(|key| {
+                let value = evm.state_mut().tload(&DEF_ADDR, &key);
+                (!value.is_zero()).then_some((key, value))
+            })
+            .collect();
 
         Self { storage, transient_storage, logs: evm.logs().to_vec() }
     }
@@ -379,9 +383,7 @@ fn prepare_host(spec_id: SpecId) -> Evm<'static, BaseEvmTypes> {
     {
         evm.state_mut().prewarm(&address);
     }
-    for key in
-        [U256::ZERO, U256::ONE, U256::from(69), U256::from(70), U256::from(200), U256::from(0xff)]
-    {
+    for key in HOST_KEYS {
         evm.state_mut().prewarm_storage_slot(&DEF_ADDR, key);
     }
     evm
@@ -443,11 +445,8 @@ fn with_evm_context_and_host_modified<
 }
 
 pub fn set_test_dump<B: Backend>(compiler: &mut EvmCompiler<B>, module_path: &str) {
-    let root =
-        Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().parent().unwrap();
-    let mut dump_path = root.to_path_buf();
-    dump_path.push("target");
-    dump_path.push("tests_dump");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
+    let mut dump_path = root.join("target").join("tests_dump");
     // Skip `evm2_jit::tests`.
     dump_path.extend(module_path.split("::").skip(2));
     dump_path.push(format!("{:?}", compiler.opt_level()));

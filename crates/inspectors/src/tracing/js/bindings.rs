@@ -28,6 +28,7 @@ use boa_engine::{
 use boa_gc::{Finalize, Trace, empty_trace};
 use core::{
     cell::{OnceCell, Ref, RefCell, RefMut},
+    fmt::Debug,
     mem::DropGuard,
     ops::Range,
 };
@@ -170,8 +171,7 @@ impl ReusableStepLog {
                 .borrow()
                 .error
                 .as_ref()
-                .map(|error| JsValue::from(js_string!(error.as_str())))
-                .unwrap_or_else(JsValue::undefined))
+                .map_or_else(JsValue::undefined, |error| js_string!(error.as_str()).into()))
         });
 
         object.set(js_string!("getPC"), get_pc, false, ctx)?;
@@ -390,8 +390,7 @@ impl ReusableFrameResult {
                 .borrow()
                 .error
                 .as_ref()
-                .map(|error| JsValue::from(js_string!(error.as_str())))
-                .unwrap_or_else(JsValue::undefined))
+                .map_or_else(JsValue::undefined, |error| js_string!(error.as_str()).into()))
         });
 
         object.set(js_string!("getGasUsed"), get_gas_used, false, ctx)?;
@@ -439,12 +438,12 @@ impl ReusableEvmDb {
         let get_balance = state_fn(ctx, state.clone(), 1, |state, args, ctx| {
             let address = address_from_value(args.get_or_undefined(0).clone(), ctx)?;
             let acc = state.borrow_mut().read_basic(address)?;
-            Ok(to_bigint(acc.map(|acc| acc.balance).unwrap_or_default()))
+            Ok(to_bigint(acc.map_or_default(|acc| acc.balance)))
         });
         let get_nonce = state_fn(ctx, state.clone(), 1, |state, args, ctx| {
             let address = address_from_value(args.get_or_undefined(0).clone(), ctx)?;
             let acc = state.borrow_mut().read_basic(address)?;
-            Ok(JsValue::from(acc.map(|acc| acc.nonce).unwrap_or_default()))
+            Ok(JsValue::from(acc.map_or_default(|acc| acc.nonce)))
         });
         let get_code = state_fn(ctx, state.clone(), 1, |state, args, ctx| {
             let address = address_from_value(args.get_or_undefined(0).clone(), ctx)?;
@@ -594,22 +593,20 @@ impl EvmDbState {
     }
 
     fn read_basic(&mut self, address: Address) -> JsResult<Option<AccountInfo>> {
-        self.active()?.read_basic(&address).map_err(|err| {
-            JsNativeError::error().with_message(format!("database read failed: {err:?}")).into()
-        })
+        self.active()?.read_basic(&address).map_err(db_error)
     }
 
     fn read_code(&mut self, address: Address) -> JsResult<Bytes> {
-        self.active()?.read_code(&address).map(|code| code.original_bytes()).map_err(|err| {
-            JsNativeError::error().with_message(format!("database read failed: {err:?}")).into()
-        })
+        self.active()?.read_code(&address).map(|code| code.original_bytes()).map_err(db_error)
     }
 
     fn read_state(&mut self, address: Address, slot: B256) -> JsResult<U256> {
-        self.active()?.read_state(&address, &slot.into()).map_err(|err| {
-            JsNativeError::error().with_message(format!("database read failed: {err:?}")).into()
-        })
+        self.active()?.read_state(&address, &slot.into()).map_err(db_error)
     }
+}
+
+fn db_error(err: impl Debug) -> JsError {
+    JsNativeError::error().with_message(format!("database read failed: {err:?}")).into()
 }
 
 /// Pre-execution data retained independently for each active call depth.
@@ -626,12 +623,11 @@ impl StepSnapshot {
     /// Records everything about a step that must be captured before the opcode executes.
     pub(crate) fn record(&mut self, step: PreStep<'_>) {
         let PreStep { pc, op, immediate, gas_remaining, stack, memory } = step;
-        let state = self;
-        state.pc = pc;
-        state.op = op;
-        state.gas_remaining = gas_remaining;
-        state.stack.record(op, immediate, stack);
-        state.memory.record(op, stack, memory);
+        self.pc = pc;
+        self.op = op;
+        self.gas_remaining = gas_remaining;
+        self.stack.record(op, immediate, stack);
+        self.memory.record(op, stack, memory);
     }
 }
 
@@ -697,7 +693,7 @@ impl OpcodeNames {
                 })
                 .collect()
         });
-        names[op as usize].clone()
+        names[usize::from(op)].clone()
     }
 }
 
@@ -729,7 +725,7 @@ impl StackView {
             opcode::EXCHANGE => {
                 decode_pair(immediate).map_or(0, |(n, m)| usize::from(n.max(m)) + 1)
             }
-            _ => OpCode::new(op).map_or(0, |op| op.inputs() as usize),
+            _ => usize::from(OpCode::new_or_unknown(op).inputs()),
         }
         .min(stack.len());
         self.saved.clear();
@@ -751,7 +747,7 @@ impl StackView {
             if idx < saved {
                 Some(self.saved[saved - 1 - idx])
             } else {
-                (idx < self.len).then(|| post.get(self.len - 1 - idx).copied()).flatten()
+                self.len.checked_sub(idx.saturating_add(1)).and_then(|i| post.get(i).copied())
             }
         });
         item.ok_or_else(|| {
@@ -786,7 +782,7 @@ impl MemoryView {
         self.len = memory.len();
         self.patch.clear();
         self.patch_offset = 0;
-        if let Some((offset, size)) = memory_write_range(op, stack)
+        if let Some((offset, size)) = OpCode::new_or_unknown(op).memory_write_range(stack)
             && offset < memory.len()
             && size > 0
         {
@@ -806,41 +802,21 @@ impl MemoryView {
         let Some(post) = self.post else {
             return Err(type_error("tracer accessed memory outside of a callback".to_string()));
         };
-        let patch = self.patch_offset..self.patch_offset + self.patch.len();
         Ok(AlignedVec::from_iter(
             0,
             range.map(|i| {
                 if i >= self.len {
                     0
-                } else if patch.contains(&i) {
-                    self.patch[i - self.patch_offset]
+                } else if let Some(&b) =
+                    i.checked_sub(self.patch_offset).and_then(|j| self.patch.get(j))
+                {
+                    b
                 } else {
                     post.get(i).copied().unwrap_or_default()
                 }
             }),
         ))
     }
-}
-
-/// Returns the memory range `(offset, size)` the opcode overwrites, based on its pre-execution
-/// stack.
-///
-/// Returns `None` for opcodes that don't write to memory, or if the operands are out of range, in
-/// which case the opcode fails without writing.
-fn memory_write_range(op: u8, stack: &[U256]) -> Option<(usize, usize)> {
-    let peek = |n: usize| stack.len().checked_sub(n + 1).map(|i| stack[i]);
-    let (offset, size) = match op {
-        opcode::MSTORE => (peek(0)?, U256::from(32)),
-        opcode::MSTORE8 => (peek(0)?, U256::ONE),
-        opcode::MCOPY | opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY => {
-            (peek(0)?, peek(2)?)
-        }
-        opcode::EXTCODECOPY => (peek(1)?, peek(3)?),
-        opcode::CALL | opcode::CALLCODE => (peek(5)?, peek(6)?),
-        opcode::DELEGATECALL | opcode::STATICCALL => (peek(4)?, peek(5)?),
-        _ => return None,
-    };
-    Some((usize::try_from(offset).ok()?, usize::try_from(size).ok()?))
 }
 
 #[derive(Debug, Default)]
@@ -895,7 +871,7 @@ fn build_step_stack_object(state: Shared<StepLogState>, ctx: &mut Context) -> Js
 fn build_step_memory_object(state: Shared<StepLogState>, ctx: &mut Context) -> JsResult<JsObject> {
     let obj = JsObject::with_object_proto(ctx.intrinsics());
     let length = state_fn(ctx, state.clone(), 0, |state, _, _| {
-        Ok(JsValue::from(state.borrow().memory.len() as u64))
+        Ok(JsValue::from(state.borrow().memory.len()))
     });
     let slice = state_fn(ctx, state.clone(), 2, |state, args, ctx| {
         let begin = to_int64(args.get_or_undefined(0), ctx)?;
@@ -1225,9 +1201,7 @@ mod tests {
                 "(
                     function(db, addr) {return db.exists(addr) }
             )
-        "
-                .to_string()
-                .as_bytes(),
+        ",
             ))
             .unwrap();
         assert!(result.is_callable());
@@ -1276,9 +1250,7 @@ mod tests {
                  setup: function(db) {this.db = db;},
                  result: function(addr) {return this.db.exists(addr) }
             })
-        "
-                .to_string()
-                .as_bytes(),
+        ",
             ))
             .unwrap();
 
@@ -1446,9 +1418,7 @@ mod tests {
 
         let eval = context
             .eval(Source::from_bytes(
-                r#"({data: [], fault: function(log) {}, step: function(log) { this.data.push({ value: log.stack.peek(2) }) }, result: function() { return this.data; }})"#
-                .to_string()
-                .as_bytes(),
+                r#"({data: [], fault: function(log) {}, step: function(log) { this.data.push({ value: log.stack.peek(2) }) }, result: function() { return this.data; }})"#,
             ))
             .unwrap();
 
@@ -1519,9 +1489,7 @@ mod tests {
             return this.retVal;
         },
    }
-)"#
-                .to_string()
-                .as_bytes(),
+)"#,
             ))
             .unwrap();
 
