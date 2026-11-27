@@ -619,10 +619,14 @@ impl JsInspector {
     /// including the gas forwarded to the child, and the child has not returned any gas yet.
     /// `step_end` then skips the step. A `step` error is recorded like on any other step and does
     /// not affect the child.
+    ///
+    /// A call step costs the gas it forwards, a create step does not, so a create passes the gas it
+    /// forwards in `forwarded` to leave it out of the cost.
     fn end_call_step<T: EvmTypes>(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
+        forwarded: u64,
     ) {
         // The top-level message has no parent step.
         if self.step_fn.is_none()
@@ -635,6 +639,7 @@ impl JsInspector {
         if let Some(pending) = self.pending_steps.get_mut(index)
             && core::mem::take(&mut pending.active)
         {
+            pending.gas_spent_before = pending.gas_spent_before.saturating_add(forwarded);
             self.invoke_step_hook(interp, false, None);
         }
     }
@@ -718,7 +723,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return None;
         }
         self.register_precompiles(interp.host());
-        self.end_call_step(interp, message);
+        self.end_call_step(interp, message, 0);
 
         // determine contract and caller based on the call scheme
         let (caller, contract) = match message.kind {
@@ -789,7 +794,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return None;
         }
         self.register_precompiles(interp.host());
-        self.end_call_step(interp, message);
+        self.end_call_step(interp, message, message.gas_limit);
         self.push_call(
             message.depth,
             Contract {
