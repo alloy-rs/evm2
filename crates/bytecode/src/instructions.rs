@@ -78,7 +78,7 @@ impl<'a> Instruction<'a> {
         let Self { opcode, immediate, .. } = *self;
         fmt::from_fn(move |f| {
             if !opcode.is_valid() {
-                return write!(f, "UNKNOWN(0x{:02x})", opcode.get());
+                return write!(f, "UNKNOWN(0x{:02X})", opcode.get());
             }
             f.write_str(opcode.name_in(spec_id))?;
             // An immediate that the end of the code cuts off reads as zero.
@@ -102,7 +102,7 @@ impl fmt::Display for Instruction<'_> {
         if self.opcode.is_valid() {
             f.write_str(self.opcode.as_str())?;
         } else {
-            write!(f, "UNKNOWN(0x{:02x})", self.opcode.get())?;
+            write!(f, "UNKNOWN(0x{:02X})", self.opcode.get())?;
         }
         write_immediate(f, self.immediate)
     }
@@ -307,7 +307,7 @@ mod tests {
         let code = [op::PUSH2, 0x00, 0x3e, op::JUMPDEST, 0x0c, op::PUSH2, 0x01];
         let insts =
             Instructions::new(&code, SpecId::OSAKA).map(|i| i.to_string()).collect::<Vec<_>>();
-        assert_eq!(insts, ["PUSH2 0x003e", "JUMPDEST", "UNKNOWN(0x0c)", "PUSH2 0x01"]);
+        assert_eq!(insts, ["PUSH2 0x003e", "JUMPDEST", "UNKNOWN(0x0C)", "PUSH2 0x01"]);
     }
 
     #[test]
@@ -323,6 +323,16 @@ mod tests {
         assert_eq!(show(&[op::DUPN, 0x5b], SpecId::AMSTERDAM), "JUMPDEST");
         let invalid = Instructions::new(&[op::DUPN, 0x5b], SpecId::AMSTERDAM).next().unwrap();
         assert_eq!(invalid.display(SpecId::AMSTERDAM).to_string(), "DUPN 0x5b");
+    }
+
+    #[test]
+    fn unknown_opcodes_print_like_opcode() {
+        for byte in (0..=u8::MAX).filter(|&byte| OpCode::new(byte).is_none()) {
+            let opcode = OpCode::new_or_unknown(byte);
+            let inst = Instruction { pc: 0, opcode, immediate: &[] };
+            assert_eq!(inst.to_string(), opcode.to_string());
+            assert_eq!(inst.display(SpecId::OSAKA).to_string(), opcode.to_string());
+        }
     }
 
     #[test]
@@ -347,7 +357,7 @@ mod tests {
         };
         assert_eq!(
             show(SpecId::AMSTERDAM),
-            ["PREVRANDAO", "DUPN 17", "SWAPN 17", "EXCHANGE 1, 2", "PUSH2 0x003e", "UNKNOWN(0x0c)"]
+            ["PREVRANDAO", "DUPN 17", "SWAPN 17", "EXCHANGE 1, 2", "PUSH2 0x003e", "UNKNOWN(0x0C)"]
         );
         assert_eq!(show(SpecId::LONDON)[0], "DIFFICULTY");
         assert_eq!(show(SpecId::MERGE)[0], "PREVRANDAO");
