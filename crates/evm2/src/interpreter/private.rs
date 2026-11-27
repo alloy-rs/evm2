@@ -16,6 +16,8 @@ bitflags! {
         /// dispatch stores the latest pc, stack length and gas into it first. Implies
         /// [`Self::DYNAMIC_GAS`].
         const HOOKED = 1 << 1;
+        /// The instruction sets the program counter itself, so the dispatch does not advance it.
+        const SETS_PC = 1 << 2;
     }
 }
 
@@ -24,9 +26,53 @@ pub trait Instruction<T: EvmTypesHost = crate::BaseEvmTypes> {
     /// The properties of this instruction.
     const FLAGS: InstructionFlags = InstructionFlags::DYNAMIC_GAS;
 
+    /// The instruction's effect on its stack slots, without the stack, for instructions with a
+    /// fixed number of stack inputs and outputs. `#[instruction]` sets it unless
+    /// `no_stack_preamble`.
+    const LOGIC: Option<InstructionLogic<T>> = None;
+
     /// Executes this instruction.
     fn execute(pc: &mut Pc, stack: StackMut<'_>, state: &mut InterpreterState<'_, '_, T>)
     -> Result;
+}
+
+/// An instruction's effect on the stack slots it reads and writes, without the stack.
+///
+/// [`Self::run`] gets the `max(inputs, outputs)` slots the instruction uses, deepest first, in the
+/// stack's own layout: the inputs fill the first `inputs` slots with the top of the stack last,
+/// and the instruction leaves its outputs in the first `outputs` slots the same way. It does
+/// everything else the instruction does, such as charging dynamic gas or moving `pc`, but checks
+/// no stack bounds and charges no static gas, which the dispatch does.
+pub struct InstructionLogic<T: EvmTypesHost> {
+    /// Stack words the instruction reads.
+    pub inputs: u8,
+    /// Stack words the instruction writes.
+    pub outputs: u8,
+    /// Runs the instruction on its slots.
+    pub run: InstructionLogicFn<T>,
+}
+
+/// Function signature of [`InstructionLogic::run`].
+pub type InstructionLogicFn<T> =
+    fn(pc: &mut Pc, state: &mut InterpreterState<'_, '_, T>, slots: &mut [Word]) -> Result;
+
+impl<T: EvmTypesHost> Clone for InstructionLogic<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: EvmTypesHost> Copy for InstructionLogic<T> {}
+
+impl<T: EvmTypesHost> core::fmt::Debug for InstructionLogic<T> {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("InstructionLogic")
+            .field("inputs", &self.inputs)
+            .field("outputs", &self.outputs)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Instruction execution context.

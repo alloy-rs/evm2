@@ -47,4 +47,6 @@ harness = false
 
 [features]
 default = []
+# Runs tests with stack superinstructions when `EVM2_SX` is set to anything but 0.
+sx = ["evm2/sx"]
 jit = ["dep:evm2-jit-runtime", "dep:evm2-jit-build"]

@@ -1,7 +1,10 @@
 use crate::{
     BaseEvmConfig, EvmConfig, ExecutionConfig, SpecId,
     env::BlockEnvExt,
-    interpreter::{Host, InstrStop, Interpreter, Message, Word, op},
+    interpreter::{
+        Host, InstrStop, Interpreter, InterpreterState, Message, Pc, Result, StackMut, Word, op,
+        private::{Instruction, InstructionLogic, instr_stack_setup},
+    },
     test_utils::{
         RunConfig, TestHost, TestInterpreter, TestTypes, legacy_bytecode, push, test_host,
     },
@@ -16,6 +19,7 @@ const NO_STACK_PREAMBLE_OPCODE: u8 = 0x0e;
 const CONCRETE_EQ_OPCODE: u8 = 0x0f;
 const TYPE_BOUND_OPCODE: u8 = 0x1d;
 const ASSOC_BOUND_OPCODE: u8 = 0x1e;
+const LOGIC_OPCODE: u8 = 0x1f;
 
 #[instruction]
 fn macro_add([a, b]: [Word]) -> out {
@@ -60,6 +64,27 @@ fn macro_assoc_bound(cx: _) -> out {
     *out = cx.state.host().macro_bound_value();
 }
 
+/// Runs `ADD` and then `ISZERO` through their logic, as one instruction.
+struct AddIszero;
+
+impl Instruction<TestTypes> for AddIszero {
+    fn execute(
+        pc: &mut Pc,
+        mut stack: StackMut<'_>,
+        state: &mut InterpreterState<'_, '_, TestTypes>,
+    ) -> Result {
+        const ADD: InstructionLogic<TestTypes> = macro_add::<TestTypes>::LOGIC.unwrap();
+        const ISZERO: InstructionLogic<TestTypes> =
+            crate::interpreter::instructions::bitwise::iszero::<TestTypes>::LOGIC.unwrap();
+        assert_eq!((ADD.inputs, ADD.outputs, ISZERO.inputs, ISZERO.outputs), (2, 1, 1, 1));
+        let ptr = instr_stack_setup(&mut stack, 2, 1)?;
+        // SAFETY: The stack holds the two inputs.
+        let slots = unsafe { core::slice::from_raw_parts_mut(ptr, 2) };
+        (ADD.run)(pc, state, slots)?;
+        (ISZERO.run)(pc, state, &mut slots[..1])
+    }
+}
+
 struct MacroConfig;
 
 impl EvmConfig<TestTypes> for MacroConfig {
@@ -75,6 +100,7 @@ const fn macro_opcode_config() -> OpcodeConfig<TestTypes> {
     config.set_instruction::<macro_concrete_eq>(CONCRETE_EQ_OPCODE, 0);
     config.set_instruction::<macro_type_bound<TestTypes>>(TYPE_BOUND_OPCODE, 0);
     config.set_instruction::<macro_assoc_bound>(ASSOC_BOUND_OPCODE, 0);
+    config.set_instruction::<AddIszero>(LOGIC_OPCODE, 0);
     config
 }
 
@@ -149,4 +175,20 @@ fn instruction_macro_evm_types_assoc_colon_bound_attribute() {
 
     assert_eq!(interp.err, InstrStop::Stop);
     assert_eq!(interp.stack(), [Word::from(31337)]);
+}
+
+#[test]
+fn instruction_macro_logic_runs_without_the_stack() {
+    assert!(macro_no_stack_preamble::<TestTypes>::LOGIC.is_none());
+    for (a, b, expected) in [(2, 3, 0), (0, 0, 1)] {
+        let mut code = Vec::new();
+        push(&mut code, b);
+        push(&mut code, a);
+        code.extend([LOGIC_OPCODE, op::STOP]);
+
+        let interp = run(RunConfig::new(code));
+
+        assert_eq!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(expected)]);
+    }
 }

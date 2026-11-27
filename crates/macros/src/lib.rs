@@ -343,6 +343,45 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             }
         }
     });
+    // An instruction with automatic stack handling also gets its logic as a function of its stack
+    // slots, which other instructions can run on words of their own.
+    let logic = (!instruction_attrs.no_stack_preamble).then(|| {
+        let (input_count, output_count) = (inputs.len(), outputs.len());
+        let slot_count = input_count.max(output_count);
+        let stack_bindings = stack_bindings(&inputs, &outputs);
+        let body = plain_writes(body.clone(), &outputs);
+        let logic = quote! {
+            impl #struct_generics #ident #type_generics
+            #where_clause
+            {
+                /// Runs the instruction on `slots`, the stack slots it reads and writes, deepest
+                /// first: see [`InstructionLogic`](evm2::interpreter::private::InstructionLogic).
+                #[inline(always)]
+                #[allow(unused_variables)]
+                #vis fn logic(
+                    __evm2_pc: &mut evm2::interpreter::Pc,
+                    __evm2_state: &mut evm2::interpreter::InterpreterState<'_, '_, #evm_types>,
+                    slots: &mut [evm2::interpreter::Word],
+                ) -> evm2::interpreter::Result {
+                    debug_assert_eq!(slots.len(), #slot_count);
+                    #cx_setup
+                    let ptr = slots.as_mut_ptr();
+                    #stack_bindings
+                    #body
+                }
+            }
+        };
+        let logic_const = quote! {
+            const LOGIC: Option<evm2::interpreter::private::InstructionLogic<#evm_types>> =
+                Some(evm2::interpreter::private::InstructionLogic {
+                    inputs: #input_count as u8,
+                    outputs: #output_count as u8,
+                    run: Self::logic,
+                });
+        };
+        (logic, logic_const)
+    });
+    let (logic, logic_const) = logic.unzip();
     let flags = {
         let mut flags = quote! { evm2::interpreter::private::InstructionFlags::empty() };
         if instruction_attrs.dynamic_gas {
@@ -364,10 +403,14 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             core::marker::PhantomData<fn() -> #evm_types>
         ) #where_clause;
 
+        #logic
+
         impl #struct_generics evm2::interpreter::private::Instruction<#evm_types> for #ident #type_generics
         #where_clause
         {
             const FLAGS: evm2::interpreter::private::InstructionFlags = #flags;
+
+            #logic_const
 
             #[inline]
             fn execute(
@@ -481,6 +524,58 @@ fn stack_setup(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
         )?;
         #stack_bindings
     }
+}
+
+/// Rewrites `out.write(x)` and `out.write_u64(x)` on the instruction's outputs to plain
+/// assignments.
+///
+/// The stack writes store a whole word at once, so the next instruction's load of it forwards from
+/// the store. Instruction logic runs on words its caller may keep in registers, where those stores
+/// would force each word through memory.
+fn plain_writes(body: TokenStream2, outputs: &[Ident]) -> TokenStream2 {
+    use proc_macro2::{Group, TokenTree};
+    let mut out = Vec::new();
+    let mut tokens = body.into_iter().peekable();
+    while let Some(token) = tokens.next() {
+        match token {
+            TokenTree::Ident(ident) if outputs.contains(&ident) => {
+                let mut rest = tokens.clone();
+                let rewritten = match (rest.next(), rest.next(), rest.next()) {
+                    (
+                        Some(TokenTree::Punct(dot)),
+                        Some(TokenTree::Ident(method)),
+                        Some(TokenTree::Group(args)),
+                    ) if dot.as_char() == '.'
+                        && args.delimiter() == proc_macro2::Delimiter::Parenthesis
+                        && (method == "write" || method == "write_u64") =>
+                    {
+                        let args = plain_writes(args.stream(), outputs);
+                        let value = if method == "write" {
+                            quote! { (#args) }
+                        } else {
+                            quote! { evm2::interpreter::Word::from(#args) }
+                        };
+                        Some(quote! { (*#ident = #value) })
+                    }
+                    _ => None,
+                };
+                match rewritten {
+                    Some(rewritten) => {
+                        tokens = rest;
+                        out.extend(rewritten);
+                    }
+                    None => out.push(TokenTree::Ident(ident)),
+                }
+            }
+            TokenTree::Group(group) => {
+                let mut new = Group::new(group.delimiter(), plain_writes(group.stream(), outputs));
+                new.set_span(group.span());
+                out.push(TokenTree::Group(new));
+            }
+            token => out.push(token),
+        }
+    }
+    out.into_iter().collect()
 }
 
 fn stack_bindings(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {

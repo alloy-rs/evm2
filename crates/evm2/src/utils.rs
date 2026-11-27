@@ -5,6 +5,23 @@ use alloc::{borrow::Cow, vec};
 use alloy_primitives::{Address, B256, Bytes, FixedBytes};
 use core::hint::cold_path;
 
+/// Returns whether the CPU supports all of the given target features.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+macro_rules! detected {
+    ($($feature:tt),+ $(,)?) => {
+        cfg!(all($(target_feature = $feature),+)) || {
+            #[cfg(feature = "std")]
+            let detected = $(std::is_x86_feature_detected!($feature))&&+;
+            #[cfg(not(feature = "std"))]
+            let detected = false;
+            detected
+        }
+    };
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub(crate) use detected;
+
 /// Returns the number of EVM words needed for `len` bytes.
 #[inline]
 pub const fn num_words(len: usize) -> usize {
@@ -55,6 +72,15 @@ pub trait WordExt: sealed::Sealed {
     /// `*self = Word::from(value)`.
     fn write_u64(&mut self, value: u64);
 
+    /// Returns whether the word is zero, comparing limb by limb.
+    ///
+    /// `Word::is_zero` and `==` compare the limbs as memory, which keeps a word in memory where its
+    /// caller has it in registers.
+    fn is_zero_limbs(&self) -> bool;
+
+    /// Returns whether the words are equal, comparing limb by limb; see [`Self::is_zero_limbs`].
+    fn eq_limbs(&self, other: &Self) -> bool;
+
     /// Converts the word to an address, keeping its low 20 bytes.
     fn to_address(&self) -> Address;
 
@@ -76,6 +102,18 @@ impl WordExt for Word {
     fn write_u64(&mut self, value: u64) {
         // SAFETY: `self` is valid for writes.
         unsafe { write_u64(self, value) }
+    }
+
+    #[inline(always)]
+    fn is_zero_limbs(&self) -> bool {
+        let l = self.as_limbs();
+        (l[0] | l[1] | l[2] | l[3]) == 0
+    }
+
+    #[inline(always)]
+    fn eq_limbs(&self, other: &Self) -> bool {
+        let (a, b) = (self.as_limbs(), other.as_limbs());
+        ((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2]) | (a[3] ^ b[3])) == 0
     }
 
     #[inline]

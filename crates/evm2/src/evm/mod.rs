@@ -555,6 +555,20 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         &mut self.tx_env
     }
 
+    /// Enables or disables stack superinstructions; see
+    /// [`ExecutionConfig::set_superinstructions`]. The setting carries over to later execution
+    /// configs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an interpreter frame is currently executing.
+    #[cfg(feature = "sx")]
+    #[inline]
+    pub fn set_superinstructions(&mut self, enabled: bool) {
+        self.assert_execution_config_mutable();
+        self.execution_config.set_superinstructions(enabled);
+    }
+
     /// Replaces the active execution specification and its fork-dependent dispatch state.
     ///
     /// `execution_config` must have the same base specification as `spec_id`. The transaction
@@ -645,6 +659,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         );
         self.set_block(block);
         self.features = execution_config.version().features;
+        #[cfg(feature = "sx")]
+        let mut execution_config = execution_config;
+        #[cfg(feature = "sx")]
+        execution_config.set_superinstructions(self.execution_config.superinstructions());
         self.execution_config = execution_config;
         self.refresh_runner_support();
     }
@@ -659,6 +677,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ) {
         self.spec_id = spec_id;
         self.features = execution_config.version().features;
+        #[cfg(feature = "sx")]
+        let mut execution_config = execution_config;
+        #[cfg(feature = "sx")]
+        execution_config.set_superinstructions(self.execution_config.superinstructions());
         self.execution_config = execution_config;
         // Refresh before the old registry and precompiles drop, so an unwinding destructor
         // cannot leave a stale verdict.

@@ -37,6 +37,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     // Borrows the immutable allocations of `bytecode`. Cleared before replacing it; accessors
     // must shorten the erased lifetime to the borrow of this interpreter.
     bytecode_ref: Option<BytecodeRef<'static>>,
+    // Whether `pc` and `bytecode_ref` point into the code translated to superinstructions.
+    #[cfg(feature = "sx")]
+    sx: bool,
     pub(in crate::interpreter) memory: Memory,
     pub(in crate::interpreter) return_data: Bytes,
 
@@ -107,6 +110,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
             bytecode_ref: None,
+            #[cfg(feature = "sx")]
+            sx: false,
             stack_len: 0,
             gas: Gas::new(0),
             memory: Memory::new(),
@@ -155,11 +160,19 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.pc = bytecode.bytes_slice().as_ptr();
         self.bytecode_ref = None;
         self.bytecode = bytecode;
+        #[cfg(feature = "sx")]
+        {
+            self.sx = false;
+        }
     }
 
     pub(crate) fn clear_frame_refs(&mut self) {
         self.bytecode = Default::default();
         self.bytecode_ref = None;
+        #[cfg(feature = "sx")]
+        {
+            self.sx = false;
+        }
         self.message = None;
         self.input = &[];
         self.host = None;
@@ -194,7 +207,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub fn pc(&self) -> usize {
         // SAFETY: `pc` is always in bounds of `bytecode`.
-        unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
+        unsafe { self.pc.offset_from(self.code_base()) as usize }
     }
 
     /// Sets the current bytecode-relative program counter.
@@ -204,9 +217,51 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Panics if `pc` is out of bounds of the active bytecode.
     #[inline]
     pub fn set_pc(&mut self, pc: usize) {
-        let bytecode = self.bytecode.bytes_slice();
-        assert!(pc < bytecode.len());
-        self.pc = unsafe { bytecode.as_ptr().add(pc) };
+        assert!(pc < self.bytecode.bytes_slice().len());
+        self.pc = unsafe { self.code_base().add(pc) };
+    }
+
+    /// Returns the start of the code `pc` points into.
+    #[inline]
+    fn code_base(&self) -> *const u8 {
+        #[cfg(feature = "sx")]
+        if self.sx
+            && let Some(view) = self.bytecode_ref
+        {
+            return view.as_ptr();
+        }
+        self.bytecode.original_byte_slice().as_ptr()
+    }
+
+    /// Points the frame at its code translated to superinstructions when it runs without an
+    /// inspector on a config with superinstructions, and at its original code otherwise. Both
+    /// have the same layout, so the program counter keeps its offset.
+    #[cfg(feature = "sx")]
+    #[inline]
+    fn select_code(&mut self, host: &T::Host<'host>, inspected: bool) {
+        // SAFETY: As in `prepare_run`: the view borrows immutable allocations of the frame's
+        // `Bytecode`, and the translated code is one of them.
+        let bytecode = unsafe { trustme::decouple_lt(self.bytecode) };
+        let code = match host.execution_config().sx_table() {
+            Some(table) if !inspected => bytecode.sx_code(&table.matcher, false),
+            _ => None,
+        };
+        let offset = self.pc();
+        match code {
+            Some(code)
+                if self.sx && self.bytecode_ref.is_some_and(|v| v.as_ptr() == code.as_ptr()) => {}
+            Some(code) => {
+                self.bytecode_ref = Some(BytecodeRef::with_code(bytecode, code));
+                self.pc = unsafe { code.as_ptr().add(offset) };
+                self.sx = true;
+            }
+            None if self.sx => {
+                self.bytecode_ref = Some(BytecodeRef::new(bytecode));
+                self.pc = unsafe { bytecode.bytes_slice().as_ptr().add(offset) };
+                self.sx = false;
+            }
+            None => {}
+        }
     }
 
     /// Returns the current opcode.
@@ -594,6 +649,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         host: &mut T::Host<'host>,
         inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     ) -> Result<InstrStop, ExecutionError> {
+        #[cfg(feature = "sx")]
+        self.select_code(host, inspector.is_some());
         self.prepare_run(host);
         self.inspector = inspector;
 
@@ -608,7 +665,14 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
                     // SAFETY: `prepare_run` initialized the host, and the config is only read
                     // here.
                     let config = unsafe { self.execution_config_detached() };
-                    dispatch::run(self, config.instructions)
+                    #[cfg(feature = "sx")]
+                    let instructions = match config.sx_table() {
+                        Some(table) if self.sx => &table.instructions,
+                        _ => config.instructions,
+                    };
+                    #[cfg(not(feature = "sx"))]
+                    let instructions = config.instructions;
+                    dispatch::run(self, instructions)
                 }
             }
         };
