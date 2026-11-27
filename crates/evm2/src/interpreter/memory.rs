@@ -138,8 +138,7 @@ impl Memory {
         }
 
         let cost = gas_params.memory_cost(new_num_words);
-        let cost =
-            unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
+        let cost = gas.memory_mut().set_words_num(new_num_words, cost).unwrap_or_default();
 
         gas.spend(cost).map_err(|_| InstrStop::MemoryOOG)?;
         self.resize_to(new_size);

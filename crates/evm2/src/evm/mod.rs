@@ -128,7 +128,7 @@ use crate::{
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
-    version::{EvmFeatures, GasId},
+    version::{EvmFeatures, GasId, GasParams},
 };
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
@@ -240,9 +240,9 @@ pub struct Evm<'a, T: EvmTypesHost> {
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// Whether `interpreter_runner` is set and supports `execution_config`.
     ///
-    /// Refreshed whenever either changes.
+    /// `None` invalidates the cached verdict until the next frame.
     #[derive_where(skip)]
-    runner_supported: bool,
+    runner_supported: Option<bool>,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
@@ -388,7 +388,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             inspect_system_calls: false,
             initial_call_depth: 0,
             interpreter_runner: None,
-            runner_supported: false,
+            runner_supported: Some(false),
             current_frame: None,
             suspended_frames: 0,
             frames_entered: 0,
@@ -454,10 +454,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn refresh_runner_support(&mut self) {
-        self.runner_supported = self
+        self.runner_supported = None;
+        let supported = self
             .interpreter_runner
             .as_ref()
             .is_some_and(|runner| runner.supports(&self.execution_config));
+        self.runner_supported = Some(supported);
     }
 
     #[inline]
@@ -1188,6 +1190,25 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.execution_config.version()
     }
 
+    /// Returns mutable gas parameters, including between messages in transaction handlers.
+    /// Changes persist; per-transaction pricing must be selected for every transaction.
+    ///
+    /// Invalidates cached runner compatibility until the next frame. Keep gas divisors non-zero
+    /// and do not mutate during message execution; only interpreter frames are detected here.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an interpreter frame is active or suspended.
+    #[inline]
+    pub fn gas_params_mut(&mut self) -> &mut GasParams {
+        assert!(
+            self.current_frame.is_none() && self.suspended_frames == 0,
+            "gas parameters cannot be modified while a frame is running"
+        );
+        self.runner_supported = None;
+        &mut self.execution_config.version.gas_params
+    }
+
     /// Returns `true` if the active EVM feature set contains `feature`.
     #[inline]
     pub const fn feature(&self, feature: EvmFeatures) -> bool {
@@ -1367,7 +1388,8 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// [`ExecutedTx::discard`].
     ///
     /// Transaction handlers cannot modify the inspector, precompile provider, interpreter runner,
-    /// or execution configuration while the transaction is being executed.
+    /// or execution configuration while the transaction is being executed, except for gas
+    /// parameters between messages through [`Self::gas_params_mut`].
     pub fn transact(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         let result = self.execute_tx(tx)?;
         self.finish_executed_tx(result)
@@ -1948,6 +1970,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         &mut self,
         message: &'frame Message<T>,
     ) -> Result<InstrStop, ExecutionError> {
+        if self.runner_supported.is_none() {
+            self.refresh_runner_support();
+        }
         let mut guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> = guard.evm.interpreter_pool.pop(message);
         let interp_ref = interp.as_mut();
@@ -1984,8 +2009,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             // interpreter run.
             unsafe { trustme::decouple_lt_mut(inspector) }
         });
-        let runner =
-            guard.evm.interpreter_runner.as_ref().filter(|_| guard.evm.runner_supported).cloned();
+        let runner = guard
+            .evm
+            .interpreter_runner
+            .as_ref()
+            .filter(|_| guard.evm.runner_supported == Some(true))
+            .cloned();
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(guard.evm, inspector)
         } else if let Some(runner) = runner
@@ -3795,7 +3824,9 @@ mod tests {
     struct SpecBoundRunner {
         spec_id: SpecId,
         chain_id: u64,
+        gas_params: GasParams,
         calls: Arc<AtomicUsize>,
+        support_checks: Arc<AtomicUsize>,
     }
 
     impl InterpreterRunner<BaseEvmTypes> for SpecBoundRunner {
@@ -3809,13 +3840,17 @@ mod tests {
         }
 
         fn supports(&self, config: &ExecutionConfig<BaseEvmTypes>) -> bool {
-            config.base_spec_id() == self.spec_id && config.version().chain_id == self.chain_id
+            self.support_checks.fetch_add(1, Ordering::Relaxed);
+            config.base_spec_id() == self.spec_id
+                && config.version().chain_id == self.chain_id
+                && config.version().gas_params == self.gas_params
         }
     }
 
     #[test]
     fn interpreter_runner_support_follows_runner_and_execution_config() {
         let calls = Arc::new(AtomicUsize::new(0));
+        let support_checks = Arc::new(AtomicUsize::new(0));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -3844,7 +3879,9 @@ mod tests {
         evm.set_shared_interpreter_runner(Arc::new(SpecBoundRunner {
             spec_id: SpecId::PRAGUE,
             chain_id: Version::new(SpecId::PRAGUE).chain_id,
+            gas_params: Version::new(SpecId::PRAGUE).gas_params,
             calls: Arc::clone(&calls),
+            support_checks: Arc::clone(&support_checks),
         }));
         assert_eq!(run(&mut evm), (InstrStop::Stop, 0));
 
@@ -3876,6 +3913,62 @@ mod tests {
 
         evm.set_shared_interpreter_runner(runner);
         assert_eq!(run(&mut evm), (InstrStop::Return, 4));
+
+        let checks = support_checks.load(Ordering::Relaxed);
+        evm.gas_params_mut()[GasId::ColdStorageAdditionalCost] -= 1;
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 4));
+        assert_eq!(run(&mut evm), (InstrStop::Stop, 4));
+        assert_eq!(support_checks.load(Ordering::Relaxed), checks + 1);
+
+        evm.gas_params_mut()[GasId::ColdStorageAdditionalCost] += 1;
+        assert_eq!(run(&mut evm), (InstrStop::Return, 5));
+        assert_eq!(support_checks.load(Ordering::Relaxed), checks + 2);
+    }
+
+    #[test]
+    fn gas_params_mut_from_transaction_handler() {
+        let mut evm = read_only_evm();
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
+                    req.host.gas_params_mut()[GasId::ColdStorageAdditionalCost] = 1000;
+                    Ok(())
+                },
+                |req, ()| {
+                    req.host.gas_params_mut()[GasId::ColdStorageAdditionalCost] += 1;
+                    Ok(TxResult::<BaseEvmTypes>::default())
+                },
+            ),
+        );
+        evm.validate_tx(&test_tx(0)).unwrap();
+        assert_eq!(evm.version().gas_params[GasId::ColdStorageAdditionalCost], 1000);
+        assert_eq!(evm.transact(&test_tx(0)).unwrap().discard().tx_gas_used(), 0);
+        assert_eq!(evm.version().gas_params[GasId::ColdStorageAdditionalCost], 1001);
+    }
+
+    #[test]
+    #[should_panic(expected = "gas parameters cannot be modified while a frame is running")]
+    fn gas_params_mut_rejects_active_frame() {
+        struct GasEditingInspector;
+        impl Inspector<BaseEvmTypes> for GasEditingInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                interp.host().gas_params_mut()[GasId::ColdStorageAdditionalCost] = 1000;
+            }
+        }
+        let mut evm = read_only_evm();
+        evm.set_inspector(GasEditingInspector);
+        let message = MessageExt { code: legacy_bytecode(vec![op::STOP]), ..Default::default() };
+        evm.run_interpreter(&message).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "gas parameters cannot be modified while a frame is running")]
+    fn gas_params_mut_rejects_suspended_frame() {
+        let mut evm = read_only_evm();
+        evm.suspended_frames = 1;
+        evm.gas_params_mut()[GasId::ColdStorageAdditionalCost] = 1000;
     }
 
     #[test]
