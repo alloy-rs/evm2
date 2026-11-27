@@ -1,25 +1,85 @@
-use crate::utils::WordExt;
+use crate::{
+    EvmTypesHost,
+    interpreter::{Gas, InterpreterState, Result, Word},
+    utils::WordExt,
+};
+use core::hint::cold_path;
 use evm2_macros::instruction;
 
 #[instruction(dynamic_gas)]
 pub fn mload(cx: _, [offset]: [Word]) -> Result<out> {
     let offset = offset.to_usize()?;
-    cx.state.resize_memory(cx.gas, offset, 32)?;
-    *out = cx.state.memory().get_word(offset);
+    if let Some(end) = offset.checked_add(32)
+        && end <= cx.gas.memory().words_num.wrapping_mul(32)
+    {
+        *out = cx.state.memory().get_word(offset);
+        return Ok(());
+    }
+    cold_path();
+    mload_cold(cx.state, cx.gas, offset, out)?;
+}
+
+#[cold]
+#[inline(never)]
+fn mload_cold<T: EvmTypesHost>(
+    state: &mut InterpreterState<'_, '_, T>,
+    gas: &mut Gas,
+    offset: usize,
+    out: &mut Word,
+) -> Result {
+    state.resize_memory(gas, offset, 32)?;
+    *out = state.memory().get_word(offset);
+    Ok(())
 }
 
 #[instruction(dynamic_gas)]
 pub fn mstore(cx: _, [offset, value]: [Word]) -> Result {
     let offset = offset.to_usize()?;
-    cx.state.resize_memory(cx.gas, offset, 32)?;
-    cx.state.memory().set(offset, &value.to_be_bytes::<32>());
+    if let Some(end) = offset.checked_add(32)
+        && end <= cx.gas.memory().words_num.wrapping_mul(32)
+    {
+        cx.state.memory().set(offset, &value.to_be_bytes::<32>());
+        return Ok(());
+    }
+    cold_path();
+    mstore_cold(cx.state, cx.gas, offset, value)?;
+}
+
+#[cold]
+#[inline(never)]
+fn mstore_cold<T: EvmTypesHost>(
+    state: &mut InterpreterState<'_, '_, T>,
+    gas: &mut Gas,
+    offset: usize,
+    value: &Word,
+) -> Result {
+    state.resize_memory(gas, offset, 32)?;
+    state.memory().set(offset, &value.to_be_bytes::<32>());
+    Ok(())
 }
 
 #[instruction(dynamic_gas)]
 pub fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
     let offset = offset.to_usize()?;
-    cx.state.resize_memory(cx.gas, offset, 1)?;
-    cx.state.memory().set(offset, &[value.byte(0)]);
+    if offset < cx.gas.memory().words_num.wrapping_mul(32) {
+        cx.state.memory().set(offset, &[value.byte(0)]);
+        return Ok(());
+    }
+    cold_path();
+    mstore8_cold(cx.state, cx.gas, offset, value.byte(0))?;
+}
+
+#[cold]
+#[inline(never)]
+fn mstore8_cold<T: EvmTypesHost>(
+    state: &mut InterpreterState<'_, '_, T>,
+    gas: &mut Gas,
+    offset: usize,
+    byte: u8,
+) -> Result {
+    state.resize_memory(gas, offset, 1)?;
+    state.memory().set(offset, &[byte]);
+    Ok(())
 }
 
 #[instruction]
@@ -129,6 +189,34 @@ mod tests {
 
         assert_matches!(err, InstrStop::MemoryOOG);
         assert_eq!(interp.memory().len(), 0);
+    }
+
+    #[test]
+    fn memory_access_expands_at_word_boundary() {
+        let mut code = Vec::new();
+        for (op, offset) in [(op::MSTORE8, 31), (op::MSTORE8, 32), (op::MSTORE, 33)] {
+            push(&mut code, Word::from(1));
+            push(&mut code, offset);
+            code.push(op);
+            code.push(op::MSIZE);
+        }
+        code.push(op::STOP);
+
+        let interp = run(RunConfig::new(code));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [32, 64, 96]);
+    }
+
+    #[test]
+    fn memory_access_near_usize_max_is_memory_oog() {
+        let word = usize::MAX - 31;
+        for interp in [
+            run_stack([word], op::MLOAD),
+            run_stack([word, 0], op::MSTORE),
+            run_stack([usize::MAX, 0], op::MSTORE8),
+        ] {
+            assert_matches!(interp.err, InstrStop::MemoryOOG);
+        }
     }
 
     #[test]

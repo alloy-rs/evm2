@@ -111,9 +111,9 @@ impl Memory {
         offset: usize,
         len: usize,
     ) -> Result {
-        let new_num_words = num_words(offset.saturating_add(len));
-        if new_num_words > gas.memory().words_num {
-            return self.resize_evm_cold(gas, gas_params, new_num_words);
+        let end = offset.saturating_add(len);
+        if end > gas.memory().words_num.wrapping_mul(32) {
+            return self.resize_evm_cold(gas, gas_params, num_words(end));
         }
 
         Ok(())
