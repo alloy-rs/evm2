@@ -1,0 +1,9 @@
+{
+  "description": "A callee deploys with init code that runs out of gas.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

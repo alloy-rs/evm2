@@ -1,0 +1,9 @@
+{
+  "description": "A callee runs out of gas at a cold SLOAD while the caller continues.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

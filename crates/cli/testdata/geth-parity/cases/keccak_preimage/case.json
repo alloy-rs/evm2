@@ -1,0 +1,9 @@
+{
+  "description": "KECCAK256 over memory, nothing, zero padding, a range past memory and a range too far past it, for the keccak256PreimageTracer.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

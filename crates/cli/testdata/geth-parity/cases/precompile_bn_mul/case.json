@@ -1,0 +1,9 @@
+{
+  "description": "The bn_mul precompile called with valid input.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

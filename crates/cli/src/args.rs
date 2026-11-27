@@ -20,6 +20,8 @@ pub(crate) enum Command {
     List(List),
     /// Replay an EEST JSON fixture, or every `.json` fixture under a folder.
     Replay(Replay),
+    /// Apply transactions to a pre-state like go-ethereum's `evm t8n`, with optional tracing.
+    T8n(evm2_cli::t8n::Args),
     /// Compile and/or run EVM bytecode.
     #[cfg(feature = "jit")]
     Run(crate::run::RunArgs),

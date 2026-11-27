@@ -1,0 +1,9 @@
+{
+  "description": "EIP-2930 and EIP-1559 transactions with access lists.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "CREATE to an address with a nonzero nonce fails.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

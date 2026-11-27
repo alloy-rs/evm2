@@ -1,0 +1,9 @@
+{
+  "description": "The beacon roots system call fails and the failure is ignored.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

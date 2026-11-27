@@ -1,0 +1,9 @@
+{
+  "description": "SSTORE clears refund more than a fifth of the gas used.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

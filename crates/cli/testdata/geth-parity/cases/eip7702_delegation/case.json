@@ -1,0 +1,8 @@
+{
+  "description": "A set-code transaction delegates an EOA to a contract, which a second transaction and a contract call.",
+  "forks": [
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

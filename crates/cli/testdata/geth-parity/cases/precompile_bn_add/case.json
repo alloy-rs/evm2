@@ -1,0 +1,9 @@
+{
+  "description": "The bn_add precompile called with valid input.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

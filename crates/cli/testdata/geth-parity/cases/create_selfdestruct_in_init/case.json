@@ -1,0 +1,9 @@
+{
+  "description": "Init code that selfdestructs deploys nothing.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

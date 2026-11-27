@@ -1,0 +1,10 @@
+{
+  "description": "A sender that can pay for gas but not for the value: the create and the call are rejected, a smaller create after them runs.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ],
+  "node": false
+}

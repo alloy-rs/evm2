@@ -1,0 +1,9 @@
+{
+  "description": "CALL and CREATE with more value than the contract holds fail without a frame.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

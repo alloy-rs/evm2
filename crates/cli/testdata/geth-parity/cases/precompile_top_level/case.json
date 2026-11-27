@@ -1,0 +1,9 @@
+{
+  "description": "A transaction sent straight to a precompile.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "A create transaction with empty data, then CREATE and CREATE2 with size 0: the frame has no code, so no step runs in it.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Cold and warm SLOAD and SSTORE: set, update, clear and restore with refunds.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

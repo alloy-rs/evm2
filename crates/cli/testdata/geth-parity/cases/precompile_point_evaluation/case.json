@@ -1,0 +1,9 @@
+{
+  "description": "The KZG point evaluation precompile rejects malformed input.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Out of gas at a cold EXTCODESIZE.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

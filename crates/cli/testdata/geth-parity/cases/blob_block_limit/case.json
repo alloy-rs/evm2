@@ -1,0 +1,10 @@
+{
+  "description": "Blob transactions past the block's blob gas limit are rejected.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ],
+  "node": false
+}

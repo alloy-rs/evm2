@@ -11,7 +11,7 @@ pub use error::TestError;
 pub(crate) use execute::state_stage;
 pub use execute::{
     ExecuteConfig, ExecuteSummary, ExecutionMode, blob_params, execute_case_on, execute_str,
-    execute_suite, pre_state,
+    execute_suite, mainnet_blob_params, pre_state,
 };
 pub use hook::{
     BlockFailed, BlockFinished, BlockStarted, CaseStarted, Hook, NoopHook, TransactionFailed,

@@ -35,6 +35,8 @@ pub(crate) enum Error {
         #[source]
         source: crate::capture::CaptureError,
     },
+    #[error("t8n failed")]
+    T8n(#[source] evm2_cli::t8n::Error),
     #[error("fuzzer failed: {0}")]
     Fuzzer(String),
     #[cfg(feature = "jit")]

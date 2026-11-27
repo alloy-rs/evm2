@@ -1,0 +1,9 @@
+{
+  "description": "SELFDESTRUCT with value to a new account, and a repeat in the same call tree.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

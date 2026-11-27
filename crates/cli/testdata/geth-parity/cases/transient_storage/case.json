@@ -1,0 +1,9 @@
+{
+  "description": "TSTORE and TLOAD, including across a call.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

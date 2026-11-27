@@ -1,0 +1,9 @@
+{
+  "description": "Init code runs out of gas inside CREATE and CREATE2.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

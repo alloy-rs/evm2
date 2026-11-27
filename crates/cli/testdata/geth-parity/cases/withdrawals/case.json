@@ -1,0 +1,9 @@
+{
+  "description": "Withdrawals credit existing and new accounts; an amount of zero must not create an account.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

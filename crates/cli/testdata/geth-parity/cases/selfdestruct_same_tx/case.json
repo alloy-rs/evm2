@@ -1,0 +1,9 @@
+{
+  "description": "SELFDESTRUCT of a contract created in the same transaction.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

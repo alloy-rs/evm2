@@ -1,0 +1,9 @@
+{
+  "description": "Out of gas at SELFDESTRUCT to a cold new account.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

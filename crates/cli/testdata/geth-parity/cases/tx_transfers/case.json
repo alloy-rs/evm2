@@ -1,0 +1,9 @@
+{
+  "description": "Value transfers to an EOA, a new account, a contract without code and with zero value.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}
