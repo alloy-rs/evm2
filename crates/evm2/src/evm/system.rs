@@ -121,9 +121,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// deploy protocol system contracts or synthesize their bytecode.
     ///
     /// The active inspector observes the call only when [`Evm::set_inspect_system_calls`] is set.
+    /// If the call unwinds, the transaction state is discarded and the inspector is kept.
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         let result = if self.inspect_system_calls {
-            self.execute_system_call(tx)
+            self.run_tx(|evm| evm.execute_system_call(tx))
         } else {
             // Restores the inspector also when the call unwinds, so a borrowed inspector's scope
             // still finds it installed.
@@ -131,15 +132,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             let mut guard = DropGuard::new((&mut *self, inspector), |(evm, inspector)| {
                 evm.inspector = inspector
             });
-            guard.0.execute_system_call(tx)
+            guard.0.run_tx(|evm| evm.execute_system_call(tx))
         };
-        match result {
-            Ok(outcome) => self.finish_executed_tx(outcome),
-            Err(error) => {
-                self.state.clear_transaction_state();
-                Err(error)
-            }
-        }
+        self.finish_executed_tx(result?)
     }
 
     /// Executes a system call without finalizing transaction state.

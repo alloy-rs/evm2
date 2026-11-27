@@ -101,7 +101,7 @@ pub struct TracingInspector {
     /// Tracks recorded steps waiting for `step_end`.
     ///
     /// This is a stack because nested calls are executed between the `step` and `step_end` of the
-    /// call instruction itself. A `usize::MAX` step index marks a step that was not recorded.
+    /// call instruction itself.
     step_stack: Vec<PendingStep>,
     /// Number of opcode steps captured across all calls since the last reset.
     recorded_steps: u64,
@@ -403,7 +403,11 @@ impl TracingInspector {
                 ..Default::default()
             },
         );
-        self.trace_stack.push(TraceStackEntry { trace_idx, log_count: self.log_count });
+        self.trace_stack.push(TraceStackEntry {
+            trace_idx,
+            log_count: self.log_count,
+            pending_steps: self.step_stack.len(),
+        });
     }
 
     /// Fills the current trace with the outcome of a call.
@@ -414,7 +418,10 @@ impl TracingInspector {
     ///
     /// This expects an existing trace [Self::start_trace_on_call]
     fn fill_trace_on_call_end<E>(&mut self, destination: Address, result: &MessageResultExt<E>) {
-        let TraceStackEntry { trace_idx, log_count } = self.pop_trace();
+        let TraceStackEntry { trace_idx, log_count, pending_steps } = self.pop_trace();
+        // A step that an inspector stopped in `step` never receives `step_end`, so the steps the
+        // call left pending would pair with the steps of its parent.
+        self.step_stack.truncate(pending_steps);
         let node = &mut self.traces.arena[trace_idx];
         let trace = &mut node.trace;
 
@@ -422,9 +429,8 @@ impl TracingInspector {
         trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
 
         trace.status = Some(result.stop);
-        trace.success = result.is_success();
         trace.output = result.output.clone();
-        if !trace.success {
+        if !result.is_success() {
             self.log_count = log_count;
         }
 
@@ -463,8 +469,8 @@ impl TracingInspector {
             && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get())
             && self.budget.reserve(self.step_record_size(op, interp));
         if !record {
-            // Push a sentinel so that the upcoming `step_end` stays paired with this step.
-            self.step_stack.push(PendingStep::new(trace_idx, usize::MAX, 0, 0));
+            // Keep the upcoming `step_end` paired with this step.
+            self.step_stack.push(PendingStep::Skipped);
             return;
         }
 
@@ -553,12 +559,13 @@ impl TracingInspector {
         });
 
         node.ordering.push(TraceMemberOrder::Step(step_idx));
-        self.step_stack.push(PendingStep::new(
+        self.step_stack.push(PendingStep::Recorded {
             trace_idx,
             step_idx,
-            interp.gas().remaining_excluding_state_spill(),
-            interp.gas().state_gas_spent(),
-        ));
+            gas_before: interp.gas().remaining_excluding_state_spill(),
+            state_gas_spent: interp.gas().state_gas_spent(),
+            after_charge: None,
+        });
 
         if self.config.record_step_deltas {
             let write_range = memory_write_range(op.get(), interp.stack().as_slice());
@@ -618,11 +625,11 @@ impl TracingInspector {
     /// give back.
     fn finish_step_charge<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>, forwarded: u64) {
         // The step's own message is the first one it starts; a precompile may start more.
-        if let Some(pending) = self.step_stack.last_mut()
-            && pending.after_charge.is_none()
+        if let Some(PendingStep::Recorded { after_charge, .. }) = self.step_stack.last_mut()
+            && after_charge.is_none()
         {
             let gas = interp.gas();
-            pending.after_charge = Some(ChargedGas {
+            *after_charge = Some(ChargedGas {
                 gas: gas.remaining_excluding_state_spill().saturating_add(forwarded),
                 state_gas_spent: gas.state_gas_spent(),
             });
@@ -634,13 +641,17 @@ impl TracingInspector {
     /// Invoked on [Inspector::step_end].
     #[cold]
     fn fill_step_on_step_end<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        let Some(PendingStep { trace_idx, step_idx, gas_before, state_gas_spent, after_charge }) =
-            self.step_stack.pop()
+        let Some(PendingStep::Recorded {
+            trace_idx,
+            step_idx,
+            gas_before,
+            state_gas_spent,
+            after_charge,
+        }) = self.step_stack.pop()
         else {
             return;
         };
         let node = &mut self.traces.arena[trace_idx];
-        // The step is not present if it was filtered out or the capture limit was reached.
         let Some(step) = node.trace.steps.get_mut(step_idx) else {
             return;
         };
@@ -1015,31 +1026,33 @@ const fn storage_write(op: u8, stack: &[U256]) -> Option<StorageDelta> {
     }
 }
 
-/// An active call and the log count to restore if it reverts.
+/// An active call, the log count to restore if it reverts and the number of steps pending when it
+/// started.
 #[derive(Clone, Debug)]
 struct TraceStackEntry {
     trace_idx: usize,
     log_count: usize,
+    pending_steps: usize,
 }
 
 /// A step waiting for `step_end`.
 #[derive(Clone, Copy, Debug)]
-struct PendingStep {
-    trace_idx: usize,
-    step_idx: usize,
-    /// The remaining gas plus spilled state gas when the step started.
-    gas_before: u64,
-    /// The state gas spent when the step started.
-    state_gas_spent: i64,
-    /// The same measures once a call or create step charged everything it charges before its
-    /// message starts.
-    after_charge: Option<ChargedGas>,
-}
-
-impl PendingStep {
-    const fn new(trace_idx: usize, step_idx: usize, gas_before: u64, state_gas_spent: i64) -> Self {
-        Self { trace_idx, step_idx, gas_before, state_gas_spent, after_charge: None }
-    }
+enum PendingStep {
+    /// The step is not recorded: its opcode is filtered out, or the step limit or the byte budget
+    /// was reached.
+    Skipped,
+    /// The step is recorded at `steps[step_idx]` of the trace at `trace_idx`.
+    Recorded {
+        trace_idx: usize,
+        step_idx: usize,
+        /// The remaining gas plus spilled state gas when the step started.
+        gas_before: u64,
+        /// The state gas spent when the step started.
+        state_gas_spent: i64,
+        /// The same measures once a call or create step charged everything it charges before its
+        /// message starts.
+        after_charge: Option<ChargedGas>,
+    },
 }
 
 /// The gas measures of a [`PendingStep`] once a call or create step charged everything it
