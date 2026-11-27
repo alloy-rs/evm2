@@ -407,7 +407,7 @@ impl TracingInspector {
         let frame_index = self.frame_transaction.as_ref().and_then(|frames| {
             (depth == self.traces.arena[0].trace.depth).then_some(frames.active)
         });
-        let depth = depth + usize::from(self.frame_transaction.is_some());
+        let depth = depth.saturating_add(u16::from(self.frame_transaction.is_some()));
 
         // find an empty steps vec or create a new one
         let steps = self.reusable_step_vecs.pop().unwrap_or_default();
@@ -783,7 +783,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         self.features = host.version().features;
         self.traces.arena[0].trace = CallTrace {
             frame_transaction_root: true,
-            depth: usize::from(host.initial_call_depth()),
+            depth: host.initial_call_depth(),
             address: ENTRY_POINT,
             caller: tx.sender,
             gas_limit: gas.maximum,
@@ -811,7 +811,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             node
         } else {
             self.start_trace_on_call(
-                usize::from(host.initial_call_depth()),
+                host.initial_call_depth(),
                 frame.resolved_target(sender),
                 if self.config.record_inputs { frame.data.clone() } else { Bytes::new() },
                 frame.value,

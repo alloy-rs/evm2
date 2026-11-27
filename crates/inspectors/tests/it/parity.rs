@@ -740,32 +740,44 @@ fn vmtrace_precompile_and_empty_code_calls_have_empty_subtraces() {
 
 #[test]
 fn vmtrace_failed_precheck_has_no_subtrace() {
-    for code in [
-        &hex!("5f5f5f5f6001604361fffff1505f5f5f5f5f604361fffff100")[..],
-        &hex!("5f5f6001f0505f5f5f5f5f604361fffff100")[..],
-    ] {
-        let trace = trace_vm_code(code, &hex!("00"));
-        let calls = trace
-            .ops
-            .iter()
-            .filter(|op| matches!(op.op.as_deref(), Some("CALL" | "CREATE")))
-            .collect::<Vec<_>>();
-        assert_eq!(calls[0].ex.as_ref().unwrap().push, vec![U256::ZERO]);
-        assert!(calls[0].sub.is_none(), "{trace:?}");
-        assert_eq!(calls[1].sub.as_ref().unwrap().ops.len(), 1);
-    }
+    // Recording 1024 recursive EVM calls requires more than the default native test stack.
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            for code in [
+                &hex!("5f5f5f5f6001604361fffff1505f5f5f5f5f604361fffff100")[..],
+                &hex!("5f5f6001f0505f5f5f5f5f604361fffff100")[..],
+            ] {
+                let trace = trace_vm_code(code, &hex!("00"));
+                let calls = trace
+                    .ops
+                    .iter()
+                    .filter(|op| matches!(op.op.as_deref(), Some("CALL" | "CREATE")))
+                    .collect::<Vec<_>>();
+                assert_eq!(calls[0].ex.as_ref().unwrap().push, vec![U256::ZERO]);
+                assert!(calls[0].sub.is_none(), "{trace:?}");
+                assert_eq!(calls[1].sub.as_ref().unwrap().ops.len(), 1);
+            }
 
-    let code = hex!("600060006000600060003060645a03f100");
-    let trace =
-        inspect_code(&code, &[], SpecId::HOMESTEAD, TracingInspectorConfig::parity_vm_trace())
+            let code = hex!("600060006000600060003060645a03f100");
+            let trace = inspect_code(
+                &code,
+                &[],
+                SpecId::HOMESTEAD,
+                TracingInspectorConfig::parity_vm_trace(),
+            )
             .into_parity_builder()
             .vm_trace();
-    let (mut frame, mut depth) = (&trace, 0);
-    while let Some(sub) = frame.ops.iter().find_map(|op| op.sub.as_ref()) {
-        frame = sub;
-        depth += 1;
-    }
-    assert_eq!(depth, 1024);
+            let (mut frame, mut depth) = (&trace, 0);
+            while let Some(sub) = frame.ops.iter().find_map(|op| op.sub.as_ref()) {
+                frame = sub;
+                depth += 1;
+            }
+            assert_eq!(depth, 1024);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
@@ -1018,63 +1030,77 @@ fn reverted_create_reports_gas_and_revert_data() {
 
 #[test]
 fn failed_frames_use_parity_labels() {
-    for (code, child, spec, labels) in [
-        (
-            &hex!("5f5f5f5ff5505f5f5f5ff500")[..],
-            &[][..],
-            SpecId::PRAGUE,
-            ["Contract address collision", "contract address collision"],
-        ),
-        (
-            &hex!("5f5f5f5f604361fffffa00")[..],
-            &hex!("602a5f5500")[..],
-            SpecId::PRAGUE,
-            ["Mutable Call In Static Context", "write protection"],
-        ),
-        (
-            &hex!("5f5f5f5f604361fffffa00")[..],
-            &hex!("5f5f5f5f6001604461fffff1")[..],
-            SpecId::PRAGUE,
-            ["Mutable Call In Static Context", "write protection"],
-        ),
-        (
-            &hex!("60015f5f3e00")[..],
-            &[][..],
-            SpecId::PRAGUE,
-            ["Out of bounds", "return data out of bounds"],
-        ),
-        (&hex!("01")[..], &[][..], SpecId::PRAGUE, ["Stack underflow", "stack underflow"]),
-        (&hex!("5f5f5f5e")[..], &[][..], SpecId::SHANGHAI, ["Bad instruction", "invalid opcode"]),
-        (
-            &hex!("646160015ff35f526005601b5ff000")[..],
-            &[][..],
-            SpecId::PRAGUE,
-            ["Out of gas", "max code size exceeded"],
-        ),
-        (
-            &hex!("6760ef5f5360015ff35f52600860185ff000")[..],
-            &[][..],
-            SpecId::PRAGUE,
-            ["Invalid code", "invalid code: must not begin with 0xef"],
-        ),
-        (
-            &hex!("61c0015f5ff000")[..],
-            &[][..],
-            SpecId::PRAGUE,
-            ["Out of gas", "max initcode size exceeded"],
-        ),
-        (
-            &hex!("600060006000600060003060645a03f100")[..],
-            &[][..],
-            SpecId::HOMESTEAD,
-            ["Max call depth exceeded", "max call depth exceeded"],
-        ),
-    ] {
-        let inspector = inspect_code(code, child, spec, TracingInspectorConfig::default_parity());
-        let (parity, geth) = frame_errors(&inspector);
-        assert_eq!(parity, [labels[0]], "{code:x?}");
-        assert_eq!(geth, [labels[1]], "{code:x?}");
-    }
+    // Recording 1024 recursive EVM calls requires more than the default native test stack.
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            for (code, child, spec, labels) in [
+                (
+                    &hex!("5f5f5f5ff5505f5f5f5ff500")[..],
+                    &[][..],
+                    SpecId::PRAGUE,
+                    ["Contract address collision", "contract address collision"],
+                ),
+                (
+                    &hex!("5f5f5f5f604361fffffa00")[..],
+                    &hex!("602a5f5500")[..],
+                    SpecId::PRAGUE,
+                    ["Mutable Call In Static Context", "write protection"],
+                ),
+                (
+                    &hex!("5f5f5f5f604361fffffa00")[..],
+                    &hex!("5f5f5f5f6001604461fffff1")[..],
+                    SpecId::PRAGUE,
+                    ["Mutable Call In Static Context", "write protection"],
+                ),
+                (
+                    &hex!("60015f5f3e00")[..],
+                    &[][..],
+                    SpecId::PRAGUE,
+                    ["Out of bounds", "return data out of bounds"],
+                ),
+                (&hex!("01")[..], &[][..], SpecId::PRAGUE, ["Stack underflow", "stack underflow"]),
+                (
+                    &hex!("5f5f5f5e")[..],
+                    &[][..],
+                    SpecId::SHANGHAI,
+                    ["Bad instruction", "invalid opcode"],
+                ),
+                (
+                    &hex!("646160015ff35f526005601b5ff000")[..],
+                    &[][..],
+                    SpecId::PRAGUE,
+                    ["Out of gas", "max code size exceeded"],
+                ),
+                (
+                    &hex!("6760ef5f5360015ff35f52600860185ff000")[..],
+                    &[][..],
+                    SpecId::PRAGUE,
+                    ["Invalid code", "invalid code: must not begin with 0xef"],
+                ),
+                (
+                    &hex!("61c0015f5ff000")[..],
+                    &[][..],
+                    SpecId::PRAGUE,
+                    ["Out of gas", "max initcode size exceeded"],
+                ),
+                (
+                    &hex!("600060006000600060003060645a03f100")[..],
+                    &[][..],
+                    SpecId::HOMESTEAD,
+                    ["Max call depth exceeded", "max call depth exceeded"],
+                ),
+            ] {
+                let inspector =
+                    inspect_code(code, child, spec, TracingInspectorConfig::default_parity());
+                let (parity, geth) = frame_errors(&inspector);
+                assert_eq!(parity, [labels[0]], "{code:x?}");
+                assert_eq!(geth, [labels[1]], "{code:x?}");
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]

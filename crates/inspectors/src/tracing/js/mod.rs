@@ -809,7 +809,6 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             },
             CallKind::Call,
             gas.maximum,
-            0,
         );
     }
 
