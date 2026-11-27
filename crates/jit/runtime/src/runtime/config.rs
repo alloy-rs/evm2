@@ -247,14 +247,14 @@ impl Default for RuntimeConfig {
 /// Tuning knobs for the runtime.
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeTuning {
-    /// Capacity of the channel between API callers and the backend.
+    /// Capacity of the backend command channel and lookup event queue.
     ///
-    /// Defaults to `4096`.
+    /// Must be non-zero. Defaults to `4096`.
     pub channel_capacity: usize,
 
     /// Maximum lookup events processed per backend wakeup.
     ///
-    /// Defaults to `4096`.
+    /// Must be non-zero. Defaults to `4096`.
     pub max_events_per_drain: usize,
 
     /// Maximum delay between lookup observation and hotness accounting.
