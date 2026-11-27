@@ -134,7 +134,7 @@ impl TryFrom<&AlloyCodeChange> for BalCodeChange {
     type Error = BytecodeDecodeError;
 
     fn try_from(change: &AlloyCodeChange) -> Result<Self, Self::Error> {
-        if let Some(hash) = change.new_code_hash() {
+        if let Some(hash) = change.adopted_code_hash() {
             return Ok(Self {
                 block_access_index: change.block_access_index,
                 code: (hash, Bytecode::default()),
@@ -142,7 +142,8 @@ impl TryFrom<&AlloyCodeChange> for BalCodeChange {
             });
         }
         let bytecode = Bytecode::new_raw_checked(change.new_code().clone())?;
-        let hash = bytecode.hash_slow();
+        let hash = change.code_hash();
+        bytecode.seed_hash(hash);
         Ok(Self::new(change.block_access_index(), (hash, bytecode)))
     }
 }

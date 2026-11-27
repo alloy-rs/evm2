@@ -264,6 +264,12 @@ impl BalContext {
     ///
     /// `bal_account` comes from [`Self::get_bal_account`], resolved before the raw account is
     /// read from the cache/database.
+    ///
+    /// The BAL records an account removed by an earlier transaction as zeroed writes, so an
+    /// account that its writes leave empty is absent, as it is after sequential execution.
+    /// This relies on EIP-161 state clearing, which every spec with EIP-7928 BALs (Amsterdam
+    /// onward) includes: a transaction that writes an account and leaves it empty touches it,
+    /// so the account is removed rather than kept as an existing empty account.
     #[inline]
     pub fn populate_bal_account(
         &self,
@@ -273,6 +279,10 @@ impl BalContext {
         let was_present = account.is_some();
         let mut info = account.take().unwrap_or_default();
         let changed = bal_account.populate_account_info(self.bal_index, &mut info);
+        // An account emptied by BAL writes was removed by an earlier transaction (EIP-161).
+        if changed && info.is_empty() {
+            return;
+        }
         // An account absent from the database with no BAL writes stays absent.
         if changed || was_present {
             *account = Some(info);
@@ -534,6 +544,34 @@ mod tests {
         // Detached, so the read resolves from the cache/database instead.
         assert_eq!(context.get_bal_account(&ADDRESS), Ok(None));
         assert!(context.bal().is_none());
+    }
+
+    #[test]
+    fn populate_removes_account_emptied_by_bal_writes() {
+        // An earlier transaction at index 1 removed the account: zeroed balance and nonce writes.
+        let mut account = AccountBal::default();
+        account.account_info.balance =
+            vec![BalanceChange::new(BlockAccessIndex::new(1), U256::ZERO)].into();
+        account.account_info.nonce = vec![NonceChange::new(BlockAccessIndex::new(1), 0)].into();
+        let mut context = BalContext::new();
+        let present = AccountInfo::default().with_balance(U256::from(2)).with_nonce(1);
+
+        // Before the removal, the database account is visible.
+        context.set_bal_index(BlockAccessIndex::new(1));
+        let mut info = Some(present.clone());
+        context.populate_bal_account(&account, &mut info);
+        assert_eq!(info, Some(present.clone()));
+
+        // After it, the account is absent rather than an existing empty account.
+        context.set_bal_index(BlockAccessIndex::new(2));
+        let mut info = Some(present);
+        context.populate_bal_account(&account, &mut info);
+        assert_eq!(info, None);
+
+        // An existing empty account with no BAL writes is left as it is.
+        let mut info = Some(AccountInfo::default());
+        context.populate_bal_account(&AccountBal::default(), &mut info);
+        assert_eq!(info, Some(AccountInfo::default()));
     }
 
     #[test]

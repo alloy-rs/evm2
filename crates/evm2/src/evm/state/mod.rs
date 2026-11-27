@@ -499,9 +499,18 @@ impl<'a> State<'a> {
     }
 
     /// Takes logs emitted by the current in-flight transaction.
-    #[inline]
     pub(crate) fn take_logs(&mut self) -> Vec<Log> {
-        mem::take(&mut self.inner.logs)
+        let logs = &mut self.inner.logs;
+        if logs.capacity() > 4 && logs.len() <= logs.capacity() / 2 {
+            // Moves the logs into a right-sized vector and keeps the buffer; `mem::take` would not.
+            #[allow(clippy::drain_collect)]
+            return logs.drain(..).collect();
+        }
+        let taken = mem::take(logs);
+        if taken.len() > 4 {
+            logs.reserve_exact(taken.len());
+        }
+        taken
     }
 
     /// Records a transaction log.
@@ -847,25 +856,24 @@ impl<'a> State<'a> {
     ) -> DbResult<Result<(), InstrStop>> {
         // TODO check order of operations, we could potentially simplify it and do a lot more with
         // only one hashmap lookup.
-        if self
-            .account(address)?
-            .get()
-            .is_some_and(|account| account.nonce != 0 || !account.is_empty_code_hash())
-        {
+        let mut target = self.account(address)?;
+        if target.get().is_some_and(|account| account.nonce != 0 || !account.is_empty_code_hash()) {
             return Ok(Err(InstrStop::CreateCollision));
         }
 
         // Deduct the endowment from the caller. A zero endowment moves nothing and leaves the
         // caller untouched, matching the prior `transfer` behaviour.
         if !value.is_zero() {
+            drop(target);
             let mut caller_account = self.account(caller)?;
             let Some(new_caller_balance) = caller_account.balance().checked_sub(*value) else {
                 return Ok(Err(InstrStop::OutOfFunds));
             };
             caller_account.set_balance(new_caller_balance);
+            drop(caller_account);
+            target = self.account(address)?;
         }
 
-        let mut target = self.account(address)?;
         // Preserve any balance the address already held (e.g. funds sent before creation) and add
         // the endowment.
         let balance = target.balance().wrapping_add(*value);
@@ -1811,6 +1819,31 @@ mod tests {
         assert_eq!(sorted_loaded_accounts(&state), [(read, vec![Word::ONE])]);
     }
 
+    #[test]
+    fn take_logs_keeps_the_buffer_and_returns_exact_capacity() {
+        let mut state = State::new(CacheDB::default());
+        let mut take = |count: usize| {
+            for _ in 0..count {
+                state.log(Log::default());
+            }
+            state.take_logs()
+        };
+
+        let heavy = take(10);
+        assert_eq!(heavy.len(), 10);
+
+        let light = take(2);
+        assert_eq!((light.len(), light.capacity()), (2, 2));
+
+        let none = take(0);
+        assert_eq!(none.capacity(), 0);
+
+        let heavy = take(10);
+        assert_eq!(heavy.len(), 10);
+
+        let light = take(5);
+        assert_eq!((light.len(), light.capacity()), (5, 5));
+    }
     #[test]
     fn reload_storage_slot_rereads_slot_read_as_zero_under_rolled_back_creation() {
         let caller = Address::with_last_byte(1);

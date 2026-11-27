@@ -5,7 +5,7 @@ mod values;
 
 use crate::utils::{
     AccountInfo, Bytecode, Context, ResultAndState, SpecId, TestDbExt, TransactTo, TxEnv,
-    deploy_contract,
+    deploy_contract, op,
 };
 use alloy_primitives::{Address, U256, address, bytes, hex, map::HashMap};
 use alloy_rpc_types_trace::geth::{
@@ -401,7 +401,6 @@ fn test_geth_jstracer_call_step_cost_and_depth() {
             ["exit"],
             ["STATICCALL", 1, null, cold_call, "3333"],
             ["enter", "STATICCALL"],
-            ["fault", 2],
             ["exit"],
             ["CREATE", 1, null, create_costs[0], "1d"],
             ["enter", "CREATE"],
@@ -626,6 +625,89 @@ fn mux_interrupts_its_js_tracers() {
 
     interrupt.interrupt();
     assert!(inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).is_err());
+}
+
+/// A step that halts exceptionally costs 0 in the struct logs and in the JS hook that reports the
+/// halt: `step` before the opcode runs, `fault` while it runs. The values come from
+/// `debug_traceTransaction` on go-ethereum `44577c84216d9e3ddcba55e57fcf611b31d2ae67`
+/// (ethereum/go-ethereum#36166), which follows ethereum/execution-apis#986.
+#[test]
+fn test_geth_exceptional_halt_costs_zero() {
+    let target = address!("0000000000000000000000000000000001000000");
+    let child_address = address!("0000000000000000000000000000000002000000");
+    let tracer = r#"{
+        events: [],
+        step: function(log) {
+            if (log.getError()) this.events.push(["step", log.op.toString(), log.getGas(), log.getCost()]);
+            else this.cost = log.getCost();
+        },
+        fault: function(log) {
+            this.events.push(["fault", log.op.toString(), log.getGas(), log.getCost(), this.cost]);
+        },
+        result: function() { return this.events; }
+    }"#;
+    // Before ethereum/go-ethereum#36166, geth reported the constant gas of an opcode that fails its
+    // stack check, such as 32000 for CREATE. A `fault` follows a `step` that has the opcode's cost.
+    for (call, child_gas, child, opcode, gas, fault_step_cost) in [
+        (op::CALL, 100_000, &hex!("6001630fffffff52")[..], "MSTORE", 99_994, None),
+        (op::CALL, 0x400, &hex!("5f5f5f5f5f60445af1")[..], "CALL", 1_009, None),
+        (op::CALL, 50_000, &hex!("602a5f55")[..], "SSTORE", 49_995, None),
+        (op::CALL, 100_000, &hex!("01")[..], "ADD", 100_000, None),
+        (op::CALL, 100_000, &[op::PUSH0; 1025][..], "PUSH0", 97_952, None),
+        (op::CALL, 100_000, &hex!("f0")[..], "CREATE", 100_000, None),
+        (op::CALL, 100_000, &hex!("a3")[..], "LOG3", 100_000, None),
+        (op::CALL, 100_000, &hex!("3b")[..], "EXTCODESIZE", 100_000, None),
+        (op::CALL, 100_000, &hex!("600556")[..], "JUMP", 99_997, Some(8)),
+        // Geth's `step` has cost 9: it charges the memory and copy gas before the bounds check,
+        // which evm2 does first.
+        (op::CALL, 100_000, &hex!("60015f5f3e")[..], "RETURNDATACOPY", 99_993, Some(3)),
+        (op::STATICCALL, 100_000, &hex!("5f5fa0")[..], "LOG0", 99_996, Some(375)),
+        (op::STATICCALL, 100_000, &hex!("5fff")[..], "SELFDESTRUCT", 99_998, None),
+    ] {
+        // call(child_gas, child, [0,] 0, 0, 0, 0), POP, STOP
+        let mut code = vec![op::PUSH0; 4 + usize::from(call == op::CALL)];
+        code.extend([op::PUSH4, 0x02, 0, 0, 0, op::PUSH3]);
+        code.extend(&u32::to_be_bytes(child_gas)[1..]);
+        code.extend([call, op::POP, op::STOP]);
+        for opts in [GethDebugTracingOptions::default(), GethDebugTracingOptions::js_tracer(tracer)]
+        {
+            let mut db = InMemoryDB::default();
+            for (address, code) in [(target, &code[..]), (child_address, child)] {
+                let code = Some(Bytecode::new_raw(code.to_vec().into()));
+                db.insert_account_info(&address, AccountInfo { code, ..Default::default() });
+            }
+            let mut inspector = DebugInspector::new(opts).unwrap();
+            // Amsterdam, for the state gas of SSTORE. The other values are the same in Osaka.
+            let mut evm = Context::mainnet()
+                .modify_cfg_chained(|cfg| cfg.spec = SpecId::AMSTERDAM)
+                .with_db(db)
+                .build_mainnet()
+                .with_inspector(&mut inspector);
+            let tx =
+                TxEnv { gas_limit: 0x30000, kind: TransactTo::Call(target), ..Default::default() };
+            let res = evm.inspect_tx(tx).unwrap();
+            assert!(res.result.is_success(), "{res:#?}");
+            let (ctx, inspector) = evm.ctx_inspector();
+            let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+            match inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap() {
+                GethTrace::Default(frame) => {
+                    let mut failed = frame.struct_logs.iter().filter(|log| log.error.is_some());
+                    let log = failed.next().unwrap();
+                    assert!(failed.next().is_none(), "{opcode}");
+                    assert_eq!((&*log.op, log.gas, log.gas_cost), (opcode, gas, 0));
+                    assert_eq!(log.state_gas_cost, None, "{opcode}");
+                }
+                GethTrace::JS(events) => {
+                    let expected = match fault_step_cost {
+                        Some(cost) => json!([["fault", opcode, gas, 0, cost]]),
+                        None => json!([["step", opcode, gas, 0]]),
+                    };
+                    assert_eq!(events, expected, "{opcode}");
+                }
+                trace => panic!("unexpected trace: {trace:?}"),
+            }
+        }
+    }
 }
 
 mod frames {

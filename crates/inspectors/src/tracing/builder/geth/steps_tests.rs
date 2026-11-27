@@ -1,24 +1,22 @@
 use super::*;
 use crate::tracing::types::{
-    CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason, TraceMemberOrder,
+    CallTrace, CallTraceStep, CallTraceStepExtra, RecordedMemory, StorageChange,
+    StorageChangeReason, TraceMemberOrder,
 };
 use alloc::string::String;
 use evm2::interpreter::{InstrStop, op, opcode::OpCode};
 
-fn test_step(pc: usize, op: u8) -> CallTraceStep {
+fn test_step(pc: u32, op: u8) -> CallTraceStep {
     CallTraceStep {
         pc,
         op: OpCode::new_or_unknown(op),
         stack: Some(vec![U256::from(pc)].into_boxed_slice()),
         push_stack: None,
         memory: None,
-        returndata: Bytes::from(vec![pc as u8]),
-        gas_remaining: 1000 - pc as u64,
+        gas_remaining: 1000 - u64::from(pc),
         gas_refund_counter: 0,
         gas_cost: 1,
-        state_gas_cost: None,
         state_gas_reservoir: None,
-        state_gas_spent: 0,
         storage_change: (op == op::SSTORE).then(|| {
             alloc::boxed::Box::new(StorageChange {
                 key: U256::ZERO,
@@ -28,8 +26,8 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
             })
         }),
         status: (op == op::REVERT).then_some(InstrStop::Revert),
-        immediate_bytes: None,
-        decoded: None,
+        extra: CallTraceStepExtra { returndata: Bytes::from(vec![pc as u8]), ..Default::default() }
+            .boxed(),
     }
 }
 
@@ -74,7 +72,7 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
     // a reverting grandchild, and a final call opcode that failed before recording a child.
     struct Fixture {
         parent: Option<usize>,
-        depth: usize,
+        depth: u16,
         children: &'static [usize],
         ops: &'static [u8],
     }
@@ -123,7 +121,7 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
                     steps: ops
                         .iter()
                         .enumerate()
-                        .map(|(pc, &op)| test_step(idx * 10 + pc, op))
+                        .map(|(pc, &op)| test_step((idx * 10 + pc) as u32, op))
                         .collect(),
                     ..Default::default()
                 },
@@ -347,7 +345,7 @@ fn struct_log_limit_counts_json_bytes() {
     let steps = [op::PUSH1, op::PUSH1, op::SSTORE, op::STOP]
         .iter()
         .enumerate()
-        .map(|(pc, &op)| test_step(pc, op))
+        .map(|(pc, &op)| test_step(pc as u32, op))
         .collect();
     let builder = GethTraceBuilder::new(vec![CallTraceNode {
         trace: CallTrace { steps, ..Default::default() },

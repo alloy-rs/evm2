@@ -503,11 +503,12 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
+    let has_eip7702 = host.feature(EvmFeatures::EIP7702);
 
     let mut sender = host.state.account(&caller)?;
     if has_eip3607 && !sender.is_empty_code_hash() {
         let code = sender.load_code()?;
-        if !code.is_empty() && !code.is_eip7702() {
+        if !code.is_empty() && !(has_eip7702 && code.is_eip7702()) {
             return Err(HandlerError::RejectCallerWithCode);
         }
     }
@@ -1426,6 +1427,42 @@ mod tests {
 
         assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
         assert_eq!(evm.read_account_info(&caller).unwrap().unwrap().balance, U256::from(100));
+    }
+
+    #[rstest::rstest]
+    #[case::cancun(SpecId::CANCUN, Err(HandlerError::RejectCallerWithCode))]
+    #[case::prague(SpecId::PRAGUE, Ok(true))]
+    fn eip3607_exempts_delegation_designator_from_prague(
+        #[case] spec: SpecId,
+        #[case] expected: HandlerResult<bool>,
+    ) {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default()
+                .with_balance(U256::from(1_000_000_000))
+                .with_code(Bytecode::new_eip7702(Address::with_last_byte(0x33))),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            spec,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(spec),
+            database,
+            Precompiles::base(spec),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                value: U256::from(1),
+                ..TxLegacy::default()
+            }),
+            caller,
+        );
+
+        assert_eq!(evm.transact(&tx).map(|executed| executed.commit().is_success()), expected);
     }
 
     #[test]

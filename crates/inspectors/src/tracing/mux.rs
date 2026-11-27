@@ -152,6 +152,13 @@ impl MuxInspector {
         }
     }
 
+    /// Returns the bytes the shared recording and the nested tracers counted against their
+    /// limits, see [`DebugInspector::recorded_bytes`].
+    pub(crate) fn recorded_bytes(&self) -> usize {
+        let shared = self.tracing.as_ref().map_or(0, TracingInspector::recorded_bytes);
+        shared + self.children.iter().map(|(_, child)| child.recorded_bytes()).sum::<usize>()
+    }
+
     /// Prepares the inspector for executing the next transaction. This removes any state from the
     /// previous transaction, except the global state of JavaScript tracers, see
     /// [`DebugInspector::fuse`].

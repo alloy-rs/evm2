@@ -196,34 +196,34 @@ fn patch_traces(patch: usize, t: &mut TracingInspector) {
             }
             5 => decoded.return_data = Some("69".to_string()),
             6 => {
-                node.trace.steps[0].decoded = Some(Box::new(DecodedTraceStep::Line(
+                *node.trace.steps[0].decoded_mut() = DecodedTraceStep::Line(
                     "[sload] 0x0000000000000000000000000000000000000000000000000000000000000045"
                         .to_string(),
-                )));
+                );
             }
             7 if node.trace.depth == 2 => {
-                node.trace.steps[30].decoded = Some(Box::new(DecodedTraceStep::InternalCall(
+                *node.trace.steps[30].decoded_mut() = DecodedTraceStep::InternalCall(
                     DecodedInternalCall {
                         func_name: "Counter::_nest3Internal".to_string(),
                         args: Some(vec!["arg1".to_string(), "arg2".to_string(), "3".to_string()]),
                         return_data: Some(vec!["ret1".to_string()]),
                     },
                     89,
-                )));
-                node.trace.steps[87].decoded =
-                    Some(Box::new(DecodedTraceStep::Line("[mstore]".to_string())));
-                node.trace.steps[90].decoded =
-                    Some(Box::new(DecodedTraceStep::Line("[before_return]".to_string())));
+                );
+                *node.trace.steps[87].decoded_mut() =
+                    DecodedTraceStep::Line("[mstore]".to_string());
+                *node.trace.steps[90].decoded_mut() =
+                    DecodedTraceStep::Line("[before_return]".to_string());
             }
             7 if node.trace.depth == 0 => {
-                node.trace.steps[10].decoded = Some(Box::new(DecodedTraceStep::InternalCall(
+                *node.trace.steps[10].decoded_mut() = DecodedTraceStep::InternalCall(
                     DecodedInternalCall {
                         func_name: "Counter::_nest1".to_string(),
                         args: Some(vec![]),
                         return_data: Some(vec!["ret1".to_string(), "ret2".to_string()]),
                     },
                     150,
-                )));
+                );
             }
             _ => continue,
         }

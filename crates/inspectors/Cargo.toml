@@ -29,7 +29,7 @@ thiserror.workspace = true
 
 # serde
 serde = { workspace = true, optional = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["alloc"] }
+serde_json = { workspace = true, features = ["alloc", "raw_value"] }
 
 # js-tracer
 boa_engine = { workspace = true, optional = true }
@@ -41,6 +41,7 @@ alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-hardforks.workspace = true
 evm2 = { workspace = true, features = ["block"] }
 k256 = { workspace = true, features = ["ecdsa"] }
+rmp-serde.workspace = true
 snapbox = { workspace = true, features = ["term-svg"] }
 
 [features]

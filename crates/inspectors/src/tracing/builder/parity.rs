@@ -462,7 +462,7 @@ impl ParityTraceBuilder {
         });
 
         VmInstruction {
-            pc: step.pc,
+            pc: step.pc as usize,
             cost: step.gas_cost,
             ex: maybe_execution,
             sub: maybe_sub_call,
@@ -517,7 +517,7 @@ fn began_executing(step: &CallTraceStep, bytecode: Option<&Bytes>) -> bool {
                 | InstrStop::StackOverflow
         )
     );
-    !rejected && bytecode.is_none_or(|code| step.pc < code.len())
+    !rejected && bytecode.is_none_or(|code| (step.pc as usize) < code.len())
 }
 
 /// Returns whether a call or creation entered a frame rather than failing its depth, balance, or
@@ -673,7 +673,8 @@ pub fn populate_state_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracing::types::CallTrace;
+    use crate::tracing::types::{CallTrace, SelfdestructTrace};
+    use alloc::boxed::Box;
     use alloy_primitives::U256;
 
     #[test]
@@ -681,7 +682,10 @@ mod tests {
         let nodes = vec![CallTraceNode {
             trace: CallTrace {
                 kind: CallKind::Call,
-                selfdestruct_refund_target: Some(Address::ZERO),
+                selfdestruct: Some(Box::new(SelfdestructTrace {
+                    refund_target: Some(Address::ZERO),
+                    ..Default::default()
+                })),
                 ..Default::default()
             },
             ..Default::default()
@@ -738,7 +742,10 @@ mod tests {
                 trace: CallTrace {
                     depth: 1,
                     kind: CallKind::Call,
-                    selfdestruct_refund_target: Some(Address::ZERO),
+                    selfdestruct: Some(Box::new(SelfdestructTrace {
+                        refund_target: Some(Address::ZERO),
+                        ..Default::default()
+                    })),
                     ..Default::default()
                 },
                 ..Default::default()

@@ -73,9 +73,9 @@ fn test_parity_selfdestruct(spec_id: SpecId) {
     let node = &evm.inspector().traces().nodes()[0];
     assert!(node.is_selfdestruct(), "{node:#?}");
     assert_eq!(node.trace.address, addr);
-    assert_eq!(node.trace.selfdestruct_address, Some(addr));
-    assert_eq!(node.trace.selfdestruct_refund_target, Some(deployer));
-    assert_eq!(node.trace.selfdestruct_transferred_value, Some(value));
+    assert_eq!(node.trace.selfdestruct_address(), Some(addr));
+    assert_eq!(node.trace.selfdestruct_refund_target(), Some(deployer));
+    assert_eq!(node.trace.selfdestruct_transferred_value(), Some(value));
 
     let traces = evm
         .into_inspector()

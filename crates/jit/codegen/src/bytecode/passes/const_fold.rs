@@ -42,8 +42,7 @@ pub(crate) fn const_fold_gas(
                 AbsValue::Const(imm) => imm.get(interner),
                 value => U256::from(value.bounds()?.last),
             };
-            let exponent_bytes = (256 - exponent.leading_zeros()).div_ceil(8);
-            10 + 50 * exponent_bytes as u64
+            10 + 50 * exponent.byte_len() as u64
         }
         _ => return None,
     };
@@ -110,21 +109,9 @@ pub(crate) fn try_const_fold(
                 op::ADD => a.wrapping_add(b),
                 op::MUL => a.wrapping_mul(b),
                 op::SUB => a.wrapping_sub(b),
-                op::DIV => {
-                    if !b.is_zero() {
-                        a.wrapping_div(b)
-                    } else {
-                        U256::ZERO
-                    }
-                }
+                op::DIV => a.checked_div(b).unwrap_or_default(),
                 op::SDIV => i256_div(a, b),
-                op::MOD => {
-                    if !b.is_zero() {
-                        a.wrapping_rem(b)
-                    } else {
-                        U256::ZERO
-                    }
-                }
+                op::MOD => a.checked_rem(b).unwrap_or_default(),
                 op::SMOD => i256_mod(a, b),
                 op::EXP => a.pow(b),
                 op::SIGNEXTEND => {

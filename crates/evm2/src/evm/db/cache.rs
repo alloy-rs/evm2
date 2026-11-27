@@ -805,6 +805,26 @@ mod tests {
     }
 
     #[test]
+    fn attached_bal_reads_account_removed_by_earlier_tx_as_absent() {
+        let address = Address::with_last_byte(1);
+        let mut cache = counting_cache();
+        // The transaction at index 1 removed the database account (balance 100, nonce 3).
+        let mut account = AccountBal::default();
+        account.account_info.balance =
+            BalChanges::new(vec![BalanceChange::new(BlockAccessIndex::new(1), Word::ZERO)]);
+        account.account_info.nonce =
+            BalChanges::new(vec![NonceChange::new(BlockAccessIndex::new(1), 0)]);
+        cache.bal_context =
+            BalContext::new().with_bal(Arc::new(Bal::from_iter([(address, account)])));
+
+        cache.bal_context.set_bal_index(BlockAccessIndex::new(1));
+        assert_eq!(cache.get_account(&address).unwrap().unwrap().nonce, 3);
+
+        cache.bal_context.set_bal_index(BlockAccessIndex::new(2));
+        assert_eq!(cache.get_account(&address).unwrap(), None);
+    }
+
+    #[test]
     fn uncovered_read_errors_without_fallback() {
         let address = Address::with_last_byte(1);
         let mut cache = cache_with_read_bal(address, false);
