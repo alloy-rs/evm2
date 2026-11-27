@@ -1,10 +1,13 @@
 use crate::utils::{AccountInfo, Bytecode, Context, TransactTo, TxEnv};
-use alloy_primitives::{Address, address};
+use alloy_primitives::{Address, U256, address};
 use evm2::{
     evm::InMemoryDB,
     interpreter::opcode::{OpCode, op},
 };
-use evm2_inspectors::opcode::OpcodeGasInspector;
+use evm2_inspectors::{
+    opcode::OpcodeGasInspector,
+    tracing::{TracingInspector, TracingInspectorConfig},
+};
 
 #[test]
 fn opcode_gas_records_parent_call_after_child_execution() {
@@ -148,4 +151,81 @@ fn opcode_gas_preserves_cold_call_out_of_gas() {
     assert!(!res.result.is_success());
     let call = OpCode::new(op::CALL).unwrap();
     assert_eq!(evm.inspector().opcode_gas().get(&call), Some(&640));
+}
+
+#[test]
+fn opcode_gas_call_excludes_forwarded_gas_and_stipend() {
+    const FORWARDED: u64 = 1_000;
+    let parent = Address::with_last_byte(0x22);
+    let target = Address::with_last_byte(0x33);
+
+    for opcode in [op::CALL, op::CALLCODE] {
+        for (value, balance) in [(0u8, 10), (1, 10), (1, 0)] {
+            // A new account has no code, so the child returns at once.
+            for (child, funded) in [
+                (None, false),
+                (Some(vec![op::STOP]), true),
+                (Some(vec![op::PUSH0, op::PUSH0, op::REVERT]), true),
+                (Some(vec![op::INVALID]), true),
+            ] {
+                let mut code = vec![op::PUSH0; 4];
+                code.extend([op::PUSH1, value, op::PUSH1, 0x33, op::PUSH2, 0x03, 0xe8, opcode]);
+                code.push(op::STOP);
+                let context = || {
+                    Context::mainnet().with_db(InMemoryDB::default()).modify_db_chained(|db| {
+                        db.insert_account_info(
+                            &parent,
+                            AccountInfo {
+                                balance: U256::from(balance),
+                                code: Some(Bytecode::new_legacy(code.clone().into())),
+                                ..Default::default()
+                            },
+                        );
+                        if let Some(child) = &child {
+                            db.insert_account_info(
+                                &target,
+                                AccountInfo {
+                                    balance: U256::from(funded),
+                                    code: Some(Bytecode::new_legacy(child.clone().into())),
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                    })
+                };
+                let tx = TxEnv {
+                    caller: Address::ZERO,
+                    gas_limit: 1_000_000,
+                    kind: TransactTo::Call(parent),
+                    ..Default::default()
+                };
+
+                let mut evm = context().build_mainnet_with_inspector(TracingInspector::new(
+                    TracingInspectorConfig::default_geth(),
+                ));
+                evm.inspect_tx(tx.clone()).unwrap();
+                let geth = evm.inspector().geth_builder().geth_traces(
+                    0,
+                    Default::default(),
+                    Default::default(),
+                );
+                let log =
+                    geth.struct_logs.iter().find(|log| log.op == "CALL" || log.op == "CALLCODE");
+                let step_cost = log.unwrap().gas_cost;
+
+                let mut inspector = OpcodeGasInspector::new();
+                let mut evm = context().build_mainnet().with_inspector(&mut inspector);
+                let res = evm.inspect_tx(tx).unwrap();
+                assert!(res.result.is_success(), "{res:#?}");
+
+                // The struct log step cost is the call's own cost plus the forwarded gas.
+                let call = OpCode::new(opcode).unwrap();
+                assert_eq!(
+                    evm.inspector().opcode_gas().get(&call),
+                    Some(&(step_cost - FORWARDED)),
+                    "opcode {opcode:#x} value {value} balance {balance} child {child:?}"
+                );
+            }
+        }
+    }
 }

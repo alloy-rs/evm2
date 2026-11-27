@@ -8,6 +8,7 @@ use evm2::{
         Interpreter, Message, MessageKind, MessageResult,
         opcode::{OpCode, op},
     },
+    version::GasId,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -15,6 +16,8 @@ struct PendingOpcodeGas {
     opcode: Option<OpCode>,
     gas_remaining: u64,
     child_gas_used: u64,
+    /// Gas the child received for free with a value transfer, which the caller never paid.
+    child_stipend: u64,
 }
 
 /// An Inspector that counts opcodes and measures gas usage per opcode.
@@ -67,7 +70,7 @@ impl OpcodeGasInspector {
 
     /// Helper function to exclude child gas from opcode gas tracking.
     /// This prevents call/create opcodes from including the gas consumed within the call/create.
-    fn exclude_child_gas(&mut self, opcode_value: u8, child_gas_used: u64) {
+    fn exclude_child_gas(&mut self, opcode_value: u8, child_gas_used: u64, child_stipend: u64) {
         let Some(opcode) = OpCode::new(opcode_value) else {
             return;
         };
@@ -75,6 +78,7 @@ impl OpcodeGasInspector {
             && pending.opcode == Some(opcode)
         {
             pending.child_gas_used = pending.child_gas_used.saturating_add(child_gas_used);
+            pending.child_stipend = pending.child_stipend.saturating_add(child_stipend);
         }
     }
 }
@@ -93,6 +97,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
             opcode,
             gas_remaining: interp.gas().remaining(),
             child_gas_used: 0,
+            child_stipend: 0,
         });
     }
 
@@ -106,6 +111,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
                 pending.gas_remaining,
                 pending.gas_remaining.saturating_sub(interp.gas().remaining()),
             )
+            .saturating_add(pending.child_stipend)
             .saturating_sub(pending.child_gas_used);
             *self.opcode_gas.entry(opcode).or_default() += gas_cost;
         }
@@ -113,7 +119,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
 
     fn call_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -133,7 +139,16 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
             MessageKind::Create | MessageKind::Create2 => return,
             _ => return,
         };
-        self.exclude_child_gas(opcode, result.gas.spent());
+        // The child's gas limit includes the stipend of a value transfer, which the caller did not
+        // pay, so the gas the caller gets back is the stipend larger than it forwarded.
+        let stipend = if matches!(message.kind, MessageKind::Call | MessageKind::CallCode)
+            && !message.value.is_zero()
+        {
+            interp.version().gas_params.get(GasId::CallStipend)
+        } else {
+            0
+        };
+        self.exclude_child_gas(opcode, result.gas.spent(), stipend);
     }
 
     fn create_end(
@@ -155,7 +170,7 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
             MessageKind::Create2 => op::CREATE2,
             _ => return,
         };
-        self.exclude_child_gas(opcode, result.gas.spent());
+        self.exclude_child_gas(opcode, result.gas.spent(), 0);
     }
 }
 
