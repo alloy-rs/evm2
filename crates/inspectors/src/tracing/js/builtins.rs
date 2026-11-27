@@ -439,18 +439,18 @@ pub(crate) fn slice(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResul
     let val = args.get_or_undefined(0).clone();
 
     let buf = bytes_from_value(val, ctx)?;
-    let start = args.get_or_undefined(1).to_numeric_number(ctx)? as usize;
-    let end = args.get_or_undefined(2).to_numeric_number(ctx)? as usize;
+    let start = to_int64(args.get_or_undefined(1), ctx)?;
+    let end = to_int64(args.get_or_undefined(2), ctx)?;
 
-    if start > end || end > buf.len() {
+    if start < 0 || start > end || end > buf.len() as i64 {
         Err(JsError::from_native(JsNativeError::error().with_message(format!(
-            "Tracer accessed out of bound memory: available {}, start {}, end {}",
+            "Tracer accessed out of bound memory: available {}, offset {}, size {}",
             buf.len(),
             start,
-            end
+            end.wrapping_sub(start)
         ))))
     } else {
-        to_uint8_array_value(buf[start..end].iter().copied(), ctx)
+        to_uint8_array_value(buf[start as usize..end as usize].iter().copied(), ctx)
     }
 }
 
@@ -856,5 +856,46 @@ mod tests {
 
         let result = ctx.eval(Source::from_bytes(b"var ret = bigInt(0); !ret.equals(0)")).unwrap();
         assert!(!result.as_boolean().unwrap());
+    }
+
+    #[test]
+    fn test_slice_bounds_follow_geth() {
+        let mut ctx = Context::default();
+        register_builtins(&mut ctx).unwrap();
+
+        // Bounds go through Go's float to `int64` conversion: fractions truncate, NaN is 0.
+        for (script, expected) in [
+            ("toHex(slice([1, 2, 3, 4], 1, 3))", "0x0203"),
+            ("toHex(slice([1, 2, 3, 4], 1.9, 3.9))", "0x0203"),
+            ("toHex(slice([1, 2, 3, 4], 1n, 3n))", "0x0203"),
+            ("toHex(slice([1, 2, 3, 4], NaN, 2))", "0x0102"),
+            ("toHex(slice([1, 2, 3, 4], Infinity, Infinity))", "0x"),
+            ("toHex(slice([1, 2, 3, 4], 2, 4))", "0x0304"),
+        ] {
+            let result = ctx.eval(Source::from_bytes(script)).unwrap();
+            let result = result.to_string(&mut ctx).unwrap().to_std_string().unwrap();
+            assert_eq!(result, expected, "{script}");
+        }
+
+        // Geth rejects a negative start or end, as it does any other bad bound.
+        for (script, expected) in [
+            ("slice([1, 2, 3, 4], -1, 2)", "available 4, offset -1, size 3"),
+            ("slice([1, 2, 3, 4], -2, -1)", "available 4, offset -2, size 1"),
+            ("slice([1, 2, 3, 4], 3, 2)", "available 4, offset 3, size -1"),
+            ("slice([1, 2, 3, 4], 0, 5)", "available 4, offset 0, size 5"),
+            ("slice([1, 2, 3, 4], 1, NaN)", "available 4, offset 1, size -1"),
+            ("slice([1, 2, 3, 4], 0, 1e30)", "available 4, offset 0, size -9223372036854775808"),
+            (
+                "slice([1, 2, 3, 4], -1e30, 2)",
+                "available 4, offset -9223372036854775808, size -9223372036854775806",
+            ),
+        ] {
+            let err = ctx.eval(Source::from_bytes(script)).unwrap_err();
+            assert_eq!(
+                err.as_native().unwrap().message(),
+                format!("Tracer accessed out of bound memory: {expected}"),
+                "{script}"
+            );
+        }
     }
 }
