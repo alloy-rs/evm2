@@ -2,10 +2,15 @@
 
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypesHost, OpcodeConfig,
+    constants::STACK_LIMIT,
     evm::config::SelectorOpcodeConfig,
-    interpreter::{Interpreter, InterpreterState, Pc, RawStack, op},
+    interpreter::{
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut, Word, op,
+    },
     trustme,
+    utils::WordExt,
 };
+use core::hint::cold_path;
 
 core::cfg_select! {
     tco => {
@@ -34,6 +39,386 @@ fn run_state<'a, 'frame, 'host, T: EvmTypesHost>(
     // the separate stack view is live.
     let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
     (state, pc, stack)
+}
+
+/// Jumps to a valid destination and skips its `JUMPDEST` when gas allows.
+#[inline(always)]
+fn jump_and_fuse_jumpdest<T: EvmTypesHost, C: EvmConfig<T>>(
+    pc: &mut Pc,
+    state: &mut InterpreterState<'_, '_, T>,
+    target: usize,
+    err_pc_advance: usize,
+    try_spend: &mut impl FnMut(&mut InterpreterState<'_, '_, T>, u64) -> bool,
+) -> Result {
+    if !state.bytecode().is_valid_jumpdest(target) {
+        cold_path();
+        unsafe { pc.advance_unchecked(err_pc_advance) };
+        return Err(InstrStop::InvalidJump);
+    }
+    unsafe { pc.set_unchecked(state.bytecode(), target) };
+    if C::OPCODE_CONFIG.is_unoverridden_base(op::JUMPDEST)
+        && try_spend(state, C::OPCODE_CONFIG.static_gas(op::JUMPDEST) as u64)
+    {
+        unsafe { pc.advance_unchecked(1) };
+    }
+    Ok(())
+}
+
+#[inline(always)]
+const unsafe fn read_u16_target(pc: Pc, offset: usize) -> usize {
+    let bytes = unsafe { pc.read_bytes_offset_unchecked(offset, 2) };
+    u16::from_be_bytes([bytes[0], bytes[1]]) as usize
+}
+
+/// Attempts to fuse `PUSH2` followed by `JUMP` or `JUMPI` (and its target `JUMPDEST`).
+#[inline(always)]
+fn try_fuse_push2_jump<T: EvmTypesHost, C: EvmConfig<T>>(
+    pc: &mut Pc,
+    stack: &mut StackMut<'_>,
+    state: &mut InterpreterState<'_, '_, T>,
+    mut try_spend: impl FnMut(&mut InterpreterState<'_, '_, T>, u64) -> bool,
+) -> Option<Result> {
+    // SAFETY: Legacy bytecode is padded with at least 33 zero bytes.
+    let next_op = unsafe { *pc.as_ptr().add(3) };
+    if (next_op & !1) != op::JUMP {
+        return None;
+    }
+    if next_op == op::JUMP {
+        if *stack.len >= STACK_LIMIT {
+            cold_path();
+            return Some(Err(InstrStop::StackOverflow));
+        }
+        if !try_spend(state, C::OPCODE_CONFIG.static_gas(op::JUMP) as u64) {
+            return None;
+        }
+        let target = unsafe { read_u16_target(*pc, 1) };
+        return Some(jump_and_fuse_jumpdest::<T, C>(pc, state, target, 3, &mut try_spend));
+    }
+    let len = *stack.len;
+    if len >= STACK_LIMIT {
+        cold_path();
+        return Some(Err(InstrStop::StackOverflow));
+    }
+    if len == 0 {
+        return None;
+    }
+    if !try_spend(state, C::OPCODE_CONFIG.static_gas(op::JUMPI) as u64) {
+        return None;
+    }
+    // SAFETY: `len >= 1`.
+    let is_zero = unsafe {
+        let new_len = len - 1;
+        *stack.len = new_len;
+        (*stack.stack.0.as_ptr().add(new_len).cast::<Word>()).is_zero()
+    };
+    if is_zero {
+        unsafe { pc.advance_unchecked(4) };
+        return Some(Ok(()));
+    }
+    let target = unsafe { read_u16_target(*pc, 1) };
+    Some(jump_and_fuse_jumpdest::<T, C>(pc, state, target, 3, &mut try_spend))
+}
+
+/// Attempts to fuse `ISZERO` followed by `PUSH2 + JUMPI` (and its target `JUMPDEST`).
+#[inline(always)]
+fn try_fuse_iszero_push2_jumpi<T: EvmTypesHost, C: EvmConfig<T>>(
+    pc: &mut Pc,
+    stack: &mut StackMut<'_>,
+    state: &mut InterpreterState<'_, '_, T>,
+    mut try_spend: impl FnMut(&mut InterpreterState<'_, '_, T>, u64) -> bool,
+) -> Option<Result> {
+    // SAFETY: Legacy bytecode is padded with at least 33 zero bytes.
+    if unsafe { *pc.as_ptr().add(1) } != op::PUSH2 || unsafe { *pc.as_ptr().add(4) } != op::JUMPI {
+        return None;
+    }
+    let len = *stack.len;
+    if len == 0 {
+        cold_path();
+        return Some(Err(InstrStop::StackUnderflow));
+    }
+    if len >= STACK_LIMIT {
+        return None;
+    }
+    let cost = C::OPCODE_CONFIG.static_gas(op::PUSH2) as u64
+        + C::OPCODE_CONFIG.static_gas(op::JUMPI) as u64;
+    if !try_spend(state, cost) {
+        return None;
+    }
+    // SAFETY: `len >= 1`.
+    let is_zero = unsafe {
+        let new_len = len - 1;
+        *stack.len = new_len;
+        (*stack.stack.0.as_ptr().add(new_len).cast::<Word>()).is_zero()
+    };
+    if !is_zero {
+        unsafe { pc.advance_unchecked(5) };
+        return Some(Ok(()));
+    }
+    let target = unsafe { read_u16_target(*pc, 2) };
+    Some(jump_and_fuse_jumpdest::<T, C>(pc, state, target, 4, &mut try_spend))
+}
+
+/// Attempts to fuse a binary comparison (`EQ`/`LT`/`GT`) followed by `PUSH2 + JUMPI`.
+#[inline(always)]
+fn try_fuse_cmp_push2_jumpi<T: EvmTypesHost, C: EvmConfig<T>, const OP: u8>(
+    pc: &mut Pc,
+    stack: &mut StackMut<'_>,
+    state: &mut InterpreterState<'_, '_, T>,
+    mut try_spend: impl FnMut(&mut InterpreterState<'_, '_, T>, u64) -> bool,
+) -> Option<Result> {
+    // SAFETY: Legacy bytecode is padded with at least 33 zero bytes.
+    if unsafe { *pc.as_ptr().add(1) } != op::PUSH2 || unsafe { *pc.as_ptr().add(4) } != op::JUMPI {
+        return None;
+    }
+    let len = *stack.len;
+    if len < 2 {
+        cold_path();
+        return Some(Err(InstrStop::StackUnderflow));
+    }
+    // After popping 2 and pushing 1, `len - 1 < STACK_LIMIT`, so `PUSH2` cannot overflow.
+    let cost = C::OPCODE_CONFIG.static_gas(op::PUSH2) as u64
+        + C::OPCODE_CONFIG.static_gas(op::JUMPI) as u64;
+    if !try_spend(state, cost) {
+        return None;
+    }
+    // SAFETY: `len >= 2`. Top of stack is `a`, second is `b`.
+    let cond = unsafe {
+        let new_len = len - 2;
+        *stack.len = new_len;
+        let ptr = stack.stack.0.as_ptr().add(new_len).cast::<Word>();
+        let b = &*ptr;
+        let a = &*ptr.add(1);
+        match OP {
+            op::EQ => a == b,
+            op::LT => a < b,
+            op::GT => a > b,
+            _ => unreachable!(),
+        }
+    };
+    if !cond {
+        unsafe { pc.advance_unchecked(5) };
+        return Some(Ok(()));
+    }
+    let target = unsafe { read_u16_target(*pc, 2) };
+    Some(jump_and_fuse_jumpdest::<T, C>(pc, state, target, 4, &mut try_spend))
+}
+
+/// Attempts to fuse `SWAP1` followed by `JUMP` (and its target `JUMPDEST`).
+#[inline(always)]
+fn try_fuse_swap1_jump<T: EvmTypesHost, C: EvmConfig<T>>(
+    pc: &mut Pc,
+    stack: &mut StackMut<'_>,
+    state: &mut InterpreterState<'_, '_, T>,
+    mut try_spend: impl FnMut(&mut InterpreterState<'_, '_, T>, u64) -> bool,
+) -> Option<Result> {
+    // SAFETY: Legacy bytecode is padded with at least 33 zero bytes.
+    if unsafe { *pc.as_ptr().add(1) } != op::JUMP {
+        return None;
+    }
+    let len = *stack.len;
+    if len < 2 {
+        cold_path();
+        return Some(Err(InstrStop::StackUnderflow));
+    }
+    if !try_spend(state, C::OPCODE_CONFIG.static_gas(op::JUMP) as u64) {
+        return None;
+    }
+    // SAFETY: `len >= 2`. Move top into `len - 2` after reading the jump target.
+    let target = unsafe {
+        let dst = stack.stack.0.as_mut_ptr().add(len - 2).cast::<Word>();
+        let target = (*dst).to_usize_saturated();
+        *dst = *dst.add(1);
+        *stack.len = len - 1;
+        target
+    };
+    Some(jump_and_fuse_jumpdest::<T, C>(pc, state, target, 1, &mut try_spend))
+}
+
+/// Attempts to fuse `PUSH1 <imm>` followed by `ADD`, `MLOAD`, or `MSTORE`.
+#[inline(always)]
+fn try_fuse_push1_op<T: EvmTypesHost, C: EvmConfig<T>>(
+    pc: &mut Pc,
+    stack: &mut StackMut<'_>,
+    state: &mut InterpreterState<'_, '_, T>,
+    mut try_spend: impl FnMut(&mut InterpreterState<'_, '_, T>, u64) -> bool,
+) -> Option<Result> {
+    // SAFETY: Legacy bytecode is padded with at least 33 zero bytes.
+    let next_op = unsafe { *pc.as_ptr().add(2) };
+    match next_op {
+        op::ADD if C::OPCODE_CONFIG.is_unoverridden_base(op::ADD) => {
+            let len = *stack.len;
+            if len >= STACK_LIMIT {
+                cold_path();
+                return Some(Err(InstrStop::StackOverflow));
+            }
+            if len == 0 || !try_spend(state, C::OPCODE_CONFIG.static_gas(op::ADD) as u64) {
+                return None;
+            }
+            let imm = unsafe { *pc.as_ptr().add(1) };
+            // SAFETY: `len >= 1`.
+            unsafe {
+                let slot = stack.stack.0.as_mut_ptr().add(len - 1).cast::<Word>();
+                (*slot).write((*slot).wrapping_add(Word::from(imm)));
+            }
+            unsafe { pc.advance_unchecked(3) };
+            Some(Ok(()))
+        }
+        op::MLOAD if C::OPCODE_CONFIG.is_unoverridden_base(op::MLOAD) => {
+            let len = *stack.len;
+            if len >= STACK_LIMIT {
+                cold_path();
+                return Some(Err(InstrStop::StackOverflow));
+            }
+            let imm = unsafe { *pc.as_ptr().add(1) } as usize;
+            if imm + 32 > state.0.gas().memory().words_num.wrapping_mul(32) {
+                return None;
+            }
+            if !try_spend(state, C::OPCODE_CONFIG.static_gas(op::MLOAD) as u64) {
+                return None;
+            }
+            let word = state.memory().get_word(imm);
+            // SAFETY: `len < STACK_LIMIT`.
+            unsafe {
+                *stack.stack.0.as_mut_ptr().add(len).cast::<Word>() = word;
+                *stack.len = len + 1;
+            }
+            unsafe { pc.advance_unchecked(3) };
+            Some(Ok(()))
+        }
+        op::MSTORE if C::OPCODE_CONFIG.is_unoverridden_base(op::MSTORE) => {
+            let len = *stack.len;
+            if len >= STACK_LIMIT {
+                cold_path();
+                return Some(Err(InstrStop::StackOverflow));
+            }
+            if len == 0 {
+                return None;
+            }
+            let imm = unsafe { *pc.as_ptr().add(1) } as usize;
+            if imm + 32 > state.0.gas().memory().words_num.wrapping_mul(32) {
+                return None;
+            }
+            if !try_spend(state, C::OPCODE_CONFIG.static_gas(op::MSTORE) as u64) {
+                return None;
+            }
+            // SAFETY: `len >= 1`.
+            let bytes = unsafe {
+                let new_len = len - 1;
+                *stack.len = new_len;
+                (*stack.stack.0.as_ptr().add(new_len).cast::<Word>()).to_be_bytes::<32>()
+            };
+            state.memory().set(imm, &bytes);
+            unsafe { pc.advance_unchecked(3) };
+            Some(Ok(()))
+        }
+        _ => None,
+    }
+}
+
+/// Attempts to fuse consecutive `POP` opcodes and an optional trailing `JUMP` (+ `JUMPDEST`).
+#[inline(always)]
+fn try_fuse_pop<T: EvmTypesHost, C: EvmConfig<T>>(
+    pc: &mut Pc,
+    stack: &mut StackMut<'_>,
+    state: &mut InterpreterState<'_, '_, T>,
+    mut try_spend: impl FnMut(&mut InterpreterState<'_, '_, T>, u64) -> bool,
+) -> Option<Result> {
+    // SAFETY: Legacy bytecode is padded with at least 33 zero bytes.
+    let first_next = unsafe { *pc.as_ptr().add(1) };
+    if first_next != op::POP
+        && !(first_next == op::JUMP && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMP))
+    {
+        return None;
+    }
+    let mut len = *stack.len;
+    if len == 0 {
+        cold_path();
+        return Some(Err(InstrStop::StackUnderflow));
+    }
+    len -= 1;
+    let pop_gas = C::OPCODE_CONFIG.static_gas(op::POP) as u64;
+    let mut count = 1usize;
+    while len > 0 && unsafe { *pc.as_ptr().add(count) } == op::POP && try_spend(state, pop_gas) {
+        len -= 1;
+        count += 1;
+    }
+    if len > 0
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMP)
+        && unsafe { *pc.as_ptr().add(count) } == op::JUMP
+        && try_spend(state, C::OPCODE_CONFIG.static_gas(op::JUMP) as u64)
+    {
+        let new_len = len - 1;
+        *stack.len = new_len;
+        // SAFETY: `len >= 1`.
+        let target =
+            unsafe { (*stack.stack.0.as_ptr().add(new_len).cast::<Word>()).to_usize_saturated() };
+        return Some(jump_and_fuse_jumpdest::<T, C>(pc, state, target, count, &mut try_spend));
+    }
+    *stack.len = len;
+    unsafe { pc.advance_unchecked(count) };
+    Some(Ok(()))
+}
+
+/// Attempts to fuse the current opcode with a following control-flow sequence.
+#[inline(always)]
+fn try_fuse<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>>(
+    op: u8,
+    pc: &mut Pc,
+    stack: &mut StackMut<'_>,
+    state: &mut InterpreterState<'_, '_, T>,
+    try_spend: impl FnMut(&mut InterpreterState<'_, '_, T>, u64) -> bool,
+) -> Option<Result> {
+    if M::INSPECT {
+        return None;
+    }
+    if op == op::PUSH2
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::PUSH2)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMP)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMPI)
+    {
+        return try_fuse_push2_jump::<T, C>(pc, stack, state, try_spend);
+    }
+    if op == op::ISZERO
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::ISZERO)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::PUSH2)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMPI)
+    {
+        return try_fuse_iszero_push2_jumpi::<T, C>(pc, stack, state, try_spend);
+    }
+    if op == op::EQ
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::EQ)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::PUSH2)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMPI)
+    {
+        return try_fuse_cmp_push2_jumpi::<T, C, { op::EQ }>(pc, stack, state, try_spend);
+    }
+    if op == op::LT
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::LT)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::PUSH2)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMPI)
+    {
+        return try_fuse_cmp_push2_jumpi::<T, C, { op::LT }>(pc, stack, state, try_spend);
+    }
+    if op == op::GT
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::GT)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::PUSH2)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMPI)
+    {
+        return try_fuse_cmp_push2_jumpi::<T, C, { op::GT }>(pc, stack, state, try_spend);
+    }
+    if op == op::SWAP1
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::SWAP1)
+        && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMP)
+    {
+        return try_fuse_swap1_jump::<T, C>(pc, stack, state, try_spend);
+    }
+    if op == op::PUSH1 && C::OPCODE_CONFIG.is_unoverridden_base(op::PUSH1) {
+        return try_fuse_push1_op::<T, C>(pc, stack, state, try_spend);
+    }
+    if op == op::POP && C::OPCODE_CONFIG.is_unoverridden_base(op::POP) {
+        return try_fuse_pop::<T, C>(pc, stack, state, try_spend);
+    }
+    None
 }
 
 #[inline(always)]

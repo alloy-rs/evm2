@@ -513,6 +513,17 @@ impl RemainingGas {
         self.0 = remaining;
     }
 
+    /// Spends execution gas if enough remains, leaving the balance unchanged otherwise.
+    #[inline(always)]
+    pub(crate) const fn try_spend(&mut self, cost: u64) -> bool {
+        if let Some(next) = self.0.checked_sub(cost) {
+            self.0 = next;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Spends execution gas.
     #[inline(always)]
     pub(crate) const fn spend(&mut self, cost: u64) -> Result {

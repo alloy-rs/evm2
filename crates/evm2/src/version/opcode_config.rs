@@ -152,6 +152,13 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         self.instruction_impls.is_unknown(opcode)
     }
 
+    /// Returns whether `opcode` keeps its base-spec unhooked instruction implementation.
+    #[inline(always)]
+    pub(crate) const fn is_unoverridden_base(&self, opcode: u8) -> bool {
+        self.instruction_sets[opcode as usize] == 1
+            && !self.instruction(opcode).flags.contains(InstructionFlags::HOOKED)
+    }
+
     /// Sets the static gas cost and instruction for `opcode`.
     ///
     /// An `I: Instruction` is implemented using the [`#[instruction]`](evm2_macros::instruction)

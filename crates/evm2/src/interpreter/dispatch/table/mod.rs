@@ -2,7 +2,7 @@ use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
 use crate::{
     EvmConfig, EvmTypesHost, OpcodeSet,
     interpreter::{
-        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut,
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut, op,
         private::InstructionFlags,
     },
 };
@@ -68,6 +68,12 @@ trait DispatchGas: Copy {
         state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
     );
+
+    fn try_spend<T: EvmTypesHost>(
+        &mut self,
+        state: &mut InterpreterState<'_, '_, T>,
+        cost: u64,
+    ) -> bool;
 }
 
 impl DispatchGas for () {
@@ -95,6 +101,21 @@ impl DispatchGas for () {
         _dynamic_gas: bool,
     ) {
     }
+
+    #[inline(always)]
+    fn try_spend<T: EvmTypesHost>(
+        &mut self,
+        state: &mut InterpreterState<'_, '_, T>,
+        cost: u64,
+    ) -> bool {
+        let gas = state.gas_mut();
+        if let Some(next) = gas.remaining().checked_sub(cost) {
+            gas.set_remaining(next);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[cold] // Not cold, but avoids MIR inlining.
@@ -117,11 +138,31 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
             if hooked {
                 state.set_pc_stack_len(pc.as_ptr(), *stack.len);
             }
-            r = instr(&mut pc, stack.reborrow(), state);
-            if r.is_ok() {
-                inc_pc(&mut pc, op);
-                if hooked {
-                    state.note_inspector_config_change();
+            if let Some(fused) =
+                super::try_fuse::<T, C, M>(op, &mut pc, &mut stack, state, |state, cost| {
+                    gas.try_spend(state, cost)
+                })
+            {
+                r = fused;
+            } else {
+                let jumpi_fallthrough =
+                    if op == op::JUMPI { unsafe { pc.as_ptr().add(1) } } else { core::ptr::null() };
+                r = instr(&mut pc, stack.reborrow(), state);
+                if r.is_ok() {
+                    inc_pc(&mut pc, op);
+                    if !M::INSPECT
+                        && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMPDEST)
+                        && ((op == op::JUMP && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMP))
+                            || (op == op::JUMPI
+                                && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMPI)
+                                && pc.as_ptr() != jumpi_fallthrough))
+                        && gas.try_spend(state, C::OPCODE_CONFIG.static_gas(op::JUMPDEST) as u64)
+                    {
+                        unsafe { pc.advance_unchecked(1) };
+                    }
+                    if hooked {
+                        state.note_inspector_config_change();
+                    }
                 }
             }
             gas.sync_after_exec(state, dynamic_gas);

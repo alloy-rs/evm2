@@ -4,6 +4,7 @@ use crate::{
     interpreter::{
         InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result,
         gas::RemainingGas,
+        op,
         private::{InstructionFlags, InstructionImplFn},
     },
 };
@@ -86,11 +87,25 @@ extern_table! {
         if hooked {
             state.set_pc_stack_len(pc.as_ptr(), stack.len());
         }
-        let (r, stack_len) = {
+        let jumpi_fallthrough =
+            if OP == op::JUMPI { unsafe { pc.as_ptr().add(1) } } else { core::ptr::null() };
+        let (r, stack_len, fused) = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
             let mut stack_view = unsafe { stack.borrow() };
-            let r = instr(&mut pc, stack_view.as_mut(), state);
-            (r, stack_view.len)
+            let mut stack_mut = stack_view.as_mut();
+            if let Some(fused_res) = super::try_fuse::<T, C, M>(
+                OP,
+                &mut pc,
+                &mut stack_mut,
+                state,
+                |_state, cost| remaining_gas.try_spend(cost),
+            )
+            {
+                (fused_res, stack_view.len, true)
+            } else {
+                let r = instr(&mut pc, stack_mut, state);
+                (r, stack_view.len, false)
+            }
         };
         stack.set_len(stack_len);
         if dynamic_gas {
@@ -105,7 +120,19 @@ extern_table! {
             }
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
-        super::inc_pc(&mut pc, OP);
+        if !fused {
+            super::inc_pc(&mut pc, OP);
+            if !M::INSPECT
+                && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMPDEST)
+                && ((OP == op::JUMP && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMP))
+                    || (OP == op::JUMPI
+                        && C::OPCODE_CONFIG.is_unoverridden_base(op::JUMPI)
+                        && pc.as_ptr() != jumpi_fallthrough))
+                && remaining_gas.try_spend(C::OPCODE_CONFIG.static_gas(op::JUMPDEST) as u64)
+            {
+                unsafe { pc.advance_unchecked(1) };
+            }
+        }
         if hooked {
             state.note_inspector_config_change();
             if !M::INSPECT && state.reload_requested() {
