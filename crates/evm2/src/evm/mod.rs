@@ -2095,6 +2095,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError> {
+        if let Some(loaded) = self.state.load_account_warm(address, load_code, self.features)? {
+            return Ok(loaded);
+        }
         let mut account = match self.state.account_with_skip(address, skip_cold_load) {
             Ok(account) => account,
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
@@ -2133,6 +2136,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SLoad, HostError> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
+        if let Some(value) = self.state.sload_warm(address, key, eip2929) {
+            return Ok(SLoad { value, is_cold: false, _non_exhaustive: () });
+        }
         let storage = self.state.storage(address)?;
         let loaded = if eip2929 {
             storage.into_slot_with_skip_and_warm(*key, skip_cold_load)
@@ -2159,6 +2165,17 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SStore, HostError> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
+        if let Some((original_value, present_value)) =
+            self.state.sstore_warm(address, key, *value, eip2929)
+        {
+            return Ok(SStore {
+                original_value,
+                present_value,
+                new_value: *value,
+                is_cold: false,
+                _non_exhaustive: (),
+            });
+        }
         // EIP-8037: SSTORE must cover the slot's access cost before the
         // implicit storage read. When the cold access is unaffordable the read is skipped, so the
         // slot stays out of the EIP-7928 block access list (the warm-read cost has already been
