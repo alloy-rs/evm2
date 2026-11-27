@@ -55,4 +55,6 @@ pub(crate) enum CaptureError {
         "withdrawal balance for {address} exceeds traced balance: traced {traced_balance}, withdrawals {withdrawal_balance}"
     )]
     WithdrawalBalanceUnderflow { address: Address, traced_balance: U256, withdrawal_balance: U256 },
+    #[error("capture cannot export transaction type {0}")]
+    UnsupportedTransactionType(u8),
 }

@@ -42,7 +42,7 @@ use evm2::{
     block::{
         BlockExecutor as _, BundleSource, ReceiptBuilder, ReceiptBuilderCtx,
         bundle_state::BundleRetention,
-        ethereum::{EthBlockExecutionCtx, EthBlockExecutor, EthBlockRules},
+        ethereum::{EthBlockExecutionCtx, EthBlockExecutor, EthBlockRules, EthReceiptBuilder},
     },
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
@@ -756,6 +756,7 @@ fn execute_block<'a>(
                             logs: receipt.logs().to_vec(),
                         };
                         ReceiptEnvelope::from_typed(receipt.tx_type(), receipt_root.with_bloom())
+                            .expect("pre-Byzantium transactions have ordinary receipts")
                     })
                     .collect::<Vec<_>>();
                 alloy_consensus::proofs::calculate_receipt_root(&receipts)
@@ -900,6 +901,9 @@ impl ReceiptBuilder for HarnessReceiptBuilder {
         &self,
         ctx: ReceiptBuilderCtx<TxType, TxResult<T>>,
     ) -> ReceiptEnvelope {
+        if ctx.result.frame.is_some() {
+            return EthReceiptBuilder::default().build_receipt::<T>(ctx);
+        }
         let ReceiptBuilderCtx { tx_type, result, cumulative_gas_used } = ctx;
         let receipt = Receipt {
             status: Eip658Value::Eip658(result.is_success()),
@@ -912,6 +916,7 @@ impl ReceiptBuilder for HarnessReceiptBuilder {
             ReceiptWithBloom::new(receipt, Bloom::ZERO)
         };
         ReceiptEnvelope::from_typed(tx_type, receipt)
+            .expect("non-frame transaction results produce ordinary receipts")
     }
 }
 

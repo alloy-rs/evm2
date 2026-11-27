@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, U256};
-use core::{hint::cold_path, num::NonZero};
+use core::{hint::cold_path, num::NonZero, ops::Range};
 use evm2::{EvmTypesHost, evm::AccountLoad, interpreter::Host};
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
@@ -106,4 +106,22 @@ pub(crate) unsafe fn copy_operation<T: EvmTypesHost>(
         ecx.memory_mut().set_data(memory_offset, data_offset, len, data);
     }
     Ok(())
+}
+
+/// Checks and expands the output slice shared by RETURN, REVERT, and APPROVE.
+#[inline]
+pub(crate) fn output_memory_range<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    offset: usize,
+    len: usize,
+) -> Result<Range<u32>, BuiltinError> {
+    if len == 0 {
+        return Ok(0..0);
+    }
+    let end = offset.checked_add(len).ok_or(InstrStop::MemoryOOG)?;
+    if end > u32::MAX as usize {
+        return Err(InstrStop::MemoryLimitOOG.into());
+    }
+    ensure_memory(ecx, offset, len)?;
+    Ok(offset as u32..end as u32)
 }

@@ -545,23 +545,23 @@ opcodes! {
     0xA4 => LOG4 => log<4> => stack_io(6, 0);
     // 0xA5
     // 0xA6
-    // 0xA7
+    0xA7 => SETCODEFROM => setcodefrom => stack_io(1, 1);
     // 0xA8
     // 0xA9
-    // 0xAA
+    0xAA => APPROVE => approve => stack_io(3, 0);
     // 0xAB
     // 0xAC
     // 0xAD
     // 0xAE
     // 0xAF
-    // 0xB0
-    // 0xB1
-    // 0xB2
-    // 0xB3
-    // 0xB4
-    // 0xB5
-    // 0xB6
-    // 0xB7
+    0xB0 => TXPARAM => txparam => stack_io(1, 1);
+    0xB1 => FRAMEDATALOAD => framedataload => stack_io(2, 1);
+    0xB2 => FRAMEDATACOPY => framedatacopy => stack_io(4, 0);
+    0xB3 => FRAMEPARAM => frameparam => stack_io(2, 1);
+    0xB4 => SIGPARAM => sigparam => stack_io(2, 1);
+    0xB5 => SIGDATACOPY => sigdatacopy => stack_io(4, 0);
+    0xB6 => TXTRACE => txtrace => stack_io(2, 1);
+    0xB7 => EVENTDATACOPY => eventdatacopy => stack_io(4, 0);
     // 0xB8
     // 0xB9
     // 0xBA

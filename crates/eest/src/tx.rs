@@ -233,7 +233,10 @@ pub(crate) fn decode_recovered_tx(
     {
         return Err(TxBuildError::ProtectedLegacy);
     }
-    let caller = recover_sender(tx.signature(), tx.signature_hash(), spec)?;
+    let signature = tx.signature().ok_or_else(|| {
+        TxBuildError::BuildTransaction("transaction has no outer ECDSA signature".into())
+    })?;
+    let caller = recover_sender(signature, tx.signature_hash(), spec)?;
     Ok(Recovered::new_unchecked(tx.into(), caller))
 }
 
@@ -316,6 +319,7 @@ fn recovered_envelope(tx: TypedTransaction, caller: Address) -> RecoveredTxEnvel
         TypedTransaction::Eip1559(tx) => Recovered::new_unchecked(TxEnvelope::Eip1559(tx), caller),
         TypedTransaction::Eip4844(tx) => Recovered::new_unchecked(TxEnvelope::Eip4844(tx), caller),
         TypedTransaction::Eip7702(tx) => Recovered::new_unchecked(tx.into(), caller),
+        TypedTransaction::Eip8141(tx) => Recovered::new_unchecked(TxEnvelope::Eip8141(tx), caller),
     }
 }
 

@@ -7,7 +7,7 @@ use alloy_consensus::{
     EthereumTxEnvelope, Header, TxEip4844,
     transaction::{Transaction as _, to_eip155_value},
 };
-use alloy_eips::{eip2930::AccessList, eip7702::SignedAuthorization};
+use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use evm2::{SpecId, utils::b256_to_word};
@@ -194,7 +194,7 @@ fn export_block(input: &CapturedBlock) -> Result<Block, CaptureError> {
                 .transactions()
                 .zip(input.transactions.iter())
                 .map(|(tx, input_tx)| export_transaction(tx, input_tx.signer))
-                .collect(),
+                .collect::<Result<_, _>>()?,
         ),
         uncle_headers: Some(block.body.ommers.iter().map(export_header).collect()),
         withdrawals: Some(
@@ -250,10 +250,13 @@ fn export_header(header: &Header) -> BlockHeader {
     }
 }
 
-fn export_transaction(tx: &EthereumTxEnvelope<TxEip4844>, signer: Address) -> Transaction {
-    let signature = tx.signature();
-    let tx_type = tx_type(tx);
-    Transaction {
+fn export_transaction(
+    tx: &EthereumTxEnvelope<TxEip4844>,
+    signer: Address,
+) -> Result<Transaction, CaptureError> {
+    let tx_type = tx.ty();
+    let signature = tx.signature().ok_or(CaptureError::UnsupportedTransactionType(tx_type))?;
+    Ok(Transaction {
         transaction_type: Some(U256::from(tx_type)),
         sender: Some(signer),
         data: tx.input().clone(),
@@ -273,21 +276,11 @@ fn export_transaction(tx: &EthereumTxEnvelope<TxEip4844>, signer: Address) -> Tr
         max_fee_per_blob_gas: tx.max_fee_per_blob_gas().map(U256::from),
         authorization_list: tx.authorization_list().map(export_authorization_list),
         hash: Some(*tx.tx_hash()),
-    }
+    })
 }
 
 fn signature_v(tx_type: u8, y_parity: bool, chain_id: Option<u64>) -> u128 {
     if tx_type == 0 { to_eip155_value(y_parity, chain_id) } else { u128::from(y_parity as u8) }
-}
-
-const fn tx_type(tx: &EthereumTxEnvelope<TxEip4844>) -> u8 {
-    match tx {
-        EthereumTxEnvelope::Legacy(_) => 0,
-        EthereumTxEnvelope::Eip2930(_) => 1,
-        EthereumTxEnvelope::Eip1559(_) => 2,
-        EthereumTxEnvelope::Eip4844(_) => 3,
-        EthereumTxEnvelope::Eip7702(_) => 4,
-    }
 }
 
 fn export_access_list(access_list: &AccessList) -> Vec<AccessListItem> {

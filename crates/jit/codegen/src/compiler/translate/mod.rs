@@ -1226,12 +1226,56 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 goto_return!(no_branch);
             }
             op::INVALID => goto_return!(fail InstrStop::InvalidFEOpcode),
+            op::SETCODEFROM => {
+                let sp = self.sp_after_inputs();
+                self.call_fallible_builtin(Builtin::SetCodeFrom, &[self.ecx, sp]);
+            }
             op::SELFDESTRUCT => {
                 let sp = self.sp_after_inputs();
                 self.sync_diverging_stack_effect();
                 self.call_fallible_builtin(Builtin::SelfDestruct, &[self.ecx, sp]);
                 self.bcx.unreachable();
                 goto_return!(no_branch);
+            }
+
+            op::APPROVE => {
+                let sp = self.sp_after_inputs();
+                self.sync_diverging_stack_effect();
+                self.call_fallible_builtin(Builtin::Approve, &[self.ecx, sp]);
+                self.bcx.unreachable();
+                goto_return!(no_branch);
+            }
+            op::TXPARAM => {
+                let sp = self.sp_after_inputs();
+                self.call_fallible_builtin(Builtin::TxParam, &[self.ecx, sp]);
+            }
+            op::FRAMEDATALOAD => {
+                let sp = self.sp_after_inputs();
+                self.call_fallible_builtin(Builtin::FrameDataLoad, &[self.ecx, sp]);
+            }
+            op::FRAMEDATACOPY => {
+                let sp = self.sp_after_inputs();
+                self.call_fallible_builtin(Builtin::FrameDataCopy, &[self.ecx, sp]);
+            }
+            op::FRAMEPARAM => {
+                let sp = self.sp_after_inputs();
+                self.call_fallible_builtin(Builtin::FrameParam, &[self.ecx, sp]);
+            }
+            op::SIGPARAM => {
+                let sp = self.sp_after_inputs();
+                self.call_fallible_builtin(Builtin::SigParam, &[self.ecx, sp]);
+            }
+            op::SIGDATACOPY => {
+                let sp = self.sp_after_inputs();
+                self.call_fallible_builtin(Builtin::SigDataCopy, &[self.ecx, sp]);
+            }
+            op::TXTRACE => {
+                let sp = self.sp_after_inputs();
+                self.call_fallible_builtin(Builtin::TxTrace, &[self.ecx, sp]);
+            }
+            op::EVENTDATACOPY => {
+                let sp = self.sp_after_inputs();
+                self.call_fallible_builtin(Builtin::EventDataCopy, &[self.ecx, sp]);
             }
 
             _ => unreachable!("unimplemented instruction: {data:?}"),

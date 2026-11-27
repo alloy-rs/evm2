@@ -1420,3 +1420,6 @@ mod custom_host_tests {
         assert_eq!(stop, InstrStop::Stop);
     }
 }
+
+#[cfg(all(test, feature = "llvm"))]
+mod frame_tests;

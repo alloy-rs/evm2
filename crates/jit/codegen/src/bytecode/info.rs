@@ -105,7 +105,7 @@ pub const fn op_info_map(spec_id: SpecId) -> &'static [OpcodeInfo; 256] {
 
 /// Opcodes whose builtin pays the whole gas cost, including the static part, at runtime. Core
 /// gives them no static gas, so a host cannot change it without running its own instruction.
-const FULLY_DYNAMIC: &[u8] = &[op::SSTORE, op::CREATE, op::CREATE2];
+const FULLY_DYNAMIC: &[u8] = &[op::SSTORE, op::CREATE, op::CREATE2, op::APPROVE, op::SETCODEFROM];
 
 const fn contains(haystack: &[u8], needle: u8) -> bool {
     let mut i = 0;
