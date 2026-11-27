@@ -93,8 +93,9 @@ fn modexp_256(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Option<Vec<u8>> {
             for _ in 0..4 {
                 acc = mont_mul(&acc, &acc, n, inv);
             }
-            if digit(i) != 0 {
-                acc = mont_mul(&acc, &table[digit(i)], n, inv);
+            let d = digit(i);
+            if d != 0 {
+                acc = mont_mul(&acc, &table[d], n, inv);
             }
         }
     }
@@ -1221,6 +1222,15 @@ mod tests {
                 base.to_be_bytes_trimmed_vec(),
                 exponent.to_be_bytes_trimmed_vec(),
                 modulus.to_be_bytes_trimmed_vec(),
+            ));
+
+            // Operands near the largest modulus, which overflow the running sum of `mont_mul`.
+            let modulus = U256::MAX - U256::from(rng.random_range(0..1u64 << 32) * 2);
+            let base = modulus - U256::from(rng.random_range(1..1u64 << 32));
+            cases.push((
+                base.to_be_bytes_vec(),
+                rng.random::<[u8; 32]>().to_vec(),
+                modulus.to_be_bytes_vec(),
             ));
 
             // Operands of random byte length, which are not all trimmed.
