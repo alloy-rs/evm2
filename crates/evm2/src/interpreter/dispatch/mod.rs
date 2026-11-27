@@ -457,7 +457,9 @@ where
     macro_rules! assign_instruction_table_entries {
         ($($op:literal,)*) => {
             $(
-                if instruction_changed(vt, previous_opcode_config, $op) && !vt.is_unknown_opcode($op) {
+                if dispatch_entry_changed::<T, M>(vt, previous_opcode_config, $op)
+                    && !vt.is_unknown_opcode($op)
+                {
                     table[$op] = imp::dispatch::<T, C, M, $op> as imp::RawInstrFn<T>;
                 }
             )*
@@ -601,6 +603,44 @@ const fn instruction_changed<T: EvmTypesHost>(
     opcode_config.revision(op) != previous_opcode_config.revision(op)
 }
 
+const fn dispatch_entry_changed<T: EvmTypesHost, M: InspectMode<T>>(
+    opcode_config: &OpcodeConfig<T>,
+    previous_opcode_config: Option<&OpcodeConfig<T>>,
+    op: u8,
+) -> bool {
+    if instruction_changed(opcode_config, previous_opcode_config, op) {
+        return true;
+    }
+    if M::INSPECT {
+        return false;
+    }
+    match op {
+        op::JUMP | op::JUMPI => {
+            instruction_changed(opcode_config, previous_opcode_config, op::JUMPDEST)
+        }
+        op::PUSH2 => {
+            instruction_changed(opcode_config, previous_opcode_config, op::JUMP)
+                || instruction_changed(opcode_config, previous_opcode_config, op::JUMPI)
+                || instruction_changed(opcode_config, previous_opcode_config, op::JUMPDEST)
+        }
+        op::ISZERO | op::EQ | op::LT | op::GT => {
+            instruction_changed(opcode_config, previous_opcode_config, op::PUSH2)
+                || instruction_changed(opcode_config, previous_opcode_config, op::JUMPI)
+                || instruction_changed(opcode_config, previous_opcode_config, op::JUMPDEST)
+        }
+        op::SWAP1 | op::POP => {
+            instruction_changed(opcode_config, previous_opcode_config, op::JUMP)
+                || instruction_changed(opcode_config, previous_opcode_config, op::JUMPDEST)
+        }
+        op::PUSH1 => {
+            instruction_changed(opcode_config, previous_opcode_config, op::ADD)
+                || instruction_changed(opcode_config, previous_opcode_config, op::MLOAD)
+                || instruction_changed(opcode_config, previous_opcode_config, op::MSTORE)
+        }
+        _ => false,
+    }
+}
+
 trait InspectMode<T: EvmTypesHost> {
     /// Whether the dispatch calls the inspector's step hooks: from the handlers on the tail-call
     /// backend, and from the loop on the others, where a hook must not run while a handler holds
@@ -645,5 +685,97 @@ impl<T: EvmTypesHost, const ALL: bool> InspectMode<T> for DynInspector<ALL> {
     #[inline(always)]
     fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {
         state.inspect_step_end(pc, stack_len);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BaseEvmConfig, BaseEvmTypes, Evm, SpecId,
+        bytecode::Bytecode,
+        env::BlockEnvExt,
+        evm::{EmptyDB, config::ExecutionConfig},
+        interpreter::{MessageExt, instructions as instr},
+        precompile::NoPrecompiles,
+        registry::TxRegistry,
+    };
+    use alloy_primitives::Bytes;
+
+    struct CustomFusedPartnerGasConfig;
+
+    impl EvmConfig<BaseEvmTypes> for CustomFusedPartnerGasConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config = OpcodeConfig::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_static_gas(op::ADD, 1);
+            config.set_static_gas(op::JUMPDEST, 7);
+            config
+        };
+    }
+
+    struct CustomFusedPartnerInstrConfig;
+
+    impl EvmConfig<BaseEvmTypes> for CustomFusedPartnerInstrConfig {
+        const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
+        const OPCODE_CONFIG: &'static OpcodeConfig<BaseEvmTypes> = &{
+            let mut config = OpcodeConfig::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+            config.set_instruction::<instr::mul<BaseEvmTypes>>(op::ADD, 5);
+            config
+        };
+    }
+
+    fn run_with_config<C: EvmConfig<BaseEvmTypes>>(code: &'static [u8]) -> (Word, u64) {
+        let mut evm = Evm::new_with_execution_config(
+            ExecutionConfig::for_config::<C>(),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            EmptyDB::default(),
+            NoPrecompiles::default(),
+        );
+        let msg = MessageExt {
+            gas_limit: 100_000,
+            code: Bytecode::new_legacy(Bytes::from_static(code)),
+            ..Default::default()
+        };
+        let mut interp = Interpreter::<BaseEvmTypes>::new(&msg);
+        assert_eq!(interp.run(&mut evm).unwrap(), InstrStop::Stop);
+        (interp.stack().peek(0).unwrap_or(Word::ZERO), interp.gas().spent())
+    }
+
+    #[test]
+    fn fused_dispatch_rebuilds_for_partner_overrides() {
+        let (top, spent) = run_with_config::<CustomFusedPartnerGasConfig>(&[
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            2,
+            op::ADD,
+            op::STOP,
+        ]);
+        assert_eq!(top, Word::from(3));
+        assert_eq!(spent, 3 + 3 + 1);
+
+        let (_, jump_spent) = run_with_config::<CustomFusedPartnerGasConfig>(&[
+            op::PUSH2,
+            0x00,
+            0x04,
+            op::JUMP,
+            op::JUMPDEST,
+            op::STOP,
+        ]);
+        assert_eq!(jump_spent, 3 + 8 + 7);
+
+        let (mul_top, mul_spent) = run_with_config::<CustomFusedPartnerInstrConfig>(&[
+            op::PUSH1,
+            3,
+            op::PUSH1,
+            4,
+            op::ADD,
+            op::STOP,
+        ]);
+        assert_eq!(mul_top, Word::from(12));
+        assert_eq!(mul_spent, 3 + 3 + 5);
     }
 }
