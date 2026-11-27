@@ -102,6 +102,7 @@ fn value_call_to_new_account_cost_leaves_out_state_gas() {
     ] {
         let step = call_step_funded(&code, &[], SpecId::AMSTERDAM, 16, gas_limit);
         assert_eq!(step.cost, 3_000 + 11_300 + 65_535);
+        assert_eq!(step.geth_cost, step.cost);
         assert_eq!(step.used, step.gas_remaining - step.cost - spilled + 65_535 + 2_300);
     }
 }
@@ -114,7 +115,10 @@ fn create_cost_leaves_out_state_gas_spilled_from_a_short_reservoir() {
         (FULL_RESERVOIR_GAS_LIMIT, 0),
     ] {
         let step = call_step_funded(&hex!("5f5f5ff000"), &[], SpecId::AMSTERDAM, 0, gas_limit);
-        assert_eq!(step.cost, 12_000);
-        assert_eq!(step.used, step.gas_remaining - 12_000 - spilled);
+        let available = step.gas_remaining - 12_000 - spilled;
+        assert_eq!(step.child_gas_limit, Some(available - available / 64));
+        assert_eq!(step.geth_cost, 12_000);
+        assert_eq!(step.cost, 12_000 + available - available / 64);
+        assert_eq!(step.used, available);
     }
 }

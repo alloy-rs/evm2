@@ -11,7 +11,7 @@ const PARTIAL_SELFDESTRUCT: &str = r#""selfdestruct_address":"0x3333333333333333
 
 fn trace_json(selfdestruct: &str) -> String {
     format!(
-        r#"{{"depth":3,"success":true,"caller":"0x1111111111111111111111111111111111111111","address":"0x2222222222222222222222222222222222222222","maybe_precompile":false,{selfdestruct},"kind":"DELEGATECALL","value":"0x5","data":"0x01","output":"0x02","bytecode":"0x6000","gas_used":1,"gas_limit":2,"gas_refund_counter":3,"status":"SelfDestruct","steps":[{FULL_STEP},{EMPTY_STEP}],"step_deltas":[{{"step":0,"memory":null,"store":null,"gas_remaining_after":8}}],"decoded":{{"label":"l","return_data":null,"call_data":null}}}}"#
+        r#"{{"depth":3,"success":true,"caller":"0x1111111111111111111111111111111111111111","address":"0x2222222222222222222222222222222222222222","maybe_precompile":false,{selfdestruct},"kind":"DELEGATECALL","value":"0x5","data":"0x01","output":"0x02","bytecode":"0x6000","gas_used":1,"gas_limit":2,"gas_refund_counter":3,"status":"SelfDestruct","steps":[{FULL_STEP},{EMPTY_STEP}],"step_deltas":[{{"step":0,"memory":null,"store":null,"gas_remaining_after":8}}],"decoded":{{"label":"l","return_data":null,"call_data":null}},"parent_step_omitted":false}}"#
     )
 }
 
@@ -30,4 +30,14 @@ fn call_trace_serializes_as_flat_structs() {
         assert_eq!(value.selfdestruct.is_some(), selfdestruct != NO_SELFDESTRUCT);
         assert_eq!(serde_json::to_string(&value).unwrap(), json);
     }
+}
+
+/// A round-tripped trace still knows whether to pair the child with a VM step.
+#[test]
+fn call_trace_preserves_an_omitted_parent_step() {
+    let mut trace = serde_json::from_str::<CallTrace>(&trace_json(NO_SELFDESTRUCT)).unwrap();
+    assert!(!trace.parent_step_omitted);
+    trace.parent_step_omitted = true;
+    let json = serde_json::to_string(&trace).unwrap();
+    assert_eq!(serde_json::from_str::<CallTrace>(&json).unwrap(), trace);
 }
