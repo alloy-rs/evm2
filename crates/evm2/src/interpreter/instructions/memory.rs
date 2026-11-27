@@ -1,25 +1,85 @@
-use crate::utils::WordExt;
+use crate::{
+    EvmTypesHost,
+    interpreter::{Gas, InterpreterState, Result, Word},
+    utils::WordExt,
+};
+use core::hint::cold_path;
 use evm2_macros::instruction;
+
+#[cold]
+#[inline(never)]
+fn mload_cold<T: EvmTypesHost>(
+    state: &mut InterpreterState<'_, '_, T>,
+    gas: &mut Gas,
+    offset: usize,
+    out: &mut Word,
+) -> Result {
+    state.resize_memory(gas, offset, 32)?;
+    *out = state.memory().get_word(offset);
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn mstore_cold<T: EvmTypesHost>(
+    state: &mut InterpreterState<'_, '_, T>,
+    gas: &mut Gas,
+    offset: usize,
+    value: &Word,
+) -> Result {
+    state.resize_memory(gas, offset, 32)?;
+    state.memory().set(offset, &value.to_be_bytes::<32>());
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn mstore8_cold<T: EvmTypesHost>(
+    state: &mut InterpreterState<'_, '_, T>,
+    gas: &mut Gas,
+    offset: usize,
+    byte: u8,
+) -> Result {
+    state.resize_memory(gas, offset, 1)?;
+    state.memory().set(offset, &[byte]);
+    Ok(())
+}
 
 #[instruction(dynamic_gas)]
 pub fn mload(cx: _, [offset]: [Word]) -> Result<out> {
     let offset = offset.to_usize()?;
-    cx.state.resize_memory(cx.gas, offset, 32)?;
-    *out = cx.state.memory().get_word(offset);
+    if let Some(end) = offset.checked_add(32)
+        && end <= cx.gas.memory().words_num.wrapping_mul(32)
+    {
+        *out = cx.state.memory().get_word(offset);
+        return Ok(());
+    }
+    cold_path();
+    mload_cold(cx.state, cx.gas, offset, out)?;
 }
 
 #[instruction(dynamic_gas)]
 pub fn mstore(cx: _, [offset, value]: [Word]) -> Result {
     let offset = offset.to_usize()?;
-    cx.state.resize_memory(cx.gas, offset, 32)?;
-    cx.state.memory().set(offset, &value.to_be_bytes::<32>());
+    if let Some(end) = offset.checked_add(32)
+        && end <= cx.gas.memory().words_num.wrapping_mul(32)
+    {
+        cx.state.memory().set(offset, &value.to_be_bytes::<32>());
+        return Ok(());
+    }
+    cold_path();
+    mstore_cold(cx.state, cx.gas, offset, value)?;
 }
 
 #[instruction(dynamic_gas)]
 pub fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
     let offset = offset.to_usize()?;
-    cx.state.resize_memory(cx.gas, offset, 1)?;
-    cx.state.memory().set(offset, &[value.byte(0)]);
+    if offset < cx.gas.memory().words_num.wrapping_mul(32) {
+        cx.state.memory().set(offset, &[value.byte(0)]);
+        return Ok(());
+    }
+    cold_path();
+    mstore8_cold(cx.state, cx.gas, offset, value.byte(0))?;
 }
 
 #[instruction]
