@@ -26,7 +26,9 @@ const PRIMES: [U256; 6] = uint!([
 
 /// Modular exponentiation.
 pub(crate) fn modexp(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
-    fermat_inverse(base, exponent, modulus).unwrap_or_else(|| modexp_big(base, exponent, modulus))
+    fermat_inverse(base, exponent, modulus)
+        .or_else(|| modexp_256(base, exponent, modulus))
+        .unwrap_or_else(|| modexp_big(base, exponent, modulus))
 }
 
 /// Computes `base^(p - 2) mod p` for a prime `p` in [`PRIMES`] as the modular inverse of `base`,
@@ -46,6 +48,105 @@ fn fermat_inverse(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Option<Vec<u8
     // `base` has no inverse only if it is a multiple of `p`, and then the result is 0.
     let inverse = U256::from_be_slice(base).inv_mod(p).unwrap_or_default();
     Some(inverse.to_be_bytes_vec())
+}
+
+/// Montgomery exponentiation with a 4-bit fixed window, without allocating. This is faster than
+/// [`modexp_big`] for odd moduli of 129 to 256 bits, while GMP is faster for smaller ones, which
+/// fit in at most two limbs.
+///
+/// Returns `None` unless every operand has at most 32 bytes and the modulus is odd and above
+/// 128 bits.
+fn modexp_256(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Option<Vec<u8>> {
+    if base.len() > 32 || exponent.len() > 32 || modulus.len() > 32 {
+        return None;
+    }
+    let modulus = U256::from_be_slice(modulus);
+    if !modulus.bit(0) || modulus.bit_len() <= 128 {
+        return None;
+    }
+    let n = modulus.as_limbs();
+
+    // `-n^-1 mod 2^64` by Newton iteration, which doubles the number of correct low bits from 3.
+    let mut inv = n[0];
+    for _ in 0..5 {
+        inv = inv.wrapping_mul(2u64.wrapping_sub(n[0].wrapping_mul(inv)));
+    }
+    let inv = inv.wrapping_neg();
+
+    // `r = 2^256 mod n` is one in Montgomery form, and `r2 = r^2 mod n` converts into it.
+    let r = U256::ZERO.wrapping_sub(modulus) % modulus;
+    let r2 = r.mul_mod(r, modulus);
+    let r = *r.as_limbs();
+
+    // `table[d]` is the base to the power `d` in Montgomery form.
+    let base = mont_mul(&(U256::from_be_slice(base) % modulus).into_limbs(), r2.as_limbs(), n, inv);
+    let mut table = [r; 16];
+    table[1] = base;
+    for d in 2..16 {
+        table[d] = mont_mul(&table[d - 1], &base, n, inv);
+    }
+
+    let exponent = U256::from_be_slice(exponent);
+    let digit = |i: usize| ((exponent.as_limbs()[i / 16] >> (4 * (i % 16))) & 0xf) as usize;
+    let mut acc = r;
+    if let Some(top) = exponent.bit_len().div_ceil(4).checked_sub(1) {
+        acc = table[digit(top)];
+        for i in (0..top).rev() {
+            for _ in 0..4 {
+                acc = mont_mul(&acc, &acc, n, inv);
+            }
+            let d = digit(i);
+            if d != 0 {
+                acc = mont_mul(&acc, &table[d], n, inv);
+            }
+        }
+    }
+
+    let result = U256::from_limbs(mont_mul(&acc, &[1, 0, 0, 0], n, inv));
+    Some(result.to_be_bytes_trimmed_vec())
+}
+
+/// Montgomery product `a * b / 2^256 mod n` of values below the odd modulus `n`, where
+/// `inv = -n^-1 mod 2^64`. Uses coarsely integrated operand scanning (CIOS).
+#[inline(always)]
+fn mont_mul(a: &[u64; 4], b: &[u64; 4], n: &[u64; 4], inv: u64) -> [u64; 4] {
+    // `x * y + z + carry` as a `(low, high)` pair. It never overflows 128 bits.
+    const fn mac(x: u64, y: u64, z: u64, carry: u64) -> (u64, u64) {
+        let t = x as u128 * y as u128 + z as u128 + carry as u128;
+        (t as u64, (t >> 64) as u64)
+    }
+
+    // The running sum is `t` plus `top * 2^256`, with `top` at most 1 after each round.
+    let mut t = [0; 4];
+    let mut top = 0u64;
+    for &b in b {
+        let mut carry = 0;
+        for j in 0..4 {
+            (t[j], carry) = mac(a[j], b, t[j], carry);
+        }
+        let (t4, overflow) = top.overflowing_add(carry);
+
+        // Add the multiple of `n` that clears the lowest limb, then shift right by one limb.
+        let m = t[0].wrapping_mul(inv);
+        let (_, mut carry) = mac(m, n[0], t[0], 0);
+        for j in 1..4 {
+            (t[j - 1], carry) = mac(m, n[j], t[j], carry);
+        }
+        let (t3, overflow2) = t4.overflowing_add(carry);
+        t[3] = t3;
+        top = overflow as u64 + overflow2 as u64;
+    }
+
+    // The sum is below `2n`, so one conditional subtraction reduces it.
+    let mut reduced = [0; 4];
+    let mut borrow = false;
+    for j in 0..4 {
+        let (d, b1) = t[j].overflowing_sub(n[j]);
+        let (d, b2) = d.overflowing_sub(borrow as u64);
+        reduced[j] = d;
+        borrow = b1 | b2;
+    }
+    if top != 0 || !borrow { reduced } else { t }
 }
 
 /// GMP-based modular exponentiation implementation
@@ -1048,6 +1149,106 @@ mod tests {
             let composite = p + U256::ONE;
             let exponent = (composite - U256::from(2)).to_be_bytes::<32>();
             assert_eq!(fermat_inverse(&[7], &exponent, &composite.to_be_bytes::<32>()), None);
+        }
+    }
+
+    #[test]
+    fn test_modexp_256() {
+        let check = |base: &[u8], exponent: &[u8], modulus: &[u8]| {
+            let [actual, expected] =
+                [modexp(base, exponent, modulus), modexp_big(base, exponent, modulus)]
+                    .map(|r| left_pad_vec_be(&r, modulus.len()).into_owned());
+            assert_eq!(actual, expected, "{base:x?} {exponent:x?} {modulus:x?}");
+
+            // Only odd moduli above 128 bits take the fast path, and only for operands up to 32
+            // bytes.
+            let m = U256::try_from_be_slice(modulus);
+            let fast = [base.len(), exponent.len()].into_iter().all(|len| len <= 32)
+                && m.is_some_and(|m| m.bit(0) && m.bit_len() > 128);
+            assert_eq!(
+                modexp_256(base, exponent, modulus).is_some(),
+                fast,
+                "{base:x?} {exponent:x?} {modulus:x?}"
+            );
+        };
+
+        let one = U256::ONE;
+        let two = U256::from(2);
+        let p = PRIMES[2];
+        let secp256k1 = |exponent: U256| {
+            let base = hex!("4866d6a5ab41ab2c6bcc57ccd3735da5f16f80a548e5e20a44e4e9b8118c26f2");
+            (base.to_vec(), exponent.to_be_bytes_vec(), p.to_be_bytes_vec())
+        };
+        let mut cases = vec![
+            secp256k1((p - one) / two),
+            secp256k1((p + one) / U256::from(4)),
+            (vec![7], vec![3], vec![]),
+            (vec![7], vec![3], vec![0]),
+            (vec![7], vec![3], vec![1]),
+            (vec![7], vec![3], vec![0, 0, 1]),
+            (vec![7], vec![3], vec![8]),
+            (vec![7], vec![3], vec![9]),
+            (vec![7], vec![3], vec![0xff; 32]),
+            (vec![7], vec![3], vec![0xfe; 32]),
+            (vec![7], vec![3], U256::from(1u128 << 127).to_be_bytes_trimmed_vec()),
+            (vec![7], vec![3], (U256::from(1u128 << 127) * two + one).to_be_bytes_trimmed_vec()),
+            (vec![7], vec![3], (U256::from(1u128 << 127) * two - one).to_be_bytes_trimmed_vec()),
+            (vec![7], vec![3], vec![0x80; 31].into_iter().chain([1]).collect()),
+            (vec![7], vec![], vec![9]),
+            (vec![7], vec![0; 32], vec![9]),
+            (vec![], vec![3], vec![9]),
+            (vec![0; 32], vec![3], vec![9]),
+            (vec![9], vec![3], vec![9]),
+            (vec![10], vec![3], vec![9]),
+            (vec![0xff; 32], vec![0xff; 32], vec![0xff; 32]),
+            (vec![0xff; 32], vec![0xff; 32], vec![0xfd; 32]),
+            (vec![0xff; 32], vec![0xff; 32], vec![0xff; 33]),
+            (vec![0xff; 33], vec![0xff; 32], vec![0xff; 32]),
+            (vec![0xff; 32], vec![0xff; 33], vec![0xff; 32]),
+            (vec![7], vec![1, 0], p.to_be_bytes_vec()),
+            (vec![7], p.to_be_bytes_vec(), vec![0; 33].into_iter().chain([9]).collect()),
+        ];
+
+        let mut rng = StdRng::seed_from_u64(0);
+        for _ in 0..200 {
+            // Full-width operands with an odd modulus whose top bit is set.
+            let [base, exponent] = [(); 2].map(|_| rng.random::<[u8; 32]>().to_vec());
+            let mut modulus = rng.random::<[u8; 32]>();
+            modulus[0] |= 0x80;
+            modulus[31] |= 1;
+            cases.push((base, exponent, modulus.to_vec()));
+
+            // Operands of random bit length, with a modulus that is odd except at random.
+            let [base, exponent, modulus] = [(); 3].map(|_| -> U256 {
+                let shift = rng.random_range(0..256);
+                U256::from_be_bytes(rng.random::<[u8; 32]>()) >> shift
+            });
+            let modulus = if rng.random() { modulus | one } else { modulus };
+            cases.push((
+                base.to_be_bytes_trimmed_vec(),
+                exponent.to_be_bytes_trimmed_vec(),
+                modulus.to_be_bytes_trimmed_vec(),
+            ));
+
+            // Operands near the largest modulus, which overflow the running sum of `mont_mul`.
+            let modulus = U256::MAX - U256::from(rng.random_range(0..1u64 << 32) * 2);
+            let base = modulus - U256::from(rng.random_range(1..1u64 << 32));
+            cases.push((
+                base.to_be_bytes_vec(),
+                rng.random::<[u8; 32]>().to_vec(),
+                modulus.to_be_bytes_vec(),
+            ));
+
+            // Operands of random byte length, which are not all trimmed.
+            let [base, exponent, modulus] = [(); 3].map(|_| {
+                let len = rng.random_range(0..=32);
+                (0..len).map(|_| rng.random()).collect::<Vec<u8>>()
+            });
+            cases.push((base, exponent, modulus));
+        }
+
+        for (base, exponent, modulus) in cases {
+            check(&base, &exponent, &modulus);
         }
     }
 }

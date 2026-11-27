@@ -280,5 +280,99 @@
         "0x0"
       ]
     }
+  },
+  "precompile/modexp/secp256k1_euler": {
+    "env": {
+      "currentBaseFee": "0x0",
+      "currentCoinbase": "0x0000000000000000000000000000000000000000",
+      "currentGasLimit": "0x1000000",
+      "currentNumber": "0x1",
+      "currentTimestamp": "0x1"
+    },
+    "post": {
+      "Berlin": [
+        {
+          "expectException": null,
+          "hash": "0x80efccaaed10981cec1fdbbecc59419278f14b5269a2f885d8f7d0531a781c93",
+          "indexes": {
+            "data": 0,
+            "gas": 0,
+            "value": 0
+          },
+          "logs": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
+        }
+      ]
+    },
+    "pre": {
+      "0x1111111111111111111111111111111111111111": {
+        "balance": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "code": "0x",
+        "nonce": "0x0",
+        "storage": {}
+      }
+    },
+    "transaction": {
+      "data": [
+        "0x0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000204866d6a5ab41ab2c6bcc57ccd3735da5f16f80a548e5e20a44e4e9b8118c26f27fffffffffffffffffffffffffffffffffffffffffffffffffffffff7ffffe17fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"
+      ],
+      "gasLimit": [
+        "0x1000000"
+      ],
+      "gasPrice": "0x0",
+      "nonce": "0x0",
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "to": "0x0000000000000000000000000000000000000005",
+      "value": [
+        "0x0"
+      ]
+    }
+  },
+  "precompile/modexp/secp256k1_sqrt": {
+    "env": {
+      "currentBaseFee": "0x0",
+      "currentCoinbase": "0x0000000000000000000000000000000000000000",
+      "currentGasLimit": "0x1000000",
+      "currentNumber": "0x1",
+      "currentTimestamp": "0x1"
+    },
+    "post": {
+      "Berlin": [
+        {
+          "expectException": null,
+          "hash": "0x80efccaaed10981cec1fdbbecc59419278f14b5269a2f885d8f7d0531a781c93",
+          "indexes": {
+            "data": 0,
+            "gas": 0,
+            "value": 0
+          },
+          "logs": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
+        }
+      ]
+    },
+    "pre": {
+      "0x1111111111111111111111111111111111111111": {
+        "balance": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "code": "0x",
+        "nonce": "0x0",
+        "storage": {}
+      }
+    },
+    "transaction": {
+      "data": [
+        "0x0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000204866d6a5ab41ab2c6bcc57ccd3735da5f16f80a548e5e20a44e4e9b8118c26f23fffffffffffffffffffffffffffffffffffffffffffffffffffffffbfffff0cfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"
+      ],
+      "gasLimit": [
+        "0x1000000"
+      ],
+      "gasPrice": "0x0",
+      "nonce": "0x0",
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "to": "0x0000000000000000000000000000000000000005",
+      "value": [
+        "0x0"
+      ]
+    }
   }
 }
