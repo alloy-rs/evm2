@@ -6,7 +6,7 @@ use crate::tracing::{
     config::geth_step_limit,
     limits::TraceBudget,
     step_refund_counter, storage_change,
-    types::is_call_like,
+    types::{OpNaming, is_call_like},
 };
 use alloc::{boxed::Box, collections::BTreeMap, format, string::String, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, U256, hex, map::AddressMap};
@@ -279,11 +279,13 @@ impl RawStructLogInspector {
         }
 
         let op = OpCode::new_or_unknown(interp.opcode());
+        let op_naming = OpNaming::new(interp, op);
         let refund = step_refund_counter(interp);
         let gas = interp.gas();
         let mut step = RecordingStep {
             pc: interp.pc() as u64,
             op,
+            op_naming,
             gas: gas.remaining(),
             gas_before: gas.remaining_excluding_state_spill(),
             message_charge: None,
@@ -307,11 +309,9 @@ impl RawStructLogInspector {
         // Charge fields known at entry before reserving scratch space or executing the opcode.
         // Even a zero gas cost takes one digit. Outcome-dependent fields can only add bytes.
         if self.budget.limits.max_recorded_bytes.is_some() {
-            let op_len = if op.is_valid() {
-                op.as_str().len()
-            } else {
-                format!("opcode {:#x} not defined", op.get()).len()
-            };
+            let op_len = op_naming
+                .name(op)
+                .map_or_else(|| format!("opcode {:#x} not defined", op.get()).len(), str::len);
             let mut len = struct_log_header_len(
                 step.pc,
                 op_len,
@@ -492,11 +492,13 @@ impl RawStructLogInspector {
         head.bytes(b"{\"pc\":");
         head.u64(step.pc);
         head.bytes(b",\"op\":\"");
-        if step.op.is_valid() {
-            let (name, len) = &OPCODE_NAMES[usize::from(step.op.get())];
-            head.padded(name, usize::from(*len));
-        } else {
-            head.bytes(format!("opcode {:#x} not defined", step.op.get()).as_bytes());
+        match step.op_naming {
+            OpNaming::Table if step.op.is_valid() => {
+                let (name, len) = &OPCODE_NAMES[usize::from(step.op.get())];
+                head.padded(name, usize::from(*len));
+            }
+            OpNaming::PrevRandao => head.bytes(b"PREVRANDAO"),
+            _ => head.bytes(format!("opcode {:#x} not defined", step.op.get()).as_bytes()),
         }
         head.bytes(b"\",\"gas\":");
         head.u64(step.gas);
@@ -708,6 +710,7 @@ enum StepState {
 struct RecordingStep {
     pc: u64,
     op: OpCode,
+    op_naming: OpNaming,
     /// The remaining gas.
     gas: u64,
     /// The remaining gas plus spilled state gas.

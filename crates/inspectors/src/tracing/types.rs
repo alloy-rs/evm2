@@ -18,9 +18,12 @@ use alloy_rpc_types_trace::{
     },
 };
 use core::ops::Range;
-use evm2::interpreter::{
-    InstrStop, MessageKind,
-    opcode::{OpCode, op},
+use evm2::{
+    EvmFeatures, EvmTypesHost,
+    interpreter::{
+        Host, InstrStop, Interpreter, MessageKind,
+        opcode::{OpCode, op},
+    },
 };
 
 /// Decoded call data.
@@ -701,6 +704,8 @@ pub struct CallTraceStep {
     pub pc: u32,
     /// Opcode to be executed
     pub op: OpCode,
+    /// How the fork of the block names [`op`](Self::op) in a struct log.
+    pub op_naming: OpNaming,
     /// Stack before step execution
     pub stack: Option<Box<[U256]>>,
     /// The new stack items placed by this step if any
@@ -752,10 +757,9 @@ impl CallTraceStep {
             state_gas_cost: self.state_gas_cost().filter(|_| !halted),
             // Like geth and ethereum/execution-apis#852, an empty reservoir is omitted.
             state_gas_reservoir: self.state_gas_reservoir.filter(|reservoir| *reservoir != 0),
-            op: if self.op.is_valid() {
-                self.op.as_str().into()
-            } else {
-                format!("opcode {:#x} not defined", self.op.get()).into()
+            op: match self.op_naming.name(self.op) {
+                Some(name) => name.into(),
+                None => format!("opcode {:#x} not defined", self.op.get()).into(),
             },
             pc: self.pc.into(),
             // geth omits a zero refund and empty memory and return data.
@@ -867,6 +871,42 @@ impl CallTraceStepExtra {
             && self.immediate_bytes.is_none()
             && self.decoded.is_none();
         (!empty).then(|| Box::new(self))
+    }
+}
+
+/// How the fork of a block names an opcode in a struct log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum OpNaming {
+    /// The opcode has the name of the opcode table.
+    Table,
+    /// The opcode is `PREVRANDAO`, which [EIP-4399](https://eips.ethereum.org/EIPS/eip-4399)
+    /// renames from `DIFFICULTY` at Paris.
+    PrevRandao,
+    /// The fork does not define the opcode, even if a later fork does.
+    Undefined,
+}
+
+impl OpNaming {
+    /// Returns how the fork that `interp` runs names `op`.
+    pub(crate) fn new<T: EvmTypesHost>(interp: &mut Interpreter<'_, '_, T>, op: OpCode) -> Self {
+        let defined = interp.host().execution_config().opcode_config().is_defined(op.get());
+        if op.get() != op::INVALID && !defined {
+            Self::Undefined
+        } else if op.get() == op::DIFFICULTY && interp.version().feature(EvmFeatures::EIP4399) {
+            Self::PrevRandao
+        } else {
+            Self::Table
+        }
+    }
+
+    /// Returns the name of `op`, or `None` if it is not defined.
+    pub(crate) fn name(self, op: OpCode) -> Option<&'static str> {
+        match self {
+            Self::Table => op.is_valid().then(|| op.as_str()),
+            Self::PrevRandao => Some("PREVRANDAO"),
+            Self::Undefined => None,
+        }
     }
 }
 
@@ -1134,6 +1174,7 @@ mod step_serde {
         pc: usize,
         #[serde(with = "opcode_serde")]
         op: OpCode,
+        op_naming: OpNaming,
         stack: &'a Option<Box<[U256]>>,
         push_stack: &'a Option<Box<[U256]>>,
         memory: &'a Option<RecordedMemory>,
@@ -1155,6 +1196,7 @@ mod step_serde {
         pc: usize,
         #[serde(with = "opcode_serde")]
         op: OpCode,
+        op_naming: OpNaming,
         stack: Option<Box<[U256]>>,
         push_stack: Option<Box<[U256]>>,
         memory: Option<RecordedMemory>,
@@ -1175,6 +1217,7 @@ mod step_serde {
             CallTraceStepSer {
                 pc: self.pc as usize,
                 op: self.op,
+                op_naming: self.op_naming,
                 stack: &self.stack,
                 push_stack: &self.push_stack,
                 memory: &self.memory,
@@ -1199,6 +1242,7 @@ mod step_serde {
                 // Code that large cannot be executed.
                 pc: step.pc.try_into().unwrap_or(u32::MAX),
                 op: step.op,
+                op_naming: step.op_naming,
                 stack: step.stack,
                 push_stack: step.push_stack,
                 memory: step.memory,
@@ -1237,6 +1281,6 @@ mod opcode_serde {
         D: Deserializer<'de>,
     {
         let op = u8::deserialize(deserializer)?;
-        Ok(OpCode::new(op).unwrap_or_else(|| OpCode::new(op::INVALID).unwrap()))
+        Ok(OpCode::new_or_unknown(op))
     }
 }

@@ -2,8 +2,8 @@
 
 use evm2_inspectors::tracing::types::{CallTrace, CallTraceStep};
 
-const FULL_STEP: &str = r#"{"pc":7,"op":96,"stack":["0x1"],"push_stack":["0x2"],"memory":"0x00ff","returndata":"0xabcd","gas_remaining":100,"gas_refund_counter":5,"storage_change":{"key":"0x1","value":"0x2","had_value":"0x3","reason":"SSTORE"},"gas_cost":3,"state_gas_cost":-4,"state_gas_reservoir":9,"status":"Revert","immediate_bytes":"0x80","decoded":{"InternalCall":[{"func_name":"f","args":["a"],"return_data":null},3]}}"#;
-const EMPTY_STEP: &str = r#"{"pc":0,"op":0,"stack":null,"push_stack":null,"memory":null,"returndata":"0x","gas_remaining":0,"gas_refund_counter":0,"storage_change":null,"gas_cost":0,"state_gas_cost":null,"state_gas_reservoir":null,"status":null,"immediate_bytes":null,"decoded":null}"#;
+const FULL_STEP: &str = r#"{"pc":7,"op":96,"op_naming":"Table","stack":["0x1"],"push_stack":["0x2"],"memory":"0x00ff","returndata":"0xabcd","gas_remaining":100,"gas_refund_counter":5,"storage_change":{"key":"0x1","value":"0x2","had_value":"0x3","reason":"SSTORE"},"gas_cost":3,"state_gas_cost":-4,"state_gas_reservoir":9,"status":"Revert","immediate_bytes":"0x80","decoded":{"InternalCall":[{"func_name":"f","args":["a"],"return_data":null},3]}}"#;
+const EMPTY_STEP: &str = r#"{"pc":0,"op":0,"op_naming":"Table","stack":null,"push_stack":null,"memory":null,"returndata":"0x","gas_remaining":0,"gas_refund_counter":0,"storage_change":null,"gas_cost":0,"state_gas_cost":null,"state_gas_reservoir":null,"status":null,"immediate_bytes":null,"decoded":null}"#;
 const NO_SELFDESTRUCT: &str = r#""selfdestruct_address":null,"selfdestruct_refund_target":null,"selfdestruct_transferred_value":null"#;
 const SELFDESTRUCT: &str = r#""selfdestruct_address":"0x3333333333333333333333333333333333333333","selfdestruct_refund_target":"0x4444444444444444444444444444444444444444","selfdestruct_transferred_value":"0x9""#;
 // A selfdestruct frame of a remote trace can lack the refund target and the value.
@@ -30,4 +30,14 @@ fn call_trace_serializes_as_flat_structs() {
         assert_eq!(value.selfdestruct.is_some(), selfdestruct != NO_SELFDESTRUCT);
         assert_eq!(serde_json::to_string(&value).unwrap(), json);
     }
+}
+
+/// An opcode that no fork defines keeps its byte when a step is deserialized.
+#[test]
+fn undefined_opcode_survives_a_round_trip() {
+    let step =
+        EMPTY_STEP.replace(r#""op":0,"op_naming":"Table""#, r#""op":12,"op_naming":"Undefined""#);
+    let value = serde_json::from_str::<CallTraceStep>(&step).unwrap();
+    assert_eq!(value.op.get(), 12);
+    assert_eq!(serde_json::to_string(&value).unwrap(), step);
 }
