@@ -15,7 +15,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
-    map::{AddressMap, B256Map, U256Map, hash_map::Entry},
+    map::{AddressMap, B256Map, U256Map},
 };
 use core::convert::Infallible;
 
@@ -167,11 +167,21 @@ impl<ExtDB> CacheDB<ExtDB> {
             let wiped = overlay.wiped || entry.discards_storage();
             let mut changed_slots = overlay.changed_slots().peekable();
             if wiped || changed_slots.peek().is_some() {
-                let storage = self.cache.storage.entry(address).or_default();
+                let storage = if let Some(storage) = self.cache.storage.get_mut(&address) {
+                    storage
+                } else {
+                    self.cache.storage.entry(address).or_default()
+                };
                 if wiped {
                     storage.wipe();
                 }
-                storage.slots.extend(changed_slots.map(|(&key, slot)| (key, slot.current)));
+                for (&key, slot) in changed_slots {
+                    if let Some(existing) = storage.slots.get_mut(&key) {
+                        *existing = slot.current;
+                    } else {
+                        storage.slots.insert(key, slot.current);
+                    }
+                }
             }
 
             if let Some((code_hash, code)) = entry.changed_code() {
@@ -181,7 +191,15 @@ impl<ExtDB> CacheDB<ExtDB> {
                 continue;
             }
             match entry.present.as_ref() {
-                Some(account) => self.insert_account_info(&address, account.clone_no_code()),
+                Some(account) => {
+                    let mut info = account.clone_no_code();
+                    normalize_code_hash(&mut info);
+                    if let Some(slot) = self.cache.accounts.get_mut(&address) {
+                        *slot = Some(info);
+                    } else {
+                        self.cache.accounts.insert(address, Some(info));
+                    }
+                }
                 None => {
                     self.cache.accounts.insert(address, None);
                     self.cache.storage.entry(address).or_default().wipe();
@@ -343,19 +361,19 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
         // Resolve the raw account from the cache or backing database. The cache always stores the
         // raw value; any attached BAL is layered onto the returned value only.
-        let mut account = {
-            let Cache { accounts, contracts, .. } = &mut self.cache;
-            match accounts.entry(*address) {
-                Entry::Occupied(entry) => entry.get().clone(),
-                Entry::Vacant(entry) => match self.db.get_account(address)? {
-                    Some(mut info) => {
-                        Self::insert_contract_inner(contracts, &mut info);
-                        info.code = None;
-                        entry.insert(Some(info)).clone()
-                    }
-                    None => entry.insert(None).clone(),
-                },
-            }
+        let mut account = if let Some(cached) = self.cache.accounts.get(address) {
+            cached.clone()
+        } else {
+            let loaded = match self.db.get_account(address)? {
+                Some(mut info) => {
+                    Self::insert_contract_inner(&mut self.cache.contracts, &mut info);
+                    info.code = None;
+                    Some(info)
+                }
+                None => None,
+            };
+            self.cache.accounts.insert(*address, loaded.clone());
+            loaded
         };
 
         // The cache fields are public, so entries written directly can still carry a zero hash.
@@ -373,10 +391,12 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         let code_hash = if code_hash.is_zero() { &KECCAK256_EMPTY } else { code_hash };
-        match self.cache.contracts.entry(*code_hash) {
-            Entry::Occupied(entry) => Ok(entry.get().clone()),
-            Entry::Vacant(entry) => Ok(entry.insert(self.db.get_code_by_hash(code_hash)?).clone()),
+        if let Some(code) = self.cache.contracts.get(code_hash) {
+            return Ok(code.clone());
         }
+        let code = self.db.get_code_by_hash(code_hash)?;
+        self.cache.contracts.insert(*code_hash, code.clone());
+        Ok(code)
     }
 
     #[inline]
@@ -391,42 +411,30 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
         // A cached slot can be a locally committed write even when the backing account is absent.
         // Only use account absence to suppress uncached backing-storage reads.
-        match self.cache.storage.entry(*address) {
-            Entry::Occupied(mut entry) => {
-                let storage = entry.get_mut();
-                match storage.slots.entry(*key) {
-                    Entry::Occupied(slot) => Ok(*slot.get()),
-                    Entry::Vacant(slot) => {
-                        if storage.wiped {
-                            return Ok(Word::ZERO);
-                        }
-                        if self.cache.accounts.get(address).is_some_and(Option::is_none) {
-                            return Ok(Word::ZERO);
-                        }
-                        let value = self.db.get_storage(address, key)?;
-                        Ok(*slot.insert(value))
-                    }
-                }
+        if let Some(storage) = self.cache.storage.get(address) {
+            if let Some(&value) = storage.slots.get(key) {
+                return Ok(value);
             }
-            Entry::Vacant(entry) => {
-                if self.cache.accounts.get(address).is_some_and(Option::is_none) {
-                    return Ok(Word::ZERO);
-                }
-                let value = self.db.get_storage(address, key)?;
-                let mut storage = AccountStorageCache::default();
-                storage.slots.insert(*key, value);
-                entry.insert(storage);
-                Ok(value)
+            if storage.wiped {
+                return Ok(Word::ZERO);
             }
         }
+        if self.cache.accounts.get(address).is_some_and(Option::is_none) {
+            return Ok(Word::ZERO);
+        }
+        let value = self.db.get_storage(address, key)?;
+        self.cache.storage.entry(*address).or_default().slots.insert(*key, value);
+        Ok(value)
     }
 
     #[inline]
     fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
-        match self.cache.block_hashes.entry(*number) {
-            Entry::Occupied(entry) => Ok(*entry.get()),
-            Entry::Vacant(entry) => Ok(*entry.insert(self.db.get_block_hash(number)?)),
+        if let Some(&hash) = self.cache.block_hashes.get(number) {
+            return Ok(hash);
         }
+        let hash = self.db.get_block_hash(number)?;
+        self.cache.block_hashes.insert(*number, hash);
+        Ok(hash)
     }
 }
 

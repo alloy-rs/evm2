@@ -26,7 +26,7 @@ pub use stream::{
 pub use tracked::Tracked;
 
 use super::{
-    PrewarmSet,
+    AccountLoad, PrewarmSet,
     bal::{Bal, BalContext, BlockAccessIndex},
     db::{Cache, CacheDB, DbResult, DynDatabase, EmptyDB, boxed_dyn_database},
 };
@@ -754,9 +754,107 @@ impl<'a> State<'a> {
         Ok(code)
     }
 
+    /// Fast read-only path for `SLOAD` when the account and warm slot are already loaded.
+    #[inline]
+    pub(crate) fn sload_warm(&self, address: &Address, key: &Word, eip2929: bool) -> Option<Word> {
+        let account = self.accounts.get(address)?;
+        let slot = account.storage.slots.get(key)?;
+        if !eip2929 || slot.is_warm {
+            return Some(slot.value.current);
+        }
+        None
+    }
+
+    /// Fast path for `SSTORE` when the account and warm slot are already loaded.
+    #[inline]
+    pub(crate) fn sstore_warm(
+        &mut self,
+        address: &Address,
+        key: &Word,
+        value: Word,
+        eip2929: bool,
+    ) -> Option<(Word, Word)> {
+        let account = self.accounts.get_mut(address)?;
+        let slot = account.storage.slots.get_mut(key)?;
+        if eip2929 && !slot.is_warm {
+            return None;
+        }
+        let original = slot.value.original;
+        let present = slot.value.current;
+        if present != value {
+            slot.value.set_current(value);
+            self.inner.push_journal(|| JournalEntry::StorageChange {
+                address: *address,
+                key: *key,
+                previous: present,
+            });
+        }
+        Some((original, present))
+    }
+
+    /// Fast path for `Host::load_account` when the account is already loaded and warm.
+    #[inline]
+    pub(crate) fn load_account_warm(
+        &mut self,
+        address: &Address,
+        load_code: bool,
+        features: EvmFeatures,
+    ) -> DbResult<Option<AccountLoad>> {
+        let Some(account) =
+            self.accounts.get(address).filter(|account| account.flags.contains(AccountFlags::WARM))
+        else {
+            return Ok(None);
+        };
+        let is_empty_for_new_account_gas = if features.contains(EvmFeatures::EIP161) {
+            account.present.as_ref().is_none_or(AccountInfo::is_empty)
+        } else {
+            account.present.is_none() && !account.flags.contains(AccountFlags::TOUCHED)
+        };
+        let (balance, nonce, code_hash, is_empty, cached_code) = match account.present.as_ref() {
+            Some(info) => (
+                info.balance,
+                info.nonce,
+                info.code_hash,
+                info.is_empty(),
+                if load_code && !info.is_empty_code_hash() {
+                    match info.code.as_ref() {
+                        Some(code) if !code.is_empty() => Some(code.clone()),
+                        _ => None,
+                    }
+                } else {
+                    Some(Bytecode::default())
+                },
+            ),
+            None => (Word::ZERO, 0, B256::ZERO, true, Some(Bytecode::default())),
+        };
+        let code = match cached_code {
+            Some(code) => code,
+            None => {
+                let code = self.inner.database.get_code_by_hash(&code_hash)?;
+                code.seed_hash(code_hash);
+                code
+            }
+        };
+        Ok(Some(AccountLoad {
+            balance,
+            nonce,
+            code_hash,
+            code,
+            is_empty,
+            is_empty_for_new_account_gas,
+            is_cold: false,
+            _non_exhaustive: (),
+        }))
+    }
+
     /// Transfers value between accounts.
     pub fn transfer(&mut self, from: &Address, to: &Address, value: &Word) -> DbResult<bool> {
         if value.is_zero() {
+            if let Some(account) = self.accounts.get(to)
+                && account.flags.contains(AccountFlags::TOUCHED)
+            {
+                return Ok(true);
+            }
             self.account(to)?.touch();
             return Ok(true);
         }
@@ -775,15 +873,12 @@ impl<'a> State<'a> {
             let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
                 return Ok(false);
             };
-            // `set_balance` touches the account, matching the touch the prior `transfer` performed.
             from_account.set_balance(new_from_balance);
-            from_account.touch();
         }
         {
             let mut to_account = self.account(to)?;
             let new_to_balance = to_account.balance().saturating_add(*value);
             to_account.set_balance(new_to_balance);
-            to_account.touch();
         }
         Ok(true)
     }
