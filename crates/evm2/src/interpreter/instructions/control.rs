@@ -261,7 +261,7 @@ mod tests {
         assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
 
         let interp = run_stack([Word::from(u32::MAX), Word::ONE], op::RETURN);
-        assert_matches!(interp.err, InstrStop::MemoryLimitOOG);
+        assert_matches!(interp.err, InstrStop::MemoryOOG);
     }
 
     #[test]
@@ -291,6 +291,6 @@ mod tests {
         assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
 
         let interp = run_stack([Word::from(u32::MAX), Word::ONE], op::REVERT);
-        assert_matches!(interp.err, InstrStop::MemoryLimitOOG);
+        assert_matches!(interp.err, InstrStop::MemoryOOG);
     }
 }

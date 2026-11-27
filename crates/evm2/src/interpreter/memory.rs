@@ -132,16 +132,17 @@ impl Memory {
             return Err(InstrStop::MemoryOOG);
         };
 
-        if self.limit_reached(new_num_words) {
-            cold_path();
-            return Err(InstrStop::MemoryLimitOOG);
-        }
-
         let cost = gas_params.memory_cost(new_num_words);
         let cost =
             unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
 
         gas.spend(cost).map_err(|_| InstrStop::MemoryOOG)?;
+
+        if self.limit_reached(new_num_words) {
+            cold_path();
+            return Err(InstrStop::MemoryLimitOOG);
+        }
+
         self.resize_to(new_size);
         Ok(())
     }
@@ -324,6 +325,25 @@ mod tests {
             Err(InstrStop::MemoryLimitOOG)
         );
         assert_eq!(memory.len(), 64);
-        assert_eq!(gas.memory().words_num, 2);
+    }
+
+    #[test]
+    fn resize_evm_reports_the_limit_only_when_the_expansion_is_affordable() {
+        let gas_params = Version::new(SpecId::FRONTIER).gas_params;
+        let mut memory = Memory::new();
+        memory.set_memory_limit(64);
+
+        // Three words cost 9 gas.
+        assert_matches!(
+            memory.resize_evm(&mut Gas::new(8), &gas_params, 0, 96),
+            Err(InstrStop::MemoryOOG)
+        );
+        assert_eq!(memory.len(), 0);
+
+        assert_matches!(
+            memory.resize_evm(&mut Gas::new(9), &gas_params, 0, 96),
+            Err(InstrStop::MemoryLimitOOG)
+        );
+        assert_eq!(memory.len(), 0);
     }
 }
