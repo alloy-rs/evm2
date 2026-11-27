@@ -1,9 +1,9 @@
-//! Configures the optional tail-call interpreter backend.
+//! Selects the interpreter dispatch backend.
 
 use std::{ffi::OsString, process::Command};
 
 fn main() {
-    for cfg in ["cranelift", "dispatch_packed", "dispatch_unpacked", "tco"] {
+    for cfg in ["cranelift", "dispatch_match", "dispatch_packed", "dispatch_unpacked", "tco"] {
         println!("cargo:rustc-check-cfg=cfg({cfg})");
     }
     println!("cargo:rerun-if-changed=build.rs");
@@ -17,9 +17,14 @@ fn main() {
     let is_wasm = target_is_wasm();
     let target_pointer_width = target_pointer_width();
     let no_tco = env("CARGO_FEATURE_NO_TCO").is_some() || clif;
-    match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco) {
+    // Cranelift compiles the 256 inlined handlers per spec slowly, and without optimization the
+    // loop reserves a native stack slot for each of them, about 158 KB per frame.
+    let optimized = env("OPT_LEVEL").is_some_and(|level| level != "0");
+    let use_match = !clif && optimized && target_prefers_match();
+    match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco, use_match) {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
         DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
+        DispatchBackend::Match => println!("cargo:rustc-cfg=dispatch_match"),
         DispatchBackend::Packed => println!("cargo:rustc-cfg=dispatch_packed"),
         DispatchBackend::Unpacked => println!("cargo:rustc-cfg=dispatch_unpacked"),
     }
@@ -28,6 +33,7 @@ fn main() {
 enum DispatchBackend {
     Auto,
     Tco,
+    Match,
     Packed,
     Unpacked,
 }
@@ -41,19 +47,32 @@ impl DispatchBackend {
         match value {
             "" | "auto" => Self::Auto,
             "tco" => Self::Tco,
+            "match" => Self::Match,
             "packed" => Self::Packed,
             "unpacked" => Self::Unpacked,
             _ => panic!(
-                "invalid EVM2_DISPATCH_BACKEND={value:?}; expected auto, tco, packed, or unpacked"
+                "invalid EVM2_DISPATCH_BACKEND={value:?}; expected auto, tco, match, packed, or unpacked"
             ),
         }
     }
 
-    fn resolve(self, is_wasm: bool, target_pointer_width: Option<u32>, no_tco: bool) -> Self {
+    fn resolve(
+        self,
+        is_wasm: bool,
+        target_pointer_width: Option<u32>,
+        no_tco: bool,
+        use_match: bool,
+    ) -> Self {
         match self {
             // `rust-preserve-none` passes arguments on the stack on 32-bit targets.
             Self::Auto if !is_wasm && target_pointer_width == Some(64) => {
-                if !no_tco && rustc_is_nightly() { Self::Tco } else { Self::Packed }
+                if !no_tco && rustc_is_nightly() {
+                    Self::Tco
+                } else if use_match {
+                    Self::Match
+                } else {
+                    Self::Packed
+                }
             }
             Self::Auto => Self::Unpacked,
             concrete => concrete,
@@ -68,6 +87,14 @@ fn target_is_wasm() -> bool {
         .and_then(|value| value.into_string().ok())
         .unwrap_or_default();
     target_arch.starts_with("wasm") || target_family.split(',').any(|family| family == "wasm")
+}
+
+/// Whether the stable `auto` backend is `match`: the architectures where it measured faster than
+/// `packed` overall.
+fn target_prefers_match() -> bool {
+    let target_arch =
+        env("CARGO_CFG_TARGET_ARCH").and_then(|value| value.into_string().ok()).unwrap_or_default();
+    matches!(target_arch.as_str(), "x86_64" | "aarch64")
 }
 
 fn target_pointer_width() -> Option<u32> {
