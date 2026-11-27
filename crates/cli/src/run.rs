@@ -619,7 +619,8 @@ impl PreparedBench {
     }
 
     fn new_evm(&self) -> Evm<'static, BaseEvmTypes> {
-        Evm::new(
+        Evm::new_with_execution_config(
+            evm_bench::execution_config(self.spec_id),
             self.spec_id,
             self.block,
             ethereum_tx_registry(self.spec_id),

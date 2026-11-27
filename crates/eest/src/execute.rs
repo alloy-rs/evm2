@@ -4,7 +4,7 @@ use crate::{
     blockchaintest::{BlobFork, BlobScheduleEntry, ChainConfig, ForkSpec, state_stage},
     dump,
     error::{TestError, TestErrorKind},
-    execution::ExecutionResources,
+    execution::{ExecutionResources, execution_config},
     filter::NameFilter,
     fixture_io,
     forks::is_fork_skipped,
@@ -366,7 +366,8 @@ fn execute_spec(
 ) -> Result<SpecOutcome, Box<SpecFailure>> {
     let db_stats = db_stats_counts.is_some();
     let mut evm = if db_stats {
-        Evm::<BaseEvmTypes>::new(
+        Evm::<BaseEvmTypes>::new_with_execution_config(
+            execution_config(spec),
             spec,
             block,
             ethereum_tx_registry(spec),
@@ -374,7 +375,8 @@ fn execute_spec(
             Precompiles::base(spec),
         )
     } else {
-        Evm::<BaseEvmTypes>::new(
+        Evm::<BaseEvmTypes>::new_with_execution_config(
+            execution_config(spec),
             spec,
             block,
             ethereum_tx_registry(spec),

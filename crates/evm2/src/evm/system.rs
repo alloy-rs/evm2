@@ -9,14 +9,12 @@
 use super::{Evm, ExecutedTx, TxResult, TxResultExt};
 #[cfg(feature = "async")]
 use super::{SendEvmRef, r#async};
-#[cfg(feature = "async")]
-use crate::registry::HandlerError;
 use crate::{
     EvmTypes,
     env::TxEnvExt,
     ethereum::{execute_initial_frame, gas_spent_breakdown, prepare_initial_frame},
     interpreter::GasTracker,
-    registry::HandlerResult,
+    registry::{HandlerError, HandlerResult},
     version::{EvmFeatures, GasId},
 };
 use alloc::vec::Vec;
@@ -117,6 +115,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// [`SystemTx::gas_limit`] gas, then finalize and return an executed transaction handle. A
     /// successful call reports its raw gas refund, without the EIP-3529 cap.
     ///
+    /// The call is still bound by [`Version::max_gas_limit`](crate::Version::max_gas_limit): a gas
+    /// limit above it, including the EIP-8037 reservoir, fails with
+    /// [`HandlerError::TxGasLimitGreaterThanCap`] before execution.
+    ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
     ///
@@ -148,7 +150,32 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// registry handler to execute system-call semantics and return the outcome to the outer
     /// transaction lifecycle for finalization.
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
+        // A system call is its own transaction, so it starts without the frames of one that is
+        // running. The guard makes them current again on every exit, also by unwinding.
+        let outer_frame = self.current_frame.take();
+        let mut guard =
+            DropGuard::new((self, outer_frame), |(evm, frame)| evm.current_frame = frame);
+        guard.0.execute_system_call_detached(tx)
+    }
+
+    fn execute_system_call_detached(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
         let SystemTx { caller, system_contract_address, data, gas_limit, .. } = tx;
+        // EIP-8037: system calls start with a state-gas reservoir sized for
+        // `SYSTEM_MAX_SSTORES_PER_CALL` new-slot writes (execution-specs
+        // `process_unchecked_system_transaction`).
+        let reservoir = if self.feature(EvmFeatures::EIP8037) {
+            self.version().gas_params.get(GasId::SstoreSetState) * SYSTEM_MAX_SSTORES_PER_CALL
+        } else {
+            0
+        };
+        // The call's total budget is `gas_limit + reservoir`; it must stay within the hard gas cap.
+        let total_gas_limit = gas_limit.saturating_add(reservoir);
+        let cap = self.version().max_gas_limit;
+        if total_gas_limit > cap {
+            return Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: total_gas_limit, cap });
+        }
+        // The total budget must also fit in a `u64`.
+        let gas_limit = gas_limit.min(u64::MAX - reservoir);
         self.state.prewarm(&system_contract_address);
         self.tx_env = TxEnvExt {
             origin: caller,
@@ -158,16 +185,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             ext: T::TxEnvExt::default(),
             _non_exhaustive: (),
         };
-        // EIP-8037: system calls start with a state-gas reservoir sized for
-        // `SYSTEM_MAX_SSTORES_PER_CALL` new-slot writes (execution-specs
-        // `process_unchecked_system_transaction`).
-        let reservoir = if self.feature(EvmFeatures::EIP8037) {
-            self.version().gas_params.get(GasId::SstoreSetState) * SYSTEM_MAX_SSTORES_PER_CALL
-        } else {
-            0
-        };
-        // The call's total budget is `gas_limit + reservoir` and must fit in a `u64`.
-        let gas_limit = gas_limit.min(u64::MAX - reservoir);
         let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
         let frame = prepare_initial_frame(
             self,
@@ -253,15 +270,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, Inspector, Precompiles, SpecId,
+        BaseEvmTypes, ExecutionConfig, Inspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
-        env::BlockEnvExt,
-        evm::{AccountInfo, InMemoryDB},
-        interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult, op},
+        env::{BlockEnv, BlockEnvExt},
+        evm::{AccountInfo, InMemoryDB, precompile::PrecompileOutput},
+        interpreter::{
+            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageResult, op,
+        },
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileResult},
-        registry::{HandlerError, TxRegistry},
+        registry::TxRegistry,
         utils::address_to_word,
     };
+    use core::sync::atomic::{AtomicBool, Ordering};
 
     type TestEvm = Evm<'static, BaseEvmTypes>;
 
@@ -507,6 +527,37 @@ mod tests {
         assert_eq!(result.state_gas_spent(), 0);
     }
 
+    #[rstest::rstest]
+    fn system_call_rejects_gas_limit_above_max_gas_limit(
+        #[values(SpecId::OSAKA, SpecId::AMSTERDAM)] spec: SpecId,
+    ) {
+        let mut version = Version::new(spec);
+        // The EIP-8037 reservoir counts toward the cap.
+        let reservoir = if version.feature(EvmFeatures::EIP8037) {
+            version.gas_params.get(GasId::SstoreSetState) * SYSTEM_MAX_SSTORES_PER_CALL
+        } else {
+            0
+        };
+        let cap = reservoir + 1_000_000;
+        version.max_gas_limit = cap;
+        let mut evm = TestEvm::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(spec),
+        );
+
+        let tx = SystemTx::new(Address::repeat_byte(0x42), Bytes::new());
+        let result = evm.system_call(tx.clone().with_gas_limit(1_000_001));
+        assert_eq!(
+            result.map(ExecutedTx::discard).unwrap_err(),
+            HandlerError::TxGasLimitGreaterThanCap { gas_limit: cap + 1, cap }
+        );
+        assert!(evm.system_call(tx.with_gas_limit(1_000_000)).is_ok());
+    }
+
     #[test]
     fn system_call_exhausts_configured_gas_limit() {
         let contract = Address::repeat_byte(0x42);
@@ -582,7 +633,10 @@ mod tests {
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
-        let mut evm = TestEvm::new(
+        let mut version = Version::new(SpecId::AMSTERDAM);
+        version.max_gas_limit = u64::MAX;
+        let mut evm = TestEvm::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::AMSTERDAM, version),
             SpecId::AMSTERDAM,
             BlockEnvExt::default(),
             TxRegistry::new(),
@@ -658,5 +712,64 @@ mod tests {
         assert_eq!(inspector.calls, expected_calls);
         assert_eq!(inspector.call_ends, expected_calls);
         assert_eq!(inspector.steps, expected_steps);
+    }
+    #[test]
+    fn nested_system_call_has_its_own_tx_memory_budget() {
+        const PRECOMPILE: Address = Address::with_last_byte(0x44);
+        static SYSTEM_CALL_SUCCEEDED: AtomicBool = AtomicBool::new(false);
+
+        fn system_call_precompile(
+            evm: &mut Evm<'_, BaseEvmTypes>,
+            _message: &Message,
+            _gas: &mut GasTracker,
+        ) -> PrecompileResult {
+            let system_contract = Address::repeat_byte(0x42);
+            let result = evm.system_call(SystemTx::new(system_contract, Bytes::new())).unwrap();
+            SYSTEM_CALL_SUCCEEDED.store(result.result().is_success(), Ordering::Relaxed);
+            drop(result);
+            Ok(PrecompileOutput::new(Bytes::new()))
+        }
+
+        // Both the outer contract and the system contract grow memory to 48 KiB, which fits the
+        // 80 KiB transaction limit alone but not together.
+        let grow = [op::PUSH1, 1, op::PUSH2, 0xbf, 0xff, op::MSTORE8];
+        let mut outer = grow.to_vec();
+        outer.extend([op::PUSH0; 5]);
+        outer.extend([op::PUSH1, PRECOMPILE.0[19], op::GAS, op::CALL, op::STOP]);
+        let mut system = grow.to_vec();
+        system.push(op::STOP);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &Address::repeat_byte(0x42),
+            AccountInfo::default().with_code(Bytecode::new_legacy(system.into())),
+        );
+        let mut precompiles = Precompiles::base(SpecId::OSAKA);
+        precompiles.as_map_mut().insert(Precompile::new(
+            PRECOMPILE,
+            PrecompileId::custom("system-call-test"),
+            system_call_precompile,
+        ));
+        let mut version = Version::new(SpecId::OSAKA);
+        version.memory_limit = 64 * 1024;
+        version.tx_memory_limit = 80 * 1024;
+        let mut evm = TestEvm::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnv::<BaseEvmTypes>::default(),
+            TxRegistry::new(),
+            database,
+            precompiles,
+        );
+        let mut message = MessageExt {
+            gas_limit: 1_000_000,
+            code: Bytecode::new_legacy(outer.into()),
+            ..Default::default()
+        };
+
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
+
+        assert_eq!(result.stop, InstrStop::Stop);
+        assert!(SYSTEM_CALL_SUCCEEDED.load(Ordering::Relaxed));
+        assert!(evm.current_frame.is_none());
     }
 }

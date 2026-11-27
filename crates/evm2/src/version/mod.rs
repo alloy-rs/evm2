@@ -43,6 +43,19 @@ pub struct Version {
     /// default is [`MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM`] (`2^32 - 1`). Without EIP-8037 this field
     /// is unused and [`tx_gas_limit_cap`](Self::tx_gas_limit_cap) bounds `tx.gas` instead.
     pub tx_total_gas_cap: u64,
+    /// Hard cap on the gas of a single transaction or system call.
+    ///
+    /// Unlike [`tx_gas_limit_cap`](Self::tx_gas_limit_cap) and
+    /// [`tx_total_gas_cap`](Self::tx_total_gas_cap), which are fork rules, this cap holds
+    /// whatever the other caps and block checks are set to, so a caller that lifts them still
+    /// runs with bounded gas. Transactions above it are rejected before execution, and gas
+    /// accounting is never clamped. `u64::MAX` disables the cap. The default is `2^40`,
+    /// above the gas limits of existing chains.
+    ///
+    /// The Ethereum transaction handlers and [`Evm::system_call`](crate::Evm::system_call) enforce
+    /// it; a custom handler must call
+    /// [`validate_tx_gas_limit_cap`](crate::ethereum::validate_tx_gas_limit_cap) itself.
+    pub max_gas_limit: u64,
     /// Hard memory limit in bytes for each call frame, not for the whole transaction. Defaults to
     /// 100 MiB.
     ///
@@ -50,6 +63,15 @@ pub struct Version {
     /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) clamps a larger
     /// limit to [`u32::MAX`], and memory stops growing there.
     pub memory_limit: u64,
+    /// Hard limit in bytes on the memory and the return data of all live call frames of a
+    /// transaction together.
+    ///
+    /// A frame that would grow memory past it stops with
+    /// [`InstrStop::MemoryLimitOOG`](crate::interpreter::InstrStop::MemoryLimitOOG), as when it
+    /// passes [`memory_limit`](Self::memory_limit). A transaction that a hook dispatches from
+    /// inside a running one counts its own frames only. Defaults to 4 GiB. `u64::MAX` disables
+    /// the limit.
+    pub tx_memory_limit: u64,
     /// Maximum deployed contract bytecode size.
     pub max_code_size: usize,
     /// Maximum contract creation initcode size.
@@ -93,6 +115,9 @@ impl Version {
     /// `tx.gas` is bounded by [`tx_total_gas_cap`](Self::tx_total_gas_cap) instead. `u64::MAX`
     /// disables that total cap; the default is [`MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM`].
     ///
+    /// [`max_gas_limit`](Self::max_gas_limit) also bounds `tx.gas`, so the first cap is the lower
+    /// of it and the rule above.
+    ///
     /// The Ethereum transaction handlers enforce these caps through
     /// [`validate_tx_gas_limit_cap`](crate::ethereum::validate_tx_gas_limit_cap) and
     /// [`validate_execution_gas_limit_cap`](crate::ethereum::validate_execution_gas_limit_cap).
@@ -100,11 +125,12 @@ impl Version {
     /// without executing the transaction.
     #[inline]
     pub const fn tx_gas_caps(&self) -> (u64, u64) {
-        if self.feature(EvmFeatures::EIP8037) {
+        let (tx_cap, execution_cap) = if self.feature(EvmFeatures::EIP8037) {
             (self.tx_total_gas_cap, self.tx_gas_limit_cap)
         } else {
             (self.tx_gas_limit_cap, u64::MAX)
-        }
+        };
+        (if tx_cap < self.max_gas_limit { tx_cap } else { self.max_gas_limit }, execution_cap)
     }
 
     /// Panics if a field holds a value the interpreter cannot run with.
@@ -144,8 +170,10 @@ const fn base_max_blobs_per_tx(spec_id: SpecId) -> usize {
     }
 }
 
+const DEFAULT_MAX_GAS_LIMIT: u64 = 1 << 40;
 const DEFAULT_MEMORY_LIMIT: u64 = 100 * 1024 * 1024;
 const DEFAULT_CHAIN_ID: u64 = 1;
+const DEFAULT_TX_MEMORY_LIMIT: u64 = 1 << 32;
 
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     let mut versions = [const {
@@ -155,7 +183,9 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             chain_id: DEFAULT_CHAIN_ID,
             tx_gas_limit_cap: u64::MAX,
             tx_total_gas_cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
+            max_gas_limit: DEFAULT_MAX_GAS_LIMIT,
             memory_limit: DEFAULT_MEMORY_LIMIT,
+            tx_memory_limit: DEFAULT_TX_MEMORY_LIMIT,
             max_code_size: MAX_CODE_SIZE,
             max_initcode_size: MAX_INITCODE_SIZE,
             max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
@@ -171,7 +201,9 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             chain_id: DEFAULT_CHAIN_ID,
             tx_gas_limit_cap: base_tx_gas_limit_cap(spec_id),
             tx_total_gas_cap: MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM,
+            max_gas_limit: DEFAULT_MAX_GAS_LIMIT,
             memory_limit: DEFAULT_MEMORY_LIMIT,
+            tx_memory_limit: DEFAULT_TX_MEMORY_LIMIT,
             max_code_size: base_max_code_size(spec_id),
             max_initcode_size: base_max_initcode_size(spec_id),
             max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
@@ -319,6 +351,7 @@ mod tests {
         assert_eq!(osaka.chain_id, DEFAULT_CHAIN_ID);
         assert_eq!(osaka.tx_gas_limit_cap, MAX_TX_GAS_LIMIT_OSAKA);
         assert_eq!(osaka.memory_limit, DEFAULT_MEMORY_LIMIT);
+        assert_eq!(osaka.tx_memory_limit, DEFAULT_TX_MEMORY_LIMIT);
         assert_eq!(osaka.max_code_size, MAX_CODE_SIZE);
         assert_eq!(osaka.max_initcode_size, MAX_INITCODE_SIZE);
         assert_eq!(osaka.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
@@ -394,7 +427,7 @@ mod tests {
     #[test]
     fn tx_gas_caps() {
         let prague = Version::base(SpecId::PRAGUE);
-        assert_eq!(prague.tx_gas_caps(), (u64::MAX, u64::MAX));
+        assert_eq!(prague.tx_gas_caps(), (DEFAULT_MAX_GAS_LIMIT, u64::MAX));
 
         let osaka = Version::base(SpecId::OSAKA);
         assert_eq!(osaka.tx_gas_caps(), (MAX_TX_GAS_LIMIT_OSAKA, u64::MAX));
@@ -408,6 +441,23 @@ mod tests {
         let mut amsterdam_without_eip8037 = Version::new(SpecId::AMSTERDAM);
         amsterdam_without_eip8037.features.remove(EvmFeatures::EIP8037);
         assert_eq!(amsterdam_without_eip8037.tx_gas_caps(), (MAX_TX_GAS_LIMIT_OSAKA, u64::MAX));
+    }
+
+    #[test]
+    fn max_gas_limit_bounds_tx_gas_caps() {
+        let mut prague = Version::new(SpecId::PRAGUE);
+        prague.max_gas_limit = 1_000;
+        assert_eq!(prague.tx_gas_caps(), (1_000, u64::MAX));
+
+        // The lower of the rule cap and the hard cap wins; the execution cap is unchanged.
+        let mut amsterdam = Version::new(SpecId::AMSTERDAM);
+        amsterdam.max_gas_limit = 1_000;
+        assert_eq!(amsterdam.tx_gas_caps(), (1_000, MAX_TX_GAS_LIMIT_OSAKA));
+        amsterdam.max_gas_limit = u64::MAX;
+        assert_eq!(
+            amsterdam.tx_gas_caps(),
+            (MAX_TX_TOTAL_GAS_LIMIT_AMSTERDAM, MAX_TX_GAS_LIMIT_OSAKA)
+        );
     }
 
     #[test]
@@ -427,7 +477,7 @@ mod tests {
         assert_eq!(amsterdam.tx_gas_caps(), (10_000_000_000, MAX_TX_GAS_LIMIT_OSAKA));
 
         amsterdam.tx_total_gas_cap = u64::MAX;
-        assert_eq!(amsterdam.tx_gas_caps(), (u64::MAX, MAX_TX_GAS_LIMIT_OSAKA));
+        assert_eq!(amsterdam.tx_gas_caps(), (DEFAULT_MAX_GAS_LIMIT, MAX_TX_GAS_LIMIT_OSAKA));
     }
 
     #[test]

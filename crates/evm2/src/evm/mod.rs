@@ -1664,7 +1664,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             message.input = input;
             let stop = result?;
             let interp = self.interpreter_pool.last_mut().unwrap();
-            (stop, interp.gas(), Bytes::copy_from_slice(interp.output()))
+            let (gas, output) = (interp.gas(), Bytes::copy_from_slice(interp.output()));
+            self.release_returned_frame();
+            (stop, gas, output)
         };
         self.finish_create_message_run(checkpoint, &message.destination, stop, gas, output)
     }
@@ -1903,6 +1905,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let interp = self.interpreter_pool.last_mut().unwrap();
         let child_gas = interp.gas();
         let output = Bytes::copy_from_slice(interp.output());
+        self.release_returned_frame();
         if !stop.is_success() {
             self.state.rollback(checkpoint, self.features);
         }
@@ -1927,6 +1930,16 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             stop,
             gas: GasTracker::new_with_execution_gas_and_reservoir(gas_remaining, reservoir),
             ..MessageResultExt::default()
+        }
+    }
+
+    /// Frees the large memory of the nested frame that just returned, once the caller copied its
+    /// output. The top-level frame keeps its buffers for the next message, as
+    /// [`InterpreterPool::trim`] does.
+    #[inline]
+    fn release_returned_frame(&mut self) {
+        if self.current_frame.is_some() {
+            self.interpreter_pool.release_last();
         }
     }
 
@@ -1967,11 +1980,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
+        // Makes the previous frame current again when the guard ends, also by unwinding, which
+        // drops this frame.
+        guard.frame_on_exit = Some(prev_frame);
+        if let Some(parent) = prev_frame {
+            // SAFETY: The parent frame is suspended on this call stack while this frame runs.
+            let parent = unsafe { parent.as_ref() };
+            let held = parent.memory().live_bytes() + parent.return_data().len() as u64;
+            interp_ref.memory_mut().set_suspended_bytes(held);
+        }
         // Messages sent from the initialize hook must see the refunds of every frame below them.
         if guard.evm.active_inspector().is_some() {
             let enclosing_refund = guard.evm.enclosing_refund;
             guard.refund_on_exit = Some(enclosing_refund);
-            guard.frame_on_exit = Some(prev_frame);
             if let Some(parent) = prev_frame {
                 // SAFETY: The parent frame is suspended on this call stack while this frame runs.
                 guard.evm.enclosing_refund =
@@ -5884,5 +5905,232 @@ mod tests {
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output[..], [0xaa; 32]);
+    }
+
+    #[test]
+    fn nested_frames_share_the_tx_memory_limit() {
+        #[derive(Default)]
+        struct Stops(Vec<InstrStop>);
+
+        impl Inspector<BaseEvmTypes> for Stops {
+            fn call_end(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                self.0.push(result.stop);
+            }
+        }
+
+        // Each frame grows memory to 48 KiB and calls the next one, so the three frames hold
+        // 144 KiB together, while each stays under the 64 KiB frame limit.
+        let grow = [op::PUSH1, 1, op::PUSH2, 0xbf, 0xff, op::MSTORE8];
+        let addresses = [0x11, 0x22, 0x33].map(Address::repeat_byte);
+        let mut database = InMemoryDB::default();
+        for (i, address) in addresses.iter().enumerate() {
+            let mut code = grow.to_vec();
+            if let Some(next) = addresses.get(i + 1) {
+                code.extend([op::PUSH0; 5]);
+                push_address(&mut code, next);
+                code.extend([op::GAS, op::CALL, op::POP]);
+            }
+            code.push(op::STOP);
+            database.insert_account_info(
+                address,
+                AccountInfo::default().with_code(legacy_bytecode(code)),
+            );
+        }
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(addresses[0]),
+                gas_limit: 1_000_000,
+                ..Default::default()
+            }),
+            Address::repeat_byte(0xaa),
+        );
+
+        for (tx_memory_limit, expected) in [
+            (144 * 1024, [InstrStop::Stop; 3]),
+            (144 * 1024 - 1, [InstrStop::MemoryLimitOOG, InstrStop::Stop, InstrStop::Stop]),
+        ] {
+            let mut version = Version::new(SpecId::CANCUN);
+            version.memory_limit = 64 * 1024;
+            version.tx_memory_limit = tx_memory_limit;
+            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
+                SpecId::CANCUN,
+                BlockEnv::<BaseEvmTypes>::default(),
+                ethereum_tx_registry(SpecId::CANCUN),
+                database.clone(),
+                Precompiles::base(SpecId::CANCUN),
+            );
+            let mut stops = Stops::default();
+            let executed = evm.transact_with_inspector(&tx, &mut stops).unwrap();
+            assert!(executed.result().is_success());
+            drop(executed);
+            assert_eq!(stops.0, expected);
+        }
+    }
+    #[test]
+    fn returned_frames_release_large_memory() {
+        // Each frame calls the next one and grows memory to 200 KB after the call returns, so
+        // memory that stays allocated in returned frames would add up unseen by the limit.
+        let grow = [op::PUSH1, 1, op::PUSH3, 0x03, 0x0d, 0x3f, op::MSTORE8];
+        let addresses = [0x11, 0x22, 0x33].map(Address::repeat_byte);
+        let mut database = InMemoryDB::default();
+        for (i, address) in addresses.iter().enumerate() {
+            let mut code = Vec::new();
+            if let Some(next) = addresses.get(i + 1) {
+                code.extend([op::PUSH0; 5]);
+                push_address(&mut code, next);
+                code.extend([op::GAS, op::CALL, op::POP]);
+            }
+            code.extend(grow);
+            code.push(op::STOP);
+            database.insert_account_info(
+                address,
+                AccountInfo::default().with_code(legacy_bytecode(code)),
+            );
+        }
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(addresses[0]),
+                gas_limit: 5_000_000,
+                ..Default::default()
+            }),
+            Address::repeat_byte(0xaa),
+        );
+
+        let executed = evm.transact(&tx).unwrap();
+        assert!(executed.result().is_success());
+        drop(executed);
+
+        assert!(evm.interpreter_pool.max_nested_capacity() < 100_000);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn unwinding_runner_restores_the_current_frame() {
+        #[derive(Debug, Default)]
+        struct PanicOnce(core::sync::atomic::AtomicBool);
+
+        impl InterpreterRunner<BaseEvmTypes> for PanicOnce {
+            fn run<'frame, 'host>(
+                &self,
+                _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+                _host: &mut Evm<'host, BaseEvmTypes>,
+            ) -> Option<InstrStop> {
+                if !self.0.swap(true, Ordering::Relaxed) {
+                    panic!("runner panic");
+                }
+                None
+            }
+        }
+
+        let mut version = Version::new(SpecId::OSAKA);
+        version.tx_memory_limit = u64::MAX;
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnv::<BaseEvmTypes>::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_interpreter_runner(PanicOnce::default());
+        let message = || MessageExt {
+            gas_limit: 100_000,
+            code: legacy_bytecode([op::STOP]),
+            ..Default::default()
+        };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = Host::execute_message(&mut evm, &mut message());
+        }));
+
+        assert!(result.is_err());
+        assert!(evm.current_frame.is_none());
+        let result = Host::execute_message(&mut evm, &mut message()).unwrap();
+        assert_eq!(result.stop, InstrStop::Stop);
+    }
+    #[test]
+    fn suspended_frames_return_data_counts_toward_the_tx_memory_limit() {
+        #[derive(Default)]
+        struct Stops(Vec<(Address, InstrStop)>);
+
+        impl Inspector<BaseEvmTypes> for Stops {
+            fn call_end(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                self.0.push((message.destination, result.stop));
+            }
+        }
+
+        // `returner` returns 40 KiB of data. Two frames each call it, so they hold 40 KiB of return
+        // data while the next frame runs, and the last frame grows memory to 40 KiB, for 120 KiB.
+        let [outer, middle, last, returner] = [0x11, 0x22, 0x33, 0x44].map(Address::repeat_byte);
+        let call = |code: &mut Vec<u8>, address: &Address| {
+            code.extend([op::PUSH0; 5]);
+            push_address(code, address);
+            code.extend([op::GAS, op::CALL, op::POP]);
+        };
+        let mut database = InMemoryDB::default();
+        let mut insert = |address: &Address, code: Vec<u8>| {
+            database.insert_account_info(
+                address,
+                AccountInfo::default().with_code(legacy_bytecode(code)),
+            );
+        };
+        for (address, next) in [(&outer, &middle), (&middle, &last)] {
+            let mut code = Vec::new();
+            call(&mut code, &returner);
+            call(&mut code, next);
+            code.push(op::STOP);
+            insert(address, code);
+        }
+        let grow = [op::PUSH1, 1, op::PUSH2, 0x9f, 0xff, op::MSTORE8];
+        insert(&last, [&grow[..], &[op::STOP]].concat());
+        insert(&returner, [&grow[..], &[op::PUSH2, 0xa0, 0x00, op::PUSH0, op::RETURN]].concat());
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(outer),
+                gas_limit: 5_000_000,
+                ..Default::default()
+            }),
+            Address::repeat_byte(0xaa),
+        );
+
+        for (tx_memory_limit, expected) in
+            [(120 * 1024, InstrStop::Stop), (120 * 1024 - 1, InstrStop::MemoryLimitOOG)]
+        {
+            let mut version = Version::new(SpecId::CANCUN);
+            version.memory_limit = 64 * 1024;
+            version.tx_memory_limit = tx_memory_limit;
+            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
+                SpecId::CANCUN,
+                BlockEnv::<BaseEvmTypes>::default(),
+                ethereum_tx_registry(SpecId::CANCUN),
+                database.clone(),
+                Precompiles::base(SpecId::CANCUN),
+            );
+            let mut stops = Stops::default();
+            let executed = evm.transact_with_inspector(&tx, &mut stops).unwrap();
+            assert!(executed.result().is_success());
+            drop(executed);
+            let last_stop = stops.0.iter().find(|(address, _)| *address == last).unwrap().1;
+            assert_eq!(last_stop, expected);
+        }
     }
 }

@@ -14,7 +14,7 @@ use crate::compiled::{self, FileSummary};
 use crate::{
     dump,
     execute::{print_db_stats, state_root_from_database},
-    execution::ExecutionResources,
+    execution::{ExecutionResources, execution_config},
     filter::NameFilter,
     fixture_io,
     forks::is_fork_skipped,
@@ -516,7 +516,8 @@ fn execute_block<'a>(
     let receipt_base = (compare_receipt_root && !spec.enables(SpecId::BYZANTIUM))
         .then(|| initial_database.clone());
     let mut evm = if db_stats {
-        Evm::<BaseEvmTypes>::new(
+        Evm::<BaseEvmTypes>::new_with_execution_config(
+            execution_config(spec),
             spec,
             next_block_env,
             ethereum_tx_registry(spec),
@@ -524,7 +525,8 @@ fn execute_block<'a>(
             Precompiles::base(spec),
         )
     } else {
-        Evm::<BaseEvmTypes>::new(
+        Evm::<BaseEvmTypes>::new_with_execution_config(
+            execution_config(spec),
             spec,
             next_block_env,
             ethereum_tx_registry(spec),

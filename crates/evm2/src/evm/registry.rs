@@ -95,7 +95,8 @@ pub enum HandlerError {
         /// Block gas limit.
         block_gas_limit: U256,
     },
-    /// Transaction gas limit exceeds the active per-transaction gas cap.
+    /// Transaction gas limit exceeds the active per-transaction gas cap. For a system call, the
+    /// reported gas limit includes the EIP-8037 reservoir.
     #[error("transaction gas limit {gas_limit} exceeds cap {cap}")]
     TxGasLimitGreaterThanCap {
         /// Transaction gas limit.

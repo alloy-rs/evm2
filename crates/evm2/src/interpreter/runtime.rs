@@ -139,6 +139,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.stack_len = 0;
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
+        self.memory.set_suspended_bytes(0);
         self.result = Ok(());
         self.error = None;
         self.output = 0..0;
@@ -511,6 +512,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let config = host.execution_config();
         let version = config.version();
         self.memory.set_memory_limit(version.memory_limit);
+        self.memory.set_tx_memory_limit(version.tx_memory_limit);
         self.spec = config.base_spec_id();
         self.features = version.features;
         self.host = Some(NonNull::from(host));
@@ -1016,6 +1018,32 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
             // Replaced rather than cleared, which would keep the buffer.
             frame.return_data = Bytes::new();
         }
+    }
+
+    /// Frees the memory of the frame that just returned beyond [`MAX_IDLE_MEMORY`], so idle
+    /// frames never keep what a transaction-wide memory limit counts only for live frames.
+    ///
+    /// Call it once the caller has copied the frame's output.
+    #[inline]
+    pub(crate) fn release_last(&mut self) {
+        if let Some(frame) = self.frames.last_mut()
+            && frame.memory.capacity() > MAX_IDLE_MEMORY
+        {
+            Self::release(frame);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn release(frame: &mut Interpreter<'static, 'static, T>) {
+        frame.memory.clear();
+        frame.memory.shrink_to(MAX_IDLE_MEMORY);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn max_nested_capacity(&self) -> usize {
+        let rest = self.frames.split_last().map_or(&[][..], |(_, rest)| rest);
+        rest.iter().map(|frame| frame.memory.capacity()).max().unwrap_or(0)
     }
 
     pub(crate) fn last_mut<'frame, 'host>(&mut self) -> Option<&mut Interpreter<'frame, 'host, T>> {
