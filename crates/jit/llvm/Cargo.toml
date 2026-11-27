@@ -20,7 +20,7 @@ evm2-jit-backend.workspace = true
 
 llvm-sys = "231"
 alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
-object = { version = "0.40", default-features = false, features = ["read_core", "elf"] }
+object = { version = "0.40", default-features = false, features = ["read_core", "elf", "macho"] }
 tracing.workspace = true
 
 [build-dependencies]

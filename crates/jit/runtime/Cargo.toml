@@ -27,7 +27,7 @@ evm2-jit-context.workspace = true
 evm2-jit-llvm = { workspace = true, optional = true }
 evm2-jit-builtins = { workspace = true, features = ["ir"] }
 
-alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
+alloy-primitives = { workspace = true, features = ["std", "map-fxhash", "getrandom"] }
 
 crossbeam-channel.workspace = true
 crossbeam-queue.workspace = true
