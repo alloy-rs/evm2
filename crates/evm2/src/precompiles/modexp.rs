@@ -51,15 +51,17 @@ fn fermat_inverse(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Option<Vec<u8
 }
 
 /// Montgomery exponentiation with a 4-bit fixed window, without allocating. This is faster than
-/// [`modexp_big`] for operands that fit in 256 bits.
+/// [`modexp_big`] for odd moduli of 129 to 256 bits, while GMP is faster for smaller ones, which
+/// fit in at most two limbs.
 ///
-/// Returns `None` unless every operand has at most 32 bytes and the modulus is odd and above 1.
+/// Returns `None` unless every operand has at most 32 bytes and the modulus is odd and above
+/// 128 bits.
 fn modexp_256(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Option<Vec<u8>> {
     if base.len() > 32 || exponent.len() > 32 || modulus.len() > 32 {
         return None;
     }
     let modulus = U256::from_be_slice(modulus);
-    if !modulus.bit(0) || modulus == U256::ONE {
+    if !modulus.bit(0) || modulus.bit_len() <= 128 {
         return None;
     }
     let n = modulus.as_limbs();
@@ -1158,10 +1160,11 @@ mod tests {
                     .map(|r| left_pad_vec_be(&r, modulus.len()).into_owned());
             assert_eq!(actual, expected, "{base:x?} {exponent:x?} {modulus:x?}");
 
-            // Only odd moduli above 1 take the fast path, and only for operands up to 32 bytes.
+            // Only odd moduli above 128 bits take the fast path, and only for operands up to 32
+            // bytes.
             let m = U256::try_from_be_slice(modulus);
             let fast = [base.len(), exponent.len()].into_iter().all(|len| len <= 32)
-                && m.is_some_and(|m| m.bit(0) && m != U256::ONE);
+                && m.is_some_and(|m| m.bit(0) && m.bit_len() > 128);
             assert_eq!(
                 modexp_256(base, exponent, modulus).is_some(),
                 fast,
@@ -1187,6 +1190,9 @@ mod tests {
             (vec![7], vec![3], vec![9]),
             (vec![7], vec![3], vec![0xff; 32]),
             (vec![7], vec![3], vec![0xfe; 32]),
+            (vec![7], vec![3], U256::from(1u128 << 127).to_be_bytes_trimmed_vec()),
+            (vec![7], vec![3], (U256::from(1u128 << 127) * two + one).to_be_bytes_trimmed_vec()),
+            (vec![7], vec![3], (U256::from(1u128 << 127) * two - one).to_be_bytes_trimmed_vec()),
             (vec![7], vec![3], vec![0x80; 31].into_iter().chain([1]).collect()),
             (vec![7], vec![], vec![9]),
             (vec![7], vec![0; 32], vec![9]),
