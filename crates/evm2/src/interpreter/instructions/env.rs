@@ -1,28 +1,44 @@
 use crate::{
     EvmTypesHost,
-    evm::AccountLoad,
+    evm::{AccountLoad, AccountLoadFlags},
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{WordExt, read_word_padded},
     version::GasParams,
 };
 use evm2_macros::instruction;
 
+/// Loads the account at `addr` without its code, charging its cold surcharge.
 fn load_account<T: EvmTypesHost>(
     cx: &mut GasInstructionCx<'_, '_, '_, T>,
     addr: Word,
-    load_code: bool,
 ) -> Result<AccountLoad> {
-    let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
-    let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let account_address = addr.to_address();
+    load_account_impl(cx, addr, false)
+}
+
+/// Loads the account at `addr` with its code, charging the cold account and code surcharges.
+fn load_account_with_code<T: EvmTypesHost>(
+    cx: &mut GasInstructionCx<'_, '_, '_, T>,
+    addr: Word,
+) -> Result<AccountLoad> {
+    load_account_impl(cx, addr, true)
+}
+
+fn load_account_impl<T: EvmTypesHost>(
+    cx: &mut GasInstructionCx<'_, '_, '_, T>,
+    addr: Word,
+    with_code: bool,
+) -> Result<AccountLoad> {
+    // Built first: computing it inside the call would borrow `cx.state` while `host()` holds it.
+    let mut flags = AccountLoadFlags::for_gas(cx.gas.remaining(), cx.state.gas_params());
+    if with_code {
+        flags = flags.with_code();
+    }
     let account = cx
         .state
         .host()
-        .load_account(&account_address, load_code, skip_cold_load)
+        .load_account(&addr.to_address(), flags)
         .map_err(|error| cx.state.fail(error))?;
-    if account.is_cold {
-        cx.gas.spend(cold_load_gas)?;
-    }
+    cx.gas.spend(account.cold_cost(cx.state.gas_params()))?;
     Ok(account)
 }
 
@@ -51,7 +67,7 @@ pub fn address(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn balance(cx: _, [addr]: [Word]) -> Result<out> {
-    *out = load_account(&mut cx, *addr, false)?.balance;
+    *out = load_account(&mut cx, *addr)?.balance;
 }
 
 #[instruction]
@@ -112,12 +128,12 @@ pub fn gasprice(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
-    out.write_u64(load_account(&mut cx, *addr, true)?.code.len() as u64);
+    out.write_u64(load_account_with_code(&mut cx, *addr)?.code.len() as u64);
 }
 
 #[instruction(dynamic_gas)]
 pub fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
-    let account = load_account(&mut cx, *addr, false)?;
+    let account = load_account(&mut cx, *addr)?;
     *out = if account.is_empty { Word::ZERO } else { account.code_hash.into() };
 }
 
@@ -132,7 +148,7 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
     } else {
         0
     };
-    let code = load_account(&mut cx, *addr, true)?.code;
+    let code = load_account_with_code(&mut cx, *addr)?.code;
     cx.state.0.memory.set_data(
         memory_offset,
         code_offset.to_usize_saturated(),

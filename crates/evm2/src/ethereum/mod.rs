@@ -18,7 +18,7 @@ use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
     evm::{
-        AccountInfo,
+        AccountInfo, AccountLoadFlags,
         handler::{DefaultTxHandlerHooks, GasSettlement},
     },
     interpreter::{
@@ -609,25 +609,36 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     // cold premium after the load. The load is skipped when the cold premium is
                     // unaffordable, keeping a cold, unafforded target out of the block access
                     // list.
-                    let cold_additional = host.version().gas_params.cold_account_additional_cost();
                     if tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
                         return Ok(halted(host));
                     }
-                    let skip_cold_load = tx_gas.remaining() < cold_additional;
-                    let load =
-                        match Host::load_account(host, &delegated_address, true, skip_cold_load) {
-                            Ok(load) => load,
-                            Err(HostError::Halt(_)) => return Ok(halted(host)),
-                            Err(HostError::Execution(error)) => return Err(error.into()),
-                        };
-                    if load.is_cold && tx_gas.spend(cold_additional).is_err() {
+                    // The target's cold account and, under TIP-1175, its cold bytecode must both
+                    // fit in the gas left, or the load halts with nothing warmed.
+                    let gas_params = host.version().gas_params;
+                    let load = match Host::load_account(
+                        host,
+                        &delegated_address,
+                        AccountLoadFlags::for_gas(tx_gas.remaining(), &gas_params).with_code(),
+                    ) {
+                        Ok(load) => load,
+                        Err(HostError::Halt(_)) => return Ok(halted(host)),
+                        Err(HostError::Execution(error)) => return Err(error.into()),
+                    };
+                    if tx_gas.spend(load.cold_cost(&gas_params)).is_err() {
                         return Ok(halted(host));
                     }
                     code = load.code;
                 } else {
+                    // The delegation target is resolved for free here, so its bytecode is warmed
+                    // for free with it (TIP-1175).
+                    let track_code = host.version().gas_params.prices_code_load();
                     let mut account = host.state.account(&delegated_address)?;
                     account.warm();
-                    code = account.load_code()?;
+                    code = if track_code {
+                        account.load_code_and_warm()?.0
+                    } else {
+                        account.load_code()?
+                    };
                 }
                 code_address = delegated_address;
             }

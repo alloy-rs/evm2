@@ -4,6 +4,7 @@ use super::require_non_staticcall;
 use crate::{
     EvmFeatures, EvmTypesHost, HostError,
     bytecode::Bytecode,
+    evm::AccountLoadFlags,
     interpreter::{
         Gas, GasTracker, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind,
         MessageResult, MessageResultExt, Result, StackMut, Word, create_preaccess_failure,
@@ -85,16 +86,14 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
         gas.spend(gas_params.get(GasId::TransferValueCost))?;
     }
 
-    let additional_cold_cost = gas_params.cold_account_additional_cost();
+    // TIP-1175: the target's bytecode is loaded with it and priced on its own; a delegating
+    // account's designator is a code load at its own price, and the delegation target then pays
+    // its account access and its bytecode.
     let remaining_gas = gas.remaining();
-    let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account = host.load_account(&to, true, skip_cold_load)?;
-
-    let mut cost = 0;
-    if account.is_cold {
-        cost += additional_cold_cost;
-    }
-    let mut code = account.code;
+    let mut account =
+        host.load_account(&to, AccountLoadFlags::for_gas(remaining_gas, gas_params).with_code())?;
+    let mut cost = account.cold_cost(gas_params);
+    let mut code = core::mem::take(&mut account.code);
     let mut code_address = to;
     if features.contains(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
@@ -103,11 +102,11 @@ fn load_acc_and_calc_gas<T: EvmTypesHost, H: Host<T> + ?Sized>(
         if cost > remaining_gas {
             return Err(InstrStop::OutOfGas.into());
         }
-        let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
-        let delegated_account = host.load_account(&delegated_address, true, skip_cold_load)?;
-        if delegated_account.is_cold {
-            cost += additional_cold_cost;
-        }
+        let delegated_account = host.load_account(
+            &delegated_address,
+            AccountLoadFlags::for_gas(remaining_gas - cost, gas_params).with_code(),
+        )?;
+        cost += delegated_account.cold_cost(gas_params);
         code = delegated_account.code;
         code_address = delegated_address;
     }
@@ -454,7 +453,12 @@ pub fn create_with<T: EvmTypesHost>(
     let caller_info = if is_create2 && !state.feature(EvmFeatures::EIP8037) {
         None
     } else {
-        Some(state.host().load_account(&caller, false, false).map_err(|error| state.fail(error))?)
+        Some(
+            state
+                .host()
+                .load_account(&caller, AccountLoadFlags::always_load())
+                .map_err(|error| state.fail(error))?,
+        )
     };
     let destination = derive_create_destination(
         kind,
@@ -492,7 +496,7 @@ pub fn create_with<T: EvmTypesHost>(
         // failures return above before the destination is accessed.
         if state
             .host()
-            .load_account(&destination, false, false)
+            .load_account(&destination, AccountLoadFlags::always_load())
             .map_err(|error| state.fail(error))?
             .is_empty_for_new_account_gas
         {

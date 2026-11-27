@@ -445,7 +445,7 @@ mod tests {
     use crate::{
         BaseEvmConfigSelector, EvmTypesHost, ExecutionConfig, SpecId,
         env::{BlockEnv, BlockEnvExt, TxEnv},
-        evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+        evm::{AccountLoad, AccountLoadFlags, SLoad, SStore, SelfDestructResult},
         interpreter::{Host, Message, MessageResult, Word},
     };
     use alloc::{borrow::Cow, rc::Rc, string::ToString, vec::Vec};
@@ -521,8 +521,7 @@ mod tests {
         fn load_account(
             &mut self,
             _address: &Address,
-            _load_code: bool,
-            _skip_cold_load: bool,
+            _flags: AccountLoadFlags,
         ) -> Result<AccountLoad, crate::HostError> {
             unimplemented!()
         }

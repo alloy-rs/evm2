@@ -451,11 +451,20 @@ impl<'a> State<'a> {
     /// set unchanged. Addresses in the pre-warmed set remain effectively warm even when their
     /// runtime warmth is cleared.
     ///
+    /// With `warm` set to `false`, the account's bytecode is marked cold too (Tempo TIP-1175), so
+    /// the next code load pays the code price again. With `true`, only the account is warmed: code
+    /// warmth is left as it was.
+    ///
     /// This call adds no journal entry; rolling back an existing account-change entry still
     /// restores the account's recorded runtime warmth.
     pub fn set_account_warm(&mut self, address: &Address, warm: bool) {
         if let Some(account) = self.accounts.get_mut(address) {
             account.flags.set(AccountFlags::WARM, warm);
+            // Cooling an account cools its bytecode too (TIP-1175); warming it does not warm the
+            // bytecode, which is paid for separately.
+            if !warm {
+                account.flags.remove(AccountFlags::CODE_WARM);
+            }
         }
     }
 
@@ -468,7 +477,7 @@ impl<'a> State<'a> {
     /// remain effectively warm.
     pub fn cool_loaded(&mut self) {
         for account in self.accounts.values_mut() {
-            account.flags.remove(AccountFlags::WARM);
+            account.flags.remove(AccountFlags::WARM | AccountFlags::CODE_WARM);
             for slot in account.storage.slots.values_mut() {
                 slot.is_warm = false;
             }
@@ -1812,5 +1821,104 @@ mod tests {
         assert_eq!((slot.original(), slot.current()), (Word::from(6), Word::from(6)));
         assert!(!state.accounts[&address].storage.slots.contains_key(&unloaded));
         assert!(!state.take_pending_state().is_changed());
+    }
+}
+
+#[cfg(test)]
+mod tip1175_cooling_tests {
+    use super::*;
+    use crate::{
+        bytecode::Bytecode,
+        evm::{db::InMemoryDB, state::AccountInfo},
+    };
+
+    fn database(address: Address) -> InMemoryDB {
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &address,
+            AccountInfo::default().with_code(Bytecode::new_legacy(alloc::vec![0x00].into())),
+        );
+        database
+    }
+
+    fn warm_code(state: &mut State<'_>, address: Address) {
+        let mut account = state.account(&address).unwrap();
+        account.warm();
+        assert!(account.load_code_and_warm().unwrap().1);
+        assert!(account.is_code_warm());
+    }
+
+    #[test]
+    fn set_account_warm_false_cools_code() {
+        let address = Address::with_last_byte(42);
+        let mut state = State::new(database(address));
+        warm_code(&mut state, address);
+        state.set_account_warm(&address, true);
+        assert!(state.account(&address).unwrap().is_code_warm());
+        state.set_account_warm(&address, false);
+        let mut account = state.account(&address).unwrap();
+        assert!(!account.is_code_warm());
+        assert!(account.load_code_and_warm().unwrap().1);
+    }
+
+    #[test]
+    fn warm_code_then_change_rolls_back_both() {
+        // Warming the code and then changing the account in the same handle records one
+        // snapshot taken before either, so rollback restores the balance and cools the code.
+        let address = Address::with_last_byte(45);
+        let mut state = State::new(database(address));
+        let checkpoint = state.checkpoint();
+        let mut account = state.account(&address).unwrap();
+        assert!(account.warm_code());
+        account.set_balance(Word::from(7));
+        drop(account);
+        assert_eq!(state.journal.len(), 1);
+        state.rollback(checkpoint, crate::EvmFeatures::empty());
+        let account = state.account(&address).unwrap();
+        assert!(!account.is_code_warm());
+        assert_eq!(account.balance(), Word::ZERO);
+    }
+
+    #[test]
+    fn set_code_does_not_warm_code() {
+        // Installing code doesn't pay for loading it, so the first load in the transaction is
+        // still cold and pays the code price.
+        let address = Address::with_last_byte(43);
+        let mut state = State::new(InMemoryDB::default());
+        let mut account = state.account(&address).unwrap();
+        account.warm();
+        let code = Bytecode::new_legacy(alloc::vec![0x00].into());
+        account.set_code(code.hash_slow(), code);
+        assert!(!account.is_code_warm());
+        assert!(account.load_code_and_warm().unwrap().1);
+        assert!(account.is_code_warm());
+    }
+
+    #[test]
+    fn rollback_removes_installed_code_and_its_warmth() {
+        let address = Address::with_last_byte(44);
+        let mut state = State::new(InMemoryDB::default());
+        state.account(&address).unwrap().warm();
+        let checkpoint = state.checkpoint();
+        let mut account = state.account(&address).unwrap();
+        let code = Bytecode::new_legacy(alloc::vec![0x00].into());
+        account.set_code(code.hash_slow(), code);
+        assert!(account.load_code_and_warm().unwrap().1);
+        drop(account);
+        state.rollback(checkpoint, crate::EvmFeatures::empty());
+        let mut account = state.account(&address).unwrap();
+        assert!(!account.is_code_warm());
+        assert!(account.load_code().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cool_loaded_cools_code() {
+        let address = Address::with_last_byte(42);
+        let mut state = State::new(database(address));
+        warm_code(&mut state, address);
+        state.cool_loaded();
+        let mut account = state.account(&address).unwrap();
+        assert!(!account.is_code_warm());
+        assert!(account.load_code_and_warm().unwrap().1);
     }
 }

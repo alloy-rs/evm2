@@ -1,6 +1,10 @@
 use alloy_primitives::{Address, U256};
 use core::{hint::cold_path, num::NonZero};
-use evm2::{EvmTypesHost, evm::AccountLoad, interpreter::Host};
+use evm2::{
+    EvmTypesHost,
+    evm::{AccountLoad, AccountLoadFlags},
+    interpreter::Host,
+};
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
 pub type BuiltinResult = Result<(), BuiltinError>;
@@ -48,23 +52,37 @@ pub(crate) fn word_to_usize(value: U256) -> Result<usize, InstrStop> {
     })
 }
 
-/// Loads an account, handling cold load gas accounting.
+/// Loads an account without its code, handling cold load gas accounting.
 ///
 /// Pre-Berlin, `cold_account_additional_cost` is 0, so the cold load logic is a no-op.
 pub(crate) fn load_account<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &Address,
-    load_code: bool,
 ) -> Result<AccountLoad, BuiltinError> {
-    let cold_load_gas = ecx.gas_params().cold_account_additional_cost();
-    let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-    let account = ecx
-        .host()
-        .load_account(address, load_code, skip_cold_load)
-        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
-    if account.is_cold {
-        ecx.gas.spend(cold_load_gas)?;
+    load_account_impl(ecx, address, false)
+}
+
+/// Loads an account with its code, handling cold account and code gas accounting.
+pub(crate) fn load_account_with_code<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    address: &Address,
+) -> Result<AccountLoad, BuiltinError> {
+    load_account_impl(ecx, address, true)
+}
+
+fn load_account_impl<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    address: &Address,
+    with_code: bool,
+) -> Result<AccountLoad, BuiltinError> {
+    // Built first: computing it inside the call would borrow `ecx` while `host()` holds it.
+    let mut flags = AccountLoadFlags::for_gas(ecx.gas.remaining(), ecx.gas_params());
+    if with_code {
+        flags = flags.with_code();
     }
+    let account =
+        ecx.host().load_account(address, flags).map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+    ecx.gas.spend(account.cold_cost(ecx.gas_params()))?;
     Ok(account)
 }
 

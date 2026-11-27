@@ -171,6 +171,8 @@ gas_ids! {
     TxValueCost;
     /// EIP-2780/EIP-8038 execution gas cost of a top-level CREATE access.
     TxCreateAccessCost;
+    /// Tempo TIP-1175 additional gas for a transaction's first load of an account's bytecode (0 on Ethereum).
+    ColdCodeAdditionalCost;
 
     // Reserved custom gas parameter slots.
 
@@ -444,6 +446,19 @@ impl GasParams {
     #[inline]
     pub const fn cold_account_additional_cost(&self) -> u64 {
         self.get(GasId::ColdAccountAdditionalCost)
+    }
+
+    /// Returns additional cold bytecode load gas (Tempo TIP-1175), zero on Ethereum.
+    #[inline]
+    pub const fn cold_code_additional_cost(&self) -> u64 {
+        self.get(GasId::ColdCodeAdditionalCost)
+    }
+
+    /// Returns whether bytecode loads are priced (Tempo TIP-1175), which turns code warmth
+    /// tracking on. False on every Ethereum fork.
+    #[inline]
+    pub const fn prices_code_load(&self) -> bool {
+        self.cold_code_additional_cost() != 0
     }
 
     /// Returns the `(intrinsic_tokens, floor_tokens)` of transaction calldata `input`.

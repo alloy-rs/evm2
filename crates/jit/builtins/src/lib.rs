@@ -18,6 +18,7 @@ use evm2::{
     BaseEvmTypes, EvmTypesHost,
     bytecode::Bytecode,
     constants::BLOCK_HASH_HISTORY,
+    evm::AccountLoadFlags,
     interpreter::{
         Host, MessageExt, MessageKind, Word, create_preaccess_failure, derive_create_destination,
         i256,
@@ -198,7 +199,7 @@ pub unsafe fn __revmc_builtin_balance<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let account = load_account(ecx, &address.to_address(), false)?;
+    let account = load_account(ecx, &address.to_address())?;
     *address = account.balance.into();
     Ok(())
 }
@@ -261,7 +262,7 @@ pub unsafe fn __revmc_builtin_extcodesize<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let account = load_account(ecx, &address.to_address(), true)?;
+    let account = load_account_with_code(ecx, &address.to_address())?;
     *address = U256::from(account.code.len()).into();
     Ok(())
 }
@@ -281,7 +282,7 @@ pub unsafe fn __revmc_builtin_extcodecopy<T: EvmTypesHost>(
         ensure_memory(ecx, memory_offset_usize, len)?;
     }
 
-    let account = load_account(ecx, &address.to_address(), true)?;
+    let account = load_account_with_code(ecx, &address.to_address())?;
     let code = account.code.original_bytes();
 
     let code_offset_usize =
@@ -322,7 +323,7 @@ pub unsafe fn __revmc_builtin_extcodehash<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let account = load_account(ecx, &address.to_address(), false)?;
+    let account = load_account(ecx, &address.to_address())?;
     let code_hash = if account.is_empty { B256::ZERO } else { account.code_hash };
     *address = EvmWord::from_be_bytes(code_hash);
     Ok(())
@@ -372,7 +373,7 @@ pub unsafe fn __revmc_builtin_self_balance<T: EvmTypesHost>(
     let destination = ecx.message().destination;
     let balance = ecx
         .host()
-        .load_account(&destination, false, false)
+        .load_account(&destination, AccountLoadFlags::always_load())
         .map_err(|stop| ecx.interpreter_mut().fail(stop))?
         .balance;
     *slot = balance.into();
@@ -664,7 +665,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     } else {
         Some(
             ecx.host()
-                .load_account(&caller, false, false)
+                .load_account(&caller, AccountLoadFlags::always_load())
                 .map_err(|error| ecx.interpreter_mut().fail(error))?,
         )
     };
@@ -702,7 +703,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         // failures return above before the destination is accessed.
         if ecx
             .host()
-            .load_account(&destination, false, false)
+            .load_account(&destination, AccountLoadFlags::always_load())
             .map_err(|error| ecx.interpreter_mut().fail(error))?
             .is_empty_for_new_account_gas
         {
@@ -893,20 +894,18 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost))?;
     }
 
-    let additional_cold_cost = version.gas_params.cold_account_additional_cost();
+    // TIP-1175: see the interpreter's `load_acc_and_calc_gas`.
     let remaining_gas = ecx.gas.remaining();
-    let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account = ecx
+    let mut account = ecx
         .host()
-        .load_account(&to, true, skip_cold_load)
+        .load_account(
+            &to,
+            AccountLoadFlags::for_gas(remaining_gas, &version.gas_params).with_code(),
+        )
         .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
-
-    let mut cost = 0;
-    if account.is_cold {
-        cost += additional_cold_cost;
-    }
+    let mut cost = account.cold_cost(&version.gas_params);
     let mut new_account_state_gas = 0;
-    let mut code = account.code;
+    let mut code = core::mem::take(&mut account.code);
     let mut code_address = to;
     if ecx.enables(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
@@ -915,14 +914,14 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         if cost > remaining_gas {
             return Err(InstrStop::OutOfGas.into());
         }
-        let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
         let delegated_account = ecx
             .host()
-            .load_account(&delegated_address, true, skip_cold_load)
+            .load_account(
+                &delegated_address,
+                AccountLoadFlags::for_gas(remaining_gas - cost, &version.gas_params).with_code(),
+            )
             .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
-        if delegated_account.is_cold {
-            cost += additional_cold_cost;
-        }
+        cost += delegated_account.cold_cost(&version.gas_params);
         code = delegated_account.code;
         code_address = delegated_address;
     }

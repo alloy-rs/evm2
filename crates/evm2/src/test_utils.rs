@@ -5,7 +5,7 @@ use crate::{
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, BlockEnvExt, TxEnv, TxEnvExt},
     ethereum::{RecoveredTxEnvelope, TxEnvelope},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult, StorageSlot, Tracked},
+    evm::{AccountLoad, AccountLoadFlags, SLoad, SStore, SelfDestructResult, StorageSlot, Tracked},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, Memory, Message, MessageExt, MessageKind,
         MessageResult, MessageResultExt, StackBacking, Word, op,
@@ -121,10 +121,10 @@ impl Host<TestTypes> for TestHost {
     fn load_account(
         &mut self,
         address: &Address,
-        load_code: bool,
-        skip_cold_load: bool,
+        flags: AccountLoadFlags,
     ) -> Result<AccountLoad, crate::HostError> {
-        if skip_cold_load && self.is_cold {
+        let load_code = flags.contains(AccountLoadFlags::CODE);
+        if !flags.contains(AccountLoadFlags::COLD_ACCOUNT) && self.is_cold {
             return Err(InstrStop::OutOfGas.into());
         }
         self.account_loads.push(*address);
@@ -148,6 +148,7 @@ impl Host<TestTypes> for TestHost {
                 !self.exists && !self.is_touched
             },
             is_cold: self.is_cold,
+            is_code_cold: false,
             _non_exhaustive: (),
         })
     }
